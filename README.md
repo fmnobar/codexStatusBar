@@ -7,6 +7,7 @@ Small macOS menu bar app that shows the remaining Codex 7-day usage percentage i
 - macOS 14+
 - Xcode 17+
 - Codex installed locally
+- No third-party package manager or extra build tool required
 
 ```bash
 git clone https://github.com/fmnobar/codexStatusBar.git
@@ -29,18 +30,9 @@ git pull
 ./uninstall.sh
 ```
 
-## Development
-
-The repo includes a checked-in Xcode project, so end users do not need `xcodegen`.
-
-If you change `project.yml`, regenerate the project with:
-
-```bash
-xcodegen generate
-```
-
 ## Notes
 
 - The app launches or reuses a local `codex app-server`.
-- The menu bar label shows the 7-day remaining percent.
+- The menu bar label shows the selected 5-hour or 7-day remaining percent.
 - The popover shows the 5-hour and 7-day remaining limits and reset times.
+- Left click opens the popover. Right click shows `Quit`.

@@ -13,7 +13,6 @@
 		4B7E911F7C5F52280586877E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 08DB61787596576CE72359F0 /* Assets.xcassets */; };
 		4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */; };
 		580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */; };
-		5E39091E01F5111EE9578B99 /* CodexMarkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D7200C1E0E68356E00AA463 /* CodexMarkView.swift */; };
 		746901348E7A668975CEDA56 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5363F89C9BF34793883A496 /* StatusItemController.swift */; };
 		9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */; };
 		AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */; };
@@ -36,7 +35,6 @@
 		1615CBD7D5D0BFBA6D625661 /* CodexUsageMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexUsageMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexUsageMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
-		4D7200C1E0E68356E00AA463 /* CodexMarkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexMarkView.swift; sourceTree = "<group>"; };
 		64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRateLimitDecodingTests.swift; sourceTree = "<group>"; };
 		6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusViewModel.swift; sourceTree = "<group>"; };
 		72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRateLimitModels.swift; sourceTree = "<group>"; };
@@ -80,7 +78,6 @@
 			isa = PBXGroup;
 			children = (
 				403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */,
-				4D7200C1E0E68356E00AA463 /* CodexMarkView.swift */,
 				72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */,
 				F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */,
 				F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */,
@@ -217,7 +214,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
-				5E39091E01F5111EE9578B99 /* CodexMarkView.swift in Sources */,
 				17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */,
 				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,
 				AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */,

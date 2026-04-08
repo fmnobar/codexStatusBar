@@ -114,12 +114,13 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
 
     private func startManagedServer(on port: Int) async throws {
         let executableURL = try resolveCodexExecutableURL()
+        let nullDevice = FileHandle(forWritingAtPath: "/dev/null")
 
         let process = Process()
         process.executableURL = executableURL
         process.arguments = ["app-server", "--listen", "ws://127.0.0.1:\(port)"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = nullDevice
+        process.standardError = nullDevice
 
         try process.run()
         self.process = process
