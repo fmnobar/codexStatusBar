@@ -1,0 +1,60 @@
+import XCTest
+@testable import CodexUsageMenuBar
+
+@MainActor
+final class MenuBarStatusViewModelTests: XCTestCase {
+    func testPopoverRefreshesOnlyWhenStatusIsStale() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 6, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 2, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+
+        var now = Date(timeIntervalSince1970: 1_000)
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: { now },
+            refreshInterval: 3_600,
+            staleAfter: 30
+        )
+
+        await viewModel.start()
+        XCTAssertEqual(client.startCallCount, 1)
+        XCTAssertEqual(client.refreshCallCount, 0)
+
+        now = now.addingTimeInterval(10)
+        await viewModel.popoverDidAppear()
+        XCTAssertEqual(client.refreshCallCount, 0)
+
+        now = now.addingTimeInterval(21)
+        await viewModel.popoverDidAppear()
+        XCTAssertEqual(client.refreshCallCount, 1)
+
+        viewModel.stop()
+    }
+}
+
+private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
+    var onSnapshot: ((CodexRateLimitSnapshot) -> Void)?
+
+    private let snapshot: CodexRateLimitSnapshot
+
+    private(set) var startCallCount = 0
+    private(set) var refreshCallCount = 0
+
+    init(snapshot: CodexRateLimitSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func start() async throws -> CodexRateLimitSnapshot {
+        startCallCount += 1
+        return snapshot
+    }
+
+    func refresh() async throws -> CodexRateLimitSnapshot {
+        refreshCallCount += 1
+        return snapshot
+    }
+
+    func stop() {}
+}

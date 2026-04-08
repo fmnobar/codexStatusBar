@@ -1,0 +1,41 @@
+name: CodexUsageMenuBar
+options:
+  createIntermediateGroups: true
+
+targets:
+  CodexUsageMenuBar:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/CodexUsageMenuBar
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.farzad.codexstatusbar
+        PRODUCT_NAME: CodexStatusBar
+        SWIFT_VERSION: 6.0
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Codex Status Bar
+        INFOPLIST_KEY_LSUIElement: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 1.0
+        CODE_SIGN_STYLE: Automatic
+    scheme:
+      testTargets:
+        - CodexUsageMenuBarTests
+
+  CodexUsageMenuBarTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    hostApplication: CodexUsageMenuBar
+    sources:
+      - path: Tests/CodexUsageMenuBarTests
+    dependencies:
+      - target: CodexUsageMenuBar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.farzad.codexstatusbar.tests
+        SWIFT_VERSION: 6.0
+        GENERATE_INFOPLIST_FILE: YES
