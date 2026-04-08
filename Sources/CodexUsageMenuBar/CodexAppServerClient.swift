@@ -3,6 +3,7 @@ import Foundation
 enum CodexClientError: LocalizedError {
     case codexExecutableNotFound
     case appServerUnavailable
+    case authTokenUnavailable
     case invalidResponse
     case websocketUnavailable
     case jsonRPCError(String)
@@ -13,6 +14,8 @@ enum CodexClientError: LocalizedError {
             return "The Codex CLI executable could not be found."
         case .appServerUnavailable:
             return "The Codex app server could not be reached."
+        case .authTokenUnavailable:
+            return "Codex auth is unavailable."
         case .invalidResponse:
             return "Codex returned an invalid response."
         case .websocketUnavailable:
@@ -183,10 +186,68 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     }
 
     private func fetchLatestSnapshot() async throws -> CodexRateLimitSnapshot {
+        do {
+            return try await fetchWhamUsageSnapshot()
+        } catch {
+            return try await fetchAppServerSnapshot()
+        }
+    }
+
+    private func fetchAppServerSnapshot() async throws -> CodexRateLimitSnapshot {
         let result = try await sendRequest(method: "account/rateLimits/read", params: nil)
         let data = try makeJSONData(from: result)
         let response = try decoder.decode(AccountRateLimitsResponse.self, from: data)
         return response.selectedSnapshot()
+    }
+
+    private func fetchWhamUsageSnapshot() async throws -> CodexRateLimitSnapshot {
+        do {
+            return try await fetchWhamUsageSnapshot(refreshToken: false)
+        } catch WhamUsageFetchError.unauthorized {
+            return try await fetchWhamUsageSnapshot(refreshToken: true)
+        }
+    }
+
+    private func fetchWhamUsageSnapshot(refreshToken: Bool) async throws -> CodexRateLimitSnapshot {
+        let authStatus = try await fetchAuthStatus(includeToken: true, refreshToken: refreshToken)
+
+        guard let authToken = authStatus.authToken, !authToken.isEmpty else {
+            throw CodexClientError.authTokenUnavailable
+        }
+
+        var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("CodexStatusBar/1.0", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexClientError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200..<300:
+            let response = try decoder.decode(WhamUsageResponse.self, from: data)
+            guard let snapshot = response.selectedSnapshot() else {
+                throw CodexClientError.invalidResponse
+            }
+            return snapshot
+        case 401:
+            throw WhamUsageFetchError.unauthorized
+        default:
+            throw WhamUsageFetchError.unexpectedStatusCode(httpResponse.statusCode)
+        }
+    }
+
+    private func fetchAuthStatus(includeToken: Bool, refreshToken: Bool) async throws -> GetAuthStatusResponse {
+        let result = try await sendRequest(
+            method: "getAuthStatus",
+            params: [
+                "includeToken": includeToken,
+                "refreshToken": refreshToken,
+            ]
+        )
+        let data = try makeJSONData(from: result)
+        return try decoder.decode(GetAuthStatusResponse.self, from: data)
     }
 
     private func sendRequest(method: String, params: Any?) async throws -> Any {
@@ -283,7 +344,18 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
             let notification = try decoder.decode(AccountRateLimitsUpdatedNotificationPayload.self, from: notificationData)
 
             if let snapshot = notification.selectedSnapshot() {
-                onSnapshot?(snapshot)
+                Task { @MainActor [weak self] in
+                    guard let self else {
+                        return
+                    }
+
+                    do {
+                        let latestSnapshot = try await self.fetchLatestSnapshot()
+                        self.onSnapshot?(latestSnapshot)
+                    } catch {
+                        self.onSnapshot?(snapshot)
+                    }
+                }
             }
         }
     }
@@ -361,4 +433,9 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     private func makeJSONData(from object: Any) throws -> Data {
         try JSONSerialization.data(withJSONObject: object, options: [])
     }
+}
+
+private enum WhamUsageFetchError: Error {
+    case unauthorized
+    case unexpectedStatusCode(Int)
 }

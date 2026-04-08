@@ -19,6 +19,12 @@ struct CodexRateLimitSnapshot: Equatable {
     let secondary: CodexRateLimitWindow?
 }
 
+struct GetAuthStatusResponse: Decodable {
+    let authMethod: String
+    let authToken: String?
+    let requiresOpenaiAuth: Bool
+}
+
 struct AccountRateLimitsResponse: Decodable {
     let rateLimits: RateLimitSnapshotPayload
     let rateLimitsByLimitId: [String: RateLimitSnapshotPayload]?
@@ -73,6 +79,55 @@ struct RateLimitWindowPayload: Decodable {
             usedPercent: usedPercent,
             windowDurationMinutes: windowDurationMins,
             resetsAt: resetsAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        )
+    }
+}
+
+struct WhamUsageResponse: Decodable {
+    let rateLimit: WhamRateLimitPayload?
+
+    enum CodingKeys: String, CodingKey {
+        case rateLimit = "rate_limit"
+    }
+
+    func selectedSnapshot() -> CodexRateLimitSnapshot? {
+        rateLimit?.toDomainSnapshot()
+    }
+}
+
+struct WhamRateLimitPayload: Decodable {
+    let primaryWindow: WhamRateLimitWindowPayload?
+    let secondaryWindow: WhamRateLimitWindowPayload?
+
+    enum CodingKeys: String, CodingKey {
+        case primaryWindow = "primary_window"
+        case secondaryWindow = "secondary_window"
+    }
+
+    func toDomainSnapshot() -> CodexRateLimitSnapshot {
+        CodexRateLimitSnapshot(
+            primary: primaryWindow?.toDomainWindow(),
+            secondary: secondaryWindow?.toDomainWindow()
+        )
+    }
+}
+
+struct WhamRateLimitWindowPayload: Decodable {
+    let usedPercent: Int
+    let limitWindowSeconds: Int?
+    let resetAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercent = "used_percent"
+        case limitWindowSeconds = "limit_window_seconds"
+        case resetAt = "reset_at"
+    }
+
+    func toDomainWindow() -> CodexRateLimitWindow {
+        CodexRateLimitWindow(
+            usedPercent: usedPercent,
+            windowDurationMinutes: limitWindowSeconds.map { $0 / 60 },
+            resetsAt: resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
         )
     }
 }

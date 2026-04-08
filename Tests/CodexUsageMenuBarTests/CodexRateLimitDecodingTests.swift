@@ -64,4 +64,36 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.secondary?.usedPercent, 2)
         XCTAssertEqual(snapshot.secondary?.windowDurationMinutes, 10080)
     }
+
+    func testDecodesWhamUsagePayloadIntoSnapshot() throws {
+        let data = Data(
+            """
+            {
+              "plan_type": "pro",
+              "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                  "used_percent": 25,
+                  "limit_window_seconds": 18000,
+                  "reset_at": 1775622013
+                },
+                "secondary_window": {
+                  "used_percent": 8,
+                  "limit_window_seconds": 604800,
+                  "reset_at": 1776208813
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(WhamUsageResponse.self, from: data)
+        let snapshot = try XCTUnwrap(response.selectedSnapshot())
+
+        XCTAssertEqual(snapshot.primary?.usedPercent, 25)
+        XCTAssertEqual(snapshot.primary?.windowDurationMinutes, 300)
+        XCTAssertEqual(snapshot.secondary?.usedPercent, 8)
+        XCTAssertEqual(snapshot.secondary?.windowDurationMinutes, 10080)
+    }
 }
