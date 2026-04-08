@@ -1,20 +1,23 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <mask id="cutout">
-      <rect width="64" height="64" fill="white"/>
-      <path
-        d="M26 22L36 32L26 42"
-        stroke="black"
-        stroke-width="8"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    </mask>
-  </defs>
-  <g mask="url(#cutout)" fill="black">
-    <circle cx="24" cy="31" r="12"/>
-    <circle cx="35" cy="24" r="10"/>
-    <circle cx="46" cy="31" r="11"/>
-    <rect x="16" y="31" width="41" height="14" rx="7"/>
-  </g>
+  <path
+    d="M22 22L12 32L22 42"
+    stroke="black"
+    stroke-width="7"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M42 22L52 32L42 42"
+    stroke="black"
+    stroke-width="7"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M34 19L29 45"
+    stroke="black"
+    stroke-width="7"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
 </svg>

@@ -39,6 +39,7 @@ final class StatusItemController: NSObject {
         button.action = #selector(handleStatusItemClick(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .imageLeading
+        button.imageScaling = .scaleProportionallyDown
         button.image = makeStatusItemImage()
         button.appearsDisabled = false
     }
@@ -69,7 +70,7 @@ final class StatusItemController: NSObject {
 
     private func makeStatusItemImage() -> NSImage? {
         let image = NSImage(named: "CodexMark")?.copy() as? NSImage
-        image?.size = NSSize(width: 13, height: 13)
+        image?.size = NSSize(width: 15, height: 15)
         image?.isTemplate = true
         return image
     }
