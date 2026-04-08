@@ -16,6 +16,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     @Published private(set) var menuBarPercentText = "--"
     @Published private(set) var fiveHourLine = "5h limit: --% left (resets --)"
     @Published private(set) var sevenDayLine = "7d limit: --% left (resets --)"
+    @Published private(set) var selectedMenuBarDisplayWindow: MenuBarDisplayWindow
     @Published private(set) var isLoading = true
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasSnapshot = false
@@ -24,6 +25,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let now: () -> Date
     private let refreshInterval: TimeInterval
     private let staleAfter: TimeInterval
+    private let persistSelection: (MenuBarDisplayWindow) -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
     private var didStart = false
@@ -39,12 +41,16 @@ final class MenuBarStatusViewModel: ObservableObject {
         client: CodexRateLimitClientProtocol,
         now: @escaping () -> Date = Date.init,
         refreshInterval: TimeInterval = 60,
-        staleAfter: TimeInterval = 30
+        staleAfter: TimeInterval = 30,
+        selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
+        persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) }
     ) {
         self.client = client
         self.now = now
         self.refreshInterval = refreshInterval
         self.staleAfter = staleAfter
+        self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
+        self.persistSelection = persistSelection
 
         client.onSnapshot = { [weak self] snapshot in
             Task { @MainActor in
@@ -78,6 +84,16 @@ final class MenuBarStatusViewModel: ObservableObject {
 
     func retry() async {
         await refresh(showLoading: true)
+    }
+
+    func selectMenuBarDisplayWindow(_ displayWindow: MenuBarDisplayWindow) {
+        guard selectedMenuBarDisplayWindow != displayWindow else {
+            return
+        }
+
+        selectedMenuBarDisplayWindow = displayWindow
+        persistSelection(displayWindow)
+        applyPresentation()
     }
 
     func stop() {
@@ -135,7 +151,11 @@ final class MenuBarStatusViewModel: ObservableObject {
     }
 
     private func applyPresentation() {
-        let presentation = MenuBarStatusFormatter.presentation(snapshot: snapshot, now: now())
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: now(),
+            selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow
+        )
         menuBarPercentText = presentation.menuBarPercentText
         fiveHourLine = presentation.fiveHourLine
         sevenDayLine = presentation.sevenDayLine

@@ -3,9 +3,9 @@
     <mask id="cutout">
       <rect width="64" height="64" fill="white"/>
       <path
-        d="M26 22L36 32L26 42"
+        d="M20 34H27L31 28L35 38L39 32H44"
         stroke="black"
-        stroke-width="8"
+        stroke-width="6.5"
         stroke-linecap="round"
         stroke-linejoin="round"
       />

@@ -19,15 +19,38 @@ struct MenuBarContentView: View {
                     }
                 }
             } else {
-                Text(viewModel.fiveHourLine)
-                    .font(.system(size: 13))
-                    .fixedSize(horizontal: false, vertical: true)
+                selectableLine(
+                    text: viewModel.fiveHourLine,
+                    displayWindow: .fiveHour
+                )
 
-                Text(viewModel.sevenDayLine)
-                    .font(.system(size: 13))
-                    .fixedSize(horizontal: false, vertical: true)
+                selectableLine(
+                    text: viewModel.sevenDayLine,
+                    displayWindow: .sevenDay
+                )
             }
         }
         .padding(12)
+    }
+
+    @ViewBuilder
+    private func selectableLine(text: String, displayWindow: MenuBarDisplayWindow) -> some View {
+        Button {
+            viewModel.selectMenuBarDisplayWindow(displayWindow)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: viewModel.selectedMenuBarDisplayWindow == displayWindow ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13))
+                    .frame(width: 14)
+
+                Text(text)
+                    .font(.system(size: 13))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

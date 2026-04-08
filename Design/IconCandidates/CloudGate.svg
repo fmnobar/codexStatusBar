@@ -3,7 +3,7 @@
     <mask id="cutout">
       <rect width="64" height="64" fill="white"/>
       <path
-        d="M26 22L36 32L26 42"
+        d="M24 42V33C24 28.2 27.6 24.5 32 24.5C36.4 24.5 40 28.2 40 33V42"
         stroke="black"
         stroke-width="8"
         stroke-linecap="round"

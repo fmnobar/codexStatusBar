@@ -1,34 +1,27 @@
+import AppKit
 import SwiftUI
 
 @main
 struct CodexUsageMenuBarApp: App {
-    @StateObject private var viewModel: MenuBarStatusViewModel
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    init() {
-        let viewModel = MenuBarStatusViewModel(client: CodexAppServerClient())
-        _viewModel = StateObject(wrappedValue: viewModel)
+    var body: some Scene {
+        Settings {
+            EmptyView()
+        }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let viewModel = MenuBarStatusViewModel(client: CodexAppServerClient())
+    private var statusItemController: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItemController = StatusItemController(viewModel: viewModel)
 
         Task {
             await viewModel.start()
         }
-    }
-
-    var body: some Scene {
-        MenuBarExtra {
-            MenuBarContentView(viewModel: viewModel)
-                .frame(width: 300)
-                .onAppear {
-                    Task {
-                        await viewModel.popoverDidAppear()
-                    }
-                }
-        } label: {
-            HStack(spacing: 6) {
-                CodexMarkView()
-                Text(viewModel.menuBarPercentText)
-                    .monospacedDigit()
-            }
-        }
-        .menuBarExtraStyle(.window)
     }
 }

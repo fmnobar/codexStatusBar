@@ -15,7 +15,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             client: client,
             now: { now },
             refreshInterval: 3_600,
-            staleAfter: 30
+            staleAfter: 30,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in }
         )
 
         await viewModel.start()
@@ -29,6 +31,31 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         now = now.addingTimeInterval(21)
         await viewModel.popoverDidAppear()
         XCTAssertEqual(client.refreshCallCount, 1)
+
+        viewModel.stop()
+    }
+
+    func testSelectingFiveHourUpdatesMenuBarText() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 5, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            staleAfter: 30,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in }
+        )
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.menuBarPercentText, "95%")
+
+        viewModel.selectMenuBarDisplayWindow(.fiveHour)
+        XCTAssertEqual(viewModel.menuBarPercentText, "84%")
 
         viewModel.stop()
     }
