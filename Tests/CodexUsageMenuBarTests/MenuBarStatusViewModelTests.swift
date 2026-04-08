@@ -3,19 +3,17 @@ import XCTest
 
 @MainActor
 final class MenuBarStatusViewModelTests: XCTestCase {
-    func testPopoverRefreshesOnlyWhenStatusIsStale() async {
+    func testPopoverAlwaysRefreshesToPickUpLatestUsage() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 6, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 2, windowDurationMinutes: 10080, resetsAt: nil)
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
 
-        var now = Date(timeIntervalSince1970: 1_000)
         let viewModel = MenuBarStatusViewModel(
             client: client,
-            now: { now },
+            now: Date.init,
             refreshInterval: 3_600,
-            staleAfter: 30,
             selectedMenuBarDisplayWindow: .sevenDay,
             persistSelection: { _ in }
         )
@@ -24,13 +22,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(client.startCallCount, 1)
         XCTAssertEqual(client.refreshCallCount, 0)
 
-        now = now.addingTimeInterval(10)
         await viewModel.popoverDidAppear()
-        XCTAssertEqual(client.refreshCallCount, 0)
-
-        now = now.addingTimeInterval(21)
         await viewModel.popoverDidAppear()
-        XCTAssertEqual(client.refreshCallCount, 1)
+        XCTAssertEqual(client.refreshCallCount, 2)
 
         viewModel.stop()
     }
@@ -46,7 +40,6 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             client: client,
             now: Date.init,
             refreshInterval: 3_600,
-            staleAfter: 30,
             selectedMenuBarDisplayWindow: .sevenDay,
             persistSelection: { _ in }
         )

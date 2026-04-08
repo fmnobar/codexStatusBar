@@ -24,7 +24,6 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let client: CodexRateLimitClientProtocol
     private let now: () -> Date
     private let refreshInterval: TimeInterval
-    private let staleAfter: TimeInterval
     private let persistSelection: (MenuBarDisplayWindow) -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
@@ -35,20 +34,16 @@ final class MenuBarStatusViewModel: ObservableObject {
     private var resetRefreshTask: Task<Void, Never>?
     private var terminationObserver: NSObjectProtocol?
 
-    private(set) var lastRefreshAt: Date?
-
     init(
         client: CodexRateLimitClientProtocol,
         now: @escaping () -> Date = Date.init,
         refreshInterval: TimeInterval = 60,
-        staleAfter: TimeInterval = 30,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
         persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) }
     ) {
         self.client = client
         self.now = now
         self.refreshInterval = refreshInterval
-        self.staleAfter = staleAfter
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
         self.persistSelection = persistSelection
 
@@ -71,15 +66,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     }
 
     func popoverDidAppear() async {
-        let shouldRefresh = RefreshPolicy.shouldRefreshOnPopover(
-            lastRefreshAt: lastRefreshAt,
-            now: now(),
-            staleAfter: staleAfter
-        )
-
-        if shouldRefresh {
-            await refresh(showLoading: !hasSnapshot)
-        }
+        await refresh(showLoading: !hasSnapshot)
     }
 
     func retry() async {
@@ -145,7 +132,6 @@ final class MenuBarStatusViewModel: ObservableObject {
         hasSnapshot = true
         isLoading = false
         errorMessage = nil
-        lastRefreshAt = now()
         applyPresentation()
         scheduleResetRefresh(for: snapshot)
     }

@@ -116,17 +116,3 @@ enum MenuBarStatusFormatter {
         }
     }
 }
-
-enum RefreshPolicy {
-    static func shouldRefreshOnPopover(
-        lastRefreshAt: Date?,
-        now: Date,
-        staleAfter: TimeInterval = 30
-    ) -> Bool {
-        guard let lastRefreshAt else {
-            return true
-        }
-
-        return now.timeIntervalSince(lastRefreshAt) >= staleAfter
-    }
-}
