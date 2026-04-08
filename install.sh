@@ -12,6 +12,36 @@ INSTALLED_APP_PATH="$INSTALL_DIR/CodexStatusBar.app"
 BUILD_ARCH="${BUILD_ARCH:-$(uname -m)}"
 OPEN_AFTER_INSTALL="${OPEN_AFTER_INSTALL:-1}"
 
+resolve_codex_path() {
+  local candidate
+
+  for candidate in \
+    /Applications/Codex.app/Contents/Resources/codex \
+    /opt/homebrew/bin/codex \
+    /usr/local/bin/codex
+  do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  while IFS= read -r bundle; do
+    candidate="$bundle/Contents/Resources/codex"
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(find /Applications -maxdepth 1 -type d -name 'Codex*.app' | sort)
+
+  if command -v codex >/dev/null 2>&1; then
+    command -v codex
+    return 0
+  fi
+
+  return 1
+}
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This installer only supports macOS."
   exit 1
@@ -22,7 +52,7 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -x "/Applications/Codex.app/Contents/Resources/codex" ]] && ! command -v codex >/dev/null 2>&1; then
+if ! resolve_codex_path >/dev/null; then
   echo "Codex was not found. Install Codex before using Codex Status Bar."
   exit 1
 fi

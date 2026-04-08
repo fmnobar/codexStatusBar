@@ -83,32 +83,38 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
             return
         }
 
+        if let currentPort {
+            do {
+                try await connectToServer(on: currentPort)
+                return
+            } catch {
+                resetSocketState()
+                self.currentPort = nil
+            }
+        }
+
         try await ensureServerAvailable()
-        try openWebSocketIfNeeded()
-        try await initializeSessionIfNeeded()
     }
 
     private func ensureServerAvailable() async throws {
-        if let currentPort, await readyzResponds(on: currentPort) {
-            return
-        }
-
-        currentPort = nil
-
         for port in portRange {
-            if await readyzResponds(on: port) {
-                currentPort = port
+            do {
+                try await connectToServer(on: port)
                 ownsProcess = false
                 return
+            } catch {
+                resetSocketState()
+                currentPort = nil
             }
 
             do {
                 try await startManagedServer(on: port)
-                currentPort = port
                 ownsProcess = true
                 return
             } catch {
                 stopManagedProcess()
+                resetSocketState()
+                currentPort = nil
             }
         }
 
@@ -130,8 +136,12 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
 
         let deadline = Date().addingTimeInterval(readyTimeout)
         while Date() < deadline {
-            if await readyzResponds(on: port) {
+            do {
+                try await connectToServer(on: port)
                 return
+            } catch {
+                resetSocketState()
+                currentPort = nil
             }
 
             if !process.isRunning {
@@ -142,6 +152,12 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         }
 
         throw CodexClientError.appServerUnavailable
+    }
+
+    private func connectToServer(on port: Int) async throws {
+        currentPort = port
+        try openWebSocketIfNeeded()
+        try await initializeSessionIfNeeded()
     }
 
     private func openWebSocketIfNeeded() throws {
@@ -187,9 +203,9 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
 
     private func fetchLatestSnapshot() async throws -> CodexRateLimitSnapshot {
         do {
-            return try await fetchWhamUsageSnapshot()
-        } catch {
             return try await fetchAppServerSnapshot()
+        } catch {
+            return try await fetchWhamUsageSnapshot()
         }
     }
 
@@ -399,9 +415,10 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     private func resolveCodexExecutableURL() throws -> URL {
         let fileManager = FileManager.default
 
-        let bundledURL = URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex")
-        if fileManager.isExecutableFile(atPath: bundledURL.path) {
-            return bundledURL
+        for candidate in candidateCodexExecutableURLs(fileManager: fileManager) {
+            if fileManager.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
         }
 
         if let path = ProcessInfo.processInfo.environment["PATH"] {
@@ -416,18 +433,35 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         throw CodexClientError.codexExecutableNotFound
     }
 
-    private func readyzResponds(on port: Int) async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/readyz") else {
-            return false
+    private func candidateCodexExecutableURLs(fileManager: FileManager) -> [URL] {
+        var candidates: [URL] = [
+            URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
+            URL(fileURLWithPath: "/usr/local/bin/codex"),
+        ]
+
+        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        if let appBundleURLs = try? fileManager.contentsOfDirectory(
+            at: applicationsURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            let discoveredCandidates = appBundleURLs
+                .filter { $0.pathExtension == "app" && $0.deletingPathExtension().lastPathComponent.hasPrefix("Codex") }
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                .map { $0.appending(path: "Contents/Resources/codex", directoryHint: .notDirectory) }
+
+            candidates.append(contentsOf: discoveredCandidates)
         }
 
-        do {
-            let (_, response) = try await urlSession.data(from: url)
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            return (200..<300).contains(statusCode)
-        } catch {
-            return false
+        var deduplicated: [URL] = []
+        var seenPaths = Set<String>()
+
+        for candidate in candidates where seenPaths.insert(candidate.path).inserted {
+            deduplicated.append(candidate)
         }
+
+        return deduplicated
     }
 
     private func makeJSONData(from object: Any) throws -> Data {
