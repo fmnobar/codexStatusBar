@@ -70,7 +70,7 @@ final class StatusItemController: NSObject {
 
     private func makeStatusItemImage() -> NSImage? {
         let image = NSImage(named: "CodexMark")?.copy() as? NSImage
-        image?.size = NSSize(width: 15, height: 15)
+        image?.size = NSSize(width: 19, height: 19)
         image?.isTemplate = true
         return image
     }
