@@ -1,5 +1,4 @@
 import XCTest
-@testable import CodexUsageMenuBar
 
 final class CodexRateLimitDecodingTests: XCTestCase {
     func testDecodesPayloadAndPrefersMainCodexBucket() throws {

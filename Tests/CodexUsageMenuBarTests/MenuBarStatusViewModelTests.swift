@@ -1,5 +1,4 @@
 import XCTest
-@testable import CodexUsageMenuBar
 
 @MainActor
 final class MenuBarStatusViewModelTests: XCTestCase {

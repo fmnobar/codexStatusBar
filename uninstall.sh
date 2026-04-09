@@ -12,5 +12,5 @@ if [[ -d "$INSTALLED_APP_PATH" ]]; then
   rm -rf "$INSTALLED_APP_PATH"
   echo "Removed $INSTALLED_APP_PATH"
 else
-  echo "Codex Status Bar is not installed in ~/Applications."
+  echo "Codex Status Bar is not installed in $INSTALL_DIR."
 fi

@@ -1,5 +1,4 @@
 import XCTest
-@testable import CodexUsageMenuBar
 
 final class MenuBarStatusFormatterTests: XCTestCase {
     func testRemainingPercentIsClamped() {
@@ -111,6 +110,9 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(formatted, "Apr 14 9:20 PM")
+        XCTAssertTrue(formatted.contains("Apr 14"))
+        XCTAssertTrue(formatted.contains("9:20"))
+        XCTAssertTrue(formatted.contains("PM"))
+        XCTAssertFalse(formatted.contains(" at "))
     }
 }

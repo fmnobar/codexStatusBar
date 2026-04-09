@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "0E0D327876564F782332F3AC"
-               BuildableName = "CodexUsageMenuBar.app"
+               BuildableName = "CodexStatusBar.app"
                BlueprintName = "CodexUsageMenuBar"
                ReferencedContainer = "container:CodexUsageMenuBar.xcodeproj">
             </BuildableReference>
@@ -29,15 +29,6 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       onlyGenerateCoverageForSpecifiedTargets = "NO">
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0E0D327876564F782332F3AC"
-            BuildableName = "CodexUsageMenuBar.app"
-            BlueprintName = "CodexUsageMenuBar"
-            ReferencedContainer = "container:CodexUsageMenuBar.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
       <Testables>
          <TestableReference
             skipped = "NO"
@@ -69,7 +60,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "0E0D327876564F782332F3AC"
-            BuildableName = "CodexUsageMenuBar.app"
+            BuildableName = "CodexStatusBar.app"
             BlueprintName = "CodexUsageMenuBar"
             ReferencedContainer = "container:CodexUsageMenuBar.xcodeproj">
          </BuildableReference>
@@ -88,7 +79,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "0E0D327876564F782332F3AC"
-            BuildableName = "CodexUsageMenuBar.app"
+            BuildableName = "CodexStatusBar.app"
             BlueprintName = "CodexUsageMenuBar"
             ReferencedContainer = "container:CodexUsageMenuBar.xcodeproj">
          </BuildableReference>

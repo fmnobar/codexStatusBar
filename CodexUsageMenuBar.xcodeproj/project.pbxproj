@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */; };
 		17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */; };
+		2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */; };
+		2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */; };
+		2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
 		2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */; };
 		4B7E911F7C5F52280586877E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 08DB61787596576CE72359F0 /* Assets.xcassets */; };
 		4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */; };
@@ -32,7 +35,7 @@
 
 /* Begin PBXFileReference section */
 		08DB61787596576CE72359F0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		1615CBD7D5D0BFBA6D625661 /* CodexUsageMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexUsageMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1615CBD7D5D0BFBA6D625661 /* CodexStatusBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexStatusBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexUsageMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
 		64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRateLimitDecodingTests.swift; sourceTree = "<group>"; };
@@ -68,7 +71,7 @@
 		85E3D69656DE9C5C9A16607C /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				1615CBD7D5D0BFBA6D625661 /* CodexUsageMenuBar.app */,
+				1615CBD7D5D0BFBA6D625661 /* CodexStatusBar.app */,
 				1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */,
 			);
 			name = Products;
@@ -132,7 +135,7 @@
 			packageProductDependencies = (
 			);
 			productName = CodexUsageMenuBar;
-			productReference = 1615CBD7D5D0BFBA6D625661 /* CodexUsageMenuBar.app */;
+			productReference = 1615CBD7D5D0BFBA6D625661 /* CodexStatusBar.app */;
 			productType = "com.apple.product-type.application";
 		};
 		181B7B289FA2703280E604C6 /* CodexUsageMenuBarTests */ = {
@@ -203,6 +206,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
+				2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */,
+				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
 				2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */,
 				4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */,
@@ -237,7 +243,6 @@
 		0807E2D663A69411BFEBC96C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -249,7 +254,6 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.farzad.codexstatusbar.tests;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CodexUsageMenuBar.app/Contents/MacOS/CodexUsageMenuBar";
 			};
 			name = Release;
 		};
@@ -364,7 +368,6 @@
 		D3DE297B364F98F874D85F31 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -376,7 +379,6 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.farzad.codexstatusbar.tests;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CodexUsageMenuBar.app/Contents/MacOS/CodexUsageMenuBar";
 			};
 			name = Debug;
 		};
