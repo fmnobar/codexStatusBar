@@ -1,12 +1,24 @@
 import Foundation
 
-enum MenuBarDisplayWindow: String, Equatable {
+enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
     case fiveHour
     case sevenDay
+    case tightest
+
+    var displayTitle: String {
+        switch self {
+        case .fiveHour:
+            return "5h"
+        case .sevenDay:
+            return "7d"
+        case .tightest:
+            return "Tightest"
+        }
+    }
 }
 
 enum MenuBarDisplayWindowStore {
-    private static let defaultsKey = "MenuBarDisplayWindow"
+    static let defaultsKey = "MenuBarDisplayWindow"
 
     static func load(from defaults: UserDefaults = .standard) -> MenuBarDisplayWindow {
         guard
@@ -24,10 +36,24 @@ enum MenuBarDisplayWindowStore {
     }
 }
 
+enum StatusItemVisualState: Equatable {
+    case normal
+    case stale
+    case error
+}
+
+struct MenuBarLimitRowPresentation: Equatable {
+    let title: String
+    let remainingPercentText: String
+    let resetText: String
+    let displayWindow: MenuBarDisplayWindow
+    let isSelected: Bool
+}
+
 struct MenuBarStatusPresentation: Equatable {
     let menuBarPercentText: String
-    let fiveHourLine: String
-    let sevenDayLine: String
+    let fiveHourRow: MenuBarLimitRowPresentation
+    let sevenDayRow: MenuBarLimitRowPresentation
 }
 
 enum MenuBarStatusFormatter {
@@ -43,20 +69,26 @@ enum MenuBarStatusFormatter {
             snapshot?.primary
         case .sevenDay:
             snapshot?.secondary
+        case .tightest:
+            tightestWindow(primary: snapshot?.primary, secondary: snapshot?.secondary)
         }
 
         return MenuBarStatusPresentation(
             menuBarPercentText: menuBarPercentText(for: menuBarWindow),
-            fiveHourLine: line(
+            fiveHourRow: row(
                 title: "5h limit",
                 window: snapshot?.primary,
+                displayWindow: .fiveHour,
+                isSelected: selectedMenuBarDisplayWindow == .fiveHour,
                 now: now,
                 calendar: calendar,
                 locale: locale
             ),
-            sevenDayLine: line(
+            sevenDayRow: row(
                 title: "7d limit",
                 window: snapshot?.secondary,
+                displayWindow: .sevenDay,
+                isSelected: selectedMenuBarDisplayWindow == .sevenDay,
                 now: now,
                 calendar: calendar,
                 locale: locale
@@ -72,16 +104,65 @@ enum MenuBarStatusFormatter {
         return "\(window.remainingPercent)%"
     }
 
-    static func line(
+    static func row(
         title: String,
         window: CodexRateLimitWindow?,
+        displayWindow: MenuBarDisplayWindow,
+        isSelected: Bool,
         now: Date,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
-    ) -> String {
-        let remainingText = window.map { String($0.remainingPercent) } ?? "--"
+    ) -> MenuBarLimitRowPresentation {
+        let remainingText = window.map { "\($0.remainingPercent)% left" } ?? "--% left"
         let resetText = resetText(for: window?.resetsAt, now: now, calendar: calendar, locale: locale)
-        return "\(title): \(remainingText)% left (resets \(resetText))"
+        return MenuBarLimitRowPresentation(
+            title: title,
+            remainingPercentText: remainingText,
+            resetText: "Resets \(resetText)",
+            displayWindow: displayWindow,
+            isSelected: isSelected
+        )
+    }
+
+    static func freshnessText(lastUpdatedAt: Date?, now: Date, isOffline: Bool) -> String? {
+        guard let lastUpdatedAt else {
+            return nil
+        }
+
+        let ageText = relativeAgeText(since: lastUpdatedAt, now: now)
+        if isOffline {
+            return "Offline, showing last update from \(ageText)"
+        }
+
+        return "Updated \(ageText)"
+    }
+
+    static func relativeAgeText(since date: Date, now: Date) -> String {
+        let interval = max(0, Int(now.timeIntervalSince(date)))
+
+        switch interval {
+        case 0..<60:
+            return "just now"
+        case 60..<3_600:
+            return "\(interval / 60)m ago"
+        case 3_600..<86_400:
+            return "\(interval / 3_600)h ago"
+        default:
+            return "\(interval / 86_400)d ago"
+        }
+    }
+
+    static func tightestWindow(primary: CodexRateLimitWindow?, secondary: CodexRateLimitWindow?) -> CodexRateLimitWindow? {
+        switch (primary, secondary) {
+        case (.none, .none):
+            return nil
+        case (.some(let primary), .none):
+            return primary
+        case (.none, .some(let secondary)):
+            return secondary
+        case (.some(let primary), .some(let secondary)):
+            return primary.remainingPercent <= secondary.remainingPercent ? primary : secondary
+        }
     }
 
     static func resetText(

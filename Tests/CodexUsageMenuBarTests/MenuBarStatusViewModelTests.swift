@@ -51,29 +51,191 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         viewModel.stop()
     }
+
+    func testFailedRefreshWithCachedSnapshotShowsStaleOfflineState() async {
+        let currentTime = MutableNow(date: ISO8601DateFormatter().date(from: "2026-04-14T20:00:00Z")!)
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 35, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 11, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(
+            startResponses: [.success(snapshot)],
+            refreshResponses: [.failure(MockClientError.sample)]
+        )
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: { currentTime.date },
+            refreshInterval: 60,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in }
+        )
+
+        await viewModel.start()
+        currentTime.date = currentTime.date.addingTimeInterval(180)
+        await viewModel.manualRefresh()
+
+        XCTAssertTrue(viewModel.hasSnapshot)
+        XCTAssertTrue(viewModel.isStaleSnapshot)
+        XCTAssertEqual(viewModel.statusItemVisualState, .stale)
+        XCTAssertEqual(viewModel.footerStatusText, "Offline, showing last update from 3m ago")
+        XCTAssertEqual(viewModel.menuBarPercentText, "89%")
+
+        viewModel.stop()
+    }
+
+    func testSuccessfulRefreshClearsStaleState() async {
+        let currentTime = MutableNow(date: ISO8601DateFormatter().date(from: "2026-04-14T20:00:00Z")!)
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 35, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 11, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(
+            startResponses: [.success(snapshot)],
+            refreshResponses: [.failure(MockClientError.sample), .success(snapshot)]
+        )
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: { currentTime.date },
+            refreshInterval: 60,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in }
+        )
+
+        await viewModel.start()
+        currentTime.date = currentTime.date.addingTimeInterval(180)
+        await viewModel.manualRefresh()
+        XCTAssertEqual(viewModel.statusItemVisualState, .stale)
+
+        currentTime.date = currentTime.date.addingTimeInterval(20)
+        await viewModel.manualRefresh()
+        XCTAssertFalse(viewModel.isStaleSnapshot)
+        XCTAssertEqual(viewModel.statusItemVisualState, .normal)
+        XCTAssertEqual(viewModel.footerStatusText, "Updated just now")
+
+        viewModel.stop()
+    }
+
+    func testFailedInitialLoadShowsErrorState() async {
+        let client = MockCodexRateLimitClient(
+            startResponses: [.failure(MockClientError.sample)],
+            refreshResponses: []
+        )
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 60,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in }
+        )
+
+        await viewModel.start()
+
+        XCTAssertFalse(viewModel.hasSnapshot)
+        XCTAssertEqual(viewModel.errorMessage, "Unable to load Codex usage.")
+        XCTAssertEqual(viewModel.statusItemVisualState, .error)
+        XCTAssertEqual(viewModel.menuBarPercentText, "--")
+
+        viewModel.stop()
+    }
+
+    func testPersistedSelectionChangesSyncBackIntoViewModel() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 35, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 11, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let persistedSelection = SelectionBox(selection: .sevenDay)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 60,
+            selectedMenuBarDisplayWindow: persistedSelection.selection,
+            loadPersistedSelection: { persistedSelection.selection },
+            persistSelection: { persistedSelection.selection = $0 }
+        )
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.selectedMenuBarDisplayWindow, .sevenDay)
+        XCTAssertEqual(viewModel.menuBarPercentText, "89%")
+
+        persistedSelection.selection = .tightest
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
+        await Task.yield()
+
+        XCTAssertEqual(viewModel.selectedMenuBarDisplayWindow, .tightest)
+        XCTAssertEqual(viewModel.menuBarPercentText, "65%")
+
+        viewModel.selectMenuBarDisplayWindow(.fiveHour)
+        XCTAssertEqual(persistedSelection.selection, .fiveHour)
+
+        viewModel.stop()
+    }
 }
 
 private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
     var onSnapshot: ((CodexRateLimitSnapshot) -> Void)?
 
-    private let snapshot: CodexRateLimitSnapshot
-
     private(set) var startCallCount = 0
     private(set) var refreshCallCount = 0
+    private var startResponses: [Result<CodexRateLimitSnapshot, Error>]
+    private var refreshResponses: [Result<CodexRateLimitSnapshot, Error>]
 
-    init(snapshot: CodexRateLimitSnapshot) {
-        self.snapshot = snapshot
+    convenience init(snapshot: CodexRateLimitSnapshot) {
+        self.init(
+            startResponses: [.success(snapshot)],
+            refreshResponses: [.success(snapshot)]
+        )
+    }
+
+    init(
+        startResponses: [Result<CodexRateLimitSnapshot, Error>],
+        refreshResponses: [Result<CodexRateLimitSnapshot, Error>]
+    ) {
+        self.startResponses = startResponses
+        self.refreshResponses = refreshResponses
     }
 
     func start() async throws -> CodexRateLimitSnapshot {
         startCallCount += 1
-        return snapshot
+        return try nextResponse(from: &startResponses)
     }
 
     func refresh() async throws -> CodexRateLimitSnapshot {
         refreshCallCount += 1
-        return snapshot
+        return try nextResponse(from: &refreshResponses)
     }
 
     func stop() {}
+
+    private func nextResponse(from responses: inout [Result<CodexRateLimitSnapshot, Error>]) throws -> CodexRateLimitSnapshot {
+        guard !responses.isEmpty else {
+            throw MockClientError.sample
+        }
+
+        return try responses.removeFirst().get()
+    }
+}
+
+private final class MutableNow {
+    var date: Date
+
+    init(date: Date) {
+        self.date = date
+    }
+}
+
+private final class SelectionBox {
+    var selection: MenuBarDisplayWindow
+
+    init(selection: MenuBarDisplayWindow) {
+        self.selection = selection
+    }
+}
+
+private enum MockClientError: Error {
+    case sample
 }

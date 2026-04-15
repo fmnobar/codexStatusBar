@@ -7,6 +7,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    private lazy var refreshMenuItem = makeMenuItem(title: "Refresh", action: #selector(refreshFromMenu))
+    private lazy var openCodexMenuItem = makeMenuItem(title: "Open Codex", action: #selector(openCodex))
+    private lazy var displayFiveHourMenuItem = makeDisplayModeMenuItem(for: .fiveHour)
+    private lazy var displaySevenDayMenuItem = makeDisplayModeMenuItem(for: .sevenDay)
+    private lazy var displayTightestMenuItem = makeDisplayModeMenuItem(for: .tightest)
+    private lazy var preferencesMenuItem = makeMenuItem(title: "Preferences…", action: #selector(openPreferences))
     private lazy var contextMenu: NSMenu = makeContextMenu()
 
     private var cancellables = Set<AnyCancellable>()
@@ -22,6 +28,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         configureStatusItem()
         bindViewModel()
         updateStatusItemTitle(viewModel.menuBarPercentText)
+        updateStatusItemImage(viewModel.statusItemVisualState)
+        updateDisplayModeMenuStates(viewModel.selectedMenuBarDisplayWindow)
     }
 
     private func configurePopover() {
@@ -43,7 +51,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .imageLeading
         button.imageScaling = .scaleProportionallyDown
-        button.image = makeStatusItemImage()
+        button.image = makeStatusItemImage(for: .normal)
         button.appearsDisabled = false
     }
 
@@ -52,6 +60,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] text in
                 self?.updateStatusItemTitle(text)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$statusItemVisualState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] visualState in
+                self?.updateStatusItemImage(visualState)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$selectedMenuBarDisplayWindow
+            .receive(on: RunLoop.main)
+            .sink { [weak self] displayWindow in
+                self?.updateDisplayModeMenuStates(displayWindow)
             }
             .store(in: &cancellables)
     }
@@ -71,19 +93,74 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.attributedTitle = attributedTitle
     }
 
-    private func makeStatusItemImage() -> NSImage? {
-        let image = NSImage(named: "CodexMark")?.copy() as? NSImage
-        image?.size = NSSize(width: 22, height: 22)
+    private func updateStatusItemImage(_ visualState: StatusItemVisualState) {
+        statusItem.button?.image = makeStatusItemImage(for: visualState)
+    }
+
+    private func makeStatusItemImage(for visualState: StatusItemVisualState) -> NSImage? {
+        switch visualState {
+        case .normal:
+            let image = NSImage(named: "CodexMark")?.copy() as? NSImage
+            image?.size = NSSize(width: 22, height: 22)
+            image?.isTemplate = true
+            return image
+        case .stale:
+            return makeSymbolImage(systemName: "clock.badge.exclamationmark")
+        case .error:
+            return makeSymbolImage(systemName: "exclamationmark.triangle")
+        }
+    }
+
+    private func makeSymbolImage(systemName: String) -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        let image = NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        image?.size = NSSize(width: 16, height: 16)
         image?.isTemplate = true
         return image
     }
 
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "")
-        quitItem.target = self
-        menu.addItem(quitItem)
+        let displayMenuItem = NSMenuItem(title: "Show in Menu Bar", action: nil, keyEquivalent: "")
+        let displaySubmenu = NSMenu(title: "Show in Menu Bar")
+        displaySubmenu.addItem(displayFiveHourMenuItem)
+        displaySubmenu.addItem(displaySevenDayMenuItem)
+        displaySubmenu.addItem(displayTightestMenuItem)
+        menu.addItem(refreshMenuItem)
+        menu.addItem(openCodexMenuItem)
+        menu.addItem(.separator())
+        menu.addItem(displayMenuItem)
+        menu.setSubmenu(displaySubmenu, for: displayMenuItem)
+        menu.addItem(.separator())
+        menu.addItem(preferencesMenuItem)
+        menu.addItem(.separator())
+        menu.addItem(makeMenuItem(title: "Quit", action: #selector(quit)))
         return menu
+    }
+
+    private func makeMenuItem(title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    private func makeDisplayModeMenuItem(for displayWindow: MenuBarDisplayWindow) -> NSMenuItem {
+        let item = makeMenuItem(title: displayWindow.displayTitle, action: #selector(selectDisplayMode(_:)))
+        item.representedObject = displayWindow.rawValue
+        return item
+    }
+
+    private func updateDisplayModeMenuStates(_ selectedDisplayWindow: MenuBarDisplayWindow) {
+        let items = [
+            (displayFiveHourMenuItem, MenuBarDisplayWindow.fiveHour),
+            (displaySevenDayMenuItem, MenuBarDisplayWindow.sevenDay),
+            (displayTightestMenuItem, MenuBarDisplayWindow.tightest),
+        ]
+
+        for (menuItem, displayWindow) in items {
+            menuItem.state = selectedDisplayWindow == displayWindow ? .on : .off
+        }
     }
 
     @objc
@@ -114,9 +191,44 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func showContextMenu() {
         popover.performClose(nil)
+        updateDisplayModeMenuStates(viewModel.selectedMenuBarDisplayWindow)
         statusItem.menu = contextMenu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    @objc
+    private func refreshFromMenu() {
+        Task {
+            await viewModel.manualRefresh()
+        }
+    }
+
+    @objc
+    private func openCodex() {
+        guard let applicationURL = resolvedCodexApplicationURL() else {
+            return
+        }
+
+        NSWorkspace.shared.openApplication(at: applicationURL, configuration: .init()) { _, _ in }
+    }
+
+    @objc
+    private func openPreferences() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
+    @objc
+    private func selectDisplayMode(_ sender: NSMenuItem) {
+        guard
+            let rawValue = sender.representedObject as? String,
+            let displayWindow = MenuBarDisplayWindow(rawValue: rawValue)
+        else {
+            return
+        }
+
+        viewModel.selectMenuBarDisplayWindow(displayWindow)
     }
 
     @objc
@@ -196,5 +308,26 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         event.window.map { window in
             window.convertPoint(toScreen: event.locationInWindow)
         } ?? event.locationInWindow
+    }
+
+    private func resolvedCodexApplicationURL() -> URL? {
+        if let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
+            return applicationURL
+        }
+
+        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let fileManager = FileManager.default
+        guard let appBundleURLs = try? fileManager.contentsOfDirectory(
+            at: applicationsURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        return appBundleURLs
+            .filter { $0.pathExtension == "app" && $0.deletingPathExtension().lastPathComponent.hasPrefix("Codex") }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            .first
     }
 }

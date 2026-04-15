@@ -14,24 +14,45 @@ protocol CodexRateLimitClientProtocol: AnyObject {
 @MainActor
 final class MenuBarStatusViewModel: ObservableObject {
     @Published private(set) var menuBarPercentText = "--"
-    @Published private(set) var fiveHourLine = "5h limit: --% left (resets --)"
-    @Published private(set) var sevenDayLine = "7d limit: --% left (resets --)"
+    @Published private(set) var fiveHourRow = MenuBarLimitRowPresentation(
+        title: "5h limit",
+        remainingPercentText: "--% left",
+        resetText: "Resets --",
+        displayWindow: .fiveHour,
+        isSelected: false
+    )
+    @Published private(set) var sevenDayRow = MenuBarLimitRowPresentation(
+        title: "7d limit",
+        remainingPercentText: "--% left",
+        resetText: "Resets --",
+        displayWindow: .sevenDay,
+        isSelected: true
+    )
     @Published private(set) var selectedMenuBarDisplayWindow: MenuBarDisplayWindow
+    @Published private(set) var statusItemVisualState: StatusItemVisualState = .normal
+    @Published private(set) var footerStatusText: String?
+    @Published private(set) var footerModeText: String?
+    @Published private(set) var isStaleSnapshot = false
     @Published private(set) var isLoading = true
+    @Published private(set) var isRefreshing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasSnapshot = false
 
     private let client: CodexRateLimitClientProtocol
     private let now: () -> Date
     private let refreshInterval: TimeInterval
+    private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
+    private var lastUpdatedAt: Date?
     private var didStart = false
     private var didBootstrapClient = false
+    private var isUsingCachedSnapshotAfterFailure = false
     private var refreshInProgress = false
     private var periodicRefreshTask: Task<Void, Never>?
     private var resetRefreshTask: Task<Void, Never>?
+    private var defaultsObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
 
     init(
@@ -39,12 +60,14 @@ final class MenuBarStatusViewModel: ObservableObject {
         now: @escaping () -> Date = Date.init,
         refreshInterval: TimeInterval = 60,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
+        loadPersistedSelection: @escaping () -> MenuBarDisplayWindow = { MenuBarDisplayWindowStore.load() },
         persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) }
     ) {
         self.client = client
         self.now = now
         self.refreshInterval = refreshInterval
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
+        self.loadPersistedSelection = loadPersistedSelection
         self.persistSelection = persistSelection
 
         client.onSnapshot = { [weak self] snapshot in
@@ -60,6 +83,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
 
         didStart = true
+        installDefaultsObserver()
         installTerminationObserver()
         schedulePeriodicRefresh()
         await refresh(showLoading: true)
@@ -69,8 +93,8 @@ final class MenuBarStatusViewModel: ObservableObject {
         await refresh(showLoading: !hasSnapshot)
     }
 
-    func retry() async {
-        await refresh(showLoading: true)
+    func manualRefresh() async {
+        await refresh(showLoading: !hasSnapshot)
     }
 
     func selectMenuBarDisplayWindow(_ displayWindow: MenuBarDisplayWindow) {
@@ -84,6 +108,10 @@ final class MenuBarStatusViewModel: ObservableObject {
     }
 
     func stop() {
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+            self.defaultsObserver = nil
+        }
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
             self.terminationObserver = nil
@@ -99,7 +127,11 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
 
         refreshInProgress = true
-        defer { refreshInProgress = false }
+        isRefreshing = true
+        defer {
+            refreshInProgress = false
+            isRefreshing = false
+        }
 
         if showLoading && !hasSnapshot {
             isLoading = true
@@ -119,16 +151,22 @@ final class MenuBarStatusViewModel: ObservableObject {
             apply(snapshot: latestSnapshot)
         } catch {
             isLoading = false
+            isUsingCachedSnapshotAfterFailure = hasSnapshot
 
             if !hasSnapshot {
                 errorMessage = "Unable to load Codex usage."
-                applyPresentation()
+            } else {
+                errorMessage = nil
             }
+
+            applyPresentation()
         }
     }
 
     private func apply(snapshot: CodexRateLimitSnapshot) {
         self.snapshot = snapshot
+        lastUpdatedAt = now()
+        isUsingCachedSnapshotAfterFailure = false
         hasSnapshot = true
         isLoading = false
         errorMessage = nil
@@ -137,14 +175,31 @@ final class MenuBarStatusViewModel: ObservableObject {
     }
 
     private func applyPresentation() {
+        let currentNow = now()
         let presentation = MenuBarStatusFormatter.presentation(
             snapshot: snapshot,
-            now: now(),
+            now: currentNow,
             selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow
         )
         menuBarPercentText = presentation.menuBarPercentText
-        fiveHourLine = presentation.fiveHourLine
-        sevenDayLine = presentation.sevenDayLine
+        fiveHourRow = presentation.fiveHourRow
+        sevenDayRow = presentation.sevenDayRow
+        isStaleSnapshot = hasSnapshot && (
+            isUsingCachedSnapshotAfterFailure || isPastStaleThreshold(at: currentNow)
+        )
+        footerStatusText = MenuBarStatusFormatter.freshnessText(
+            lastUpdatedAt: lastUpdatedAt,
+            now: currentNow,
+            isOffline: isUsingCachedSnapshotAfterFailure
+        )
+        footerModeText = selectedMenuBarDisplayWindow == .tightest ? "Menu bar: Tightest" : nil
+        statusItemVisualState = if !hasSnapshot && errorMessage != nil {
+            .error
+        } else if isStaleSnapshot {
+            .stale
+        } else {
+            .normal
+        }
     }
 
     private func schedulePeriodicRefresh() {
@@ -209,5 +264,39 @@ final class MenuBarStatusViewModel: ObservableObject {
                 self?.stop()
             }
         }
+    }
+
+    private func installDefaultsObserver() {
+        guard defaultsObserver == nil else {
+            return
+        }
+
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncSelectionFromDefaults()
+            }
+        }
+    }
+
+    private func syncSelectionFromDefaults() {
+        let persistedSelection = loadPersistedSelection()
+        guard persistedSelection != selectedMenuBarDisplayWindow else {
+            return
+        }
+
+        selectedMenuBarDisplayWindow = persistedSelection
+        applyPresentation()
+    }
+
+    private func isPastStaleThreshold(at now: Date) -> Bool {
+        guard let lastUpdatedAt else {
+            return false
+        }
+
+        return now.timeIntervalSince(lastUpdatedAt) > (refreshInterval * 2)
     }
 }

@@ -4,7 +4,7 @@ struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if viewModel.isLoading && !viewModel.hasSnapshot {
                 Text("Loading…")
                     .font(.system(size: 13))
@@ -15,42 +15,77 @@ struct MenuBarContentView: View {
 
                 Button("Retry") {
                     Task {
-                        await viewModel.retry()
+                        await viewModel.manualRefresh()
                     }
                 }
             } else {
-                selectableLine(
-                    text: viewModel.fiveHourLine,
-                    displayWindow: .fiveHour
-                )
-
-                selectableLine(
-                    text: viewModel.sevenDayLine,
-                    displayWindow: .sevenDay
-                )
+                selectableRow(viewModel.fiveHourRow)
+                selectableRow(viewModel.sevenDayRow)
+                Divider()
+                footer
             }
         }
         .padding(12)
     }
 
     @ViewBuilder
-    private func selectableLine(text: String, displayWindow: MenuBarDisplayWindow) -> some View {
+    private func selectableRow(_ row: MenuBarLimitRowPresentation) -> some View {
         Button {
-            viewModel.selectMenuBarDisplayWindow(displayWindow)
+            viewModel.selectMenuBarDisplayWindow(row.displayWindow)
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: viewModel.selectedMenuBarDisplayWindow == displayWindow ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 13))
-                    .frame(width: 14)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: row.isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 14))
+                    .frame(width: 14, alignment: .top)
 
-                Text(text)
-                    .font(.system(size: 13))
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(row.title)
+                            .font(.system(size: 13))
+
+                        Text(row.remainingPercentText)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+
+                    Text(row.resetText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
             }
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var footer: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let footerStatusText = viewModel.footerStatusText {
+                    Text(footerStatusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(viewModel.isStaleSnapshot ? .orange : .secondary)
+                }
+
+                if let footerModeText = viewModel.footerModeText {
+                    Text(footerModeText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button(viewModel.isRefreshing ? "Refreshing…" : "Refresh") {
+                Task {
+                    await viewModel.manualRefresh()
+                }
+            }
+            .controlSize(.small)
+            .disabled(viewModel.isRefreshing)
+        }
     }
 }
