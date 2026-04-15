@@ -148,9 +148,9 @@ enum MenuBarStatusFormatter {
         }
 
         return MenuBarLimitRowPresentation(
-            title: "Tightest",
-            remainingPercentText: resolvedWindow.map { "\($0.remainingPercent)% left" } ?? "--% left",
-            detailText: "Tightest: \(sourceTitle ?? "--")",
+            title: "Tightest: \(sourceTitle ?? "--")",
+            remainingPercentText: "",
+            detailText: "",
             displayWindow: .tightest,
             isSelected: isSelected
         )

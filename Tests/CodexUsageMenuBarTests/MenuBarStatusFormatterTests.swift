@@ -95,9 +95,9 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.menuBarPercentText, "19%")
-        XCTAssertEqual(presentation.tightestRow.title, "Tightest")
-        XCTAssertEqual(presentation.tightestRow.remainingPercentText, "19% left")
-        XCTAssertEqual(presentation.tightestRow.detailText, "Tightest: 7d")
+        XCTAssertEqual(presentation.tightestRow.title, "Tightest: 7d")
+        XCTAssertEqual(presentation.tightestRow.remainingPercentText, "")
+        XCTAssertEqual(presentation.tightestRow.detailText, "")
         XCTAssertTrue(presentation.tightestRow.isSelected)
     }
 

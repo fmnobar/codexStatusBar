@@ -44,13 +44,17 @@ struct MenuBarContentView: View {
                         Text(row.title)
                             .font(.system(size: 13))
 
-                        Text(row.remainingPercentText)
-                            .font(.system(size: 13, weight: .semibold))
+                        if !row.remainingPercentText.isEmpty {
+                            Text(row.remainingPercentText)
+                                .font(.system(size: 13, weight: .semibold))
+                        }
                     }
 
-                    Text(row.detailText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    if !row.detailText.isEmpty {
+                        Text(row.detailText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 0)

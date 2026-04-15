@@ -29,9 +29,9 @@ final class MenuBarStatusViewModel: ObservableObject {
         isSelected: true
     )
     @Published private(set) var tightestRow = MenuBarLimitRowPresentation(
-        title: "Tightest",
-        remainingPercentText: "--% left",
-        detailText: "Resets --",
+        title: "Tightest: --",
+        remainingPercentText: "",
+        detailText: "",
         displayWindow: .tightest,
         isSelected: false
     )
