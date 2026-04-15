@@ -53,7 +53,9 @@ private final class PreferencesWindowController: NSObject, NSWindowDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.isReleasedWhenClosed = false
         window.center()
-        window.setContentSize(NSSize(width: 360, height: 220))
+        let contentSize = NSSize(width: 420, height: 300)
+        window.setContentSize(contentSize)
+        window.minSize = contentSize
         window.tabbingMode = .disallowed
         window.delegate = self
 
@@ -69,12 +71,20 @@ private struct SettingsView: View {
     @State private var launchAtLoginError: String?
 
     var body: some View {
-        Form {
-            Section("General") {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("General")
+                    .font(.headline)
+
                 Toggle("Launch at login", isOn: launchAtLoginBinding)
             }
 
-            Section("Display") {
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Display")
+                    .font(.headline)
+
                 Picker("Default menu bar display", selection: displayWindowBinding) {
                     ForEach(MenuBarDisplayWindow.allCases, id: \.rawValue) { displayWindow in
                         Text(displayWindow.displayTitle)
@@ -89,10 +99,11 @@ private struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Spacer(minLength: 0)
         }
-        .formStyle(.grouped)
-        .padding(16)
-        .frame(width: 320)
+        .padding(20)
+        .frame(width: 380, height: 250, alignment: .topLeading)
         .task {
             refreshLaunchAtLoginState()
         }

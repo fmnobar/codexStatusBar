@@ -79,13 +79,36 @@ struct MenuBarContentView: View {
 
             Spacer(minLength: 0)
 
-            Button(viewModel.isRefreshing ? "Refreshing…" : "Refresh") {
+            Button {
                 Task {
                     await viewModel.manualRefresh()
                 }
+            } label: {
+                TimelineView(.animation) { context in
+                    let rotation = refreshRotation(at: context.date)
+
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
+                        .rotationEffect(rotation)
+                        .frame(width: 18, height: 18)
+                }
             }
-            .controlSize(.small)
+            .buttonStyle(.plain)
             .disabled(viewModel.isRefreshing)
+            .help(viewModel.isRefreshing ? "Refreshing…" : "Refresh")
+            .accessibilityLabel(viewModel.isRefreshing ? "Refreshing" : "Refresh")
         }
+    }
+
+    private func refreshRotation(at date: Date) -> Angle {
+        guard viewModel.isRefreshing else {
+            return .degrees(0)
+        }
+
+        let cycleDuration = 0.9
+        let progress = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: cycleDuration) / cycleDuration
+
+        return .degrees(progress * 360)
     }
 }
