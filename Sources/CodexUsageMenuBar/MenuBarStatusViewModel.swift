@@ -17,32 +17,42 @@ final class MenuBarStatusViewModel: ObservableObject {
     @Published private(set) var fiveHourRow = MenuBarLimitRowPresentation(
         title: "5h limit",
         remainingPercentText: "--% left",
-        resetText: "Resets --",
+        detailText: "Resets --",
         displayWindow: .fiveHour,
         isSelected: false
     )
     @Published private(set) var sevenDayRow = MenuBarLimitRowPresentation(
         title: "7d limit",
         remainingPercentText: "--% left",
-        resetText: "Resets --",
+        detailText: "Resets --",
         displayWindow: .sevenDay,
         isSelected: true
+    )
+    @Published private(set) var tightestRow = MenuBarLimitRowPresentation(
+        title: "Tightest",
+        remainingPercentText: "--% left",
+        detailText: "Resets --",
+        displayWindow: .tightest,
+        isSelected: false
     )
     @Published private(set) var selectedMenuBarDisplayWindow: MenuBarDisplayWindow
     @Published private(set) var statusItemVisualState: StatusItemVisualState = .normal
     @Published private(set) var footerStatusText: String?
-    @Published private(set) var footerModeText: String?
     @Published private(set) var isStaleSnapshot = false
     @Published private(set) var isLoading = true
     @Published private(set) var isRefreshing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var hasSnapshot = false
+    @Published private(set) var launchAtLoginEnabled: Bool
+    @Published private(set) var launchAtLoginError: String?
 
     private let client: CodexRateLimitClientProtocol
     private let now: () -> Date
     private let refreshInterval: TimeInterval
     private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
+    private let loadLaunchAtLoginEnabled: () -> Bool
+    private let setLaunchAtLoginEnabledAction: (Bool) throws -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
     private var lastUpdatedAt: Date?
@@ -61,7 +71,9 @@ final class MenuBarStatusViewModel: ObservableObject {
         refreshInterval: TimeInterval = 60,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
         loadPersistedSelection: @escaping () -> MenuBarDisplayWindow = { MenuBarDisplayWindowStore.load() },
-        persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) }
+        persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) },
+        loadLaunchAtLoginEnabled: @escaping () -> Bool = { LaunchAtLoginController.isEnabled },
+        setLaunchAtLoginEnabledAction: @escaping (Bool) throws -> Void = { try LaunchAtLoginController.setEnabled($0) }
     ) {
         self.client = client
         self.now = now
@@ -69,6 +81,9 @@ final class MenuBarStatusViewModel: ObservableObject {
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
         self.loadPersistedSelection = loadPersistedSelection
         self.persistSelection = persistSelection
+        self.loadLaunchAtLoginEnabled = loadLaunchAtLoginEnabled
+        self.setLaunchAtLoginEnabledAction = setLaunchAtLoginEnabledAction
+        self.launchAtLoginEnabled = loadLaunchAtLoginEnabled()
 
         client.onSnapshot = { [weak self] snapshot in
             Task { @MainActor in
@@ -83,6 +98,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
 
         didStart = true
+        refreshLaunchAtLoginState()
         installDefaultsObserver()
         installTerminationObserver()
         schedulePeriodicRefresh()
@@ -90,6 +106,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     }
 
     func popoverDidAppear() async {
+        refreshLaunchAtLoginState()
         await refresh(showLoading: !hasSnapshot)
     }
 
@@ -105,6 +122,17 @@ final class MenuBarStatusViewModel: ObservableObject {
         selectedMenuBarDisplayWindow = displayWindow
         persistSelection(displayWindow)
         applyPresentation()
+    }
+
+    func setLaunchAtLoginEnabled(_ isEnabled: Bool) {
+        do {
+            try setLaunchAtLoginEnabledAction(isEnabled)
+            launchAtLoginEnabled = loadLaunchAtLoginEnabled()
+            launchAtLoginError = nil
+        } catch {
+            launchAtLoginEnabled = loadLaunchAtLoginEnabled()
+            launchAtLoginError = "Launch at login could not be updated."
+        }
     }
 
     func stop() {
@@ -184,6 +212,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         menuBarPercentText = presentation.menuBarPercentText
         fiveHourRow = presentation.fiveHourRow
         sevenDayRow = presentation.sevenDayRow
+        tightestRow = presentation.tightestRow
         isStaleSnapshot = hasSnapshot && (
             isUsingCachedSnapshotAfterFailure || isPastStaleThreshold(at: currentNow)
         )
@@ -192,7 +221,6 @@ final class MenuBarStatusViewModel: ObservableObject {
             now: currentNow,
             isOffline: isUsingCachedSnapshotAfterFailure
         )
-        footerModeText = selectedMenuBarDisplayWindow == .tightest ? "Menu bar: Tightest" : nil
         statusItemVisualState = if !hasSnapshot && errorMessage != nil {
             .error
         } else if isStaleSnapshot {
@@ -290,6 +318,11 @@ final class MenuBarStatusViewModel: ObservableObject {
 
         selectedMenuBarDisplayWindow = persistedSelection
         applyPresentation()
+    }
+
+    private func refreshLaunchAtLoginState() {
+        launchAtLoginEnabled = loadLaunchAtLoginEnabled()
+        launchAtLoginError = nil
     }
 
     private func isPastStaleThreshold(at now: Date) -> Bool {

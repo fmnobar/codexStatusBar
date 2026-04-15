@@ -12,7 +12,9 @@
 		2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */; };
 		2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */; };
 		2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
+		2B2719138AB40807B72BE239 /* LaunchAtLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */; };
 		2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */; };
+		319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */; };
 		4B7E911F7C5F52280586877E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 08DB61787596576CE72359F0 /* Assets.xcassets */; };
 		4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */; };
 		580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */; };
@@ -37,6 +39,7 @@
 		08DB61787596576CE72359F0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1615CBD7D5D0BFBA6D625661 /* CodexStatusBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexStatusBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexUsageMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginController.swift; sourceTree = "<group>"; };
 		403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
 		64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRateLimitDecodingTests.swift; sourceTree = "<group>"; };
 		6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusViewModel.swift; sourceTree = "<group>"; };
@@ -83,6 +86,7 @@
 				403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */,
 				72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */,
 				F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */,
+				318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */,
 				F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */,
 				B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */,
 				6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */,
@@ -207,6 +211,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
+				319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
@@ -222,6 +227,7 @@
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
 				17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */,
 				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,
+				2B2719138AB40807B72BE239 /* LaunchAtLoginController.swift in Sources */,
 				AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */,
 				9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */,
 				D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */,

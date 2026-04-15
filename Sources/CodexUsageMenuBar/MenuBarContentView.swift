@@ -21,6 +21,9 @@ struct MenuBarContentView: View {
             } else {
                 selectableRow(viewModel.fiveHourRow)
                 selectableRow(viewModel.sevenDayRow)
+                selectableRow(viewModel.tightestRow)
+                Divider()
+                launchAtLoginSection
                 Divider()
                 footer
             }
@@ -34,9 +37,7 @@ struct MenuBarContentView: View {
             viewModel.selectMenuBarDisplayWindow(row.displayWindow)
         } label: {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: row.isSelected ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 14))
-                    .frame(width: 14, alignment: .top)
+                checkboxImage(isSelected: row.isSelected)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -47,9 +48,36 @@ struct MenuBarContentView: View {
                             .font(.system(size: 13, weight: .semibold))
                     }
 
-                    Text(row.resetText)
+                    Text(row.detailText)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var launchAtLoginSection: some View {
+        Button {
+            viewModel.setLaunchAtLoginEnabled(!viewModel.launchAtLoginEnabled)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                checkboxImage(isSelected: viewModel.launchAtLoginEnabled)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Launch at login")
+                        .font(.system(size: 13))
+
+                    if let launchAtLoginError = viewModel.launchAtLoginError {
+                        Text(launchAtLoginError)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -68,12 +96,6 @@ struct MenuBarContentView: View {
                     Text(footerStatusText)
                         .font(.system(size: 11))
                         .foregroundStyle(viewModel.isStaleSnapshot ? .orange : .secondary)
-                }
-
-                if let footerModeText = viewModel.footerModeText {
-                    Text(footerModeText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -110,5 +132,11 @@ struct MenuBarContentView: View {
             .truncatingRemainder(dividingBy: cycleDuration) / cycleDuration
 
         return .degrees(progress * 360)
+    }
+
+    private func checkboxImage(isSelected: Bool) -> some View {
+        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+            .font(.system(size: 14))
+            .frame(width: 14, alignment: .top)
     }
 }

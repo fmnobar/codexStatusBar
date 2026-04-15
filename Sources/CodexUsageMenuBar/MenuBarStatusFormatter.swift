@@ -45,7 +45,7 @@ enum StatusItemVisualState: Equatable {
 struct MenuBarLimitRowPresentation: Equatable {
     let title: String
     let remainingPercentText: String
-    let resetText: String
+    let detailText: String
     let displayWindow: MenuBarDisplayWindow
     let isSelected: Bool
 }
@@ -54,6 +54,7 @@ struct MenuBarStatusPresentation: Equatable {
     let menuBarPercentText: String
     let fiveHourRow: MenuBarLimitRowPresentation
     let sevenDayRow: MenuBarLimitRowPresentation
+    let tightestRow: MenuBarLimitRowPresentation
 }
 
 enum MenuBarStatusFormatter {
@@ -92,6 +93,11 @@ enum MenuBarStatusFormatter {
                 now: now,
                 calendar: calendar,
                 locale: locale
+            ),
+            tightestRow: tightestRow(
+                primary: snapshot?.primary,
+                secondary: snapshot?.secondary,
+                isSelected: selectedMenuBarDisplayWindow == .tightest
             )
         )
     }
@@ -118,8 +124,34 @@ enum MenuBarStatusFormatter {
         return MenuBarLimitRowPresentation(
             title: title,
             remainingPercentText: remainingText,
-            resetText: "Resets \(resetText)",
+            detailText: "Resets \(resetText)",
             displayWindow: displayWindow,
+            isSelected: isSelected
+        )
+    }
+
+    static func tightestRow(
+        primary: CodexRateLimitWindow?,
+        secondary: CodexRateLimitWindow?,
+        isSelected: Bool
+    ) -> MenuBarLimitRowPresentation {
+        let resolvedWindow = tightestWindow(primary: primary, secondary: secondary)
+        let sourceTitle: String? = switch (primary, secondary) {
+        case (.none, .none):
+            nil
+        case (.some(let primary), .none):
+            primary == resolvedWindow ? "5h" : nil
+        case (.none, .some(let secondary)):
+            secondary == resolvedWindow ? "7d" : nil
+        case (.some(let primary), .some(let secondary)):
+            primary.remainingPercent <= secondary.remainingPercent ? "5h" : "7d"
+        }
+
+        return MenuBarLimitRowPresentation(
+            title: "Tightest",
+            remainingPercentText: resolvedWindow.map { "\($0.remainingPercent)% left" } ?? "--% left",
+            detailText: "Tightest: \(sourceTitle ?? "--")",
+            displayWindow: .tightest,
             isSelected: isSelected
         )
     }

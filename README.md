@@ -43,8 +43,7 @@ git pull
 
 - The app launches or reuses a local `codex app-server`.
 - The menu bar label can show `5h`, `7d`, or `Tightest`.
-- The popover shows the 5-hour and 7-day remaining limits, reset times, and freshness state.
-- In the popover, you can choose whether the menu bar shows `5h` or `7d`.
-- Right click includes quick actions for refresh, opening Codex, display mode, preferences, and quit.
-- Settings includes `Launch at login` and a default menu bar display mode.
+- The popover shows `5h`, `7d`, and `Tightest`, along with reset times and freshness state.
+- The popover also includes a `Launch at login` toggle.
+- Right click includes quick actions for refresh, opening Codex, and quit.
 - Left click opens the popover. Clicking outside closes it.

@@ -14,7 +14,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: Date.init,
             refreshInterval: 3_600,
             selectedMenuBarDisplayWindow: .sevenDay,
-            persistSelection: { _ in }
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
         )
 
         await viewModel.start()
@@ -40,7 +42,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: Date.init,
             refreshInterval: 3_600,
             selectedMenuBarDisplayWindow: .sevenDay,
-            persistSelection: { _ in }
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
         )
 
         await viewModel.start()
@@ -68,7 +72,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: { currentTime.date },
             refreshInterval: 60,
             selectedMenuBarDisplayWindow: .sevenDay,
-            persistSelection: { _ in }
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
         )
 
         await viewModel.start()
@@ -100,7 +106,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: { currentTime.date },
             refreshInterval: 60,
             selectedMenuBarDisplayWindow: .sevenDay,
-            persistSelection: { _ in }
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
         )
 
         await viewModel.start()
@@ -128,7 +136,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: Date.init,
             refreshInterval: 60,
             selectedMenuBarDisplayWindow: .sevenDay,
-            persistSelection: { _ in }
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
         )
 
         await viewModel.start()
@@ -155,7 +165,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             refreshInterval: 60,
             selectedMenuBarDisplayWindow: persistedSelection.selection,
             loadPersistedSelection: { persistedSelection.selection },
-            persistSelection: { persistedSelection.selection = $0 }
+            persistSelection: { persistedSelection.selection = $0 },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
         )
 
         await viewModel.start()
@@ -171,6 +183,34 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         viewModel.selectMenuBarDisplayWindow(.fiveHour)
         XCTAssertEqual(persistedSelection.selection, .fiveHour)
+
+        viewModel.stop()
+    }
+
+    func testLaunchAtLoginToggleUpdatesStateAndClearsError() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 10, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let launchAtLogin = LaunchAtLoginBox(isEnabled: false)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 60,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { launchAtLogin.isEnabled },
+            setLaunchAtLoginEnabledAction: { launchAtLogin.isEnabled = $0 }
+        )
+
+        await viewModel.start()
+        XCTAssertFalse(viewModel.launchAtLoginEnabled)
+
+        viewModel.setLaunchAtLoginEnabled(true)
+        XCTAssertTrue(viewModel.launchAtLoginEnabled)
+        XCTAssertNil(viewModel.launchAtLoginError)
 
         viewModel.stop()
     }
@@ -233,6 +273,14 @@ private final class SelectionBox {
 
     init(selection: MenuBarDisplayWindow) {
         self.selection = selection
+    }
+}
+
+private final class LaunchAtLoginBox {
+    var isEnabled: Bool
+
+    init(isEnabled: Bool) {
+        self.isEnabled = isEnabled
     }
 }
 
