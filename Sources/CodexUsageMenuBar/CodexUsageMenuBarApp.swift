@@ -16,14 +16,50 @@ struct CodexUsageMenuBarApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let viewModel = MenuBarStatusViewModel(client: CodexAppServerClient())
+    private let preferencesWindowController = PreferencesWindowController()
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItemController = StatusItemController(viewModel: viewModel)
+        statusItemController = StatusItemController(
+            viewModel: viewModel,
+            openPreferences: { [preferencesWindowController] in
+                preferencesWindowController.show()
+            }
+        )
 
         Task {
             await viewModel.start()
         }
+    }
+}
+
+@MainActor
+private final class PreferencesWindowController: NSObject, NSWindowDelegate {
+    private var windowController: NSWindowController?
+
+    func show() {
+        let windowController = windowController ?? makeWindowController()
+        self.windowController = windowController
+
+        NSApp.activate(ignoringOtherApps: true)
+        windowController.showWindow(nil)
+        windowController.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeWindowController() -> NSWindowController {
+        let hostingController = NSHostingController(rootView: SettingsView())
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Preferences"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.setContentSize(NSSize(width: 360, height: 220))
+        window.tabbingMode = .disallowed
+        window.delegate = self
+
+        let windowController = NSWindowController(window: window)
+        windowController.shouldCascadeWindows = false
+        return windowController
     }
 }
 

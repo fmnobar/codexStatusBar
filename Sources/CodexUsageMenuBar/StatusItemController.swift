@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
+    private let openPreferencesAction: @MainActor () -> Void
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private lazy var refreshMenuItem = makeMenuItem(title: "Refresh", action: #selector(refreshFromMenu))
@@ -19,8 +20,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
 
-    init(viewModel: MenuBarStatusViewModel) {
+    init(
+        viewModel: MenuBarStatusViewModel,
+        openPreferences: @escaping @MainActor () -> Void
+    ) {
         self.viewModel = viewModel
+        self.openPreferencesAction = openPreferences
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -215,8 +220,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc
     private func openPreferences() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        openPreferencesAction()
     }
 
     @objc
