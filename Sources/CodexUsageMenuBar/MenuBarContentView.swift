@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MenuBarContentView: View {
@@ -29,6 +30,7 @@ struct MenuBarContentView: View {
             }
         }
         .padding(12)
+        .background(PopoverMaterialBackground())
     }
 
     @ViewBuilder
@@ -142,5 +144,24 @@ struct MenuBarContentView: View {
         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
             .font(.system(size: 14))
             .frame(width: 14, alignment: .top)
+    }
+}
+
+private struct PopoverMaterialBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        configure(nsView)
+    }
+
+    private func configure(_ view: NSVisualEffectView) {
+        view.material = .popover
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        view.isEmphasized = false
     }
 }
