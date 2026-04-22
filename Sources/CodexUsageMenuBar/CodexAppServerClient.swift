@@ -203,9 +203,9 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
 
     private func fetchLatestSnapshot() async throws -> CodexRateLimitSnapshot {
         do {
-            return try await fetchWhamUsageSnapshot()
-        } catch {
             return try await fetchAppServerSnapshot()
+        } catch {
+            return try await fetchWhamUsageSnapshot()
         }
     }
 
