@@ -18,10 +18,12 @@
   - Kept the History chart in neutral independent-signal mode until real captures prove contributor semantics.
   - Added internal contributor rendering support for evidence-backed comparable buckets.
 
-## Next Candidates
-
 - Improve History chart polish and interaction
-  - Add point hover details, clearer empty states per range, and better legend behavior when many models exist.
+  - Added nearest-timestamp hover inspection with per-bucket usage details.
+  - Replaced the horizontal series toggle strip with a searchable model selector.
+  - Added specific empty states for no history, no selected-range data, and hidden series.
+
+## Next Candidates
 
 - Add data-management preferences
   - Show history database location and size.

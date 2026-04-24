@@ -191,6 +191,25 @@ final class UsageHistoryStore {
         notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
 
+    func hasAnyHistory() throws -> Bool {
+        let statement = try prepare(
+            """
+            SELECT EXISTS(SELECT 1 FROM usage_samples LIMIT 1)
+                OR EXISTS(SELECT 1 FROM usage_rollups LIMIT 1)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0) != 0
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     private static func applicationSupportDirectoryURL() throws -> URL {
         let baseURL = try FileManager.default.url(
             for: .applicationSupportDirectory,

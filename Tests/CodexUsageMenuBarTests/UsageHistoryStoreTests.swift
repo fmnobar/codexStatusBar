@@ -92,6 +92,18 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(csv.contains("2026-04-14T20:00:00Z,codex_gpt55,GPT-5.5,model,sevenDay,7.000"))
     }
 
+    func testHasAnyHistoryReflectsSamplesAndClear() throws {
+        let store = try makeStore()
+
+        XCTAssertFalse(try store.hasAnyHistory())
+
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        XCTAssertTrue(try store.hasAnyHistory())
+
+        try store.clearHistory()
+        XCTAssertFalse(try store.hasAnyHistory())
+    }
+
     @MainActor
     func testHistoryPresentationDefaultsToIndependentSignals() throws {
         let store = try makeStore()
@@ -129,19 +141,170 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleLinePoints.map(\.bucketID), ["codex"])
     }
 
+    @MainActor
+    func testHoverSelectionChoosesNearestTimestampAndGroupsVisiblePoints() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 25, modelSevenDay: 9), at: date("2026-04-14T20:10:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+
+        viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:07:00Z"), xPosition: 180)
+
+        XCTAssertEqual(viewModel.hoverSelection?.timestamp, date("2026-04-14T20:10:00Z"))
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.bucketID), ["codex", "codex_gpt55"])
+        XCTAssertEqual(viewModel.hoverSelection?.xPosition, 180)
+    }
+
+    @MainActor
+    func testHoverSelectionClearsWhenVisibleSeriesChanges() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+        viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
+
+        viewModel.setSeries("codex_gpt55", isSelected: false)
+
+        XCTAssertNil(viewModel.hoverSelection)
+        XCTAssertEqual(viewModel.visiblePoints.map(\.bucketID), ["codex"])
+    }
+
+    @MainActor
+    func testSeriesSelectorKeepsAggregateSelectedAndFiltersModels() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7, extraModelSevenDay: 4), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["codex", "codex_gpt54", "codex_gpt55"])
+        XCTAssertTrue(viewModel.selectedSeriesIDs.contains("codex"))
+
+        viewModel.setSeries("codex", isSelected: false)
+        XCTAssertTrue(viewModel.selectedSeriesIDs.contains("codex"))
+
+        viewModel.seriesSearchText = "5.5"
+        XCTAssertEqual(viewModel.filteredSeries.map(\.id), ["codex", "codex_gpt55"])
+    }
+
+    @MainActor
+    func testSeriesSelectorSelectAllAndClearModels() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7, extraModelSevenDay: 4), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+
+        viewModel.clearModelSeries()
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
+        XCTAssertEqual(viewModel.visiblePoints.map(\.bucketID), ["codex"])
+        XCTAssertFalse(viewModel.hasSelectedModels)
+
+        viewModel.selectAllSeries()
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex", "codex_gpt54", "codex_gpt55"])
+        XCTAssertEqual(viewModel.seriesSelectionSummary, "3 of 3 selected")
+    }
+
+    @MainActor
+    func testEmptyStateDistinguishesNoHistoryAndNoDataForSelection() throws {
+        let emptyStore = try makeStore()
+        let emptyViewModel = UsageHistoryViewModel(
+            store: emptyStore,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        emptyViewModel.reload()
+
+        XCTAssertEqual(emptyViewModel.emptyStatePresentation.kind, .noHistory)
+
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-16T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+
+        XCTAssertTrue(viewModel.hasAnyRecordedHistory)
+        XCTAssertEqual(viewModel.emptyStatePresentation.kind, .noDataForSelection)
+    }
+
+    @MainActor
+    func testHiddenSeriesStateWhenVisiblePointsAreEmpty() throws {
+        let store = try makeStore()
+        try store.record(snapshot: modelOnlyUsageSnapshot(modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+
+        viewModel.clearModelSeries()
+
+        XCTAssertTrue(viewModel.hasHistory)
+        XCTAssertTrue(viewModel.visiblePoints.isEmpty)
+        XCTAssertEqual(viewModel.emptyStatePresentation.kind, .hiddenSeries)
+    }
+
     private func makeStore() throws -> UsageHistoryStore {
         try UsageHistoryStore.inMemory(notificationCenter: NotificationCenter(), calendar: calendar)
     }
 
-    private func usageSnapshot(aggregateSevenDay: Int, modelSevenDay: Int) -> CodexUsageSnapshot {
+    private func usageSnapshot(
+        aggregateSevenDay: Int,
+        modelSevenDay: Int,
+        extraModelSevenDay: Int? = nil
+    ) -> CodexUsageSnapshot {
         let aggregateSnapshot = rateLimitSnapshot(sevenDayUsedPercent: aggregateSevenDay)
         let modelSnapshot = rateLimitSnapshot(sevenDayUsedPercent: modelSevenDay)
+        var buckets = [
+            CodexUsageBucket(id: "codex", name: "All models", kind: .aggregate, snapshot: aggregateSnapshot),
+            CodexUsageBucket(id: "codex_gpt55", name: "GPT-5.5", kind: .model, snapshot: modelSnapshot),
+        ]
+
+        if let extraModelSevenDay {
+            buckets.append(
+                CodexUsageBucket(
+                    id: "codex_gpt54",
+                    name: "GPT-5.4",
+                    kind: .model,
+                    snapshot: rateLimitSnapshot(sevenDayUsedPercent: extraModelSevenDay)
+                )
+            )
+        }
 
         return CodexUsageSnapshot(
             displaySnapshot: aggregateSnapshot,
+            buckets: buckets
+        )
+    }
+
+    private func modelOnlyUsageSnapshot(modelSevenDay: Int) -> CodexUsageSnapshot {
+        let snapshot = rateLimitSnapshot(sevenDayUsedPercent: modelSevenDay)
+        return CodexUsageSnapshot(
+            displaySnapshot: CodexRateLimitSnapshot(
+                primary: snapshot.primary,
+                secondary: nil
+            ),
             buckets: [
-                CodexUsageBucket(id: "codex", name: "All models", kind: .aggregate, snapshot: aggregateSnapshot),
-                CodexUsageBucket(id: "codex_gpt55", name: "GPT-5.5", kind: .model, snapshot: modelSnapshot),
+                CodexUsageBucket(id: "codex_gpt55", name: "GPT-5.5", kind: .model, snapshot: snapshot),
             ]
         )
     }
