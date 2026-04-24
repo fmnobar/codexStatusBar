@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     let onOpenHistory: () -> Void
+    let onOpenSettings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -26,6 +27,8 @@ struct MenuBarContentView: View {
                 selectableRow(viewModel.tightestRow)
                 Divider()
                 historySection
+                Divider()
+                settingsSection
                 Divider()
                 launchAtLoginSection
                 Divider()
@@ -81,6 +84,31 @@ struct MenuBarContentView: View {
                     .frame(width: 14)
 
                 Text("History")
+                    .font(.system(size: 13))
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var settingsSection: some View {
+        Button {
+            onOpenSettings()
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14))
+                    .frame(width: 14)
+
+                Text("Settings")
                     .font(.system(size: 13))
 
                 Spacer(minLength: 0)

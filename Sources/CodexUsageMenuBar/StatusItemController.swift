@@ -11,6 +11,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private lazy var refreshMenuItem = makeMenuItem(title: "Refresh", action: #selector(refreshFromMenu))
     private lazy var historyMenuItem = makeMenuItem(title: "History", action: #selector(showHistoryFromMenu))
+    private lazy var settingsMenuItem = makeMenuItem(title: "Settings", action: #selector(showSettingsFromMenu))
     private lazy var exportDiagnosticsMenuItem = makeMenuItem(title: "Export Diagnostics...", action: #selector(exportDiagnosticsFromMenu))
     private lazy var openCodexMenuItem = makeMenuItem(title: "Open Codex", action: #selector(openCodex))
     private lazy var contextMenu: NSMenu = makeContextMenu()
@@ -41,6 +42,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 onOpenHistory: { [weak self] in
                     self?.popover.performClose(nil)
                     self?.showHistory()
+                },
+                onOpenSettings: { [weak self] in
+                    self?.showSettings()
                 }
             )
                 .frame(width: 340)
@@ -123,6 +127,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let menu = NSMenu()
         menu.addItem(refreshMenuItem)
         menu.addItem(historyMenuItem)
+        menu.addItem(settingsMenuItem)
         menu.addItem(openCodexMenuItem)
         menu.addItem(.separator())
         menu.addItem(makeMenuItem(title: "Quit", action: #selector(quit)))
@@ -196,6 +201,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func showHistory() {
         historyWindowController.showWindow()
+    }
+
+    @objc
+    private func showSettingsFromMenu() {
+        showSettings()
+    }
+
+    private func showSettings() {
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     @objc

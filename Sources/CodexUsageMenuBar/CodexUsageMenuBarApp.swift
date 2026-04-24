@@ -7,14 +7,14 @@ struct CodexUsageMenuBarApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            DataManagementSettingsView(store: appDelegate.historyStore)
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let historyStore: UsageHistoryStore
+    let historyStore: UsageHistoryStore
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
 

@@ -23,6 +23,8 @@
 		A20000000000000000000011 /* CodexUsageDiagnosticsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */; };
 		A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */; };
 		A20000000000000000000022 /* CodexUsageDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */; };
+		A30000000000000000000011 /* DataManagementSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000001 /* DataManagementSettingsView.swift */; };
+		A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000001 /* DataManagementSettingsView.swift */; };
 		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
 		A10000000000000000000012 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
 		A10000000000000000000013 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
@@ -58,6 +60,7 @@
 		7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusViewModelTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageDiagnosticsModels.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageDiagnosticsTests.swift; sourceTree = "<group>"; };
+		A30000000000000000000001 /* DataManagementSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementSettingsView.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* UsageHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* UsageHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryView.swift; sourceTree = "<group>"; };
@@ -107,6 +110,7 @@
 				72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */,
 				A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */,
 				F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */,
+				A30000000000000000000001 /* DataManagementSettingsView.swift */,
 				318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */,
 				F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */,
 				B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */,
@@ -237,6 +241,7 @@
 			files = (
 				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
 				A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */,
+				A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */,
 				319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
@@ -259,6 +264,7 @@
 				17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */,
 				A20000000000000000000011 /* CodexUsageDiagnosticsModels.swift in Sources */,
 				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,
+				A30000000000000000000011 /* DataManagementSettingsView.swift in Sources */,
 				2B2719138AB40807B72BE239 /* LaunchAtLoginController.swift in Sources */,
 				AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */,
 				9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */,

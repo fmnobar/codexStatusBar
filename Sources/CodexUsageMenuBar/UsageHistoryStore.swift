@@ -29,6 +29,9 @@ enum UsageHistoryStoreError: LocalizedError {
     case databaseOpenFailed(String)
     case databaseOperationFailed(String)
     case statementPreparationFailed(String)
+    case databaseUnavailable
+    case invalidBackup
+    case fileOperationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -38,7 +41,49 @@ enum UsageHistoryStoreError: LocalizedError {
             return "Usage history database operation failed: \(message)"
         case .statementPreparationFailed(let message):
             return "Usage history database statement could not be prepared: \(message)"
+        case .databaseUnavailable:
+            return "Usage history database is not available."
+        case .invalidBackup:
+            return "Selected file is not a valid usage history backup."
+        case .fileOperationFailed(let message):
+            return "Usage history file operation failed: \(message)"
         }
+    }
+}
+
+struct UsageHistoryDatabaseInfo: Equatable {
+    let databaseURL: URL
+    let totalByteSize: Int64
+}
+
+enum UsageHistoryRawRetention: Int, CaseIterable, Identifiable, Equatable {
+    case sevenDays = 7
+    case fourteenDays = 14
+    case thirtyDays = 30
+    case ninetyDays = 90
+
+    var id: Int { rawValue }
+
+    var displayTitle: String {
+        "\(rawValue) days"
+    }
+
+    var timeInterval: TimeInterval {
+        TimeInterval(rawValue * 24 * 60 * 60)
+    }
+}
+
+enum UsageHistoryRawRetentionStore {
+    static let defaultsKey = "UsageHistoryRawRetentionDays"
+    static let defaultRetention: UsageHistoryRawRetention = .fourteenDays
+
+    static func load(from defaults: UserDefaults = .standard) -> UsageHistoryRawRetention {
+        let rawValue = defaults.integer(forKey: defaultsKey)
+        return UsageHistoryRawRetention(rawValue: rawValue) ?? defaultRetention
+    }
+
+    static func save(_ retention: UsageHistoryRawRetention, to defaults: UserDefaults = .standard) {
+        defaults.set(retention.rawValue, forKey: defaultsKey)
     }
 }
 
@@ -47,9 +92,10 @@ final class UsageHistoryStore {
     static let defaultRawRetention: TimeInterval = 14 * 24 * 60 * 60
 
     private let database: OpaquePointer
+    private let databaseURL: URL?
     private let notificationCenter: NotificationCenter
     private let calendar: Calendar
-    private let rawRetention: TimeInterval
+    private let rawRetentionProvider: () -> TimeInterval
 
     convenience init(
         databaseURL: URL,
@@ -58,18 +104,34 @@ final class UsageHistoryStore {
         rawRetention: TimeInterval = UsageHistoryStore.defaultRawRetention
     ) throws {
         try self.init(
-            databasePath: databaseURL.path,
+            databaseURL: databaseURL,
             notificationCenter: notificationCenter,
             calendar: calendar,
-            rawRetention: rawRetention
+            rawRetentionProvider: { rawRetention }
+        )
+    }
+
+    convenience init(
+        databaseURL: URL,
+        notificationCenter: NotificationCenter = .default,
+        calendar: Calendar = .autoupdatingCurrent,
+        rawRetentionProvider: @escaping () -> TimeInterval
+    ) throws {
+        try self.init(
+            databasePath: databaseURL.path,
+            databaseURL: databaseURL,
+            notificationCenter: notificationCenter,
+            calendar: calendar,
+            rawRetentionProvider: rawRetentionProvider
         )
     }
 
     private init(
         databasePath: String,
+        databaseURL: URL?,
         notificationCenter: NotificationCenter,
         calendar: Calendar,
-        rawRetention: TimeInterval
+        rawRetentionProvider: @escaping () -> TimeInterval
     ) throws {
         var openedDatabase: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
@@ -79,9 +141,10 @@ final class UsageHistoryStore {
         }
 
         database = openedDatabase
+        self.databaseURL = databaseURL
         self.notificationCenter = notificationCenter
         self.calendar = calendar
-        self.rawRetention = rawRetention
+        self.rawRetentionProvider = rawRetentionProvider
 
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA foreign_keys=ON")
@@ -92,10 +155,17 @@ final class UsageHistoryStore {
         sqlite3_close(database)
     }
 
-    static func applicationSupportStore() throws -> UsageHistoryStore {
+    static func applicationSupportStore(
+        rawRetentionProvider: @escaping () -> TimeInterval = {
+            UsageHistoryRawRetentionStore.load().timeInterval
+        }
+    ) throws -> UsageHistoryStore {
         let directoryURL = try applicationSupportDirectoryURL()
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        return try UsageHistoryStore(databaseURL: directoryURL.appendingPathComponent("usage-history.sqlite3"))
+        return try UsageHistoryStore(
+            databaseURL: directoryURL.appendingPathComponent("usage-history.sqlite3"),
+            rawRetentionProvider: rawRetentionProvider
+        )
     }
 
     static func inMemory(
@@ -105,9 +175,24 @@ final class UsageHistoryStore {
     ) throws -> UsageHistoryStore {
         try UsageHistoryStore(
             databasePath: ":memory:",
+            databaseURL: nil,
             notificationCenter: notificationCenter,
             calendar: calendar,
-            rawRetention: rawRetention
+            rawRetentionProvider: { rawRetention }
+        )
+    }
+
+    static func inMemory(
+        notificationCenter: NotificationCenter = .default,
+        calendar: Calendar = .autoupdatingCurrent,
+        rawRetentionProvider: @escaping () -> TimeInterval
+    ) throws -> UsageHistoryStore {
+        try UsageHistoryStore(
+            databasePath: ":memory:",
+            databaseURL: nil,
+            notificationCenter: notificationCenter,
+            calendar: calendar,
+            rawRetentionProvider: rawRetentionProvider
         )
     }
 
@@ -120,7 +205,9 @@ final class UsageHistoryStore {
                 try record(bucket: bucket, window: .sevenDay, timestamp: timestamp)
             }
 
-            try compactRawSamples(olderThan: Date(timeIntervalSince1970: TimeInterval(timestamp)).addingTimeInterval(-rawRetention))
+            try compactRawSamples(
+                olderThan: Date(timeIntervalSince1970: TimeInterval(timestamp)).addingTimeInterval(-rawRetentionProvider())
+            )
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -208,6 +295,88 @@ final class UsageHistoryStore {
         default:
             throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
         }
+    }
+
+    func databaseInfo(fileManager: FileManager = .default) throws -> UsageHistoryDatabaseInfo {
+        guard let databaseURL else {
+            throw UsageHistoryStoreError.databaseUnavailable
+        }
+
+        return UsageHistoryDatabaseInfo(
+            databaseURL: databaseURL,
+            totalByteSize: Self.totalByteSize(for: databaseURL, fileManager: fileManager)
+        )
+    }
+
+    func exportBackup(to destinationURL: URL, fileManager: FileManager = .default) throws {
+        guard let databaseURL else {
+            throw UsageHistoryStoreError.databaseUnavailable
+        }
+
+        guard databaseURL.standardizedFileURL != destinationURL.standardizedFileURL else {
+            throw UsageHistoryStoreError.fileOperationFailed("Backup destination cannot be the active database.")
+        }
+
+        try checkpointWriteAheadLog()
+
+        do {
+            try fileManager.createDirectory(
+                at: destinationURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try fileManager.removeItem(at: destinationURL)
+            }
+
+            try fileManager.copyItem(at: databaseURL, to: destinationURL)
+            try Self.normalizeBackupJournalMode(at: destinationURL)
+        } catch {
+            throw UsageHistoryStoreError.fileOperationFailed(error.localizedDescription)
+        }
+    }
+
+    func importBackup(from sourceURL: URL) throws {
+        guard let databaseURL else {
+            throw UsageHistoryStoreError.databaseUnavailable
+        }
+
+        guard databaseURL.standardizedFileURL != sourceURL.standardizedFileURL else {
+            throw UsageHistoryStoreError.invalidBackup
+        }
+
+        try Self.validateBackup(at: sourceURL)
+        try attachBackupDatabase(at: sourceURL)
+        defer {
+            try? detachBackupDatabase()
+        }
+
+        try transaction {
+            try execute("DELETE FROM usage_samples")
+            try execute("DELETE FROM usage_rollups")
+            try execute(
+                """
+                INSERT INTO usage_samples (
+                    bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, reset_at
+                )
+                SELECT bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, reset_at
+                FROM imported_usage_history.usage_samples
+                """
+            )
+            try execute(
+                """
+                INSERT INTO usage_rollups (
+                    granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
+                    sample_timestamp, used_percent, reset_at
+                )
+                SELECT granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
+                    sample_timestamp, used_percent, reset_at
+                FROM imported_usage_history.usage_rollups
+                """
+            )
+        }
+
+        notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
 
     private static func applicationSupportDirectoryURL() throws -> URL {
@@ -458,6 +627,25 @@ final class UsageHistoryStore {
         try step(statement)
     }
 
+    private func checkpointWriteAheadLog() throws {
+        let result = sqlite3_wal_checkpoint_v2(database, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
+        guard result == SQLITE_OK else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func attachBackupDatabase(at sourceURL: URL) throws {
+        let statement = try prepare("ATTACH DATABASE ? AS imported_usage_history")
+        defer { sqlite3_finalize(statement) }
+
+        bindText(sourceURL.path, to: 1, in: statement)
+        try step(statement)
+    }
+
+    private func detachBackupDatabase() throws {
+        try execute("DETACH DATABASE imported_usage_history")
+    }
+
     private func periodStart(for timestamp: Int64, granularity: UsageHistoryGranularity) -> Int64 {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
         let components: Set<Calendar.Component> = if granularity == .hour {
@@ -533,6 +721,86 @@ final class UsageHistoryStore {
 
     private static func roundedToMinute(_ date: Date) -> Date {
         Date(timeIntervalSince1970: TimeInterval((date.timeIntervalSince1970Int / 60) * 60))
+    }
+
+    private static func totalByteSize(for databaseURL: URL, fileManager: FileManager) -> Int64 {
+        databaseFileURLs(for: databaseURL).reduce(Int64(0)) { total, url in
+            guard
+                fileManager.fileExists(atPath: url.path),
+                let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                let fileSize = attributes[.size] as? NSNumber
+            else {
+                return total
+            }
+
+            return total + fileSize.int64Value
+        }
+    }
+
+    private static func databaseFileURLs(for databaseURL: URL) -> [URL] {
+        [
+            databaseURL,
+            URL(fileURLWithPath: databaseURL.path + "-wal"),
+            URL(fileURLWithPath: databaseURL.path + "-shm"),
+        ]
+    }
+
+    private static func validateBackup(at sourceURL: URL) throws {
+        var backupDatabase: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(sourceURL.path, &backupDatabase, flags, nil) == SQLITE_OK, let backupDatabase else {
+            if let backupDatabase {
+                sqlite3_close(backupDatabase)
+            }
+            throw UsageHistoryStoreError.invalidBackup
+        }
+        defer { sqlite3_close(backupDatabase) }
+
+        try validateBackupQuery(
+            """
+            SELECT bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, reset_at
+            FROM usage_samples
+            LIMIT 1
+            """,
+            database: backupDatabase
+        )
+        try validateBackupQuery(
+            """
+            SELECT granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
+                sample_timestamp, used_percent, reset_at
+            FROM usage_rollups
+            LIMIT 1
+            """,
+            database: backupDatabase
+        )
+    }
+
+    private static func validateBackupQuery(_ sql: String, database: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.invalidBackup
+        }
+        sqlite3_finalize(statement)
+    }
+
+    private static func normalizeBackupJournalMode(at backupURL: URL) throws {
+        var backupDatabase: OpaquePointer?
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(backupURL.path, &backupDatabase, flags, nil) == SQLITE_OK, let backupDatabase else {
+            if let backupDatabase {
+                sqlite3_close(backupDatabase)
+            }
+            throw UsageHistoryStoreError.fileOperationFailed("Backup database could not be prepared.")
+        }
+        defer { sqlite3_close(backupDatabase) }
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(backupDatabase, "PRAGMA journal_mode=DELETE", nil, nil, &errorMessage)
+        guard result == SQLITE_OK else {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown error"
+            sqlite3_free(errorMessage)
+            throw UsageHistoryStoreError.fileOperationFailed(message)
+        }
     }
 
     private static func csvEscaped(_ value: String) -> String {

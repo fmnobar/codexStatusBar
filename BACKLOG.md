@@ -23,12 +23,12 @@
   - Replaced the horizontal series toggle strip with a searchable model selector.
   - Added specific empty states for no history, no selected-range data, and hidden series.
 
-## Next Candidates
-
 - Add data-management preferences
-  - Show history database location and size.
-  - Add explicit raw-sample retention controls.
-  - Add an import/export path for backup or migration.
+  - Added a native Data settings pane for history database location, size, reveal, backup, restore, and clear actions.
+  - Added raw-sample retention presets while keeping hourly and daily rollups indefinitely.
+  - Added SQLite backup export/import with validation and history-change notifications.
+
+## Next Candidates
 
 - Add install/update visibility
   - Surface version/build info in the popover or History window.
