@@ -92,6 +92,43 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(csv.contains("2026-04-14T20:00:00Z,codex_gpt55,GPT-5.5,model,sevenDay,7.000"))
     }
 
+    @MainActor
+    func testHistoryPresentationDefaultsToIndependentSignals() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.chartSemantics, .independentSignals)
+        XCTAssertEqual(viewModel.chartSubtitle, "Sampled rate-limit usage signals by bucket")
+        XCTAssertEqual(viewModel.visibleLinePoints.map(\.bucketID), ["codex", "codex_gpt55"])
+        XCTAssertTrue(viewModel.visibleContributorPoints.isEmpty)
+    }
+
+    @MainActor
+    func testComparableHistoryPresentationUsesContributorsAndAggregateReference() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            chartSemantics: .comparableContributors,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.chartSubtitle, "Sampled model usage contributors with aggregate reference")
+        XCTAssertEqual(viewModel.visibleContributorPoints.map(\.bucketID), ["codex_gpt55"])
+        XCTAssertEqual(viewModel.visibleAggregateReferencePoints.map(\.bucketID), ["codex"])
+        XCTAssertEqual(viewModel.visibleLinePoints.map(\.bucketID), ["codex"])
+    }
+
     private func makeStore() throws -> UsageHistoryStore {
         try UsageHistoryStore.inMemory(notificationCenter: NotificationCenter(), calendar: calendar)
     }

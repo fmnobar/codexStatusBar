@@ -3,6 +3,20 @@ import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum UsageHistoryChartSemantics: Equatable {
+    case independentSignals
+    case comparableContributors
+
+    var subtitle: String {
+        switch self {
+        case .independentSignals:
+            return "Sampled rate-limit usage signals by bucket"
+        case .comparableContributors:
+            return "Sampled model usage contributors with aggregate reference"
+        }
+    }
+}
+
 @MainActor
 final class UsageHistoryViewModel: ObservableObject {
     @Published var selectedRange: UsageHistoryRange = .day {
@@ -15,6 +29,7 @@ final class UsageHistoryViewModel: ObservableObject {
     @Published private(set) var series: [UsageHistorySeries] = []
     @Published private(set) var selectedSeriesIDs = Set<String>()
     @Published private(set) var errorMessage: String?
+    let chartSemantics: UsageHistoryChartSemantics
 
     private let store: UsageHistoryStore
     private let now: () -> Date
@@ -24,10 +39,12 @@ final class UsageHistoryViewModel: ObservableObject {
 
     init(
         store: UsageHistoryStore,
+        chartSemantics: UsageHistoryChartSemantics = .independentSignals,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent
     ) {
         self.store = store
+        self.chartSemantics = chartSemantics
         self.now = now
         self.calendar = calendar
         historyObserver = NotificationCenter.default.addObserver(
@@ -49,6 +66,31 @@ final class UsageHistoryViewModel: ObservableObject {
 
     var visiblePoints: [UsageHistoryPoint] {
         points.filter { selectedSeriesIDs.contains($0.bucketID) }
+    }
+
+    var chartSubtitle: String {
+        chartSemantics.subtitle
+    }
+
+    var visibleLinePoints: [UsageHistoryPoint] {
+        switch chartSemantics {
+        case .independentSignals:
+            return visiblePoints
+        case .comparableContributors:
+            return visibleAggregateReferencePoints
+        }
+    }
+
+    var visibleContributorPoints: [UsageHistoryPoint] {
+        guard chartSemantics == .comparableContributors else {
+            return []
+        }
+
+        return visiblePoints.filter { $0.bucketKind == .model }
+    }
+
+    var visibleAggregateReferencePoints: [UsageHistoryPoint] {
+        visiblePoints.filter { $0.bucketKind == .aggregate }
     }
 
     var hasHistory: Bool {
@@ -150,8 +192,14 @@ struct UsageHistoryView: View {
     @StateObject private var viewModel: UsageHistoryViewModel
     @State private var isConfirmingClear = false
 
-    init(store: UsageHistoryStore) {
-        _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(store: store))
+    init(
+        store: UsageHistoryStore,
+        chartSemantics: UsageHistoryChartSemantics = .independentSignals
+    ) {
+        _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
+            store: store,
+            chartSemantics: chartSemantics
+        ))
     }
 
     var body: some View {
@@ -193,7 +241,7 @@ struct UsageHistoryView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Usage History")
                     .font(.title2.weight(.semibold))
-                Text("Sampled rate-limit usage by model")
+                Text(viewModel.chartSubtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -244,14 +292,28 @@ struct UsageHistoryView: View {
     }
 
     private var chart: some View {
-        Chart(viewModel.visiblePoints) { point in
-            LineMark(
-                x: .value("Time", point.timestamp),
-                y: .value("Used", point.usedPercent),
-                series: .value("Model", point.bucketName)
-            )
-            .foregroundStyle(by: .value("Model", point.bucketName))
-            .lineStyle(StrokeStyle(lineWidth: point.bucketKind == .aggregate ? 2.5 : 1.8))
+        Chart {
+            if viewModel.chartSemantics == .comparableContributors {
+                ForEach(viewModel.visibleContributorPoints) { point in
+                    AreaMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Used", point.usedPercent),
+                        stacking: .standard
+                    )
+                    .foregroundStyle(by: .value("Bucket", point.bucketName))
+                    .opacity(0.65)
+                }
+            }
+
+            ForEach(viewModel.visibleLinePoints) { point in
+                LineMark(
+                    x: .value("Time", point.timestamp),
+                    y: .value("Used", point.usedPercent),
+                    series: .value("Bucket", point.bucketName)
+                )
+                .foregroundStyle(by: .value("Bucket", point.bucketName))
+                .lineStyle(StrokeStyle(lineWidth: point.bucketKind == .aggregate ? 2.5 : 1.8))
+            }
         }
         .chartYScale(domain: 0...100)
         .chartYAxisLabel("Used %")

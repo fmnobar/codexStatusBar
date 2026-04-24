@@ -115,6 +115,118 @@ final class CodexUsageDiagnosticsTests: XCTestCase {
         XCTAssertFalse(json.localizedCaseInsensitiveContains("token"))
     }
 
+    func testReviewClassifiesComparableAcrossThreeAlignedCaptures() {
+        let review = CodexUsageDiagnosticsReviewer.review([
+            reviewSnapshot(
+                generatedAt: "2026-04-14T20:00:00Z",
+                primaryAggregate: 10,
+                primaryModelSum: 6,
+                secondaryAggregate: 20,
+                secondaryModelSum: 15
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T21:00:00Z",
+                primaryAggregate: 13,
+                primaryModelSum: 9,
+                secondaryAggregate: 24,
+                secondaryModelSum: 19
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T22:00:00Z",
+                primaryAggregate: 16,
+                primaryModelSum: 12,
+                secondaryAggregate: 27,
+                secondaryModelSum: 22
+            ),
+        ])
+
+        XCTAssertEqual(review.captureCount, 3)
+        XCTAssertEqual(review.classification, .comparableCandidate)
+        XCTAssertEqual(review.summaries.map(\.classification), [.comparableCandidate, .comparableCandidate])
+    }
+
+    func testReviewClassifiesIndependentWhenDurationDiffers() {
+        let review = CodexUsageDiagnosticsReviewer.review([
+            reviewSnapshot(
+                generatedAt: "2026-04-14T20:00:00Z",
+                primaryAggregate: 10,
+                primaryModelSum: 6,
+                secondaryAggregate: 20,
+                secondaryModelSum: 15
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T21:00:00Z",
+                primaryAggregate: 13,
+                primaryModelSum: 9,
+                secondaryAggregate: 24,
+                secondaryModelSum: 19,
+                durationsAligned: false
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T22:00:00Z",
+                primaryAggregate: 16,
+                primaryModelSum: 12,
+                secondaryAggregate: 27,
+                secondaryModelSum: 22
+            ),
+        ])
+
+        XCTAssertEqual(review.classification, .independentLikely)
+        XCTAssertTrue(review.notes.contains { $0.contains("durations") })
+    }
+
+    func testReviewClassifiesIndependentWhenModelMovementConflictsWithAggregate() {
+        let review = CodexUsageDiagnosticsReviewer.review([
+            reviewSnapshot(
+                generatedAt: "2026-04-14T20:00:00Z",
+                primaryAggregate: 10,
+                primaryModelSum: 6,
+                secondaryAggregate: 20,
+                secondaryModelSum: 15
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T21:00:00Z",
+                primaryAggregate: 13,
+                primaryModelSum: 6,
+                secondaryAggregate: 24,
+                secondaryModelSum: 19
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T22:00:00Z",
+                primaryAggregate: 16,
+                primaryModelSum: 9,
+                secondaryAggregate: 27,
+                secondaryModelSum: 22
+            ),
+        ])
+
+        XCTAssertEqual(review.classification, .independentLikely)
+        XCTAssertTrue(review.notes.contains { $0.contains("model deltas") })
+    }
+
+    func testReviewClassifiesInconclusiveWithTooFewCaptures() {
+        let review = CodexUsageDiagnosticsReviewer.review([
+            reviewSnapshot(
+                generatedAt: "2026-04-14T20:00:00Z",
+                primaryAggregate: 10,
+                primaryModelSum: 6,
+                secondaryAggregate: 20,
+                secondaryModelSum: 15
+            ),
+            reviewSnapshot(
+                generatedAt: "2026-04-14T21:00:00Z",
+                primaryAggregate: 13,
+                primaryModelSum: 9,
+                secondaryAggregate: 24,
+                secondaryModelSum: 19
+            ),
+        ])
+
+        XCTAssertEqual(review.captureCount, 2)
+        XCTAssertEqual(review.classification, .inconclusive)
+        XCTAssertTrue(review.summaries.allSatisfy { $0.classification == .inconclusive })
+    }
+
     private func decodeResponse(
         aggregatePrimaryReset: Int64,
         aggregateSecondaryReset: Int64,
@@ -197,5 +309,64 @@ final class CodexUsageDiagnosticsTests: XCTestCase {
         )
 
         return try JSONDecoder().decode(AccountRateLimitsResponse.self, from: data)
+    }
+
+    private func reviewSnapshot(
+        generatedAt: String,
+        primaryAggregate: Int,
+        primaryModelSum: Int,
+        secondaryAggregate: Int,
+        secondaryModelSum: Int,
+        durationsAligned: Bool = true,
+        resetsAligned: Bool = true,
+        modelValuesWithinAggregate: Bool = true
+    ) -> CodexUsageDiagnosticsSnapshot {
+        CodexUsageDiagnosticsSnapshot(
+            generatedAt: ISO8601DateFormatter().date(from: generatedAt)!,
+            buckets: [],
+            summaries: [
+                reviewSummary(
+                    window: .fiveHour,
+                    aggregate: primaryAggregate,
+                    modelSum: primaryModelSum,
+                    durationsAligned: durationsAligned,
+                    resetsAligned: resetsAligned,
+                    modelValuesWithinAggregate: modelValuesWithinAggregate
+                ),
+                reviewSummary(
+                    window: .sevenDay,
+                    aggregate: secondaryAggregate,
+                    modelSum: secondaryModelSum,
+                    durationsAligned: durationsAligned,
+                    resetsAligned: resetsAligned,
+                    modelValuesWithinAggregate: modelValuesWithinAggregate
+                ),
+            ]
+        )
+    }
+
+    private func reviewSummary(
+        window: UsageLimitWindow,
+        aggregate: Int,
+        modelSum: Int,
+        durationsAligned: Bool,
+        resetsAligned: Bool,
+        modelValuesWithinAggregate: Bool
+    ) -> CodexUsageDiagnosticsWindowSummary {
+        let classification: CodexUsageDiagnosticsClassification =
+            durationsAligned && resetsAligned && modelValuesWithinAggregate ? .comparableCandidate : .independentLikely
+
+        return CodexUsageDiagnosticsWindowSummary(
+            window: window,
+            classification: classification,
+            aggregateBucketID: "codex",
+            aggregateUsedPercent: aggregate,
+            modelBucketCount: 2,
+            modelUsedPercentSum: modelSum,
+            durationsAligned: durationsAligned,
+            resetsAligned: resetsAligned,
+            modelValuesWithinAggregate: modelValuesWithinAggregate,
+            notes: []
+        )
     }
 }

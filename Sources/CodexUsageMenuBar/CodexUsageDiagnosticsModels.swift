@@ -68,12 +68,162 @@ struct CodexUsageDiagnosticsWindowSummary: Codable, Equatable {
     let notes: [String]
 }
 
+struct CodexUsageDiagnosticsReview: Equatable {
+    let captureCount: Int
+    let classification: CodexUsageDiagnosticsClassification
+    let summaries: [CodexUsageDiagnosticsReviewWindowSummary]
+    let notes: [String]
+}
+
+struct CodexUsageDiagnosticsReviewWindowSummary: Equatable {
+    let window: UsageLimitWindow
+    let classification: CodexUsageDiagnosticsClassification
+    let notes: [String]
+}
+
 enum CodexUsageDiagnosticsExporter {
     static func jsonData(for snapshot: CodexUsageDiagnosticsSnapshot) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(snapshot)
+    }
+}
+
+enum CodexUsageDiagnosticsReviewer {
+    private static let minimumCaptureCount = 3
+    private static let movementTolerance = 1
+
+    static func review(_ snapshots: [CodexUsageDiagnosticsSnapshot]) -> CodexUsageDiagnosticsReview {
+        let sortedSnapshots = snapshots.sorted { $0.generatedAt < $1.generatedAt }
+        let summaries = UsageLimitWindow.allCases.map { window in
+            review(window: window, snapshots: sortedSnapshots)
+        }
+        let classification = CodexUsageDiagnosticsSnapshot.overallClassification(from: summaries)
+        let notes = if sortedSnapshots.count < minimumCaptureCount {
+            ["At least 3 diagnostics captures are required before changing chart semantics."]
+        } else {
+            summaries.flatMap(\.notes)
+        }
+
+        return CodexUsageDiagnosticsReview(
+            captureCount: sortedSnapshots.count,
+            classification: classification,
+            summaries: summaries,
+            notes: notes
+        )
+    }
+
+    private static func review(
+        window: UsageLimitWindow,
+        snapshots: [CodexUsageDiagnosticsSnapshot]
+    ) -> CodexUsageDiagnosticsReviewWindowSummary {
+        guard snapshots.count >= minimumCaptureCount else {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .inconclusive,
+                notes: ["At least 3 diagnostics captures are required for \(window.displayTitle)."]
+            )
+        }
+
+        let observations = snapshots.compactMap { snapshot in
+            observation(in: snapshot, window: window)
+        }
+
+        guard observations.count == snapshots.count else {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .inconclusive,
+                notes: ["One or more captures are missing aggregate or model data for \(window.displayTitle)."]
+            )
+        }
+
+        if observations.contains(where: { !$0.durationsAligned }) {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .independentLikely,
+                notes: ["One or more \(window.displayTitle) captures have model durations that differ from aggregate."]
+            )
+        }
+
+        if observations.contains(where: { !$0.resetsAligned }) {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .independentLikely,
+                notes: ["One or more \(window.displayTitle) captures have model resets that differ from aggregate."]
+            )
+        }
+
+        if observations.contains(where: { !$0.modelValuesWithinAggregate }) {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .independentLikely,
+                notes: ["One or more \(window.displayTitle) captures have model percentages outside the aggregate value."]
+            )
+        }
+
+        var movingDeltas: [(aggregateDelta: Int, modelDelta: Int)] = []
+        for (current, previous) in zip(observations.dropFirst(), observations) {
+            let aggregateDelta = current.aggregateUsedPercent - previous.aggregateUsedPercent
+            let modelDelta = current.modelUsedPercentSum - previous.modelUsedPercentSum
+
+            guard aggregateDelta != 0 || modelDelta != 0 else {
+                continue
+            }
+
+            movingDeltas.append((aggregateDelta: aggregateDelta, modelDelta: modelDelta))
+        }
+
+        guard !movingDeltas.isEmpty else {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .inconclusive,
+                notes: ["The \(window.displayTitle) captures do not include enough percentage movement."]
+            )
+        }
+
+        guard movingDeltas.allSatisfy({ abs($0.aggregateDelta - $0.modelDelta) <= movementTolerance }) else {
+            return CodexUsageDiagnosticsReviewWindowSummary(
+                window: window,
+                classification: .independentLikely,
+                notes: ["The \(window.displayTitle) model deltas do not consistently explain aggregate deltas."]
+            )
+        }
+
+        return CodexUsageDiagnosticsReviewWindowSummary(
+            window: window,
+            classification: .comparableCandidate,
+            notes: ["The \(window.displayTitle) model deltas consistently explain aggregate deltas."]
+        )
+    }
+
+    private static func observation(
+        in snapshot: CodexUsageDiagnosticsSnapshot,
+        window: UsageLimitWindow
+    ) -> WindowObservation? {
+        guard let summary = snapshot.summaries.first(where: { $0.window == window }),
+              let aggregateUsedPercent = summary.aggregateUsedPercent,
+              let modelUsedPercentSum = summary.modelUsedPercentSum,
+              summary.modelBucketCount > 0
+        else {
+            return nil
+        }
+
+        return WindowObservation(
+            aggregateUsedPercent: aggregateUsedPercent,
+            modelUsedPercentSum: modelUsedPercentSum,
+            durationsAligned: summary.durationsAligned,
+            resetsAligned: summary.resetsAligned,
+            modelValuesWithinAggregate: summary.modelValuesWithinAggregate
+        )
+    }
+
+    private struct WindowObservation {
+        let aggregateUsedPercent: Int
+        let modelUsedPercentSum: Int
+        let durationsAligned: Bool
+        let resetsAligned: Bool
+        let modelValuesWithinAggregate: Bool
     }
 }
 
@@ -103,6 +253,22 @@ extension AccountRateLimitsResponse {
         return [
             rateLimits.toDiagnosticsBucket(fallbackId: rateLimits.limitId ?? "codex"),
         ]
+    }
+}
+
+private extension CodexUsageDiagnosticsSnapshot {
+    static func overallClassification(
+        from summaries: [CodexUsageDiagnosticsReviewWindowSummary]
+    ) -> CodexUsageDiagnosticsClassification {
+        if summaries.contains(where: { $0.classification == .independentLikely }) {
+            return .independentLikely
+        }
+
+        if !summaries.isEmpty, summaries.allSatisfy({ $0.classification == .comparableCandidate }) {
+            return .comparableCandidate
+        }
+
+        return .inconclusive
     }
 }
 

@@ -13,12 +13,12 @@
   - Added sanitized app-server bucket JSON with aggregate/model comparison summaries.
   - Added classification for comparable, independent, and inconclusive bucket shapes.
 
-## Next Candidates
-
 - Review exported diagnostics and decide History chart semantics
-  - Capture real diagnostics across a few usage changes.
-  - Decide whether model series should remain independent lines or be presented as comparable contributors.
-  - Update chart wording only after the real bucket behavior is confirmed.
+  - Added multi-capture diagnostics review for comparable, independent, and inconclusive evidence.
+  - Kept the History chart in neutral independent-signal mode until real captures prove contributor semantics.
+  - Added internal contributor rendering support for evidence-backed comparable buckets.
+
+## Next Candidates
 
 - Improve History chart polish and interaction
   - Add point hover details, clearer empty states per range, and better legend behavior when many models exist.
