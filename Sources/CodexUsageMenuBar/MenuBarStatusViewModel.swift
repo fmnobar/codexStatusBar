@@ -8,6 +8,7 @@ protocol CodexRateLimitClientProtocol: AnyObject {
 
     func start() async throws -> CodexUsageSnapshot
     func refresh() async throws -> CodexUsageSnapshot
+    func usageDiagnostics() async throws -> CodexUsageDiagnosticsSnapshot
     func stop()
 }
 
@@ -45,6 +46,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     @Published private(set) var hasSnapshot = false
     @Published private(set) var launchAtLoginEnabled: Bool
     @Published private(set) var launchAtLoginError: String?
+    @Published private(set) var diagnosticsExportError: String?
 
     private let client: CodexRateLimitClientProtocol
     private let now: () -> Date
@@ -135,6 +137,17 @@ final class MenuBarStatusViewModel: ObservableObject {
         } catch {
             launchAtLoginEnabled = loadLaunchAtLoginEnabled()
             launchAtLoginError = "Launch at login could not be updated."
+        }
+    }
+
+    func usageDiagnosticsJSONData() async -> Data? {
+        do {
+            let diagnostics = try await client.usageDiagnostics()
+            diagnosticsExportError = nil
+            return try CodexUsageDiagnosticsExporter.jsonData(for: diagnostics)
+        } catch {
+            diagnosticsExportError = "Diagnostics could not be exported."
+            return nil
         }
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-enum UsageLimitWindow: String, CaseIterable, Identifiable, Equatable {
+enum UsageLimitWindow: String, CaseIterable, Codable, Identifiable, Equatable {
     case fiveHour
     case sevenDay
 

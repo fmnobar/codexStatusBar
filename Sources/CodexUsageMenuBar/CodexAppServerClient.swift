@@ -73,6 +73,17 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         }
     }
 
+    func usageDiagnostics() async throws -> CodexUsageDiagnosticsSnapshot {
+        do {
+            try await ensureConnected()
+            return try await fetchUsageDiagnostics()
+        } catch {
+            resetSocketState()
+            try await ensureConnected()
+            return try await fetchUsageDiagnostics()
+        }
+    }
+
     func stop() {
         resetSocketState()
         stopManagedProcess()
@@ -220,6 +231,13 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         let data = try makeJSONData(from: result)
         let response = try decoder.decode(AccountRateLimitsResponse.self, from: data)
         return response.usageSnapshot(displaySnapshotOverride: displaySnapshotOverride)
+    }
+
+    private func fetchUsageDiagnostics() async throws -> CodexUsageDiagnosticsSnapshot {
+        let result = try await sendRequest(method: "account/rateLimits/read", params: nil)
+        let data = try makeJSONData(from: result)
+        let response = try decoder.decode(AccountRateLimitsResponse.self, from: data)
+        return response.diagnosticsSnapshot(generatedAt: Date())
     }
 
     private func fetchWhamUsageSnapshot() async throws -> CodexRateLimitSnapshot {

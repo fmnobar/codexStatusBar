@@ -19,7 +19,7 @@ struct CodexRateLimitSnapshot: Equatable {
     let secondary: CodexRateLimitWindow?
 }
 
-enum CodexUsageBucketKind: String, Equatable {
+enum CodexUsageBucketKind: String, Codable, Equatable {
     case aggregate
     case model
 }

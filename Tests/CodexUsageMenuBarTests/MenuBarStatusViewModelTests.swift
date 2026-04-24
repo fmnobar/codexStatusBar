@@ -245,6 +245,93 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         viewModel.stop()
     }
+
+    func testUsageDiagnosticsExportReturnsJSONAndClearsError() async throws {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 10, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let diagnostics = Self.diagnosticsSnapshot(classification: .comparableCandidate)
+        let client = MockCodexRateLimitClient(
+            snapshot: snapshot,
+            diagnosticsResponses: [.success(diagnostics)]
+        )
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        let maybeData = await viewModel.usageDiagnosticsJSONData()
+        let data = try XCTUnwrap(maybeData)
+        let json = String(decoding: data, as: UTF8.self)
+
+        XCTAssertTrue(json.contains("\"classification\" : \"comparableCandidate\""))
+        XCTAssertNil(viewModel.diagnosticsExportError)
+        XCTAssertEqual(client.diagnosticsCallCount, 1)
+    }
+
+    func testFailedUsageDiagnosticsExportPublishesError() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 10, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(
+            snapshot: snapshot,
+            diagnosticsResponses: [.failure(MockClientError.sample)]
+        )
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        let data = await viewModel.usageDiagnosticsJSONData()
+
+        XCTAssertNil(data)
+        XCTAssertEqual(viewModel.diagnosticsExportError, "Diagnostics could not be exported.")
+        XCTAssertEqual(client.diagnosticsCallCount, 1)
+    }
+
+    private static func diagnosticsSnapshot(
+        classification: CodexUsageDiagnosticsClassification
+    ) -> CodexUsageDiagnosticsSnapshot {
+        CodexUsageDiagnosticsSnapshot(
+            generatedAt: Date(timeIntervalSince1970: 0),
+            buckets: [
+                CodexUsageDiagnosticsBucket(
+                    id: "codex",
+                    name: "All models",
+                    kind: .aggregate,
+                    planType: "pro",
+                    primary: CodexUsageDiagnosticsWindow(usedPercent: 10, windowDurationMinutes: 300, resetsAt: nil),
+                    secondary: CodexUsageDiagnosticsWindow(usedPercent: 20, windowDurationMinutes: 10080, resetsAt: nil)
+                ),
+            ],
+            summaries: [
+                CodexUsageDiagnosticsWindowSummary(
+                    window: .fiveHour,
+                    classification: classification,
+                    aggregateBucketID: "codex",
+                    aggregateUsedPercent: 10,
+                    modelBucketCount: 0,
+                    modelUsedPercentSum: nil,
+                    durationsAligned: true,
+                    resetsAligned: true,
+                    modelValuesWithinAggregate: true,
+                    notes: []
+                ),
+            ]
+        )
+    }
 }
 
 private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
@@ -252,30 +339,40 @@ private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
 
     private(set) var startCallCount = 0
     private(set) var refreshCallCount = 0
+    private(set) var diagnosticsCallCount = 0
     private var startResponses: [Result<CodexUsageSnapshot, Error>]
     private var refreshResponses: [Result<CodexUsageSnapshot, Error>]
+    private var diagnosticsResponses: [Result<CodexUsageDiagnosticsSnapshot, Error>]
 
-    convenience init(snapshot: CodexRateLimitSnapshot) {
+    convenience init(
+        snapshot: CodexRateLimitSnapshot,
+        diagnosticsResponses: [Result<CodexUsageDiagnosticsSnapshot, Error>] = []
+    ) {
         self.init(
             startResponses: [.success(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))],
-            refreshResponses: [.success(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))]
+            refreshResponses: [.success(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))],
+            diagnosticsResponses: diagnosticsResponses
         )
     }
 
     init(
         startResponses: [Result<CodexRateLimitSnapshot, Error>],
-        refreshResponses: [Result<CodexRateLimitSnapshot, Error>]
+        refreshResponses: [Result<CodexRateLimitSnapshot, Error>],
+        diagnosticsResponses: [Result<CodexUsageDiagnosticsSnapshot, Error>] = []
     ) {
         self.startResponses = startResponses.map { $0.map(CodexUsageSnapshot.aggregateOnly(displaySnapshot:)) }
         self.refreshResponses = refreshResponses.map { $0.map(CodexUsageSnapshot.aggregateOnly(displaySnapshot:)) }
+        self.diagnosticsResponses = diagnosticsResponses
     }
 
     init(
         startResponses: [Result<CodexUsageSnapshot, Error>],
-        refreshResponses: [Result<CodexUsageSnapshot, Error>]
+        refreshResponses: [Result<CodexUsageSnapshot, Error>],
+        diagnosticsResponses: [Result<CodexUsageDiagnosticsSnapshot, Error>] = []
     ) {
         self.startResponses = startResponses
         self.refreshResponses = refreshResponses
+        self.diagnosticsResponses = diagnosticsResponses
     }
 
     func start() async throws -> CodexUsageSnapshot {
@@ -286,6 +383,15 @@ private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
     func refresh() async throws -> CodexUsageSnapshot {
         refreshCallCount += 1
         return try nextResponse(from: &refreshResponses)
+    }
+
+    func usageDiagnostics() async throws -> CodexUsageDiagnosticsSnapshot {
+        diagnosticsCallCount += 1
+        guard !diagnosticsResponses.isEmpty else {
+            throw MockClientError.sample
+        }
+
+        return try diagnosticsResponses.removeFirst().get()
     }
 
     func stop() {}

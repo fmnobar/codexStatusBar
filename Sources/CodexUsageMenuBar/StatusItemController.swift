@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
@@ -10,6 +11,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private lazy var refreshMenuItem = makeMenuItem(title: "Refresh", action: #selector(refreshFromMenu))
     private lazy var historyMenuItem = makeMenuItem(title: "History", action: #selector(showHistoryFromMenu))
+    private lazy var exportDiagnosticsMenuItem = makeMenuItem(title: "Export Diagnostics...", action: #selector(exportDiagnosticsFromMenu))
     private lazy var openCodexMenuItem = makeMenuItem(title: "Open Codex", action: #selector(openCodex))
     private lazy var contextMenu: NSMenu = makeContextMenu()
 
@@ -161,9 +163,23 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func showContextMenu() {
         popover.performClose(nil)
+        updateContextMenuForCurrentModifiers()
         statusItem.menu = contextMenu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    private func updateContextMenuForCurrentModifiers() {
+        let modifierFlags = NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
+        let shouldShowDiagnostics = modifierFlags.contains(.option)
+        let diagnosticsIndex = contextMenu.index(of: exportDiagnosticsMenuItem)
+
+        if shouldShowDiagnostics, diagnosticsIndex == -1 {
+            let insertionIndex = contextMenu.index(of: historyMenuItem) + 1
+            contextMenu.insertItem(exportDiagnosticsMenuItem, at: max(insertionIndex, 0))
+        } else if !shouldShowDiagnostics, diagnosticsIndex != -1 {
+            contextMenu.removeItem(exportDiagnosticsMenuItem)
+        }
     }
 
     @objc
@@ -180,6 +196,43 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func showHistory() {
         historyWindowController.showWindow()
+    }
+
+    @objc
+    private func exportDiagnosticsFromMenu() {
+        Task {
+            await exportDiagnostics()
+        }
+    }
+
+    private func exportDiagnostics() async {
+        guard let data = await viewModel.usageDiagnosticsJSONData() else {
+            showDiagnosticsExportFailure()
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "codex-usage-diagnostics.json"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            showDiagnosticsExportFailure()
+        }
+    }
+
+    private func showDiagnosticsExportFailure() {
+        let alert = NSAlert()
+        alert.messageText = "Diagnostics could not be exported."
+        alert.informativeText = "Try again after refreshing Codex Status Bar."
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     @objc
