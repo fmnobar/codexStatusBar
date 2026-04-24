@@ -1,6 +1,6 @@
 # Codex Status Bar
 
-Small macOS menu bar app that shows the selected Codex usage percentage in the status bar and the 5-hour and 7-day limits in a click popover.
+Small macOS menu bar app that shows the selected Codex usage percentage in the status bar, the 5-hour and 7-day limits in a click popover, and local usage history over time.
 
 ## Install
 
@@ -44,6 +44,8 @@ git pull
 - The app launches or reuses a local `codex app-server`.
 - The menu bar label can show `5h`, `7d`, or `Tightest`.
 - The popover shows `5h`, `7d`, and `Tightest`, along with reset times and freshness state.
+- The History window charts locally sampled usage by rolling day, week, month, and year ranges.
+- History can include per-model series when Codex exposes model-specific rate-limit buckets.
 - The popover also includes a `Launch at login` toggle.
-- Right click includes quick actions for refresh, opening Codex, and quit.
+- Right click includes quick actions for refresh, history, opening Codex, and quit.
 - Left click opens the popover. Clicking outside closes it.

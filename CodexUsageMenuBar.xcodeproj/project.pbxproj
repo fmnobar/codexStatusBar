@@ -20,6 +20,13 @@
 		580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */; };
 		746901348E7A668975CEDA56 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5363F89C9BF34793883A496 /* StatusItemController.swift */; };
 		9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */; };
+		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
+		A10000000000000000000012 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
+		A10000000000000000000013 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
+		A10000000000000000000014 /* UsageHistoryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* UsageHistoryWindowController.swift */; };
+		A10000000000000000000021 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
+		A10000000000000000000022 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
+		A10000000000000000000025 /* UsageHistoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* UsageHistoryStoreTests.swift */; };
 		AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */; };
 		D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
 		ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */; };
@@ -45,6 +52,11 @@
 		6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusViewModel.swift; sourceTree = "<group>"; };
 		72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRateLimitModels.swift; sourceTree = "<group>"; };
 		7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusViewModelTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000001 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
+		A10000000000000000000002 /* UsageHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* UsageHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryView.swift; sourceTree = "<group>"; };
+		A10000000000000000000004 /* UsageHistoryWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryWindowController.swift; sourceTree = "<group>"; };
+		A10000000000000000000005 /* UsageHistoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStoreTests.swift; sourceTree = "<group>"; };
 		B5363F89C9BF34793883A496 /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusFormatter.swift; sourceTree = "<group>"; };
 		D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusFormatterTests.swift; sourceTree = "<group>"; };
@@ -67,6 +79,7 @@
 				64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */,
 				D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */,
 				7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */,
+				A10000000000000000000005 /* UsageHistoryStoreTests.swift */,
 			);
 			path = CodexUsageMenuBarTests;
 			sourceTree = "<group>";
@@ -91,6 +104,10 @@
 				B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */,
 				6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */,
 				B5363F89C9BF34793883A496 /* StatusItemController.swift */,
+				A10000000000000000000001 /* UsageHistoryModels.swift */,
+				A10000000000000000000002 /* UsageHistoryStore.swift */,
+				A10000000000000000000003 /* UsageHistoryView.swift */,
+				A10000000000000000000004 /* UsageHistoryWindowController.swift */,
 			);
 			path = CodexUsageMenuBar;
 			sourceTree = "<group>";
@@ -214,9 +231,12 @@
 				319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
+				A10000000000000000000021 /* UsageHistoryModels.swift in Sources */,
+				A10000000000000000000022 /* UsageHistoryStore.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
 				2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */,
 				4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */,
+				A10000000000000000000025 /* UsageHistoryStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -232,6 +252,10 @@
 				9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */,
 				D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */,
 				746901348E7A668975CEDA56 /* StatusItemController.swift in Sources */,
+				A10000000000000000000011 /* UsageHistoryModels.swift in Sources */,
+				A10000000000000000000012 /* UsageHistoryStore.swift in Sources */,
+				A10000000000000000000013 /* UsageHistoryView.swift in Sources */,
+				A10000000000000000000014 /* UsageHistoryWindowController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

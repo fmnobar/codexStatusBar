@@ -5,9 +5,11 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
+    private let historyWindowController: UsageHistoryWindowController
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private lazy var refreshMenuItem = makeMenuItem(title: "Refresh", action: #selector(refreshFromMenu))
+    private lazy var historyMenuItem = makeMenuItem(title: "History", action: #selector(showHistoryFromMenu))
     private lazy var openCodexMenuItem = makeMenuItem(title: "Open Codex", action: #selector(openCodex))
     private lazy var contextMenu: NSMenu = makeContextMenu()
 
@@ -15,8 +17,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
 
-    init(viewModel: MenuBarStatusViewModel) {
+    init(viewModel: MenuBarStatusViewModel, historyStore: UsageHistoryStore) {
         self.viewModel = viewModel
+        self.historyWindowController = UsageHistoryWindowController(store: historyStore)
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -31,7 +34,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.behavior = .transient
         popover.delegate = self
         popover.contentViewController = NSHostingController(
-            rootView: MenuBarContentView(viewModel: viewModel)
+            rootView: MenuBarContentView(
+                viewModel: viewModel,
+                onOpenHistory: { [weak self] in
+                    self?.popover.performClose(nil)
+                    self?.showHistory()
+                }
+            )
                 .frame(width: 340)
         )
     }
@@ -111,6 +120,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.addItem(refreshMenuItem)
+        menu.addItem(historyMenuItem)
         menu.addItem(openCodexMenuItem)
         menu.addItem(.separator())
         menu.addItem(makeMenuItem(title: "Quit", action: #selector(quit)))
@@ -161,6 +171,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         Task {
             await viewModel.manualRefresh()
         }
+    }
+
+    @objc
+    private func showHistoryFromMenu() {
+        showHistory()
+    }
+
+    private func showHistory() {
+        historyWindowController.showWindow()
     }
 
     @objc

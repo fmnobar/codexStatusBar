@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
+    let onOpenHistory: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -23,6 +24,8 @@ struct MenuBarContentView: View {
                 selectableRow(viewModel.fiveHourRow)
                 selectableRow(viewModel.sevenDayRow)
                 selectableRow(viewModel.tightestRow)
+                Divider()
+                historySection
                 Divider()
                 launchAtLoginSection
                 Divider()
@@ -60,6 +63,31 @@ struct MenuBarContentView: View {
                 }
 
                 Spacer(minLength: 0)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var historySection: some View {
+        Button {
+            onOpenHistory()
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "chart.xyaxis.line")
+                    .font(.system(size: 14))
+                    .frame(width: 14)
+
+                Text("History")
+                    .font(.system(size: 13))
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
             }
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, alignment: .leading)

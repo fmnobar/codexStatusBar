@@ -19,6 +19,52 @@ struct CodexRateLimitSnapshot: Equatable {
     let secondary: CodexRateLimitWindow?
 }
 
+enum CodexUsageBucketKind: String, Equatable {
+    case aggregate
+    case model
+}
+
+struct CodexUsageBucket: Equatable, Identifiable {
+    let id: String
+    let name: String
+    let kind: CodexUsageBucketKind
+    let snapshot: CodexRateLimitSnapshot
+}
+
+struct CodexUsageSnapshot: Equatable {
+    let displaySnapshot: CodexRateLimitSnapshot
+    let buckets: [CodexUsageBucket]
+
+    static func aggregateOnly(displaySnapshot: CodexRateLimitSnapshot) -> CodexUsageSnapshot {
+        CodexUsageSnapshot(
+            displaySnapshot: displaySnapshot,
+            buckets: [
+                CodexUsageBucket(
+                    id: "codex",
+                    name: "All models",
+                    kind: .aggregate,
+                    snapshot: displaySnapshot
+                ),
+            ]
+        )
+    }
+
+    var bucketsForRecording: [CodexUsageBucket] {
+        if buckets.contains(where: { $0.kind == .aggregate }) {
+            return buckets
+        }
+
+        return [
+            CodexUsageBucket(
+                id: "codex",
+                name: "All models",
+                kind: .aggregate,
+                snapshot: displaySnapshot
+            ),
+        ] + buckets
+    }
+}
+
 struct GetAuthStatusResponse: Decodable {
     let authMethod: String
     let authToken: String?
@@ -36,6 +82,37 @@ struct AccountRateLimitsResponse: Decodable {
 
         return rateLimits.toDomainSnapshot()
     }
+
+    func usageSnapshot(displaySnapshotOverride: CodexRateLimitSnapshot? = nil) -> CodexUsageSnapshot {
+        let displaySnapshot = displaySnapshotOverride ?? selectedSnapshot()
+        var buckets = usageBuckets()
+
+        if buckets.isEmpty {
+            buckets = CodexUsageSnapshot.aggregateOnly(displaySnapshot: displaySnapshot).buckets
+        }
+
+        return CodexUsageSnapshot(displaySnapshot: displaySnapshot, buckets: buckets)
+    }
+
+    func usageBuckets() -> [CodexUsageBucket] {
+        guard let rateLimitsByLimitId, !rateLimitsByLimitId.isEmpty else {
+            return [
+                rateLimits.toUsageBucket(fallbackId: rateLimits.limitId ?? "codex"),
+            ]
+        }
+
+        return rateLimitsByLimitId
+            .map { key, payload in
+                payload.toUsageBucket(fallbackId: key)
+            }
+            .sorted { lhs, rhs in
+                if lhs.kind != rhs.kind {
+                    return lhs.kind == .aggregate
+                }
+
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
 }
 
 struct AccountRateLimitsUpdatedNotificationPayload: Decodable {
@@ -47,6 +124,10 @@ struct AccountRateLimitsUpdatedNotificationPayload: Decodable {
         }
 
         return rateLimits.toDomainSnapshot()
+    }
+
+    var isCodexRelated: Bool {
+        rateLimits.limitId?.hasPrefix("codex") ?? true
     }
 }
 
@@ -65,6 +146,23 @@ struct RateLimitSnapshotPayload: Decodable {
         CodexRateLimitSnapshot(
             primary: primary?.toDomainWindow(),
             secondary: secondary?.toDomainWindow()
+        )
+    }
+
+    func toUsageBucket(fallbackId: String) -> CodexUsageBucket {
+        let resolvedId = limitId ?? fallbackId
+        let kind: CodexUsageBucketKind = isMainCodexBucket ? .aggregate : .model
+        let resolvedName = if kind == .aggregate {
+            "All models"
+        } else {
+            limitName ?? resolvedId
+        }
+
+        return CodexUsageBucket(
+            id: resolvedId,
+            name: resolvedName,
+            kind: kind,
+            snapshot: toDomainSnapshot()
         )
     }
 }
@@ -92,6 +190,10 @@ struct WhamUsageResponse: Decodable {
 
     func selectedSnapshot() -> CodexRateLimitSnapshot? {
         rateLimit?.toDomainSnapshot()
+    }
+
+    func selectedUsageSnapshot() -> CodexUsageSnapshot? {
+        selectedSnapshot().map { CodexUsageSnapshot.aggregateOnly(displaySnapshot: $0) }
     }
 }
 

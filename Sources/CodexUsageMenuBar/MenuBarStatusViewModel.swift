@@ -4,10 +4,10 @@ import SwiftUI
 
 @MainActor
 protocol CodexRateLimitClientProtocol: AnyObject {
-    var onSnapshot: ((CodexRateLimitSnapshot) -> Void)? { get set }
+    var onSnapshot: ((CodexUsageSnapshot) -> Void)? { get set }
 
-    func start() async throws -> CodexRateLimitSnapshot
-    func refresh() async throws -> CodexRateLimitSnapshot
+    func start() async throws -> CodexUsageSnapshot
+    func refresh() async throws -> CodexUsageSnapshot
     func stop()
 }
 
@@ -49,6 +49,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let client: CodexRateLimitClientProtocol
     private let now: () -> Date
     private let refreshInterval: TimeInterval
+    private let historyRecorder: UsageHistoryRecording
     private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
     private let loadLaunchAtLoginEnabled: () -> Bool
@@ -69,6 +70,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         client: CodexRateLimitClientProtocol,
         now: @escaping () -> Date = Date.init,
         refreshInterval: TimeInterval = 60,
+        historyRecorder: UsageHistoryRecording = NoOpUsageHistoryRecorder(),
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
         loadPersistedSelection: @escaping () -> MenuBarDisplayWindow = { MenuBarDisplayWindowStore.load() },
         persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) },
@@ -78,6 +80,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         self.client = client
         self.now = now
         self.refreshInterval = refreshInterval
+        self.historyRecorder = historyRecorder
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
         self.loadPersistedSelection = loadPersistedSelection
         self.persistSelection = persistSelection
@@ -87,7 +90,7 @@ final class MenuBarStatusViewModel: ObservableObject {
 
         client.onSnapshot = { [weak self] snapshot in
             Task { @MainActor in
-                self?.apply(snapshot: snapshot)
+                self?.apply(usageSnapshot: snapshot)
             }
         }
     }
@@ -167,7 +170,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
 
         do {
-            let latestSnapshot: CodexRateLimitSnapshot
+            let latestSnapshot: CodexUsageSnapshot
 
             if didBootstrapClient {
                 latestSnapshot = try await client.refresh()
@@ -176,7 +179,7 @@ final class MenuBarStatusViewModel: ObservableObject {
                 didBootstrapClient = true
             }
 
-            apply(snapshot: latestSnapshot)
+            apply(usageSnapshot: latestSnapshot)
         } catch {
             isLoading = false
             isUsingCachedSnapshotAfterFailure = hasSnapshot
@@ -191,15 +194,17 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
     }
 
-    private func apply(snapshot: CodexRateLimitSnapshot) {
-        self.snapshot = snapshot
-        lastUpdatedAt = now()
+    private func apply(usageSnapshot: CodexUsageSnapshot) {
+        let updateDate = now()
+        snapshot = usageSnapshot.displaySnapshot
+        lastUpdatedAt = updateDate
         isUsingCachedSnapshotAfterFailure = false
         hasSnapshot = true
         isLoading = false
         errorMessage = nil
+        historyRecorder.record(snapshot: usageSnapshot, at: updateDate)
         applyPresentation()
-        scheduleResetRefresh(for: snapshot)
+        scheduleResetRefresh(for: usageSnapshot.displaySnapshot)
     }
 
     private func applyPresentation() {

@@ -127,8 +127,8 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
     func testFailedInitialLoadShowsErrorState() async {
         let client = MockCodexRateLimitClient(
-            startResponses: [.failure(MockClientError.sample)],
-            refreshResponses: []
+            startResponses: [Result<CodexRateLimitSnapshot, Error>.failure(MockClientError.sample)],
+            refreshResponses: [Result<CodexRateLimitSnapshot, Error>]()
         )
 
         let viewModel = MenuBarStatusViewModel(
@@ -145,7 +145,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         XCTAssertFalse(viewModel.hasSnapshot)
         XCTAssertEqual(viewModel.errorMessage, "Unable to load Codex usage.")
-        XCTAssertEqual(viewModel.statusItemVisualState, .error)
+        XCTAssertEqual(viewModel.statusItemVisualState, StatusItemVisualState.error)
         XCTAssertEqual(viewModel.menuBarPercentText, "--")
 
         viewModel.stop()
@@ -214,20 +214,51 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         viewModel.stop()
     }
+
+    func testSuccessfulSnapshotsAreRecordedInHistory() async {
+        let currentTime = MutableNow(date: ISO8601DateFormatter().date(from: "2026-04-14T20:00:00Z")!)
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 10, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let historyRecorder = MockUsageHistoryRecorder()
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: { currentTime.date },
+            refreshInterval: 3_600,
+            historyRecorder: historyRecorder,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+        currentTime.date = currentTime.date.addingTimeInterval(60)
+        await viewModel.manualRefresh()
+
+        XCTAssertEqual(historyRecorder.records.count, 2)
+        XCTAssertEqual(historyRecorder.records[0].snapshot.displaySnapshot.secondary?.usedPercent, 20)
+        XCTAssertEqual(historyRecorder.records[1].date, currentTime.date)
+
+        viewModel.stop()
+    }
 }
 
 private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
-    var onSnapshot: ((CodexRateLimitSnapshot) -> Void)?
+    var onSnapshot: ((CodexUsageSnapshot) -> Void)?
 
     private(set) var startCallCount = 0
     private(set) var refreshCallCount = 0
-    private var startResponses: [Result<CodexRateLimitSnapshot, Error>]
-    private var refreshResponses: [Result<CodexRateLimitSnapshot, Error>]
+    private var startResponses: [Result<CodexUsageSnapshot, Error>]
+    private var refreshResponses: [Result<CodexUsageSnapshot, Error>]
 
     convenience init(snapshot: CodexRateLimitSnapshot) {
         self.init(
-            startResponses: [.success(snapshot)],
-            refreshResponses: [.success(snapshot)]
+            startResponses: [.success(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))],
+            refreshResponses: [.success(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))]
         )
     }
 
@@ -235,23 +266,31 @@ private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
         startResponses: [Result<CodexRateLimitSnapshot, Error>],
         refreshResponses: [Result<CodexRateLimitSnapshot, Error>]
     ) {
+        self.startResponses = startResponses.map { $0.map(CodexUsageSnapshot.aggregateOnly(displaySnapshot:)) }
+        self.refreshResponses = refreshResponses.map { $0.map(CodexUsageSnapshot.aggregateOnly(displaySnapshot:)) }
+    }
+
+    init(
+        startResponses: [Result<CodexUsageSnapshot, Error>],
+        refreshResponses: [Result<CodexUsageSnapshot, Error>]
+    ) {
         self.startResponses = startResponses
         self.refreshResponses = refreshResponses
     }
 
-    func start() async throws -> CodexRateLimitSnapshot {
+    func start() async throws -> CodexUsageSnapshot {
         startCallCount += 1
         return try nextResponse(from: &startResponses)
     }
 
-    func refresh() async throws -> CodexRateLimitSnapshot {
+    func refresh() async throws -> CodexUsageSnapshot {
         refreshCallCount += 1
         return try nextResponse(from: &refreshResponses)
     }
 
     func stop() {}
 
-    private func nextResponse(from responses: inout [Result<CodexRateLimitSnapshot, Error>]) throws -> CodexRateLimitSnapshot {
+    private func nextResponse(from responses: inout [Result<CodexUsageSnapshot, Error>]) throws -> CodexUsageSnapshot {
         guard !responses.isEmpty else {
             throw MockClientError.sample
         }
@@ -281,6 +320,14 @@ private final class LaunchAtLoginBox {
 
     init(isEnabled: Bool) {
         self.isEnabled = isEnabled
+    }
+}
+
+private final class MockUsageHistoryRecorder: UsageHistoryRecording {
+    private(set) var records: [(snapshot: CodexUsageSnapshot, date: Date)] = []
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) {
+        records.append((snapshot, date))
     }
 }
 

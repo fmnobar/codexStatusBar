@@ -28,7 +28,7 @@ enum CodexClientError: LocalizedError {
 
 @MainActor
 final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
-    var onSnapshot: ((CodexRateLimitSnapshot) -> Void)?
+    var onSnapshot: ((CodexUsageSnapshot) -> Void)?
 
     private let decoder = JSONDecoder()
     private let urlSession: URLSession
@@ -57,19 +57,19 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         self.readyPollInterval = readyPollInterval
     }
 
-    func start() async throws -> CodexRateLimitSnapshot {
+    func start() async throws -> CodexUsageSnapshot {
         try await ensureConnected()
-        return try await fetchLatestSnapshot()
+        return try await fetchLatestUsageSnapshot()
     }
 
-    func refresh() async throws -> CodexRateLimitSnapshot {
+    func refresh() async throws -> CodexUsageSnapshot {
         do {
             try await ensureConnected()
-            return try await fetchLatestSnapshot()
+            return try await fetchLatestUsageSnapshot()
         } catch {
             resetSocketState()
             try await ensureConnected()
-            return try await fetchLatestSnapshot()
+            return try await fetchLatestUsageSnapshot()
         }
     }
 
@@ -201,19 +201,25 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         isInitialized = true
     }
 
-    private func fetchLatestSnapshot() async throws -> CodexRateLimitSnapshot {
+    private func fetchLatestUsageSnapshot() async throws -> CodexUsageSnapshot {
         do {
-            return try await fetchWhamUsageSnapshot()
+            let whamSnapshot = try await fetchWhamUsageSnapshot()
+
+            if let appServerSnapshot = try? await fetchAppServerUsageSnapshot(displaySnapshotOverride: whamSnapshot) {
+                return appServerSnapshot
+            }
+
+            return CodexUsageSnapshot.aggregateOnly(displaySnapshot: whamSnapshot)
         } catch {
-            return try await fetchAppServerSnapshot()
+            return try await fetchAppServerUsageSnapshot(displaySnapshotOverride: nil)
         }
     }
 
-    private func fetchAppServerSnapshot() async throws -> CodexRateLimitSnapshot {
+    private func fetchAppServerUsageSnapshot(displaySnapshotOverride: CodexRateLimitSnapshot?) async throws -> CodexUsageSnapshot {
         let result = try await sendRequest(method: "account/rateLimits/read", params: nil)
         let data = try makeJSONData(from: result)
         let response = try decoder.decode(AccountRateLimitsResponse.self, from: data)
-        return response.selectedSnapshot()
+        return response.usageSnapshot(displaySnapshotOverride: displaySnapshotOverride)
     }
 
     private func fetchWhamUsageSnapshot() async throws -> CodexRateLimitSnapshot {
@@ -359,17 +365,19 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
             let notificationData = try makeJSONData(from: params)
             let notification = try decoder.decode(AccountRateLimitsUpdatedNotificationPayload.self, from: notificationData)
 
-            if let snapshot = notification.selectedSnapshot() {
+            if notification.isCodexRelated {
                 Task { @MainActor [weak self] in
                     guard let self else {
                         return
                     }
 
                     do {
-                        let latestSnapshot = try await self.fetchLatestSnapshot()
+                        let latestSnapshot = try await self.fetchLatestUsageSnapshot()
                         self.onSnapshot?(latestSnapshot)
                     } catch {
-                        self.onSnapshot?(snapshot)
+                        if let snapshot = notification.selectedSnapshot() {
+                            self.onSnapshot?(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))
+                        }
                     }
                 }
             }

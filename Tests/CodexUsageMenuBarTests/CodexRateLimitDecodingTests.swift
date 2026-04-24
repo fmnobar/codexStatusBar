@@ -64,6 +64,86 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.secondary?.windowDurationMinutes, 10080)
     }
 
+    func testBuildsUsageSnapshotWithAggregateAndModelBuckets() throws {
+        let data = Data(
+            """
+            {
+              "rateLimits": {
+                "limitId": "codex",
+                "limitName": null,
+                "primary": {
+                  "usedPercent": 6,
+                  "windowDurationMins": 300,
+                  "resetsAt": 1775622013
+                },
+                "secondary": {
+                  "usedPercent": 2,
+                  "windowDurationMins": 10080,
+                  "resetsAt": 1776208813
+                },
+                "planType": "pro"
+              },
+              "rateLimitsByLimitId": {
+                "codex": {
+                  "limitId": "codex",
+                  "limitName": null,
+                  "primary": {
+                    "usedPercent": 6,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1775622013
+                  },
+                  "secondary": {
+                    "usedPercent": 2,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1776208813
+                  },
+                  "planType": "pro"
+                },
+                "codex_gpt55": {
+                  "limitId": "codex_gpt55",
+                  "limitName": "GPT-5.5",
+                  "primary": {
+                    "usedPercent": 9,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1775624694
+                  },
+                  "secondary": {
+                    "usedPercent": 4,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1776211494
+                  },
+                  "planType": "pro"
+                },
+                "codex_gpt54": {
+                  "limitId": "codex_gpt54",
+                  "limitName": "GPT-5.4",
+                  "primary": {
+                    "usedPercent": 3,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1775624694
+                  },
+                  "secondary": {
+                    "usedPercent": 1,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1776211494
+                  },
+                  "planType": "pro"
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AccountRateLimitsResponse.self, from: data)
+        let usageSnapshot = response.usageSnapshot()
+
+        XCTAssertEqual(usageSnapshot.displaySnapshot.primary?.usedPercent, 6)
+        XCTAssertEqual(usageSnapshot.buckets.map(\.id), ["codex", "codex_gpt54", "codex_gpt55"])
+        XCTAssertEqual(usageSnapshot.buckets.map(\.name), ["All models", "GPT-5.4", "GPT-5.5"])
+        XCTAssertEqual(usageSnapshot.buckets.map(\.kind), [.aggregate, .model, .model])
+        XCTAssertEqual(usageSnapshot.buckets.first { $0.id == "codex_gpt55" }?.snapshot.secondary?.usedPercent, 4)
+    }
+
     func testDecodesWhamUsagePayloadIntoSnapshot() throws {
         let data = Data(
             """
