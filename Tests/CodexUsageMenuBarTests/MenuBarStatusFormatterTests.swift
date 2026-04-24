@@ -168,3 +168,104 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(freshnessText, "Offline, showing last update from 3m ago")
     }
 }
+
+final class AppVersionInfoTests: XCTestCase {
+    func testVersionInfoReadsBundleValues() {
+        let bundleURL = URL(fileURLWithPath: "/Applications/CodexStatusBar.app")
+        let versionInfo = AppVersionInfo(
+            infoDictionary: [
+                "CFBundleDisplayName": "Codex Status Bar",
+                "CFBundleName": "CodexStatusBar",
+                "CFBundleShortVersionString": "1.2",
+                "CFBundleVersion": "45",
+                "CFBundleIdentifier": "com.example.fallback",
+            ],
+            bundleIdentifier: "com.example.codexstatusbar",
+            bundleURL: bundleURL
+        )
+
+        XCTAssertEqual(versionInfo.appName, "Codex Status Bar")
+        XCTAssertEqual(versionInfo.version, "1.2")
+        XCTAssertEqual(versionInfo.build, "45")
+        XCTAssertEqual(versionInfo.bundleIdentifier, "com.example.codexstatusbar")
+        XCTAssertEqual(versionInfo.bundleURL, bundleURL)
+        XCTAssertEqual(versionInfo.versionBuildText, "Version 1.2 (45)")
+    }
+
+    func testVersionInfoFallsBackToUnknownValues() {
+        let versionInfo = AppVersionInfo(
+            infoDictionary: [
+                "CFBundleDisplayName": " ",
+                "CFBundleName": "",
+            ],
+            bundleIdentifier: nil,
+            bundleURL: nil
+        )
+
+        XCTAssertEqual(versionInfo.appName, "Unknown")
+        XCTAssertEqual(versionInfo.version, "Unknown")
+        XCTAssertEqual(versionInfo.build, "Unknown")
+        XCTAssertEqual(versionInfo.bundleIdentifier, "Unknown")
+        XCTAssertNil(versionInfo.bundleURL)
+        XCTAssertEqual(versionInfo.versionBuildText, "Version Unknown (Unknown)")
+    }
+
+    func testVersionInfoFallsBackToBundleIdentifierFromInfoDictionary() {
+        let versionInfo = AppVersionInfo(
+            infoDictionary: [
+                "CFBundleName": "CodexStatusBar",
+                "CFBundleIdentifier": "com.example.fromInfo",
+            ],
+            bundleIdentifier: nil,
+            bundleURL: nil
+        )
+
+        XCTAssertEqual(versionInfo.bundleIdentifier, "com.example.fromInfo")
+    }
+
+    func testInstallUpdateSettingsViewModelDisplaysLocalUpdateInfo() {
+        let bundleURL = URL(fileURLWithPath: "/Applications/CodexStatusBar.app")
+        let releaseNotes = [
+            AppReleaseNote(id: "history", title: "History", detail: "Charts local usage."),
+        ]
+        let viewModel = InstallUpdateSettingsViewModel(
+            versionInfo: AppVersionInfo(
+                infoDictionary: [
+                    "CFBundleDisplayName": "Codex Status Bar",
+                    "CFBundleShortVersionString": "1.0",
+                    "CFBundleVersion": "1",
+                ],
+                bundleIdentifier: "com.farzad.codexstatusbar",
+                bundleURL: bundleURL
+            ),
+            releaseNotes: releaseNotes
+        )
+
+        XCTAssertEqual(viewModel.appNameText, "Codex Status Bar")
+        XCTAssertEqual(viewModel.versionText, "Version 1.0 (1)")
+        XCTAssertEqual(viewModel.bundleIdentifierText, "com.farzad.codexstatusbar")
+        XCTAssertEqual(viewModel.installedPathText, bundleURL.path)
+        XCTAssertEqual(viewModel.updateCommandText, "git pull\n./install.sh")
+        XCTAssertEqual(viewModel.projectURL.absoluteString, "https://github.com/fmnobar/codexStatusBar")
+        XCTAssertEqual(viewModel.releaseNotes, releaseNotes)
+        XCTAssertTrue(viewModel.canRevealApp)
+    }
+
+    func testInstallUpdateSettingsViewModelHandlesMissingBundleURL() {
+        let viewModel = InstallUpdateSettingsViewModel(
+            versionInfo: AppVersionInfo(
+                infoDictionary: [
+                    "CFBundleName": "CodexStatusBar",
+                    "CFBundleShortVersionString": "1.0",
+                    "CFBundleVersion": "1",
+                ],
+                bundleIdentifier: "com.farzad.codexstatusbar",
+                bundleURL: nil
+            )
+        )
+
+        XCTAssertEqual(viewModel.installedPathText, "Unavailable")
+        XCTAssertFalse(viewModel.canRevealApp)
+        XCTAssertNil(viewModel.appBundleURL)
+    }
+}

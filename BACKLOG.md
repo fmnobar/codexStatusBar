@@ -28,8 +28,12 @@
   - Added raw-sample retention presets while keeping hourly and daily rollups indefinitely.
   - Added SQLite backup export/import with validation and history-change notifications.
 
+- Add install/update visibility
+  - Added local version/build visibility in the popover.
+  - Added an Updates settings tab with app metadata, install/update commands, project link, and release notes.
+
 ## Next Candidates
 
-- Add install/update visibility
-  - Surface version/build info in the popover or History window.
-  - Add a lightweight changelog section for user-facing feature changes.
+- Add live update checking
+  - Check the project release source for newer versions without changing the local-only install flow.
+  - Add offline and update-available states to the Updates settings tab.

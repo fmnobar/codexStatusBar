@@ -43,9 +43,10 @@ git pull
 
 - The app launches or reuses a local `codex app-server`.
 - The menu bar label can show `5h`, `7d`, or `Tightest`.
-- The popover shows `5h`, `7d`, and `Tightest`, along with reset times and freshness state.
+- The popover shows `5h`, `7d`, and `Tightest`, along with reset times, freshness state, and app version.
 - The History window charts locally sampled usage by rolling day, week, month, and year ranges.
 - History can include per-model series when Codex exposes model-specific rate-limit buckets.
-- The popover also includes a `Launch at login` toggle.
-- Right click includes quick actions for refresh, history, opening Codex, and quit.
+- Settings includes local history data management plus install/update visibility and release notes.
+- The popover also includes `Settings` and a `Launch at login` toggle.
+- Right click includes quick actions for refresh, history, settings, opening Codex, and quit.
 - Left click opens the popover. Clicking outside closes it.

@@ -127,8 +127,13 @@ struct DataManagementSettingsView: View {
             .tabItem {
                 Label("Data", systemImage: "externaldrive")
             }
+
+            InstallUpdateSettingsView()
+                .tabItem {
+                    Label("Updates", systemImage: "arrow.triangle.2.circlepath")
+                }
         }
-        .frame(width: 560, height: 360)
+        .frame(width: 580, height: 430)
         .scenePadding()
         .alert("Clear History?", isPresented: $isConfirmingClear) {
             Button("Clear History", role: .destructive) {

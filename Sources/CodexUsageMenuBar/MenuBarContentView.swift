@@ -5,6 +5,7 @@ struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     let onOpenHistory: () -> Void
     let onOpenSettings: () -> Void
+    var appVersionInfo: AppVersionInfo = .current()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -159,6 +160,10 @@ struct MenuBarContentView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(viewModel.isStaleSnapshot ? .orange : .secondary)
                 }
+
+                Text(appVersionInfo.versionBuildText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
             }
 
             Spacer(minLength: 0)
