@@ -12,6 +12,7 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
 
     func showWindow() {
         if let window {
+            enforceMinimumFrame(for: window)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -24,7 +25,7 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "Codex Usage History"
-        window.minSize = NSSize(width: 760, height: 640)
+        window.minSize = NSSize(width: 700, height: 520)
         window.delegate = self
         window.setFrameAutosaveName("CodexUsageHistoryWindow")
         window.contentViewController = NSHostingController(rootView: UsageHistoryView(store: store))
@@ -37,27 +38,43 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
     }
 
     private func enforceMinimumFrame(for window: NSWindow) {
-        var frame = window.frame
-        var didChangeFrame = false
-
-        if frame.width < window.minSize.width {
-            frame.size.width = window.minSize.width
-            didChangeFrame = true
+        guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else {
+            return
         }
 
-        if frame.height < window.minSize.height {
-            let heightDelta = window.minSize.height - frame.height
-            frame.origin.y -= heightDelta
-            frame.size.height = window.minSize.height
-            didChangeFrame = true
-        }
+        let clampedFrame = UsageHistoryWindowFrame.clampedFrame(
+            window.frame,
+            minimumSize: window.minSize,
+            visibleFrame: visibleFrame
+        )
 
-        if didChangeFrame {
-            window.setFrame(frame, display: false)
+        if clampedFrame != window.frame {
+            window.setFrame(clampedFrame, display: false)
         }
     }
 
     func windowWillClose(_ notification: Notification) {
         window = nil
+    }
+}
+
+enum UsageHistoryWindowFrame {
+    static func clampedFrame(
+        _ frame: CGRect,
+        minimumSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGRect {
+        guard visibleFrame.width > 0, visibleFrame.height > 0 else {
+            return frame
+        }
+
+        let width = min(max(frame.width, minimumSize.width), visibleFrame.width)
+        let height = min(max(frame.height, minimumSize.height), visibleFrame.height)
+        let maxX = visibleFrame.maxX - width
+        let maxY = visibleFrame.maxY - height
+        let originX = min(max(frame.origin.x, visibleFrame.minX), maxX)
+        let originY = min(max(frame.origin.y, visibleFrame.minY), maxY)
+
+        return CGRect(x: originX, y: originY, width: width, height: height)
     }
 }

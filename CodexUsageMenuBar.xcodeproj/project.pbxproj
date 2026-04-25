@@ -37,6 +37,7 @@
 		A10000000000000000000021 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
 		A10000000000000000000022 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
 		A10000000000000000000023 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
+		A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* UsageHistoryWindowController.swift */; };
 		A10000000000000000000025 /* UsageHistoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* UsageHistoryStoreTests.swift */; };
 		AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */; };
 		D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
@@ -261,6 +262,7 @@
 				A10000000000000000000021 /* UsageHistoryModels.swift in Sources */,
 				A10000000000000000000022 /* UsageHistoryStore.swift in Sources */,
 				A10000000000000000000023 /* UsageHistoryView.swift in Sources */,
+				A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
 				A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */,
 				A20000000000000000000022 /* CodexUsageDiagnosticsTests.swift in Sources */,

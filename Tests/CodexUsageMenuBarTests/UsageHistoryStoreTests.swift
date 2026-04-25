@@ -1,3 +1,4 @@
+import CoreGraphics
 import SQLite3
 import XCTest
 
@@ -583,6 +584,32 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(viewModel.hasHistory)
         XCTAssertTrue(viewModel.visiblePoints.isEmpty)
         XCTAssertEqual(viewModel.emptyStatePresentation.kind, .hiddenSeries)
+    }
+
+    func testHistoryWindowFrameClampsOffscreenSavedFrame() {
+        let visibleFrame = CGRect(x: 0, y: 0, width: 1000, height: 700)
+        let restoredFrame = CGRect(x: -320, y: -80, width: 880, height: 640)
+
+        let frame = UsageHistoryWindowFrame.clampedFrame(
+            restoredFrame,
+            minimumSize: CGSize(width: 700, height: 520),
+            visibleFrame: visibleFrame
+        )
+
+        XCTAssertEqual(frame, CGRect(x: 0, y: 0, width: 880, height: 640))
+    }
+
+    func testHistoryWindowFrameFitsVisibleScreenBeforeMinimumSize() {
+        let visibleFrame = CGRect(x: 100, y: 50, width: 640, height: 480)
+        let restoredFrame = CGRect(x: 80, y: 20, width: 500, height: 300)
+
+        let frame = UsageHistoryWindowFrame.clampedFrame(
+            restoredFrame,
+            minimumSize: CGSize(width: 700, height: 520),
+            visibleFrame: visibleFrame
+        )
+
+        XCTAssertEqual(frame, visibleFrame)
     }
 
     private func makeStore() throws -> UsageHistoryStore {

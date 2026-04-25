@@ -597,6 +597,62 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 }
 
+private struct UsageHistoryLayoutMetrics {
+    let availableSize: CGSize
+    let hasHistory: Bool
+
+    private var isCompactHeight: Bool {
+        availableSize.height < 580
+    }
+
+    var topPadding: CGFloat {
+        isCompactHeight ? 12 : 16
+    }
+
+    var horizontalPadding: CGFloat {
+        availableSize.width < 760 ? 14 : 20
+    }
+
+    var bottomPadding: CGFloat {
+        isCompactHeight ? 12 : 20
+    }
+
+    var verticalSpacing: CGFloat {
+        isCompactHeight ? 8 : 12
+    }
+
+    var seriesSelectorHeight: CGFloat {
+        guard hasHistory else {
+            return 0
+        }
+
+        if availableSize.height < 540 {
+            return 60
+        }
+
+        if availableSize.height < 620 {
+            return 84
+        }
+
+        return 112
+    }
+
+    var chartHeight: CGFloat {
+        let fixedRowsHeight: CGFloat = 34 + 36 + 22
+        let spacingCount: CGFloat = hasHistory ? 5 : 4
+        let selectorHeight = hasHistory ? seriesSelectorHeight : 0
+        let reservedHeight = topPadding
+            + bottomPadding
+            + fixedRowsHeight
+            + selectorHeight
+            + (verticalSpacing * spacingCount)
+        let availableChartHeight = availableSize.height - reservedHeight
+        let maximumHeight: CGFloat = isCompactHeight ? 240 : 330
+
+        return min(max(availableChartHeight, 160), maximumHeight)
+    }
+}
+
 struct UsageHistoryView: View {
     @StateObject private var viewModel: UsageHistoryViewModel
     @State private var isConfirmingClear = false
@@ -612,7 +668,31 @@ struct UsageHistoryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        GeometryReader { geometry in
+            let layout = UsageHistoryLayoutMetrics(
+                availableSize: geometry.size,
+                hasHistory: viewModel.hasHistory
+            )
+
+            content(layout: layout)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            viewModel.scheduleReload()
+        }
+        .confirmationDialog(
+            "Clear all local usage history?",
+            isPresented: $isConfirmingClear
+        ) {
+            Button("Clear History", role: .destructive) {
+                viewModel.clearHistory()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func content(layout: UsageHistoryLayoutMetrics) -> some View {
+        VStack(alignment: .leading, spacing: layout.verticalSpacing) {
             header
             controls
             Text(viewModel.chartSubtitle)
@@ -627,30 +707,20 @@ struct UsageHistoryView: View {
 
             if viewModel.hasVisiblePoints {
                 chart
+                    .frame(height: layout.chartHeight)
             } else {
                 emptyState
+                    .frame(height: layout.chartHeight)
             }
 
             if viewModel.hasHistory {
-                seriesSelector
+                seriesSelector(maxHeight: layout.seriesSelectorHeight)
             }
         }
-        .padding(.top, 52)
-        .padding(.horizontal, 20)
-        .padding(.bottom, 20)
-        .frame(minWidth: 760, minHeight: 600)
-        .onAppear {
-            viewModel.scheduleReload()
-        }
-        .confirmationDialog(
-            "Clear all local usage history?",
-            isPresented: $isConfirmingClear
-        ) {
-            Button("Clear History", role: .destructive) {
-                viewModel.clearHistory()
-            }
-            Button("Cancel", role: .cancel) {}
-        }
+        .padding(.top, layout.topPadding)
+        .padding(.horizontal, layout.horizontalPadding)
+        .padding(.bottom, layout.bottomPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var header: some View {
@@ -674,43 +744,71 @@ struct UsageHistoryView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 12) {
-            Picker("Range", selection: $viewModel.selectedRange) {
-                ForEach(UsageHistoryRange.allCases) { range in
-                    Text(range.displayTitle).tag(range)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                rangePicker
+                limitPicker
+                metricPicker
+                Spacer()
+                chartPointCount
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    rangePicker
+                    limitPicker
+                    Spacer()
+                    chartPointCount
+                }
+
+                HStack {
+                    metricPicker
+                    Spacer()
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 240)
-
-            Picker("Limit", selection: $viewModel.selectedWindow) {
-                ForEach(UsageLimitWindow.allCases) { window in
-                    Text(window.displayTitle).tag(window)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 104)
-
-            Picker("Metric", selection: $viewModel.selectedMetric) {
-                ForEach(UsageHistoryMetric.allCases) { metric in
-                    Text(metric.displayTitle).tag(metric)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 250)
-
-            Spacer()
-
-            Text(viewModel.chartPointCountSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize()
         }
+    }
+
+    private var rangePicker: some View {
+        Picker("Range", selection: $viewModel.selectedRange) {
+            ForEach(UsageHistoryRange.allCases) { range in
+                Text(range.displayTitle).tag(range)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: 240)
+    }
+
+    private var limitPicker: some View {
+        Picker("Limit", selection: $viewModel.selectedWindow) {
+            ForEach(UsageLimitWindow.allCases) { window in
+                Text(window.displayTitle).tag(window)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: 104)
+    }
+
+    private var metricPicker: some View {
+        Picker("Metric", selection: $viewModel.selectedMetric) {
+            ForEach(UsageHistoryMetric.allCases) { metric in
+                Text(metric.displayTitle).tag(metric)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: 250)
+    }
+
+    private var chartPointCount: some View {
+        Text(viewModel.chartPointCountSummary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize()
     }
 
     private var chart: some View {
@@ -785,33 +883,11 @@ struct UsageHistoryView: View {
                     .allowsHitTesting(false)
             }
         }
-        .frame(minHeight: 280)
     }
 
-    private var seriesSelector: some View {
+    private func seriesSelector(maxHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                TextField("Search models", text: $viewModel.seriesSearchText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
-
-                Button("Select All") {
-                    viewModel.selectAllSeries()
-                }
-                .disabled(viewModel.selectedSeriesCount == viewModel.series.count)
-
-                Button("Clear Models") {
-                    viewModel.clearModelSeries()
-                }
-                .disabled(!viewModel.hasSelectedModels)
-
-                Spacer()
-
-                Text(viewModel.seriesSelectionSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+            seriesActions
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
@@ -835,8 +911,61 @@ struct UsageHistoryView: View {
                     }
                 }
             }
-            .frame(maxHeight: 112)
+            .frame(maxHeight: maxHeight)
         }
+    }
+
+    private var seriesActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                searchModelsField
+                selectAllButton
+                clearModelsButton
+                Spacer()
+                seriesSelectionCount
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    searchModelsField
+                    Spacer()
+                    seriesSelectionCount
+                }
+
+                HStack(spacing: 10) {
+                    selectAllButton
+                    clearModelsButton
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private var searchModelsField: some View {
+        TextField("Search models", text: $viewModel.seriesSearchText)
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 220)
+    }
+
+    private var selectAllButton: some View {
+        Button("Select All") {
+            viewModel.selectAllSeries()
+        }
+        .disabled(viewModel.selectedSeriesCount == viewModel.series.count)
+    }
+
+    private var clearModelsButton: some View {
+        Button("Clear Models") {
+            viewModel.clearModelSeries()
+        }
+        .disabled(!viewModel.hasSelectedModels)
+    }
+
+    private var seriesSelectionCount: some View {
+        Text(viewModel.seriesSelectionSummary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
     }
 
     private var emptyState: some View {
