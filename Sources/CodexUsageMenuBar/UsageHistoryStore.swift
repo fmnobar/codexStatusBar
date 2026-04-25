@@ -351,6 +351,12 @@ final class UsageHistoryStore {
             try? detachBackupDatabase()
         }
 
+        let importedPeakExpression = try tableHasColumn(
+            table: "usage_rollups",
+            column: "peak_used_percent",
+            schema: "imported_usage_history"
+        ) ? "IFNULL(peak_used_percent, used_percent)" : "used_percent"
+
         try transaction {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
@@ -367,10 +373,10 @@ final class UsageHistoryStore {
                 """
                 INSERT INTO usage_rollups (
                     granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
-                    sample_timestamp, used_percent, reset_at
+                    sample_timestamp, used_percent, peak_used_percent, reset_at
                 )
                 SELECT granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
-                    sample_timestamp, used_percent, reset_at
+                    sample_timestamp, used_percent, \(importedPeakExpression), reset_at
                 FROM imported_usage_history.usage_rollups
                 """
             )
@@ -416,14 +422,24 @@ final class UsageHistoryStore {
                 period_start INTEGER NOT NULL,
                 sample_timestamp INTEGER NOT NULL,
                 used_percent INTEGER NOT NULL,
+                peak_used_percent INTEGER,
                 reset_at INTEGER,
                 PRIMARY KEY (granularity, bucket_id, window, period_start)
             )
             """
         )
+        try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
+    }
+
+    private func addColumnIfNeeded(table: String, column: String, definition: String) throws {
+        guard try !tableHasColumn(table: table, column: column) else {
+            return
+        }
+
+        try execute("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
     }
 
     private func record(bucket: CodexUsageBucket, window: UsageLimitWindow, timestamp: Int64) throws {
@@ -501,15 +517,30 @@ final class UsageHistoryStore {
             """
             INSERT INTO usage_rollups (
                 granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
-                sample_timestamp, used_percent, reset_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sample_timestamp, used_percent, peak_used_percent, reset_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(granularity, bucket_id, window, period_start) DO UPDATE SET
                 bucket_name = excluded.bucket_name,
                 bucket_kind = excluded.bucket_kind,
-                sample_timestamp = excluded.sample_timestamp,
-                used_percent = excluded.used_percent,
-                reset_at = excluded.reset_at
-            WHERE excluded.sample_timestamp >= usage_rollups.sample_timestamp
+                sample_timestamp = CASE
+                    WHEN excluded.sample_timestamp >= usage_rollups.sample_timestamp
+                    THEN excluded.sample_timestamp
+                    ELSE usage_rollups.sample_timestamp
+                END,
+                used_percent = CASE
+                    WHEN excluded.sample_timestamp >= usage_rollups.sample_timestamp
+                    THEN excluded.used_percent
+                    ELSE usage_rollups.used_percent
+                END,
+                peak_used_percent = MAX(
+                    IFNULL(usage_rollups.peak_used_percent, usage_rollups.used_percent),
+                    excluded.peak_used_percent
+                ),
+                reset_at = CASE
+                    WHEN excluded.sample_timestamp >= usage_rollups.sample_timestamp
+                    THEN excluded.reset_at
+                    ELSE usage_rollups.reset_at
+                END
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -522,7 +553,8 @@ final class UsageHistoryStore {
         sqlite3_bind_int64(statement, 6, periodStart)
         sqlite3_bind_int64(statement, 7, timestamp)
         sqlite3_bind_int(statement, 8, Int32(usedPercent))
-        bindOptionalInt(resetAt, to: 9, in: statement)
+        sqlite3_bind_int(statement, 9, Int32(usedPercent))
+        bindOptionalInt(resetAt, to: 10, in: statement)
 
         try step(statement)
     }
@@ -530,7 +562,7 @@ final class UsageHistoryStore {
     private func rawPoints(window: UsageLimitWindow, startTimestamp: Int64, endTimestamp: Int64) throws -> [UsageHistoryPoint] {
         let statement = try prepare(
             """
-            SELECT bucket_id, bucket_name, bucket_kind, timestamp, used_percent
+            SELECT bucket_id, bucket_name, bucket_kind, timestamp, used_percent, used_percent
             FROM usage_samples
             WHERE window = ? AND timestamp >= ? AND timestamp <= ?
             ORDER BY timestamp ASC, bucket_kind ASC, bucket_name ASC
@@ -553,7 +585,8 @@ final class UsageHistoryStore {
     ) throws -> [UsageHistoryPoint] {
         let statement = try prepare(
             """
-            SELECT bucket_id, bucket_name, bucket_kind, sample_timestamp, used_percent
+            SELECT bucket_id, bucket_name, bucket_kind, sample_timestamp,
+                used_percent, IFNULL(peak_used_percent, used_percent)
             FROM usage_rollups
             WHERE granularity = ? AND window = ? AND sample_timestamp >= ? AND sample_timestamp <= ?
             ORDER BY sample_timestamp ASC, bucket_kind ASC, bucket_name ASC
@@ -582,6 +615,7 @@ final class UsageHistoryStore {
                 let bucketKind = CodexUsageBucketKind(rawValue: columnText(statement, index: 2)) ?? .model
                 let timestamp = sqlite3_column_int64(statement, 3)
                 let usedPercent = sqlite3_column_double(statement, 4)
+                let peakUsedPercent = sqlite3_column_double(statement, 5)
                 points.append(
                     UsageHistoryPoint(
                         timestamp: Date(timeIntervalSince1970: TimeInterval(timestamp)),
@@ -589,7 +623,8 @@ final class UsageHistoryStore {
                         bucketName: bucketName,
                         bucketKind: bucketKind,
                         window: window,
-                        usedPercent: usedPercent
+                        usedPercent: usedPercent,
+                        peakUsedPercent: peakUsedPercent
                     )
                 )
             case SQLITE_DONE:
@@ -644,6 +679,27 @@ final class UsageHistoryStore {
 
     private func detachBackupDatabase() throws {
         try execute("DETACH DATABASE imported_usage_history")
+    }
+
+    private func tableHasColumn(table: String, column: String, schema: String? = nil) throws -> Bool {
+        let pragmaPrefix = schema.map { "\($0)." } ?? ""
+        let statement = try prepare("PRAGMA \(pragmaPrefix)table_info(\(table))")
+        defer { sqlite3_finalize(statement) }
+
+        while true {
+            let result = sqlite3_step(statement)
+
+            switch result {
+            case SQLITE_ROW:
+                if columnText(statement, index: 1) == column {
+                    return true
+                }
+            case SQLITE_DONE:
+                return false
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
     }
 
     private func periodStart(for timestamp: Int64, granularity: UsageHistoryGranularity) -> Int64 {

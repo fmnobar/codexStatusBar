@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 
 final class UsageHistoryStoreTests: XCTestCase {
@@ -52,6 +53,46 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(weekPoints.map(\.usedPercent), [30, 45])
         XCTAssertEqual(monthPoints.map(\.usedPercent), [30, 45])
         XCTAssertEqual(yearPoints.map(\.usedPercent), [30, 45])
+    }
+
+    func testMigratesExistingRollupsWithoutPeakColumn() throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        try createLegacyHistoryDatabase(at: databaseURL)
+
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+
+        let points = try store.points(range: .week, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [42])
+        XCTAssertEqual(points.map(\.peakUsedPercent), [42])
+    }
+
+    func testRollupsTrackLatestAndPeakUsedPercent() throws {
+        let store = try makeStore()
+
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30)), at: date("2026-04-14T20:05:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T20:40:00Z"))
+
+        let points = try store.points(range: .week, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [10])
+        XCTAssertEqual(points.map(\.peakUsedPercent), [30])
+    }
+
+    func testDuplicateMinuteRollupsPreservePeakWhileUpdatingLatest() throws {
+        let store = try makeStore()
+
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30)), at: date("2026-04-14T20:00:10Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 25)), at: date("2026-04-14T20:00:50Z"))
+
+        let points = try store.points(range: .week, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [25])
+        XCTAssertEqual(points.map(\.peakUsedPercent), [30])
     }
 
     func testRawSamplesCompactButRollupsRemain() throws {
@@ -261,9 +302,18 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.reload()
 
         XCTAssertEqual(viewModel.chartSemantics, .independentSignals)
-        XCTAssertEqual(viewModel.chartSubtitle, "Sampled rate-limit usage signals by bucket")
-        XCTAssertEqual(viewModel.visibleLinePoints.map(\.bucketID), ["codex", "codex_gpt55"])
+        XCTAssertEqual(viewModel.selectedMetric, .capacityLeft)
+        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by hour")
+        XCTAssertEqual(viewModel.chartYAxisTitle, "Left %")
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), ["codex", "codex_gpt55"])
+        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [80, 93])
         XCTAssertTrue(viewModel.visibleContributorPoints.isEmpty)
+
+        viewModel.selectedMetric = .usage
+
+        XCTAssertEqual(viewModel.chartSubtitle, "Peak usage by hour")
+        XCTAssertEqual(viewModel.chartYAxisTitle, "Used %")
+        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [20, 7])
     }
 
     @MainActor
@@ -279,10 +329,122 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.reload()
 
-        XCTAssertEqual(viewModel.chartSubtitle, "Sampled model usage contributors with aggregate reference")
+        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by hour")
         XCTAssertEqual(viewModel.visibleContributorPoints.map(\.bucketID), ["codex_gpt55"])
         XCTAssertEqual(viewModel.visibleAggregateReferencePoints.map(\.bucketID), ["codex"])
-        XCTAssertEqual(viewModel.visibleLinePoints.map(\.bucketID), ["codex"])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), ["codex_gpt55"])
+    }
+
+    @MainActor
+    func testDayChartGroupsRawSamplesIntoHourlyBuckets() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 5)), at: date("2026-04-14T17:05:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 9)), at: date("2026-04-14T17:55:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-14T18:10:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T20:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-04-14T17:00:00Z"),
+            date("2026-04-14T18:00:00Z"),
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [9, 12])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .capacityLeft) }, [91, 88])
+    }
+
+    @MainActor
+    func testWeekChartGroupsHourlyRollupsIntoDailyBucketsAndShowsResetCapacity() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 90)), at: date("2026-04-12T17:05:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 70)), at: date("2026-04-13T18:10:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-16T09:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-17T20:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .week
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-04-12T00:00:00Z"),
+            date("2026-04-13T00:00:00Z"),
+            date("2026-04-16T00:00:00Z"),
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .capacityLeft) }, [10, 30, 90])
+    }
+
+    @MainActor
+    func testMonthAndYearChartBucketGranularity() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 15)), at: date("2026-01-10T12:00:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 50)), at: date("2026-04-14T12:00:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 60)), at: date("2026-04-15T12:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-30T20:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .month
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-04-14T00:00:00Z"),
+            date("2026-04-15T00:00:00Z"),
+        ])
+
+        viewModel.selectedRange = .year
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-01-01T00:00:00Z"),
+            date("2026-04-01T00:00:00Z"),
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [15, 60])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.peakUsedPercent), [15, 60])
+    }
+
+    @MainActor
+    func testUsageMetricUsesPeakUsedPercentWithinBucket() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-14T20:05:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 25)), at: date("2026-04-14T20:45:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.reload()
+        viewModel.selectedMetric = .usage
+
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [25])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.peakUsedPercent), [40])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: viewModel.selectedMetric) }, [40])
+    }
+
+    @MainActor
+    func testChartCSVUsesVisibleBucketedDatasetAndSelectedMetric() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.reload()
+        let csv = viewModel.chartCSV()
+
+        XCTAssertTrue(csv.contains("range,limit,metric,bucket_start,bucket_end,bucket_id,bucket_name,bucket_kind,percent_value"))
+        XCTAssertTrue(csv.contains("day,sevenDay,capacityLeft,2026-04-14T20:00:00Z,2026-04-14T21:00:00Z,codex,All models,aggregate,80.000"))
     }
 
     @MainActor
@@ -299,7 +461,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:07:00Z"), xPosition: 180)
 
-        XCTAssertEqual(viewModel.hoverSelection?.timestamp, date("2026-04-14T20:10:00Z"))
+        XCTAssertEqual(viewModel.hoverSelection?.bucketStart, date("2026-04-14T20:00:00Z"))
         XCTAssertEqual(viewModel.hoverSelection?.points.map(\.bucketID), ["codex", "codex_gpt55"])
         XCTAssertEqual(viewModel.hoverSelection?.xPosition, 180)
     }
@@ -433,6 +595,58 @@ final class UsageHistoryStoreTests: XCTestCase {
             try? FileManager.default.removeItem(at: directoryURL)
         }
         return directoryURL
+    }
+
+    private func createLegacyHistoryDatabase(at databaseURL: URL) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected legacy database to open")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        let legacyTimestamp = Int64(date("2026-04-14T20:30:00Z").timeIntervalSince1970)
+        let legacyPeriodStart = Int64(date("2026-04-14T20:00:00Z").timeIntervalSince1970)
+        let sql = """
+        CREATE TABLE usage_samples (
+            bucket_id TEXT NOT NULL,
+            bucket_name TEXT NOT NULL,
+            bucket_kind TEXT NOT NULL,
+            window TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            used_percent INTEGER NOT NULL,
+            reset_at INTEGER,
+            PRIMARY KEY (bucket_id, window, timestamp)
+        );
+        CREATE TABLE usage_rollups (
+            granularity TEXT NOT NULL,
+            bucket_id TEXT NOT NULL,
+            bucket_name TEXT NOT NULL,
+            bucket_kind TEXT NOT NULL,
+            window TEXT NOT NULL,
+            period_start INTEGER NOT NULL,
+            sample_timestamp INTEGER NOT NULL,
+            used_percent INTEGER NOT NULL,
+            reset_at INTEGER,
+            PRIMARY KEY (granularity, bucket_id, window, period_start)
+        );
+        INSERT INTO usage_rollups (
+            granularity, bucket_id, bucket_name, bucket_kind, window,
+            period_start, sample_timestamp, used_percent, reset_at
+        ) VALUES (
+            'hour', 'codex', 'All models', 'aggregate', 'sevenDay',
+            \(legacyPeriodStart), \(legacyTimestamp), 42, NULL
+        );
+        """
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        if result != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail(message)
+        }
     }
 
     private func makeIsolatedDefaults() -> UserDefaults {

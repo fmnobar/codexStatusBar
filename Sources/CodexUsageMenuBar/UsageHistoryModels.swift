@@ -48,6 +48,28 @@ enum UsageHistoryRange: String, CaseIterable, Identifiable, Equatable {
         }
     }
 
+    var chartBucketComponent: Calendar.Component {
+        switch self {
+        case .day:
+            return .hour
+        case .week, .month:
+            return .day
+        case .year:
+            return .month
+        }
+    }
+
+    var chartBucketTitle: String {
+        switch self {
+        case .day:
+            return "hour"
+        case .week, .month:
+            return "day"
+        case .year:
+            return "month"
+        }
+    }
+
     func startDate(before date: Date, calendar: Calendar = .autoupdatingCurrent) -> Date {
         switch self {
         case .day:
@@ -68,6 +90,40 @@ enum UsageHistoryGranularity: String, Equatable {
     case day
 }
 
+enum UsageHistoryMetric: String, CaseIterable, Identifiable, Equatable {
+    case capacityLeft
+    case usage
+
+    var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .capacityLeft:
+            return "Capacity left"
+        case .usage:
+            return "Usage"
+        }
+    }
+
+    var axisTitle: String {
+        switch self {
+        case .capacityLeft:
+            return "Left %"
+        case .usage:
+            return "Used %"
+        }
+    }
+
+    func subtitle(for range: UsageHistoryRange) -> String {
+        switch self {
+        case .capacityLeft:
+            return "Capacity left by \(range.chartBucketTitle)"
+        case .usage:
+            return "Peak usage by \(range.chartBucketTitle)"
+        }
+    }
+}
+
 struct UsageHistoryPoint: Equatable, Identifiable {
     let id: String
     let timestamp: Date
@@ -76,6 +132,7 @@ struct UsageHistoryPoint: Equatable, Identifiable {
     let bucketKind: CodexUsageBucketKind
     let window: UsageLimitWindow
     let usedPercent: Double
+    let peakUsedPercent: Double
 
     init(
         timestamp: Date,
@@ -83,7 +140,8 @@ struct UsageHistoryPoint: Equatable, Identifiable {
         bucketName: String,
         bucketKind: CodexUsageBucketKind,
         window: UsageLimitWindow,
-        usedPercent: Double
+        usedPercent: Double,
+        peakUsedPercent: Double? = nil
     ) {
         self.timestamp = timestamp
         self.bucketID = bucketID
@@ -91,6 +149,7 @@ struct UsageHistoryPoint: Equatable, Identifiable {
         self.bucketKind = bucketKind
         self.window = window
         self.usedPercent = usedPercent
+        self.peakUsedPercent = peakUsedPercent ?? usedPercent
         id = "\(bucketID)-\(window.rawValue)-\(Int(timestamp.timeIntervalSince1970))"
     }
 }
@@ -99,4 +158,53 @@ struct UsageHistorySeries: Equatable, Identifiable {
     let id: String
     let name: String
     let kind: CodexUsageBucketKind
+}
+
+struct UsageHistoryChartPoint: Equatable, Identifiable {
+    let id: String
+    let bucketStart: Date
+    let bucketEnd: Date
+    let sampleTimestamp: Date
+    let bucketID: String
+    let bucketName: String
+    let bucketKind: CodexUsageBucketKind
+    let window: UsageLimitWindow
+    let latestUsedPercent: Double
+    let peakUsedPercent: Double
+
+    init(
+        bucketStart: Date,
+        bucketEnd: Date,
+        sampleTimestamp: Date,
+        bucketID: String,
+        bucketName: String,
+        bucketKind: CodexUsageBucketKind,
+        window: UsageLimitWindow,
+        latestUsedPercent: Double,
+        peakUsedPercent: Double
+    ) {
+        self.bucketStart = bucketStart
+        self.bucketEnd = bucketEnd
+        self.sampleTimestamp = sampleTimestamp
+        self.bucketID = bucketID
+        self.bucketName = bucketName
+        self.bucketKind = bucketKind
+        self.window = window
+        self.latestUsedPercent = latestUsedPercent
+        self.peakUsedPercent = peakUsedPercent
+        id = "\(bucketID)-\(window.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
+    }
+
+    func value(for metric: UsageHistoryMetric) -> Double {
+        switch metric {
+        case .capacityLeft:
+            return Self.clampedPercent(100 - latestUsedPercent)
+        case .usage:
+            return Self.clampedPercent(peakUsedPercent)
+        }
+    }
+
+    private static func clampedPercent(_ value: Double) -> Double {
+        min(max(value, 0), 100)
+    }
 }

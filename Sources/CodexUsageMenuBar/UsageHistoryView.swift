@@ -6,20 +6,12 @@ import UniformTypeIdentifiers
 enum UsageHistoryChartSemantics: Equatable {
     case independentSignals
     case comparableContributors
-
-    var subtitle: String {
-        switch self {
-        case .independentSignals:
-            return "Sampled rate-limit usage signals by bucket"
-        case .comparableContributors:
-            return "Sampled model usage contributors with aggregate reference"
-        }
-    }
 }
 
 struct UsageHistoryHoverSelection: Equatable {
-    let timestamp: Date
-    let points: [UsageHistoryPoint]
+    let bucketStart: Date
+    let bucketEnd: Date
+    let points: [UsageHistoryChartPoint]
     let xPosition: CGFloat
 }
 
@@ -43,6 +35,9 @@ final class UsageHistoryViewModel: ObservableObject {
     }
     @Published var selectedWindow: UsageLimitWindow = .sevenDay {
         didSet { reload() }
+    }
+    @Published var selectedMetric: UsageHistoryMetric = .capacityLeft {
+        didSet { clearHoverSelection() }
     }
     @Published var seriesSearchText = ""
     @Published private(set) var points: [UsageHistoryPoint] = []
@@ -90,8 +85,22 @@ final class UsageHistoryViewModel: ObservableObject {
         points.filter { selectedSeriesIDs.contains($0.bucketID) }
     }
 
+    var chartPoints: [UsageHistoryChartPoint] {
+        Self.bucketedChartPoints(
+            from: points,
+            range: selectedRange,
+            window: selectedWindow,
+            now: now(),
+            calendar: calendar
+        )
+    }
+
+    var visibleChartPoints: [UsageHistoryChartPoint] {
+        chartPoints.filter { selectedSeriesIDs.contains($0.bucketID) }
+    }
+
     var hasVisiblePoints: Bool {
-        !visiblePoints.isEmpty
+        !visibleChartPoints.isEmpty
     }
 
     var canExport: Bool {
@@ -99,28 +108,44 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     var chartSubtitle: String {
-        chartSemantics.subtitle
+        selectedMetric.subtitle(for: selectedRange)
     }
 
-    var visibleLinePoints: [UsageHistoryPoint] {
+    var chartYAxisTitle: String {
+        selectedMetric.axisTitle
+    }
+
+    var chartValueLabel: String {
+        selectedMetric.displayTitle
+    }
+
+    var chartDomainStart: Date {
+        Self.bucketWindow(for: selectedRange, now: now(), calendar: calendar).start
+    }
+
+    var chartDomainEnd: Date {
+        Self.bucketWindow(for: selectedRange, now: now(), calendar: calendar).end
+    }
+
+    var visibleBarPoints: [UsageHistoryChartPoint] {
         switch chartSemantics {
         case .independentSignals:
-            return visiblePoints
+            return visibleChartPoints
         case .comparableContributors:
-            return visibleAggregateReferencePoints
+            return visibleContributorPoints
         }
     }
 
-    var visibleContributorPoints: [UsageHistoryPoint] {
+    var visibleContributorPoints: [UsageHistoryChartPoint] {
         guard chartSemantics == .comparableContributors else {
             return []
         }
 
-        return visiblePoints.filter { $0.bucketKind == .model }
+        return visibleChartPoints.filter { $0.bucketKind == .model }
     }
 
-    var visibleAggregateReferencePoints: [UsageHistoryPoint] {
-        visiblePoints.filter { $0.bucketKind == .aggregate }
+    var visibleAggregateReferencePoints: [UsageHistoryChartPoint] {
+        visibleChartPoints.filter { $0.bucketKind == .aggregate }
     }
 
     var sortedSeries: [UsageHistorySeries] {
@@ -144,6 +169,10 @@ final class UsageHistoryViewModel: ObservableObject {
 
     var seriesSelectionSummary: String {
         "\(selectedSeriesCount) of \(series.count) selected"
+    }
+
+    var chartPointCountSummary: String {
+        "\(visibleChartPoints.count) bars"
     }
 
     var hasSelectedModels: Bool {
@@ -254,16 +283,16 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func updateHoverSelection(nearestTo timestamp: Date, xPosition: CGFloat) {
-        let candidates = visiblePoints
+        let candidates = visibleChartPoints
         guard !candidates.isEmpty else {
             clearHoverSelection()
             return
         }
 
-        let timestamps = Array(Set(candidates.map(\.timestamp))).sorted()
-        guard let nearestTimestamp = timestamps.min(by: { lhs, rhs in
-            let lhsDistance = abs(lhs.timeIntervalSince(timestamp))
-            let rhsDistance = abs(rhs.timeIntervalSince(timestamp))
+        let bucketStarts = Array(Set(candidates.map(\.bucketStart))).sorted()
+        guard let nearestBucketStart = bucketStarts.min(by: { lhs, rhs in
+            let lhsDistance = abs(chartXPosition(forBucketStart: lhs).timeIntervalSince(timestamp))
+            let rhsDistance = abs(chartXPosition(forBucketStart: rhs).timeIntervalSince(timestamp))
             if lhsDistance == rhsDistance {
                 return lhs < rhs
             }
@@ -274,17 +303,50 @@ final class UsageHistoryViewModel: ObservableObject {
             return
         }
 
+        let selectedPoints = candidates
+            .filter { $0.bucketStart == nearestBucketStart }
+            .sortedByDisplayOrder()
+        guard let bucketEnd = selectedPoints.first?.bucketEnd else {
+            clearHoverSelection()
+            return
+        }
+
         hoverSelection = UsageHistoryHoverSelection(
-            timestamp: nearestTimestamp,
-            points: candidates
-                .filter { $0.timestamp == nearestTimestamp }
-                .sortedByDisplayOrder(),
+            bucketStart: nearestBucketStart,
+            bucketEnd: bucketEnd,
+            points: selectedPoints,
             xPosition: xPosition
         )
     }
 
     func clearHoverSelection() {
         hoverSelection = nil
+    }
+
+    func chartXPosition(for point: UsageHistoryChartPoint) -> Date {
+        guard chartSemantics == .independentSignals else {
+            return chartXPosition(forBucketStart: point.bucketStart)
+        }
+
+        let visibleSeriesIDs = sortedSeries
+            .filter { selectedSeriesIDs.contains($0.id) }
+            .map(\.id)
+        guard
+            let index = visibleSeriesIDs.firstIndex(of: point.bucketID),
+            !visibleSeriesIDs.isEmpty
+        else {
+            return chartXPosition(forBucketStart: point.bucketStart)
+        }
+
+        let bucketEnd = fullBucketEnd(for: point.bucketStart)
+        let bucketDuration = max(bucketEnd.timeIntervalSince(point.bucketStart), 1)
+        let slotDuration = bucketDuration / Double(visibleSeriesIDs.count)
+        let offset = slotDuration * (Double(index) + 0.5)
+        return point.bucketStart.addingTimeInterval(offset)
+    }
+
+    func chartXPosition(for selection: UsageHistoryHoverSelection) -> Date {
+        chartXPosition(forBucketStart: selection.bucketStart)
     }
 
     func clearHistory() {
@@ -300,25 +362,56 @@ final class UsageHistoryViewModel: ObservableObject {
 
     func exportCSV() {
         do {
-            let csv = try store.csv(
-                range: selectedRange,
-                window: selectedWindow,
-                now: now(),
-                calendar: calendar
-            )
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.commaSeparatedText]
             panel.canCreateDirectories = true
-            panel.nameFieldStringValue = "codex-usage-\(selectedRange.rawValue)-\(selectedWindow.rawValue).csv"
+            panel.nameFieldStringValue = "codex-usage-\(selectedRange.rawValue)-\(selectedWindow.rawValue)-\(selectedMetric.rawValue).csv"
 
             guard panel.runModal() == .OK, let url = panel.url else {
                 return
             }
 
-            try Data(csv.utf8).write(to: url, options: .atomic)
+            try Data(chartCSV().utf8).write(to: url, options: .atomic)
             errorMessage = nil
         } catch {
             errorMessage = "History could not be exported."
+        }
+    }
+
+    func chartCSV() -> String {
+        var rows = ["range,limit,metric,bucket_start,bucket_end,bucket_id,bucket_name,bucket_kind,percent_value"]
+        let formatter = ISO8601DateFormatter()
+
+        rows += visibleChartPoints.map { point in
+            [
+                selectedRange.rawValue,
+                selectedWindow.rawValue,
+                selectedMetric.rawValue,
+                formatter.string(from: point.bucketStart),
+                formatter.string(from: point.bucketEnd),
+                Self.csvEscaped(point.bucketID),
+                Self.csvEscaped(point.bucketName),
+                point.bucketKind.rawValue,
+                String(format: "%.3f", point.value(for: selectedMetric)),
+            ].joined(separator: ",")
+        }
+
+        return rows.joined(separator: "\n") + "\n"
+    }
+
+    func formattedBucketInterval(_ selection: UsageHistoryHoverSelection) -> String {
+        switch selectedRange.chartBucketComponent {
+        case .hour:
+            let date = selection.bucketStart.formatted(date: .abbreviated, time: .omitted)
+            let start = selection.bucketStart.formatted(date: .omitted, time: .shortened)
+            let end = selection.bucketEnd.formatted(date: .omitted, time: .shortened)
+            return "\(date), \(start)-\(end)"
+        case .day:
+            return selection.bucketStart.formatted(date: .abbreviated, time: .omitted)
+        case .month:
+            return selection.bucketStart.formatted(.dateTime.month(.abbreviated).year())
+        default:
+            return selection.bucketStart.formatted(date: .abbreviated, time: .shortened)
         }
     }
 
@@ -336,6 +429,136 @@ final class UsageHistoryViewModel: ObservableObject {
             selectedSeriesIDs = currentIDs
             userEditedSeriesSelection = false
         }
+    }
+
+    private static func bucketedChartPoints(
+        from points: [UsageHistoryPoint],
+        range: UsageHistoryRange,
+        window: UsageLimitWindow,
+        now: Date,
+        calendar: Calendar
+    ) -> [UsageHistoryChartPoint] {
+        let bucketComponent = range.chartBucketComponent
+        let bucketWindow = bucketWindow(for: range, now: now, calendar: calendar)
+        var buckets = [String: [UsageHistoryPoint]]()
+
+        for point in points {
+            let bucketStart = bucketStart(for: point.timestamp, component: bucketComponent, calendar: calendar)
+            guard bucketStart >= bucketWindow.start, bucketStart < bucketWindow.end else {
+                continue
+            }
+
+            let key = "\(point.bucketID)-\(Int(bucketStart.timeIntervalSince1970))"
+            buckets[key, default: []].append(point)
+        }
+
+        return buckets.compactMap { _, bucketPoints in
+            guard
+                let latestPoint = bucketPoints.max(by: { lhs, rhs in
+                    if lhs.timestamp == rhs.timestamp {
+                        return lhs.bucketName < rhs.bucketName
+                    }
+
+                    return lhs.timestamp < rhs.timestamp
+                }),
+                let firstPoint = bucketPoints.first
+            else {
+                return nil
+            }
+
+            let bucketStart = bucketStart(for: latestPoint.timestamp, component: bucketComponent, calendar: calendar)
+            let uncappedBucketEnd = calendar.date(byAdding: bucketComponent, value: 1, to: bucketStart) ?? bucketStart
+            let peakUsedPercent = bucketPoints.map(\.peakUsedPercent).max() ?? latestPoint.peakUsedPercent
+
+            return UsageHistoryChartPoint(
+                bucketStart: bucketStart,
+                bucketEnd: min(uncappedBucketEnd, now),
+                sampleTimestamp: latestPoint.timestamp,
+                bucketID: firstPoint.bucketID,
+                bucketName: latestPoint.bucketName,
+                bucketKind: latestPoint.bucketKind,
+                window: window,
+                latestUsedPercent: latestPoint.usedPercent,
+                peakUsedPercent: peakUsedPercent
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.bucketStart != rhs.bucketStart {
+                return lhs.bucketStart < rhs.bucketStart
+            }
+
+            if lhs.bucketKind != rhs.bucketKind {
+                return lhs.bucketKind == .aggregate
+            }
+
+            return lhs.bucketName.localizedStandardCompare(rhs.bucketName) == .orderedAscending
+        }
+    }
+
+    private static func bucketWindow(
+        for range: UsageHistoryRange,
+        now: Date,
+        calendar: Calendar
+    ) -> (start: Date, end: Date) {
+        let component = range.chartBucketComponent
+        let currentBucketStart = bucketStart(for: now, component: component, calendar: calendar)
+
+        let bucketCountBack: Int
+        switch range {
+        case .day:
+            bucketCountBack = 23
+        case .week:
+            bucketCountBack = 6
+        case .month:
+            let monthStart = range.startDate(before: now, calendar: calendar)
+            let start = bucketStart(for: monthStart, component: component, calendar: calendar)
+            let end = calendar.date(byAdding: component, value: 1, to: currentBucketStart) ?? now
+            return (start, end)
+        case .year:
+            bucketCountBack = 11
+        }
+
+        let start = calendar.date(byAdding: component, value: -bucketCountBack, to: currentBucketStart) ?? currentBucketStart
+        let end = calendar.date(byAdding: component, value: 1, to: currentBucketStart) ?? now
+        return (start, end)
+    }
+
+    private static func bucketStart(
+        for date: Date,
+        component: Calendar.Component,
+        calendar: Calendar
+    ) -> Date {
+        let components: Set<Calendar.Component>
+        switch component {
+        case .hour:
+            components = [.year, .month, .day, .hour]
+        case .day:
+            components = [.year, .month, .day]
+        case .month:
+            components = [.year, .month]
+        default:
+            components = [.year, .month, .day]
+        }
+
+        return calendar.date(from: calendar.dateComponents(components, from: date)) ?? date
+    }
+
+    private static func csvEscaped(_ value: String) -> String {
+        if value.contains(",") || value.contains("\"") || value.contains("\n") {
+            return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }
+
+        return value
+    }
+
+    private func chartXPosition(forBucketStart bucketStart: Date) -> Date {
+        let bucketEnd = fullBucketEnd(for: bucketStart)
+        let midpointOffset = max(bucketEnd.timeIntervalSince(bucketStart), 1) / 2
+        return bucketStart.addingTimeInterval(midpointOffset)
+    }
+
+    private func fullBucketEnd(for bucketStart: Date) -> Date {
+        calendar.date(byAdding: selectedRange.chartBucketComponent, value: 1, to: bucketStart) ?? bucketStart
     }
 }
 
@@ -357,6 +580,9 @@ struct UsageHistoryView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             controls
+            Text(viewModel.chartSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
@@ -374,7 +600,9 @@ struct UsageHistoryView: View {
                 seriesSelector
             }
         }
-        .padding(20)
+        .padding(.top, 34)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
         .frame(minWidth: 760, minHeight: 460)
         .onAppear {
             viewModel.reload()
@@ -392,14 +620,6 @@ struct UsageHistoryView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Usage History")
-                    .font(.title2.weight(.semibold))
-                Text(viewModel.chartSubtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
             Spacer()
 
             Button {
@@ -419,29 +639,45 @@ struct UsageHistoryView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 16) {
-            Picker("Range", selection: $viewModel.selectedRange) {
-                ForEach(UsageHistoryRange.allCases) { range in
-                    Text(range.displayTitle).tag(range)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 16) {
+                Picker("Range", selection: $viewModel.selectedRange) {
+                    ForEach(UsageHistoryRange.allCases) { range in
+                        Text(range.displayTitle).tag(range)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 300)
+                .pickerStyle(.segmented)
+                .frame(width: 300)
 
-            Picker("Limit", selection: $viewModel.selectedWindow) {
-                ForEach(UsageLimitWindow.allCases) { window in
-                    Text(window.displayTitle).tag(window)
+                Picker("Limit", selection: $viewModel.selectedWindow) {
+                    ForEach(UsageLimitWindow.allCases) { window in
+                        Text(window.displayTitle).tag(window)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+
+                Spacer()
+
+                Text(viewModel.chartPointCountSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .pickerStyle(.segmented)
-            .frame(width: 120)
 
-            Spacer()
+            HStack(spacing: 16) {
+                Picker("Metric", selection: $viewModel.selectedMetric) {
+                    ForEach(UsageHistoryMetric.allCases) { metric in
+                        Text(metric.displayTitle).tag(metric)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 330)
 
-            Text("\(viewModel.visiblePoints.count) points")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+                Spacer()
+            }
         }
     }
 
@@ -450,35 +686,45 @@ struct UsageHistoryView: View {
             Chart {
                 if viewModel.chartSemantics == .comparableContributors {
                     ForEach(viewModel.visibleContributorPoints) { point in
-                        AreaMark(
-                            x: .value("Time", point.timestamp),
-                            y: .value("Used", point.usedPercent),
+                        BarMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
                             stacking: .standard
                         )
                         .foregroundStyle(by: .value("Bucket", point.bucketName))
-                        .opacity(0.65)
+                        .opacity(0.72)
+                    }
+
+                    ForEach(viewModel.visibleAggregateReferencePoints) { point in
+                        LineMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
+                            series: .value("Bucket", point.bucketName)
+                        )
+                        .foregroundStyle(by: .value("Bucket", point.bucketName))
+                        .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    }
+                } else {
+                    ForEach(viewModel.visibleBarPoints) { point in
+                        BarMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
+                            stacking: .unstacked
+                        )
+                        .foregroundStyle(by: .value("Bucket", point.bucketName))
+                        .opacity(point.bucketKind == .aggregate ? 0.82 : 0.66)
                     }
                 }
 
-                ForEach(viewModel.visibleLinePoints) { point in
-                    LineMark(
-                        x: .value("Time", point.timestamp),
-                        y: .value("Used", point.usedPercent),
-                        series: .value("Bucket", point.bucketName)
-                    )
-                    .foregroundStyle(by: .value("Bucket", point.bucketName))
-                    .lineStyle(StrokeStyle(lineWidth: point.bucketKind == .aggregate ? 2.5 : 1.8))
-                }
-
                 if let hoverSelection = viewModel.hoverSelection {
-                    RuleMark(x: .value("Selected Time", hoverSelection.timestamp))
+                    RuleMark(x: .value("Selected Time", viewModel.chartXPosition(for: hoverSelection)))
                         .foregroundStyle(.secondary.opacity(0.45))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
                     ForEach(hoverSelection.points) { point in
                         PointMark(
-                            x: .value("Time", point.timestamp),
-                            y: .value("Used", point.usedPercent)
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric))
                         )
                         .foregroundStyle(by: .value("Bucket", point.bucketName))
                         .symbolSize(point.bucketKind == .aggregate ? 58 : 42)
@@ -486,7 +732,8 @@ struct UsageHistoryView: View {
                 }
             }
             .chartYScale(domain: 0...100)
-            .chartYAxisLabel("Used %")
+            .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+            .chartYAxisLabel(viewModel.chartYAxisTitle)
             .chartLegend(position: .bottom, alignment: .leading)
             .chartOverlay { proxy in
                 GeometryReader { geometry in
@@ -580,7 +827,7 @@ struct UsageHistoryView: View {
 
     private func hoverCallout(_ selection: UsageHistoryHoverSelection) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(selection.timestamp.formatted(date: .abbreviated, time: .shortened))
+            Text(viewModel.formattedBucketInterval(selection))
                 .font(.caption.weight(.semibold))
 
             ForEach(selection.points) { point in
@@ -588,7 +835,7 @@ struct UsageHistoryView: View {
                     Text(point.bucketName)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text("\(point.usedPercent, specifier: "%.0f")%")
+                    Text("\(point.value(for: viewModel.selectedMetric), specifier: "%.0f")%")
                         .monospacedDigit()
                 }
                 .font(.caption)
@@ -653,6 +900,18 @@ private extension Array where Element == UsageHistorySeries {
 
 private extension Array where Element == UsageHistoryPoint {
     func sortedByDisplayOrder() -> [UsageHistoryPoint] {
+        sorted { lhs, rhs in
+            if lhs.bucketKind != rhs.bucketKind {
+                return lhs.bucketKind == .aggregate
+            }
+
+            return lhs.bucketName.localizedStandardCompare(rhs.bucketName) == .orderedAscending
+        }
+    }
+}
+
+private extension Array where Element == UsageHistoryChartPoint {
+    func sortedByDisplayOrder() -> [UsageHistoryChartPoint] {
         sorted { lhs, rhs in
             if lhs.bucketKind != rhs.bucketKind {
                 return lhs.bucketKind == .aggregate

@@ -44,6 +44,11 @@
   - Added optional Developer ID signing and notarization to local release packaging.
   - Kept unsigned local packaging available while documenting the recommended signed public release path.
 
+- Make History charts easier to read
+  - Replaced sampled line charts with bucketed bar charts for hourly, daily, and monthly views.
+  - Added a default Capacity left metric with a Usage toggle for peak consumption.
+  - Added peak rollups, bucket hover details, and chart-shaped CSV export.
+
 ## Next Candidates
 
 - Add GitHub Actions release automation
