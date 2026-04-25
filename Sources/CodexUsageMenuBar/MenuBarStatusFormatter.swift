@@ -116,6 +116,7 @@ enum MenuBarStatusFormatter {
                 for: menuBarWindow.window,
                 sourceTitle: menuBarWindow.sourceTitle,
                 options: menuBarDisplayOptions,
+                now: now,
                 calendar: calendar
             ),
             fiveHourRow: row(
@@ -148,6 +149,7 @@ enum MenuBarStatusFormatter {
         for window: CodexRateLimitWindow?,
         sourceTitle: String? = nil,
         options: MenuBarDisplayOptions = .defaultValue,
+        now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
         guard let window else {
@@ -166,6 +168,7 @@ enum MenuBarStatusFormatter {
         if let resetText = menuBarResetText(
             for: window.resetsAt,
             options: options,
+            now: now,
             calendar: calendar
         ) {
             components.append(resetText)
@@ -312,6 +315,7 @@ enum MenuBarStatusFormatter {
     private static func menuBarResetText(
         for resetDate: Date?,
         options: MenuBarDisplayOptions,
+        now: Date,
         calendar: Calendar
     ) -> String? {
         guard options.showsResetDate || options.showsResetTime else {
@@ -327,7 +331,13 @@ enum MenuBarStatusFormatter {
             let dateFormatter = DateFormatter()
             dateFormatter.locale = Locale(identifier: "en_US_POSIX")
             dateFormatter.timeZone = calendar.timeZone
-            dateFormatter.dateFormat = "M/d"
+
+            if calendar.isDate(resetDate, inSameDayAs: now), !options.showsResetTime {
+                dateFormatter.dateFormat = "h:mma"
+            } else {
+                dateFormatter.dateFormat = "M/d"
+            }
+
             components.append(dateFormatter.string(from: resetDate))
         }
 

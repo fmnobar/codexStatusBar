@@ -201,6 +201,58 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 39% 4/28 7:58PM")
     }
 
+    func testMenuBarResetDateShowsTimeWhenResetIsLaterToday() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = ISO8601DateFormatter().date(from: "2026-04-28T15:00:00Z")!
+        let resetDate = ISO8601DateFormatter().date(from: "2026-04-28T17:00:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 37, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 65, windowDurationMinutes: 10080, resetsAt: resetDate)
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: now,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: false,
+                showsResetDate: true,
+                showsResetTime: false
+            ),
+            calendar: calendar,
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "35% 5:00PM")
+    }
+
+    func testMenuBarResetDateStillShowsDateBeforeResetDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = ISO8601DateFormatter().date(from: "2026-04-27T15:00:00Z")!
+        let resetDate = ISO8601DateFormatter().date(from: "2026-04-28T17:00:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 37, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 65, windowDurationMinutes: 10080, resetsAt: resetDate)
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: now,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: false,
+                showsResetDate: true,
+                showsResetTime: false
+            ),
+            calendar: calendar,
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "35% 4/28")
+    }
+
     func testMenuBarTextCanHideLimitLabelAndShowResetTimeOnly() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
