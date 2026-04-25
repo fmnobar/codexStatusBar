@@ -169,6 +169,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
     }
 }
 
+@MainActor
 final class AppVersionInfoTests: XCTestCase {
     func testVersionInfoReadsBundleValues() {
         let bundleURL = URL(fileURLWithPath: "/Applications/CodexStatusBar.app")

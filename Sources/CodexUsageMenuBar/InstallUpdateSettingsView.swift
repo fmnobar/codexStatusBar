@@ -82,22 +82,39 @@ enum AppReleaseNotes {
     ]
 }
 
-struct InstallUpdateSettingsViewModel: Equatable {
+@MainActor
+final class InstallUpdateSettingsViewModel: ObservableObject {
     static let defaultProjectURL = URL(string: "https://github.com/fmnobar/codexStatusBar")!
     static let updateCommandText = "git pull\n./install.sh"
+    static let defaultCheckCacheDuration: TimeInterval = 300
 
     let versionInfo: AppVersionInfo
     let releaseNotes: [AppReleaseNote]
     let projectURL: URL
+    @Published private(set) var updateState: AppUpdateCheckState = .idle
+
+    private let updateClient: AppUpdateCheckClientProtocol
+    private let now: () -> Date
+    private let checkCacheDuration: TimeInterval
+    private let publishedDateFormatter: DateFormatter
+    private var lastCheckedAt: Date?
 
     init(
         versionInfo: AppVersionInfo = .current(),
         releaseNotes: [AppReleaseNote] = AppReleaseNotes.current,
-        projectURL: URL = Self.defaultProjectURL
+        projectURL: URL = InstallUpdateSettingsViewModel.defaultProjectURL,
+        updateClient: AppUpdateCheckClientProtocol = GitHubLatestReleaseClient(),
+        now: @escaping () -> Date = Date.init,
+        checkCacheDuration: TimeInterval = InstallUpdateSettingsViewModel.defaultCheckCacheDuration,
+        publishedDateFormatter: DateFormatter = InstallUpdateSettingsViewModel.makePublishedDateFormatter()
     ) {
         self.versionInfo = versionInfo
         self.releaseNotes = releaseNotes
         self.projectURL = projectURL
+        self.updateClient = updateClient
+        self.now = now
+        self.checkCacheDuration = checkCacheDuration
+        self.publishedDateFormatter = publishedDateFormatter
     }
 
     var appNameText: String {
@@ -128,16 +145,125 @@ struct InstallUpdateSettingsViewModel: Equatable {
         Self.updateCommandText
     }
 
+    var updateStatusText: String {
+        switch updateState {
+        case .idle:
+            return "Update status has not been checked yet."
+        case .checking:
+            return "Checking for updates..."
+        case .updateAvailable(let release):
+            return "Update available: \(release.displayVersionText)."
+        case .upToDate:
+            return "\(appNameText) is up to date."
+        case .noPublishedRelease:
+            return "No published release found."
+        case .inconclusive:
+            return "Latest release found, but the version could not be compared."
+        case .failed:
+            return "Could not check for updates."
+        }
+    }
+
+    var latestReleaseText: String {
+        updateState.release?.displayVersionText ?? "--"
+    }
+
+    var publishedDateText: String {
+        guard let publishedAt = updateState.release?.publishedAt else {
+            return "--"
+        }
+
+        return publishedDateFormatter.string(from: publishedAt)
+    }
+
+    var lastCheckedText: String {
+        guard let lastCheckedAt else {
+            return "--"
+        }
+
+        return publishedDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var releasePageURL: URL? {
+        updateState.release?.htmlURL
+    }
+
+    var canOpenReleasePage: Bool {
+        releasePageURL != nil
+    }
+
+    var isCheckingForUpdates: Bool {
+        updateState == .checking
+    }
+
+    func checkForUpdatesIfNeeded() async {
+        guard shouldCheckForUpdates else {
+            return
+        }
+
+        await checkForUpdates(force: false)
+    }
+
+    func checkForUpdates(force: Bool) async {
+        guard updateState != .checking else {
+            return
+        }
+        if !force, !shouldCheckForUpdates {
+            return
+        }
+
+        updateState = .checking
+
+        do {
+            let release = try await updateClient.latestRelease()
+            lastCheckedAt = now()
+            updateState = state(for: release)
+        } catch AppUpdateCheckClientError.noPublishedRelease {
+            lastCheckedAt = now()
+            updateState = .noPublishedRelease
+        } catch {
+            lastCheckedAt = now()
+            updateState = .failed
+        }
+    }
+
     static func current(bundle: Bundle = .main) -> InstallUpdateSettingsViewModel {
         InstallUpdateSettingsViewModel(versionInfo: .current(bundle: bundle))
+    }
+
+    private var shouldCheckForUpdates: Bool {
+        guard let lastCheckedAt else {
+            return true
+        }
+
+        return now().timeIntervalSince(lastCheckedAt) >= checkCacheDuration
+    }
+
+    private func state(for release: AppUpdateRelease) -> AppUpdateCheckState {
+        switch AppVersionComparison.compare(installedVersion: versionInfo.version, latestTag: release.tagName) {
+        case .updateAvailable:
+            return .updateAvailable(release)
+        case .upToDate:
+            return .upToDate(release)
+        case .inconclusive:
+            return .inconclusive(release)
+        }
+    }
+
+    private static func makePublishedDateFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
     }
 }
 
 struct InstallUpdateSettingsView: View {
-    let viewModel: InstallUpdateSettingsViewModel
+    @StateObject private var viewModel: InstallUpdateSettingsViewModel
 
     init(viewModel: InstallUpdateSettingsViewModel = .current()) {
-        self.viewModel = viewModel
+        _viewModel = StateObject(wrappedValue: viewModel)
     }
 
     var body: some View {
@@ -147,6 +273,9 @@ struct InstallUpdateSettingsView: View {
             releaseNotesSection
         }
         .formStyle(.grouped)
+        .task {
+            await viewModel.checkForUpdatesIfNeeded()
+        }
     }
 
     private var appSection: some View {
@@ -167,6 +296,22 @@ struct InstallUpdateSettingsView: View {
     private var updateSection: some View {
         Section("Update") {
             VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(viewModel.updateStatusText)
+                        .foregroundStyle(.secondary)
+
+                    if viewModel.isCheckingForUpdates {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                LabeledContent("Latest Release", value: viewModel.latestReleaseText)
+                LabeledContent("Published", value: viewModel.publishedDateText)
+                LabeledContent("Last Checked", value: viewModel.lastCheckedText)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Text("From the project checkout:")
                     .foregroundStyle(.secondary)
 
@@ -175,14 +320,40 @@ struct InstallUpdateSettingsView: View {
                     .textSelection(.enabled)
             }
 
-            HStack {
-                Button("Reveal App in Finder") {
-                    revealAppInFinder()
-                }
-                .disabled(!viewModel.canRevealApp)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button {
+                        Task {
+                            await viewModel.checkForUpdates(force: true)
+                        }
+                    } label: {
+                        Label("Check Now", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(viewModel.isCheckingForUpdates)
 
-                Button("Open Project Page") {
-                    NSWorkspace.shared.open(viewModel.projectURL)
+                    Button {
+                        revealAppInFinder()
+                    } label: {
+                        Label("Reveal App in Finder", systemImage: "folder")
+                    }
+                    .disabled(!viewModel.canRevealApp)
+                }
+
+                HStack {
+                    Button {
+                        if let releasePageURL = viewModel.releasePageURL {
+                            NSWorkspace.shared.open(releasePageURL)
+                        }
+                    } label: {
+                        Label("Open Release Page", systemImage: "tag")
+                    }
+                    .disabled(!viewModel.canOpenReleasePage)
+
+                    Button {
+                        NSWorkspace.shared.open(viewModel.projectURL)
+                    } label: {
+                        Label("Open Project Page", systemImage: "safari")
+                    }
                 }
             }
         }

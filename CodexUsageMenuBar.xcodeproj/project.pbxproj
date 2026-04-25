@@ -27,6 +27,9 @@
 		A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000001 /* DataManagementSettingsView.swift */; };
 		A40000000000000000000011 /* InstallUpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000001 /* InstallUpdateSettingsView.swift */; };
 		A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000001 /* InstallUpdateSettingsView.swift */; };
+		A50000000000000000000011 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
+		A50000000000000000000021 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
+		A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000002 /* AppUpdateCheckTests.swift */; };
 		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
 		A10000000000000000000012 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
 		A10000000000000000000013 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
@@ -64,6 +67,8 @@
 		A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageDiagnosticsTests.swift; sourceTree = "<group>"; };
 		A30000000000000000000001 /* DataManagementSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementSettingsView.swift; sourceTree = "<group>"; };
 		A40000000000000000000001 /* InstallUpdateSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallUpdateSettingsView.swift; sourceTree = "<group>"; };
+		A50000000000000000000001 /* AppUpdateCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheck.swift; sourceTree = "<group>"; };
+		A50000000000000000000002 /* AppUpdateCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheckTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* UsageHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* UsageHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryView.swift; sourceTree = "<group>"; };
@@ -88,6 +93,7 @@
 		84791DA2B128BBABD53F7412 /* CodexUsageMenuBarTests */ = {
 			isa = PBXGroup;
 			children = (
+				A50000000000000000000002 /* AppUpdateCheckTests.swift */,
 				64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */,
 				A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */,
 				D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */,
@@ -109,6 +115,7 @@
 		99585084361C276AABC79F8A /* CodexUsageMenuBar */ = {
 			isa = PBXGroup;
 			children = (
+				A50000000000000000000001 /* AppUpdateCheck.swift */,
 				403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */,
 				72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */,
 				A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */,
@@ -244,6 +251,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
+				A50000000000000000000021 /* AppUpdateCheck.swift in Sources */,
 				A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */,
 				A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */,
 				A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */,
@@ -254,6 +262,7 @@
 				A10000000000000000000022 /* UsageHistoryStore.swift in Sources */,
 				A10000000000000000000023 /* UsageHistoryView.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
+				A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */,
 				A20000000000000000000022 /* CodexUsageDiagnosticsTests.swift in Sources */,
 				2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */,
 				4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */,
@@ -266,6 +275,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
+				A50000000000000000000011 /* AppUpdateCheck.swift in Sources */,
 				17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */,
 				A20000000000000000000011 /* CodexUsageDiagnosticsModels.swift in Sources */,
 				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,

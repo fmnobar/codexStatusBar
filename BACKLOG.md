@@ -32,8 +32,12 @@
   - Added local version/build visibility in the popover.
   - Added an Updates settings tab with app metadata, install/update commands, project link, and release notes.
 
+- Add live update checking
+  - Added GitHub latest-release checks without changing the manual install flow.
+  - Added up-to-date, update-available, no-release, inconclusive, checking, and failure states to the Updates settings tab.
+
 ## Next Candidates
 
-- Add live update checking
-  - Check the project release source for newer versions without changing the local-only install flow.
-  - Add offline and update-available states to the Updates settings tab.
+- Add release packaging and versioning workflow
+  - Define the version bump and GitHub Release process that powers live update checking.
+  - Add a repeatable archive/zip or DMG packaging path for release assets.
