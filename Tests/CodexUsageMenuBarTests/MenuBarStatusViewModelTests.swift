@@ -48,10 +48,10 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         )
 
         await viewModel.start()
-        XCTAssertEqual(viewModel.menuBarPercentText, "95%")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 95%")
 
         viewModel.selectMenuBarDisplayWindow(.fiveHour)
-        XCTAssertEqual(viewModel.menuBarPercentText, "84%")
+        XCTAssertEqual(viewModel.menuBarPercentText, "5h: 84%")
 
         viewModel.stop()
     }
@@ -85,7 +85,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isStaleSnapshot)
         XCTAssertEqual(viewModel.statusItemVisualState, .stale)
         XCTAssertEqual(viewModel.footerStatusText, "Offline, showing last update from 3m ago")
-        XCTAssertEqual(viewModel.menuBarPercentText, "89%")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 89%")
 
         viewModel.stop()
     }
@@ -172,14 +172,14 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         await viewModel.start()
         XCTAssertEqual(viewModel.selectedMenuBarDisplayWindow, .sevenDay)
-        XCTAssertEqual(viewModel.menuBarPercentText, "89%")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 89%")
 
         persistedSelection.selection = .tightest
         NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
         await Task.yield()
 
         XCTAssertEqual(viewModel.selectedMenuBarDisplayWindow, .tightest)
-        XCTAssertEqual(viewModel.menuBarPercentText, "65%")
+        XCTAssertEqual(viewModel.menuBarPercentText, "5h: 65%")
 
         viewModel.selectMenuBarDisplayWindow(.fiveHour)
         XCTAssertEqual(persistedSelection.selection, .fiveHour)

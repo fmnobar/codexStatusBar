@@ -316,18 +316,21 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.reload()
 
         XCTAssertEqual(viewModel.chartSemantics, .independentSignals)
-        XCTAssertEqual(viewModel.selectedMetric, .usage)
-        XCTAssertEqual(viewModel.chartSubtitle, "Usage consumed by hour")
-        XCTAssertEqual(viewModel.chartYAxisTitle, "Consumed %")
+        XCTAssertEqual(viewModel.selectedRange, .month)
+        XCTAssertEqual(viewModel.selectedMetric, .capacityLeft)
+        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by day")
+        XCTAssertEqual(viewModel.chartYAxisTitle, "Left %")
+        XCTAssertEqual(viewModel.chartYDomain, 0...100)
         XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), ["codex", "codex_gpt55"])
-        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [0, 0])
+        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [80, 93])
         XCTAssertTrue(viewModel.visibleContributorPoints.isEmpty)
 
-        viewModel.selectedMetric = .capacityLeft
+        viewModel.selectedMetric = .usage
 
-        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by hour")
-        XCTAssertEqual(viewModel.chartYAxisTitle, "Left %")
-        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [80, 93])
+        XCTAssertEqual(viewModel.chartSubtitle, "Usage consumed by day")
+        XCTAssertEqual(viewModel.chartYAxisTitle, "Consumed %")
+        XCTAssertEqual(viewModel.chartYDomain, 0...50)
+        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [0, 0])
     }
 
     @MainActor
@@ -341,6 +344,8 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
 
+        viewModel.selectedRange = .day
+        viewModel.selectedMetric = .usage
         viewModel.reload()
 
         XCTAssertEqual(viewModel.chartSubtitle, "Usage consumed by hour")
@@ -361,6 +366,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
 
+        viewModel.selectedRange = .day
         viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
@@ -439,6 +445,8 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
 
+        viewModel.selectedRange = .day
+        viewModel.selectedMetric = .usage
         viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [30, 42])
@@ -457,6 +465,8 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
 
+        viewModel.selectedRange = .day
+        viewModel.selectedMetric = .usage
         viewModel.reload()
         let csv = viewModel.chartCSV()
 
@@ -474,6 +484,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
+        viewModel.selectedRange = .day
         viewModel.reload()
 
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:07:00Z"), xPosition: 180)
@@ -492,6 +503,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
+        viewModel.selectedRange = .day
         viewModel.reload()
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
 
@@ -520,6 +532,30 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.seriesSearchText = "5.5"
         XCTAssertEqual(viewModel.filteredSeries.map(\.id), ["codex", "codex_gpt55"])
+    }
+
+    @MainActor
+    func testSparkModelIsHiddenByDefault() throws {
+        let store = try makeStore()
+        try store.record(
+            snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["codex", "codex_gpt53_spark"])
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
+        XCTAssertEqual(viewModel.visiblePoints.map(\.bucketID), ["codex"])
+
+        viewModel.selectAllSeries()
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex", "codex_gpt53_spark"])
     }
 
     @MainActor
@@ -562,10 +598,42 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-04-16T21:00:00Z") },
             calendar: calendar
         )
+        viewModel.selectedRange = .day
         viewModel.reload()
 
         XCTAssertTrue(viewModel.hasAnyRecordedHistory)
         XCTAssertEqual(viewModel.emptyStatePresentation.kind, .noDataForSelection)
+    }
+
+    @MainActor
+    func testUsageAxisDefaultsToFiftyAndExpandsForHighConsumption() throws {
+        let lowUsageStore = try makeStore()
+        try lowUsageStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T19:55:00Z"))
+        try lowUsageStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 25)), at: date("2026-04-14T20:05:00Z"))
+        let lowUsageViewModel = UsageHistoryViewModel(
+            store: lowUsageStore,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        lowUsageViewModel.selectedRange = .day
+        lowUsageViewModel.selectedMetric = .usage
+        lowUsageViewModel.reload()
+
+        XCTAssertEqual(lowUsageViewModel.chartYDomain, 0...50)
+
+        let highUsageStore = try makeStore()
+        try highUsageStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T19:55:00Z"))
+        try highUsageStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 70)), at: date("2026-04-14T20:05:00Z"))
+        let highUsageViewModel = UsageHistoryViewModel(
+            store: highUsageStore,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        highUsageViewModel.selectedRange = .day
+        highUsageViewModel.selectedMetric = .usage
+        highUsageViewModel.reload()
+
+        XCTAssertEqual(highUsageViewModel.chartYDomain, 0...100)
     }
 
     @MainActor
@@ -728,6 +796,23 @@ final class UsageHistoryStoreTests: XCTestCase {
         return CodexUsageSnapshot(
             displaySnapshot: aggregateSnapshot,
             buckets: buckets
+        )
+    }
+
+    private func sparkUsageSnapshot(aggregateSevenDay: Int, sparkSevenDay: Int) -> CodexUsageSnapshot {
+        let aggregateSnapshot = rateLimitSnapshot(sevenDayUsedPercent: aggregateSevenDay)
+        let sparkSnapshot = rateLimitSnapshot(sevenDayUsedPercent: sparkSevenDay)
+        return CodexUsageSnapshot(
+            displaySnapshot: aggregateSnapshot,
+            buckets: [
+                CodexUsageBucket(id: "codex", name: "All models", kind: .aggregate, snapshot: aggregateSnapshot),
+                CodexUsageBucket(
+                    id: "codex_gpt53_spark",
+                    name: "GPT-5.3-Codex-Spark",
+                    kind: .model,
+                    snapshot: sparkSnapshot
+                ),
+            ]
         )
     }
 

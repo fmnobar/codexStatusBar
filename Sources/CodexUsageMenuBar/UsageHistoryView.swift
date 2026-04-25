@@ -30,13 +30,13 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 
 @MainActor
 final class UsageHistoryViewModel: ObservableObject {
-    @Published var selectedRange: UsageHistoryRange = .day {
+    @Published var selectedRange: UsageHistoryRange = .month {
         didSet { scheduleReload() }
     }
     @Published var selectedWindow: UsageLimitWindow = .sevenDay {
         didSet { scheduleReload() }
     }
-    @Published var selectedMetric: UsageHistoryMetric = .usage {
+    @Published var selectedMetric: UsageHistoryMetric = .capacityLeft {
         didSet { scheduleClearHoverSelection() }
     }
     @Published var seriesSearchText = ""
@@ -117,6 +117,18 @@ final class UsageHistoryViewModel: ObservableObject {
 
     var chartYAxisTitle: String {
         selectedMetric.axisTitle
+    }
+
+    var chartYDomain: ClosedRange<Double> {
+        switch selectedMetric {
+        case .capacityLeft:
+            return 0...100
+        case .usage:
+            let hasHighUsage = visibleChartPoints.contains { point in
+                point.value(for: .usage) > 50
+            }
+            return hasHighUsage ? 0...100 : 0...50
+        }
     }
 
     var chartValueLabel: String {
@@ -450,16 +462,27 @@ final class UsageHistoryViewModel: ObservableObject {
         let currentIDs = Set(series.map(\.id))
 
         if !userEditedSeriesSelection {
-            selectedSeriesIDs = currentIDs
+            selectedSeriesIDs = Self.defaultSelectedSeriesIDs(from: series)
             return
         }
 
         selectedSeriesIDs.formIntersection(currentIDs)
         selectedSeriesIDs.formUnion(series.filter { $0.kind == .aggregate }.map(\.id))
         if selectedSeriesIDs.isEmpty {
-            selectedSeriesIDs = currentIDs
+            selectedSeriesIDs = Self.defaultSelectedSeriesIDs(from: series)
             userEditedSeriesSelection = false
         }
+    }
+
+    private static func defaultSelectedSeriesIDs(from series: [UsageHistorySeries]) -> Set<String> {
+        Set(series.filter { !isHiddenByDefault($0) }.map(\.id))
+    }
+
+    private static func isHiddenByDefault(_ series: UsageHistorySeries) -> Bool {
+        series.kind == .model && series.name.compare(
+            "GPT-5.3-Codex-Spark",
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ) == .orderedSame
     }
 
     private static func bucketedChartPoints(
@@ -638,8 +661,8 @@ private struct UsageHistoryLayoutMetrics {
     }
 
     var chartHeight: CGFloat {
-        let fixedRowsHeight: CGFloat = 34 + 36 + 22
-        let spacingCount: CGFloat = hasHistory ? 5 : 4
+        let fixedRowsHeight: CGFloat = 36 + 22
+        let spacingCount: CGFloat = hasHistory ? 3 : 2
         let selectorHeight = hasHistory ? seriesSelectorHeight : 0
         let reservedHeight = topPadding
             + bottomPadding
@@ -693,7 +716,6 @@ struct UsageHistoryView: View {
 
     private func content(layout: UsageHistoryLayoutMetrics) -> some View {
         VStack(alignment: .leading, spacing: layout.verticalSpacing) {
-            header
             controls
             Text(viewModel.chartSubtitle)
                 .font(.subheadline)
@@ -723,26 +745,6 @@ struct UsageHistoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Spacer()
-
-            Button {
-                viewModel.exportCSV()
-            } label: {
-                Label("Export CSV", systemImage: "square.and.arrow.up")
-            }
-            .disabled(!viewModel.canExport)
-
-            Button(role: .destructive) {
-                isConfirmingClear = true
-            } label: {
-                Label("Clear History", systemImage: "trash")
-            }
-            .disabled(!viewModel.hasHistory)
-        }
-    }
-
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
@@ -751,20 +753,15 @@ struct UsageHistoryView: View {
                 metricPicker
                 Spacer()
                 chartPointCount
+                historyActions
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    rangePicker
-                    limitPicker
-                    Spacer()
-                    chartPointCount
-                }
-
-                HStack {
-                    metricPicker
-                    Spacer()
-                }
+            HStack(spacing: 10) {
+                rangePicker
+                limitPicker
+                metricPicker
+                Spacer(minLength: 0)
+                historyActions
             }
         }
     }
@@ -777,7 +774,7 @@ struct UsageHistoryView: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
-        .frame(width: 240)
+        .frame(width: 218)
     }
 
     private var limitPicker: some View {
@@ -788,7 +785,7 @@ struct UsageHistoryView: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
-        .frame(width: 104)
+        .frame(width: 86)
     }
 
     private var metricPicker: some View {
@@ -799,7 +796,7 @@ struct UsageHistoryView: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
-        .frame(width: 250)
+        .frame(width: 216)
     }
 
     private var chartPointCount: some View {
@@ -809,6 +806,32 @@ struct UsageHistoryView: View {
             .monospacedDigit()
             .lineLimit(1)
             .fixedSize()
+    }
+
+    private var historyActions: some View {
+        HStack(spacing: 6) {
+            Button {
+                viewModel.exportCSV()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!viewModel.canExport)
+            .help("Export CSV")
+            .accessibilityLabel("Export CSV")
+
+            Button(role: .destructive) {
+                isConfirmingClear = true
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!viewModel.hasHistory)
+            .help("Clear History")
+            .accessibilityLabel("Clear History")
+        }
     }
 
     private var chart: some View {
@@ -861,7 +884,7 @@ struct UsageHistoryView: View {
                     }
                 }
             }
-            .chartYScale(domain: 0...100)
+            .chartYScale(domain: viewModel.chartYDomain)
             .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
             .chartYAxisLabel(viewModel.chartYAxisTitle)
             .chartLegend(position: .bottom, alignment: .leading)

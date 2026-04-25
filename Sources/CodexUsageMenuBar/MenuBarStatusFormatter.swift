@@ -25,7 +25,7 @@ enum MenuBarDisplayWindowStore {
             let rawValue = defaults.string(forKey: defaultsKey),
             let selection = MenuBarDisplayWindow(rawValue: rawValue)
         else {
-            return .sevenDay
+            return .tightest
         }
 
         return selection
@@ -65,17 +65,16 @@ enum MenuBarStatusFormatter {
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
-        let menuBarWindow: CodexRateLimitWindow? = switch selectedMenuBarDisplayWindow {
-        case .fiveHour:
-            snapshot?.primary
-        case .sevenDay:
-            snapshot?.secondary
-        case .tightest:
-            tightestWindow(primary: snapshot?.primary, secondary: snapshot?.secondary)
-        }
+        let menuBarWindow = resolvedMenuBarWindow(
+            snapshot: snapshot,
+            selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow
+        )
 
         return MenuBarStatusPresentation(
-            menuBarPercentText: menuBarPercentText(for: menuBarWindow),
+            menuBarPercentText: menuBarPercentText(
+                for: menuBarWindow.window,
+                sourceTitle: menuBarWindow.sourceTitle
+            ),
             fiveHourRow: row(
                 title: "5h limit",
                 window: snapshot?.primary,
@@ -102,12 +101,17 @@ enum MenuBarStatusFormatter {
         )
     }
 
-    static func menuBarPercentText(for window: CodexRateLimitWindow?) -> String {
+    static func menuBarPercentText(for window: CodexRateLimitWindow?, sourceTitle: String? = nil) -> String {
         guard let window else {
             return "--"
         }
 
-        return "\(window.remainingPercent)%"
+        let percentText = "\(window.remainingPercent)%"
+        guard let sourceTitle else {
+            return percentText
+        }
+
+        return "\(sourceTitle): \(percentText)"
     }
 
     static func row(
@@ -135,17 +139,7 @@ enum MenuBarStatusFormatter {
         secondary: CodexRateLimitWindow?,
         isSelected: Bool
     ) -> MenuBarLimitRowPresentation {
-        let resolvedWindow = tightestWindow(primary: primary, secondary: secondary)
-        let sourceTitle: String? = switch (primary, secondary) {
-        case (.none, .none):
-            nil
-        case (.some(let primary), .none):
-            primary == resolvedWindow ? "5h" : nil
-        case (.none, .some(let secondary)):
-            secondary == resolvedWindow ? "7d" : nil
-        case (.some(let primary), .some(let secondary)):
-            primary.remainingPercent <= secondary.remainingPercent ? "5h" : "7d"
-        }
+        let sourceTitle = tightestWindowWithSource(primary: primary, secondary: secondary)?.sourceTitle
 
         return MenuBarLimitRowPresentation(
             title: "Tightest: \(sourceTitle ?? "--")",
@@ -185,15 +179,41 @@ enum MenuBarStatusFormatter {
     }
 
     static func tightestWindow(primary: CodexRateLimitWindow?, secondary: CodexRateLimitWindow?) -> CodexRateLimitWindow? {
+        tightestWindowWithSource(primary: primary, secondary: secondary)?.window
+    }
+
+    private static func resolvedMenuBarWindow(
+        snapshot: CodexRateLimitSnapshot?,
+        selectedMenuBarDisplayWindow: MenuBarDisplayWindow
+    ) -> (sourceTitle: String?, window: CodexRateLimitWindow?) {
+        switch selectedMenuBarDisplayWindow {
+        case .fiveHour:
+            return ("5h", snapshot?.primary)
+        case .sevenDay:
+            return ("7d", snapshot?.secondary)
+        case .tightest:
+            let tightest = tightestWindowWithSource(primary: snapshot?.primary, secondary: snapshot?.secondary)
+            return (tightest?.sourceTitle, tightest?.window)
+        }
+    }
+
+    private static func tightestWindowWithSource(
+        primary: CodexRateLimitWindow?,
+        secondary: CodexRateLimitWindow?
+    ) -> (sourceTitle: String, window: CodexRateLimitWindow)? {
         switch (primary, secondary) {
         case (.none, .none):
             return nil
         case (.some(let primary), .none):
-            return primary
+            return ("5h", primary)
         case (.none, .some(let secondary)):
-            return secondary
+            return ("7d", secondary)
         case (.some(let primary), .some(let secondary)):
-            return primary.remainingPercent <= secondary.remainingPercent ? primary : secondary
+            if primary.remainingPercent <= secondary.remainingPercent {
+                return ("5h", primary)
+            }
+
+            return ("7d", secondary)
         }
     }
 

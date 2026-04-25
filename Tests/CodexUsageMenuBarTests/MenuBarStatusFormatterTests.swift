@@ -1,6 +1,17 @@
 import XCTest
 
 final class MenuBarStatusFormatterTests: XCTestCase {
+    func testMenuBarDisplayWindowStoreDefaultsToTightest() {
+        let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        XCTAssertEqual(MenuBarDisplayWindowStore.load(from: defaults), .tightest)
+    }
+
     func testRemainingPercentIsClamped() {
         XCTAssertEqual(CodexRateLimitWindow.clampedRemainingPercent(from: 2), 98)
         XCTAssertEqual(CodexRateLimitWindow.clampedRemainingPercent(from: -5), 100)
@@ -75,7 +86,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(presentation.menuBarPercentText, "98%")
+        XCTAssertEqual(presentation.menuBarPercentText, "7d: 98%")
         XCTAssertEqual(presentation.fiveHourRow.remainingPercentText, "--% left")
         XCTAssertEqual(presentation.sevenDayRow.remainingPercentText, "98% left")
     }
@@ -94,7 +105,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(presentation.menuBarPercentText, "19%")
+        XCTAssertEqual(presentation.menuBarPercentText, "7d: 19%")
         XCTAssertEqual(presentation.tightestRow.title, "Tightest: 7d")
         XCTAssertEqual(presentation.tightestRow.remainingPercentText, "")
         XCTAssertEqual(presentation.tightestRow.detailText, "")
@@ -115,7 +126,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(presentation.menuBarPercentText, "84%")
+        XCTAssertEqual(presentation.menuBarPercentText, "5h: 84%")
     }
 
     func testTightestSelectionUsesLowerRemainingPercent() {
@@ -132,7 +143,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(presentation.menuBarPercentText, "84%")
+        XCTAssertEqual(presentation.menuBarPercentText, "5h: 84%")
     }
 
     func testCrossDayResetFormattingOmitsAt() {

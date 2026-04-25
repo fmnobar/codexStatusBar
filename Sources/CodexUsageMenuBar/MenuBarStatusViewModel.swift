@@ -27,14 +27,14 @@ final class MenuBarStatusViewModel: ObservableObject {
         remainingPercentText: "--% left",
         detailText: "Resets --",
         displayWindow: .sevenDay,
-        isSelected: true
+        isSelected: false
     )
     @Published private(set) var tightestRow = MenuBarLimitRowPresentation(
         title: "Tightest: --",
         remainingPercentText: "",
         detailText: "",
         displayWindow: .tightest,
-        isSelected: false
+        isSelected: true
     )
     @Published private(set) var selectedMenuBarDisplayWindow: MenuBarDisplayWindow
     @Published private(set) var statusItemVisualState: StatusItemVisualState = .normal
