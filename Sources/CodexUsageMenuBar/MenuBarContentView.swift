@@ -76,11 +76,11 @@ struct MenuBarContentView: View {
         Button {
             viewModel.selectMenuBarDisplayWindow(row.displayWindow)
         } label: {
-            HStack(alignment: .top, spacing: 7) {
-                checkboxImage(isSelected: row.isSelected)
+            HStack(alignment: .top, spacing: 6) {
+                checkboxImage(isSelected: row.isSelected, size: 12)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text(row.title.replacingOccurrences(of: " limit", with: ""))
                             .font(.system(size: 12))
                             .lineLimit(1)
@@ -96,7 +96,7 @@ struct MenuBarContentView: View {
 
                     if !row.detailText.isEmpty {
                         Text(row.detailText)
-                            .font(.system(size: 10.5))
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.82)
@@ -106,9 +106,10 @@ struct MenuBarContentView: View {
                 Spacer(minLength: 0)
             }
             .foregroundStyle(.primary)
-            .padding(8)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 62, alignment: .topLeading)
+            .frame(height: 44, alignment: .topLeading)
             .background {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(row.isSelected ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
@@ -308,9 +309,13 @@ struct MenuBarContentView: View {
     }
 
     private func checkboxImage(isSelected: Bool) -> some View {
+        checkboxImage(isSelected: isSelected, size: 14)
+    }
+
+    private func checkboxImage(isSelected: Bool, size: CGFloat) -> some View {
         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-            .font(.system(size: 14))
-            .frame(width: 14, alignment: .top)
+            .font(.system(size: size))
+            .frame(width: size, alignment: .top)
     }
 }
 
