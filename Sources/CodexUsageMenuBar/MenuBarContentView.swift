@@ -106,9 +106,9 @@ struct MenuBarContentView: View {
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 44, alignment: .topLeading)
+            .frame(height: 34, alignment: .topLeading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
