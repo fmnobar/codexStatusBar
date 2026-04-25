@@ -181,7 +181,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             return
         }
 
-        popover.contentSize = clampedSize
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            popover.contentSize = clampedSize
+        }
     }
 
     private func maxPopoverHeight() -> CGFloat {

@@ -43,7 +43,6 @@ struct MenuBarContentView: View {
         .frame(width: popoverWidth, alignment: .topLeading)
         .background(PopoverMaterialBackground())
         .background(contentSizeReader)
-        .animation(.snappy(duration: 0.18), value: expandedSection)
     }
 
     private var popoverWidth: CGFloat {
@@ -125,7 +124,6 @@ struct MenuBarContentView: View {
 
             if expandedSection == .history {
                 CompactUsageHistoryPanel(store: historyStore)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -136,7 +134,6 @@ struct MenuBarContentView: View {
 
             if expandedSection == .settings {
                 inlineSettings
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
