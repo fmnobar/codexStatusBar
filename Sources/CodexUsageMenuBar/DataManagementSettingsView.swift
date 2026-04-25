@@ -133,7 +133,7 @@ struct DataManagementSettingsView: View {
                     Label("Updates", systemImage: "arrow.triangle.2.circlepath")
                 }
         }
-        .frame(width: 580, height: 430)
+        .frame(width: 580, height: 540)
         .scenePadding()
         .alert("Clear History?", isPresented: $isConfirmingClear) {
             Button("Clear History", role: .destructive) {

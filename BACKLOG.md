@@ -54,8 +54,13 @@
   - Kept local release scripts as the source of truth while adding CI keychain and notary support.
   - Documented required repository secrets and protected-branch behavior.
 
+- Add in-app update download/install flow
+  - Added release asset decoding for signed GitHub Release zip downloads.
+  - Added download staging, checksum/trust verification, and guided no-admin app replacement.
+  - Added Settings UI states for downloading, verifying, ready-to-install, install fallback, and errors.
+
 ## Next Candidates
 
-- Add in-app update download/install flow
-  - Let the app download the latest GitHub Release asset and guide the user through replacing the installed app.
-  - Keep user confirmation and macOS trust prompts explicit.
+- Add lightweight update notifications
+  - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.
+  - Keep downloads and installs user-initiated.

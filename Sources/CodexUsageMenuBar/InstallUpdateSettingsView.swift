@@ -65,6 +65,11 @@ struct AppReleaseNote: Equatable, Identifiable {
 enum AppReleaseNotes {
     static let current: [AppReleaseNote] = [
         AppReleaseNote(
+            id: "in-app-updates",
+            title: "Guided in-app updates",
+            detail: "Download, verify, and install signed GitHub Release updates from the Updates settings tab."
+        ),
+        AppReleaseNote(
             id: "data-management",
             title: "Data management settings",
             detail: "View the local history database, choose raw retention, export backups, import backups, and clear local history."
@@ -92,8 +97,15 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
     let releaseNotes: [AppReleaseNote]
     let projectURL: URL
     @Published private(set) var updateState: AppUpdateCheckState = .idle
+    @Published private(set) var installState: AppUpdateInstallState = .idle
 
     private let updateClient: AppUpdateCheckClientProtocol
+    private let downloadClient: AppUpdateDownloadClientProtocol
+    private let packageVerifier: AppUpdatePackageVerifierProtocol
+    private let installer: AppUpdateInstallerProtocol
+    private let stagingDirectoryProvider: @MainActor (AppUpdateRelease) throws -> URL
+    private let processIdentifier: () -> Int32
+    private let terminateApplication: () -> Void
     private let now: () -> Date
     private let checkCacheDuration: TimeInterval
     private let publishedDateFormatter: DateFormatter
@@ -104,6 +116,14 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         releaseNotes: [AppReleaseNote] = AppReleaseNotes.current,
         projectURL: URL = InstallUpdateSettingsViewModel.defaultProjectURL,
         updateClient: AppUpdateCheckClientProtocol = GitHubLatestReleaseClient(),
+        downloadClient: AppUpdateDownloadClientProtocol = AppUpdateDownloadClient(),
+        packageVerifier: AppUpdatePackageVerifierProtocol = AppUpdatePackageVerifier(),
+        installer: AppUpdateInstallerProtocol = AppUpdateInstaller(),
+        stagingDirectoryProvider: @escaping @MainActor (AppUpdateRelease) throws -> URL = { release in
+            try InstallUpdateSettingsViewModel.defaultStagingDirectory(for: release)
+        },
+        processIdentifier: @escaping () -> Int32 = { ProcessInfo.processInfo.processIdentifier },
+        terminateApplication: @escaping () -> Void = { NSApp.terminate(nil) },
         now: @escaping () -> Date = Date.init,
         checkCacheDuration: TimeInterval = InstallUpdateSettingsViewModel.defaultCheckCacheDuration,
         publishedDateFormatter: DateFormatter = InstallUpdateSettingsViewModel.makePublishedDateFormatter()
@@ -112,6 +132,12 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         self.releaseNotes = releaseNotes
         self.projectURL = projectURL
         self.updateClient = updateClient
+        self.downloadClient = downloadClient
+        self.packageVerifier = packageVerifier
+        self.installer = installer
+        self.stagingDirectoryProvider = stagingDirectoryProvider
+        self.processIdentifier = processIdentifier
+        self.terminateApplication = terminateApplication
         self.now = now
         self.checkCacheDuration = checkCacheDuration
         self.publishedDateFormatter = publishedDateFormatter
@@ -196,6 +222,78 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         updateState == .checking
     }
 
+    var installStatusText: String? {
+        switch installState {
+        case .idle:
+            if isUpdateAvailable, downloadableUpdateAsset == nil {
+                return "This release does not include a downloadable Codex Status Bar zip."
+            }
+            return nil
+        case .downloading(let progress):
+            if let progress {
+                return "Downloading update \(Int((progress * 100).rounded()))%..."
+            }
+            return "Downloading update..."
+        case .verifying:
+            return "Verifying downloaded update..."
+        case .ready:
+            return "Update downloaded and verified."
+        case .installing:
+            return "Installing update..."
+        case .unavailable(let message, _), .failed(let message):
+            return message
+        }
+    }
+
+    var downloadProgressValue: Double? {
+        guard case .downloading(let progress) = installState else {
+            return nil
+        }
+
+        return progress
+    }
+
+    var isWorkingOnUpdateInstall: Bool {
+        installState.isBusy
+    }
+
+    var canCheckForUpdates: Bool {
+        !isCheckingForUpdates && !isWorkingOnUpdateInstall
+    }
+
+    var canDownloadUpdate: Bool {
+        isUpdateAvailable && downloadableUpdateAsset != nil && !isWorkingOnUpdateInstall
+    }
+
+    var shouldShowDownloadUpdateButton: Bool {
+        canDownloadUpdate && !installState.hasPreparedPackage
+    }
+
+    var canInstallPreparedUpdate: Bool {
+        guard case .ready = installState else {
+            return false
+        }
+
+        return !isWorkingOnUpdateInstall
+    }
+
+    var canRevealDownloadedUpdate: Bool {
+        installState.preparedPackage != nil
+    }
+
+    var downloadedUpdateURL: URL? {
+        installState.preparedPackage?.appURL
+    }
+
+    var isShowingInstallProgress: Bool {
+        switch installState {
+        case .downloading, .verifying, .installing:
+            return true
+        case .idle, .ready, .unavailable, .failed:
+            return false
+        }
+    }
+
     func checkForUpdatesIfNeeded() async {
         guard shouldCheckForUpdates else {
             return
@@ -205,7 +303,7 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
     }
 
     func checkForUpdates(force: Bool) async {
-        guard updateState != .checking else {
+        guard updateState != .checking, !isWorkingOnUpdateInstall else {
             return
         }
         if !force, !shouldCheckForUpdates {
@@ -213,6 +311,7 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         }
 
         updateState = .checking
+        installState = .idle
 
         do {
             let release = try await updateClient.latestRelease()
@@ -224,6 +323,79 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         } catch {
             lastCheckedAt = now()
             updateState = .failed
+        }
+    }
+
+    func downloadUpdate() async {
+        guard
+            case .updateAvailable(let release) = updateState,
+            !isWorkingOnUpdateInstall
+        else {
+            return
+        }
+
+        guard let asset = release.matchingCodexStatusBarZipAsset else {
+            installState = .unavailable("This release does not include a downloadable Codex Status Bar zip.", nil)
+            return
+        }
+
+        do {
+            let stagingDirectory = try stagingDirectoryProvider(release)
+            try? FileManager.default.removeItem(at: stagingDirectory)
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            let zipURL = stagingDirectory.appendingPathComponent(asset.name)
+
+            installState = .downloading(progress: nil)
+            let downloadedZipURL = try await downloadClient.download(asset: asset, to: zipURL) { [weak self] progress in
+                self?.installState = .downloading(progress: progress)
+            }
+
+            installState = .verifying
+            let package = try await packageVerifier.verify(
+                zipURL: downloadedZipURL,
+                release: release,
+                asset: asset,
+                installedBundleIdentifier: versionInfo.bundleIdentifier
+            )
+
+            guard let appBundleURL else {
+                installState = .unavailable("Installed app location is unavailable. Reveal the verified download and replace it manually.", package)
+                return
+            }
+
+            if installer.canInstall(to: appBundleURL) {
+                installState = .ready(package)
+            } else {
+                installState = .unavailable("The installed app location is not writable. Reveal the verified download and replace it manually.", package)
+            }
+        } catch is AppUpdatePackageVerificationError {
+            installState = .failed("Downloaded update could not be verified.")
+        } catch {
+            installState = .failed("Update could not be downloaded.")
+        }
+    }
+
+    func installPreparedUpdate() async {
+        guard
+            case .ready(let package) = installState,
+            let appBundleURL
+        else {
+            return
+        }
+
+        installState = .installing(package)
+
+        do {
+            _ = try await installer.install(
+                package: package,
+                targetAppURL: appBundleURL,
+                currentProcessIdentifier: processIdentifier()
+            )
+            terminateApplication()
+        } catch AppUpdateInstallerError.targetNotWritable {
+            installState = .unavailable("The installed app location is not writable. Reveal the verified download and replace it manually.", package)
+        } catch {
+            installState = .failed("Update could not be installed.")
         }
     }
 
@@ -250,6 +422,36 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         }
     }
 
+    private var isUpdateAvailable: Bool {
+        if case .updateAvailable = updateState {
+            return true
+        }
+
+        return false
+    }
+
+    private var downloadableUpdateAsset: AppUpdateReleaseAsset? {
+        updateState.release?.matchingCodexStatusBarZipAsset
+    }
+
+    private static func defaultStagingDirectory(for release: AppUpdateRelease) throws -> URL {
+        guard let applicationSupportURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        let safeTag = release.tagName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+
+        return applicationSupportURL
+            .appendingPathComponent("CodexStatusBar", isDirectory: true)
+            .appendingPathComponent("Updates", isDirectory: true)
+            .appendingPathComponent(safeTag, isDirectory: true)
+    }
+
     private static func makePublishedDateFormatter() -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -259,8 +461,43 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
     }
 }
 
+enum AppUpdateInstallState: Equatable {
+    case idle
+    case downloading(progress: Double?)
+    case verifying
+    case ready(AppUpdatePackage)
+    case installing(AppUpdatePackage)
+    case unavailable(String, AppUpdatePackage?)
+    case failed(String)
+
+    var isBusy: Bool {
+        switch self {
+        case .downloading, .verifying, .installing:
+            return true
+        case .idle, .ready, .unavailable, .failed:
+            return false
+        }
+    }
+
+    var hasPreparedPackage: Bool {
+        preparedPackage != nil
+    }
+
+    var preparedPackage: AppUpdatePackage? {
+        switch self {
+        case .ready(let package), .installing(let package):
+            return package
+        case .unavailable(_, let package):
+            return package
+        case .idle, .downloading, .verifying, .failed:
+            return nil
+        }
+    }
+}
+
 struct InstallUpdateSettingsView: View {
     @StateObject private var viewModel: InstallUpdateSettingsViewModel
+    @State private var isConfirmingInstall = false
 
     init(viewModel: InstallUpdateSettingsViewModel = .current()) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -275,6 +512,16 @@ struct InstallUpdateSettingsView: View {
         .formStyle(.grouped)
         .task {
             await viewModel.checkForUpdatesIfNeeded()
+        }
+        .alert("Install Update?", isPresented: $isConfirmingInstall) {
+            Button("Install and Relaunch", role: .destructive) {
+                Task {
+                    await viewModel.installPreparedUpdate()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Codex Status Bar will quit, replace the current app with the verified update, and reopen.")
         }
     }
 
@@ -300,7 +547,7 @@ struct InstallUpdateSettingsView: View {
                     Text(viewModel.updateStatusText)
                         .foregroundStyle(.secondary)
 
-                    if viewModel.isCheckingForUpdates {
+                    if viewModel.isCheckingForUpdates || viewModel.isShowingInstallProgress {
                         ProgressView()
                             .controlSize(.small)
                     }
@@ -309,6 +556,16 @@ struct InstallUpdateSettingsView: View {
                 LabeledContent("Latest Release", value: viewModel.latestReleaseText)
                 LabeledContent("Published", value: viewModel.publishedDateText)
                 LabeledContent("Last Checked", value: viewModel.lastCheckedText)
+
+                if let installStatusText = viewModel.installStatusText {
+                    Text(installStatusText)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let downloadProgressValue = viewModel.downloadProgressValue {
+                        ProgressView(value: downloadProgressValue)
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -329,7 +586,7 @@ struct InstallUpdateSettingsView: View {
                     } label: {
                         Label("Check Now", systemImage: "arrow.clockwise")
                     }
-                    .disabled(viewModel.isCheckingForUpdates)
+                    .disabled(!viewModel.canCheckForUpdates)
 
                     Button {
                         revealAppInFinder()
@@ -340,6 +597,33 @@ struct InstallUpdateSettingsView: View {
                 }
 
                 HStack {
+                    if viewModel.shouldShowDownloadUpdateButton {
+                        Button {
+                            Task {
+                                await viewModel.downloadUpdate()
+                            }
+                        } label: {
+                            Label("Download Update", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(!viewModel.canDownloadUpdate)
+                    }
+
+                    if viewModel.canInstallPreparedUpdate {
+                        Button {
+                            isConfirmingInstall = true
+                        } label: {
+                            Label("Install and Relaunch...", systemImage: "square.and.arrow.down")
+                        }
+                    }
+
+                    if viewModel.canRevealDownloadedUpdate {
+                        Button {
+                            revealDownloadedUpdateInFinder()
+                        } label: {
+                            Label("Reveal Download", systemImage: "folder")
+                        }
+                    }
+
                     Button {
                         if let releasePageURL = viewModel.releasePageURL {
                             NSWorkspace.shared.open(releasePageURL)
@@ -380,5 +664,13 @@ struct InstallUpdateSettingsView: View {
         }
 
         NSWorkspace.shared.activateFileViewerSelecting([appBundleURL])
+    }
+
+    private func revealDownloadedUpdateInFinder() {
+        guard let downloadedUpdateURL = viewModel.downloadedUpdateURL else {
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([downloadedUpdateURL])
     }
 }

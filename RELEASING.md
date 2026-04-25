@@ -142,6 +142,21 @@ The app's live update checker reads GitHub's latest published release. Raw git
 tags are not enough; the GitHub Release must be published. The GitHub Actions
 workflow performs these publish steps automatically.
 
+## In-App Updates
+
+The Updates settings tab reads the latest published GitHub Release and looks for
+an asset named:
+
+```text
+CodexStatusBar-vX.Y.Z-buildN.zip
+```
+
+When that asset exists, the app can download it, verify a `sha256:` digest when
+GitHub exposes one, unzip it, check the bundle identifier and version, validate
+the app with `codesign` and `spctl`, then guide the user through replacing the
+currently installed app. If the current app location is not writable, the app
+reveals the verified download and leaves replacement manual.
+
 ## Validate The Artifact
 
 To inspect a generated zip locally:

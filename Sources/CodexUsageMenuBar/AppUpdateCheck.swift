@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct AppUpdateRelease: Equatable {
@@ -5,6 +6,21 @@ struct AppUpdateRelease: Equatable {
     let name: String?
     let htmlURL: URL
     let publishedAt: Date?
+    let assets: [AppUpdateReleaseAsset]
+
+    init(
+        tagName: String,
+        name: String?,
+        htmlURL: URL,
+        publishedAt: Date?,
+        assets: [AppUpdateReleaseAsset] = []
+    ) {
+        self.tagName = tagName
+        self.name = name
+        self.htmlURL = htmlURL
+        self.publishedAt = publishedAt
+        self.assets = assets
+    }
 
     var displayVersionText: String {
         tagName
@@ -18,6 +34,51 @@ struct AppUpdateRelease: Equatable {
 
         return tagName
     }
+
+    var matchingCodexStatusBarZipAsset: AppUpdateReleaseAsset? {
+        let expectedTag = normalizedTagName
+        let expectedPrefix = "CodexStatusBar-\(expectedTag)-build"
+
+        return assets.first { asset in
+            guard asset.name.hasPrefix(expectedPrefix), asset.name.hasSuffix(".zip") else {
+                return false
+            }
+
+            let buildStart = asset.name.index(asset.name.startIndex, offsetBy: expectedPrefix.count)
+            let buildEnd = asset.name.index(asset.name.endIndex, offsetBy: -4)
+            guard buildStart < buildEnd else {
+                return false
+            }
+
+            return asset.name[buildStart..<buildEnd].allSatisfy(\.isNumber)
+        }
+    }
+
+    var releaseVersionText: String {
+        var version = tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if version.hasPrefix("v") || version.hasPrefix("V") {
+            version.removeFirst()
+        }
+        return version
+    }
+
+    private var normalizedTagName: String {
+        let trimmedTag = tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTag.hasPrefix("v") || trimmedTag.hasPrefix("V") {
+            return "v\(trimmedTag.dropFirst())"
+        }
+        return "v\(trimmedTag)"
+    }
+}
+
+struct AppUpdateReleaseAsset: Equatable, Identifiable {
+    var id: String { name }
+
+    let name: String
+    let browserDownloadURL: URL
+    let contentType: String?
+    let size: Int64
+    let digest: String?
 }
 
 enum AppUpdateCheckClientError: Error, Equatable {
@@ -78,7 +139,8 @@ final class GitHubLatestReleaseClient: AppUpdateCheckClientProtocol {
                 tagName: payload.tagName,
                 name: payload.name,
                 htmlURL: payload.htmlURL,
-                publishedAt: payload.publishedAt
+                publishedAt: payload.publishedAt,
+                assets: payload.assets.map(\.asset)
             )
         } catch {
             throw AppUpdateCheckClientError.decodingFailed
@@ -91,12 +153,49 @@ private struct GitHubLatestReleasePayload: Decodable {
     let name: String?
     let htmlURL: URL
     let publishedAt: Date?
+    let assets: [GitHubReleaseAssetPayload]
 
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case name
         case htmlURL = "html_url"
         case publishedAt = "published_at"
+        case assets
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tagName = try container.decode(String.self, forKey: .tagName)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        htmlURL = try container.decode(URL.self, forKey: .htmlURL)
+        publishedAt = try container.decodeIfPresent(Date.self, forKey: .publishedAt)
+        assets = try container.decodeIfPresent([GitHubReleaseAssetPayload].self, forKey: .assets) ?? []
+    }
+}
+
+private struct GitHubReleaseAssetPayload: Decodable {
+    let name: String
+    let browserDownloadURL: URL
+    let contentType: String?
+    let size: Int64
+    let digest: String?
+
+    var asset: AppUpdateReleaseAsset {
+        AppUpdateReleaseAsset(
+            name: name,
+            browserDownloadURL: browserDownloadURL,
+            contentType: contentType,
+            size: size,
+            digest: digest
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+        case contentType = "content_type"
+        case size
+        case digest
     }
 }
 
@@ -184,4 +283,405 @@ enum AppUpdateCheckState: Equatable {
             return nil
         }
     }
+}
+
+struct AppUpdatePackage: Equatable {
+    let release: AppUpdateRelease
+    let asset: AppUpdateReleaseAsset
+    let zipURL: URL
+    let appURL: URL
+}
+
+enum AppUpdateDownloadError: Error, Equatable {
+    case invalidResponse
+    case requestFailed(statusCode: Int)
+    case writeFailed
+}
+
+@MainActor
+protocol AppUpdateDownloadClientProtocol: AnyObject {
+    func download(
+        asset: AppUpdateReleaseAsset,
+        to destinationURL: URL,
+        progress: @escaping (Double?) -> Void
+    ) async throws -> URL
+}
+
+@MainActor
+final class AppUpdateDownloadClient: AppUpdateDownloadClientProtocol {
+    typealias ResponseLoader = (URLRequest) async throws -> (Data, URLResponse)
+
+    private let fileManager: FileManager
+    private let responseLoader: ResponseLoader
+
+    init(
+        fileManager: FileManager = .default,
+        responseLoader: @escaping ResponseLoader = { request in
+            try await URLSession.shared.data(for: request)
+        }
+    ) {
+        self.fileManager = fileManager
+        self.responseLoader = responseLoader
+    }
+
+    func download(
+        asset: AppUpdateReleaseAsset,
+        to destinationURL: URL,
+        progress: @escaping (Double?) -> Void
+    ) async throws -> URL {
+        progress(0)
+
+        var request = URLRequest(url: asset.browserDownloadURL)
+        request.setValue("CodexStatusBar", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await responseLoader(request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AppUpdateDownloadError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw AppUpdateDownloadError.requestFailed(statusCode: httpResponse.statusCode)
+        }
+
+        do {
+            try fileManager.createDirectory(
+                at: destinationURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: destinationURL, options: .atomic)
+            progress(1)
+            return destinationURL
+        } catch {
+            throw AppUpdateDownloadError.writeFailed
+        }
+    }
+}
+
+enum AppUpdatePackageVerificationError: Error, Equatable {
+    case checksumMalformed
+    case checksumMismatch
+    case unzipFailed
+    case missingAppBundle
+    case missingInfoPlist
+    case bundleIdentifierMismatch(expected: String, actual: String?)
+    case versionMismatch(expected: String, actual: String?)
+    case verificationCommandFailed(String)
+}
+
+@MainActor
+protocol AppUpdatePackageVerifierProtocol: AnyObject {
+    func verify(
+        zipURL: URL,
+        release: AppUpdateRelease,
+        asset: AppUpdateReleaseAsset,
+        installedBundleIdentifier: String
+    ) async throws -> AppUpdatePackage
+}
+
+struct AppUpdateCommandResult: Equatable {
+    let output: String
+    let errorOutput: String
+}
+
+enum AppUpdateCommandError: Error, Equatable {
+    case launchFailed(String)
+    case nonZeroExit(status: Int32, output: String)
+}
+
+@MainActor
+protocol AppUpdateCommandRunning {
+    func run(executablePath: String, arguments: [String]) async throws -> AppUpdateCommandResult
+}
+
+@MainActor
+final class AppUpdateProcessCommandRunner: AppUpdateCommandRunning {
+    func run(executablePath: String, arguments: [String]) async throws -> AppUpdateCommandResult {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    let process = Process()
+                    let outputPipe = Pipe()
+                    let errorPipe = Pipe()
+                    process.executableURL = URL(fileURLWithPath: executablePath)
+                    process.arguments = arguments
+                    process.standardOutput = outputPipe
+                    process.standardError = errorPipe
+
+                    try process.run()
+                    process.waitUntilExit()
+
+                    let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+                    guard process.terminationStatus == 0 else {
+                        let combinedOutput = [output, errorOutput]
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                            .joined(separator: "\n")
+                        throw AppUpdateCommandError.nonZeroExit(
+                            status: process.terminationStatus,
+                            output: combinedOutput
+                        )
+                    }
+
+                    continuation.resume(returning: AppUpdateCommandResult(output: output, errorOutput: errorOutput))
+                } catch let error as AppUpdateCommandError {
+                    continuation.resume(throwing: error)
+                } catch {
+                    continuation.resume(throwing: AppUpdateCommandError.launchFailed(error.localizedDescription))
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+final class AppUpdatePackageVerifier: AppUpdatePackageVerifierProtocol {
+    private let fileManager: FileManager
+    private let commandRunner: AppUpdateCommandRunning
+
+    init(
+        fileManager: FileManager = .default,
+        commandRunner: AppUpdateCommandRunning = AppUpdateProcessCommandRunner()
+    ) {
+        self.fileManager = fileManager
+        self.commandRunner = commandRunner
+    }
+
+    func verify(
+        zipURL: URL,
+        release: AppUpdateRelease,
+        asset: AppUpdateReleaseAsset,
+        installedBundleIdentifier: String
+    ) async throws -> AppUpdatePackage {
+        try verifyChecksumIfAvailable(zipURL: zipURL, asset: asset)
+
+        let extractionURL = zipURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("Expanded", isDirectory: true)
+        try? fileManager.removeItem(at: extractionURL)
+        try fileManager.createDirectory(at: extractionURL, withIntermediateDirectories: true)
+
+        do {
+            _ = try await commandRunner.run(
+                executablePath: "/usr/bin/ditto",
+                arguments: ["-x", "-k", zipURL.path, extractionURL.path]
+            )
+        } catch {
+            throw AppUpdatePackageVerificationError.unzipFailed
+        }
+
+        let appURL = extractionURL.appendingPathComponent("CodexStatusBar.app", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: appURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw AppUpdatePackageVerificationError.missingAppBundle
+        }
+
+        let info = try readInfoPlist(for: appURL)
+        let actualBundleIdentifier = info["CFBundleIdentifier"] as? String
+        guard actualBundleIdentifier == installedBundleIdentifier else {
+            throw AppUpdatePackageVerificationError.bundleIdentifierMismatch(
+                expected: installedBundleIdentifier,
+                actual: actualBundleIdentifier
+            )
+        }
+
+        let actualVersion = info["CFBundleShortVersionString"] as? String
+        guard actualVersion == release.releaseVersionText else {
+            throw AppUpdatePackageVerificationError.versionMismatch(
+                expected: release.releaseVersionText,
+                actual: actualVersion
+            )
+        }
+
+        do {
+            _ = try await commandRunner.run(
+                executablePath: "/usr/bin/codesign",
+                arguments: ["--verify", "--deep", "--strict", "--verbose=2", appURL.path]
+            )
+            _ = try await commandRunner.run(
+                executablePath: "/usr/sbin/spctl",
+                arguments: ["-a", "-vv", "--type", "execute", appURL.path]
+            )
+        } catch {
+            throw AppUpdatePackageVerificationError.verificationCommandFailed(String(describing: error))
+        }
+
+        return AppUpdatePackage(release: release, asset: asset, zipURL: zipURL, appURL: appURL)
+    }
+
+    private func verifyChecksumIfAvailable(zipURL: URL, asset: AppUpdateReleaseAsset) throws {
+        guard let digest = asset.digest?.trimmingCharacters(in: .whitespacesAndNewlines), !digest.isEmpty else {
+            return
+        }
+
+        let prefix = "sha256:"
+        guard digest.lowercased().hasPrefix(prefix) else {
+            return
+        }
+
+        let expectedHash = String(digest.dropFirst(prefix.count)).lowercased()
+        guard
+            expectedHash.count == 64,
+            expectedHash.allSatisfy({ $0.isHexDigit })
+        else {
+            throw AppUpdatePackageVerificationError.checksumMalformed
+        }
+
+        let data = try Data(contentsOf: zipURL)
+        let actualHash = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+
+        guard actualHash == expectedHash else {
+            throw AppUpdatePackageVerificationError.checksumMismatch
+        }
+    }
+
+    private func readInfoPlist(for appURL: URL) throws -> [String: Any] {
+        let infoURL = appURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Info.plist")
+        guard let data = try? Data(contentsOf: infoURL) else {
+            throw AppUpdatePackageVerificationError.missingInfoPlist
+        }
+
+        guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            throw AppUpdatePackageVerificationError.missingInfoPlist
+        }
+
+        return plist
+    }
+}
+
+struct AppUpdateInstallLaunch: Equatable {
+    let scriptURL: URL
+    let arguments: [String]
+}
+
+enum AppUpdateInstallerError: Error, Equatable {
+    case targetParentUnavailable
+    case targetNotWritable(URL)
+    case scriptWriteFailed
+    case launchFailed(String)
+}
+
+@MainActor
+protocol AppUpdateInstallerProtocol: AnyObject {
+    func canInstall(to targetAppURL: URL) -> Bool
+    func install(
+        package: AppUpdatePackage,
+        targetAppURL: URL,
+        currentProcessIdentifier: Int32
+    ) async throws -> AppUpdateInstallLaunch
+}
+
+@MainActor
+protocol AppUpdateProcessLaunching {
+    func launch(executableURL: URL, arguments: [String]) throws
+}
+
+@MainActor
+final class AppUpdateProcessLauncher: AppUpdateProcessLaunching {
+    func launch(executableURL: URL, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardOutput = nil
+        process.standardError = nil
+        try process.run()
+    }
+}
+
+@MainActor
+final class AppUpdateInstaller: AppUpdateInstallerProtocol {
+    private let fileManager: FileManager
+    private let processLauncher: AppUpdateProcessLaunching
+    private let scriptDirectory: URL
+    private let writableDirectoryCheck: (URL) -> Bool
+
+    init(
+        fileManager: FileManager = .default,
+        processLauncher: AppUpdateProcessLaunching = AppUpdateProcessLauncher(),
+        scriptDirectory: URL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexStatusBarUpdateInstaller", isDirectory: true),
+        writableDirectoryCheck: ((URL) -> Bool)? = nil
+    ) {
+        self.fileManager = fileManager
+        self.processLauncher = processLauncher
+        self.scriptDirectory = scriptDirectory
+        self.writableDirectoryCheck = writableDirectoryCheck ?? { url in
+            fileManager.isWritableFile(atPath: url.path)
+        }
+    }
+
+    func canInstall(to targetAppURL: URL) -> Bool {
+        writableDirectoryCheck(targetAppURL.deletingLastPathComponent())
+    }
+
+    func install(
+        package: AppUpdatePackage,
+        targetAppURL: URL,
+        currentProcessIdentifier: Int32
+    ) async throws -> AppUpdateInstallLaunch {
+        let targetParentURL = targetAppURL.deletingLastPathComponent()
+        guard !targetParentURL.path.isEmpty else {
+            throw AppUpdateInstallerError.targetParentUnavailable
+        }
+        guard writableDirectoryCheck(targetParentURL) else {
+            throw AppUpdateInstallerError.targetNotWritable(targetParentURL)
+        }
+
+        do {
+            try fileManager.createDirectory(at: scriptDirectory, withIntermediateDirectories: true)
+            let scriptURL = scriptDirectory
+                .appendingPathComponent("install-codex-status-bar-\(UUID().uuidString).sh")
+            let logURL = scriptDirectory
+                .appendingPathComponent("install-codex-status-bar-\(UUID().uuidString).log")
+            try Self.installerScript.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+            let arguments = [
+                scriptURL.path,
+                "\(currentProcessIdentifier)",
+                package.appURL.path,
+                targetAppURL.path,
+                logURL.path,
+            ]
+            try processLauncher.launch(executableURL: URL(fileURLWithPath: "/bin/bash"), arguments: arguments)
+            return AppUpdateInstallLaunch(scriptURL: scriptURL, arguments: arguments)
+        } catch let error as AppUpdateInstallerError {
+            throw error
+        } catch {
+            if error is CocoaError {
+                throw AppUpdateInstallerError.scriptWriteFailed
+            }
+            throw AppUpdateInstallerError.launchFailed(error.localizedDescription)
+        }
+    }
+
+    static let installerScript = """
+    #!/bin/bash
+    set -euo pipefail
+
+    CURRENT_PID="$1"
+    STAGED_APP="$2"
+    TARGET_APP="$3"
+    LOG_PATH="$4"
+
+    exec >"$LOG_PATH" 2>&1
+
+    while kill -0 "$CURRENT_PID" 2>/dev/null; do
+      sleep 0.2
+    done
+
+    TARGET_PARENT="$(dirname "$TARGET_APP")"
+    TEMP_TARGET="$TARGET_PARENT/.CodexStatusBar.update.$$"
+
+    rm -rf "$TEMP_TARGET"
+    ditto "$STAGED_APP" "$TEMP_TARGET"
+    rm -rf "$TARGET_APP"
+    mv "$TEMP_TARGET" "$TARGET_APP"
+    open "$TARGET_APP"
+    """
 }
