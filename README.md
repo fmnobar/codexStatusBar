@@ -35,6 +35,8 @@ git pull
 ./install.sh
 ```
 
+Release maintainers should follow [RELEASING.md](RELEASING.md) to bump versions and publish GitHub Release assets.
+
 ## Uninstall
 
 ```bash

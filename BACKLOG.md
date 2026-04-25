@@ -36,8 +36,12 @@
   - Added GitHub latest-release checks without changing the manual install flow.
   - Added up-to-date, update-available, no-release, inconclusive, checking, and failure states to the Updates settings tab.
 
+- Add release packaging and versioning workflow
+  - Added local scripts to set semantic app versions, validate releases, and package unsigned zip assets.
+  - Added release instructions for tags, GitHub Releases, and manual artifact validation.
+
 ## Next Candidates
 
-- Add release packaging and versioning workflow
-  - Define the version bump and GitHub Release process that powers live update checking.
-  - Add a repeatable archive/zip or DMG packaging path for release assets.
+- Add signed/notarized distribution
+  - Add Developer ID signing and notarization support for release assets.
+  - Reduce Gatekeeper friction for downloaded app zips.
