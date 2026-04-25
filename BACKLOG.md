@@ -40,8 +40,12 @@
   - Added local scripts to set semantic app versions, validate releases, and package unsigned zip assets.
   - Added release instructions for tags, GitHub Releases, and manual artifact validation.
 
+- Add signed/notarized distribution
+  - Added optional Developer ID signing and notarization to local release packaging.
+  - Kept unsigned local packaging available while documenting the recommended signed public release path.
+
 ## Next Candidates
 
-- Add signed/notarized distribution
-  - Add Developer ID signing and notarization support for release assets.
-  - Reduce Gatekeeper friction for downloaded app zips.
+- Add GitHub Actions release automation
+  - Automate release validation and artifact creation after local signed distribution is proven.
+  - Keep signing and notarization secrets outside the repo and scoped to release workflows.

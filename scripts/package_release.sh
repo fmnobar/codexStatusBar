@@ -3,7 +3,11 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: scripts/package_release.sh [--dry-run]"
+  echo "Usage: scripts/package_release.sh [--signed] [--notarize] [--dry-run]"
+  echo
+  echo "  --signed     Build with Developer ID signing and hardened runtime."
+  echo "  --notarize   Submit, staple, and validate the signed app before zipping."
+  echo "  --dry-run    Validate inputs and print paths without building or writing artifacts."
 }
 
 fail() {
@@ -23,10 +27,22 @@ DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$RELEASE_ROOT/DerivedData}"
 STAGED_APP_PATH="$RELEASE_ROOT/$APP_NAME"
 BUILT_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/$APP_NAME"
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
+NOTARY_UPLOAD_PATH="$RELEASE_ROOT/CodexStatusBar-vnotary-upload.zip"
+NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-30m}"
 DRY_RUN=0
+SIGNED=0
+NOTARIZE=0
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
+    --signed)
+      SIGNED=1
+      shift
+      ;;
+    --notarize)
+      NOTARIZE=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -52,6 +68,40 @@ fi
 
 if [[ ! -f "$PROJECT_FILE" ]]; then
   fail "Project file not found: $PROJECT_FILE"
+fi
+
+if [[ "$NOTARIZE" == "1" && "$SIGNED" != "1" ]]; then
+  fail "--notarize requires --signed."
+fi
+
+if [[ "$SIGNED" == "1" ]]; then
+  if [[ -z "${DEVELOPER_ID_APPLICATION:-}" ]]; then
+    fail "DEVELOPER_ID_APPLICATION is required with --signed."
+  fi
+
+  if [[ -z "${DEVELOPMENT_TEAM:-}" ]]; then
+    fail "DEVELOPMENT_TEAM is required with --signed."
+  fi
+fi
+
+if [[ "$NOTARIZE" == "1" ]]; then
+  if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
+    fail "NOTARYTOOL_PROFILE is required with --notarize."
+  fi
+
+  if ! xcrun -f notarytool >/dev/null 2>&1; then
+    fail "xcrun notarytool is required for notarization."
+  fi
+
+  if ! xcrun -f stapler >/dev/null 2>&1; then
+    fail "xcrun stapler is required for notarization."
+  fi
+fi
+
+if [[ "$SIGNED" == "1" && "$DRY_RUN" != "1" ]]; then
+  if ! security find-identity -p codesigning -v | grep -F "$DEVELOPER_ID_APPLICATION" >/dev/null; then
+    fail "Developer ID signing identity was not found: $DEVELOPER_ID_APPLICATION"
+  fi
 fi
 
 read_unique_build_setting() {
@@ -86,9 +136,27 @@ fi
 
 ARTIFACT_PATH="$DIST_DIR/CodexStatusBar-v$VERSION-build$BUILD.zip"
 
+if [[ "$NOTARIZE" == "1" ]]; then
+  SIGNING_STATUS="Developer ID signed, notarized, and stapled"
+elif [[ "$SIGNED" == "1" ]]; then
+  SIGNING_STATUS="Developer ID signed; not notarized"
+else
+  SIGNING_STATUS="unsigned; not Developer ID signed or notarized"
+fi
+
 echo "Release version: $VERSION ($BUILD)"
 echo "Artifact path: $ARTIFACT_PATH"
-echo "Signing: unsigned; not Developer ID signed or notarized."
+echo "Signing: $SIGNING_STATUS."
+
+if [[ "$SIGNED" == "1" ]]; then
+  echo "Developer ID identity: $DEVELOPER_ID_APPLICATION"
+  echo "Development team: $DEVELOPMENT_TEAM"
+fi
+
+if [[ "$NOTARIZE" == "1" ]]; then
+  echo "Notary profile: $NOTARYTOOL_PROFILE"
+  echo "Notary timeout: $NOTARY_TIMEOUT"
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "Dry run complete. No build or zip was created."
@@ -99,14 +167,32 @@ rm -rf "$RELEASE_ROOT"
 mkdir -p "$RELEASE_ROOT" "$DIST_DIR"
 
 echo "Building Release app..."
-xcodebuild \
+build_args=(
   -project "$PROJECT_PATH" \
   -scheme "$SCHEME_NAME" \
   -configuration Release \
   -destination "platform=macOS,arch=$BUILD_ARCH" \
-  -derivedDataPath "$DERIVED_DATA_PATH" \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+  -derivedDataPath "$DERIVED_DATA_PATH"
+)
+
+if [[ "$SIGNED" == "1" ]]; then
+  build_args+=(
+    CODE_SIGNING_ALLOWED=YES
+    CODE_SIGNING_REQUIRED=YES
+    CODE_SIGN_STYLE=Manual
+    CODE_SIGN_IDENTITY="$DEVELOPER_ID_APPLICATION"
+    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
+    ENABLE_HARDENED_RUNTIME=YES
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
+    OTHER_CODE_SIGN_FLAGS="--timestamp"
+  )
+else
+  build_args+=(CODE_SIGNING_ALLOWED=NO)
+fi
+
+build_args+=(build)
+
+xcodebuild "${build_args[@]}"
 
 if [[ ! -d "$BUILT_APP_PATH" ]]; then
   fail "Build succeeded, but the app bundle was not found at $BUILT_APP_PATH"
@@ -120,6 +206,37 @@ if [[ "$actual_version" != "$VERSION" || "$actual_build" != "$BUILD" ]]; then
 fi
 
 ditto "$BUILT_APP_PATH" "$STAGED_APP_PATH"
+
+if [[ "$SIGNED" == "1" ]]; then
+  echo "Verifying Developer ID signature..."
+  codesign --verify --deep --strict --verbose=2 "$STAGED_APP_PATH"
+fi
+
+if [[ "$NOTARIZE" == "1" ]]; then
+  rm -f "$NOTARY_UPLOAD_PATH"
+
+  echo "Creating temporary notarization upload zip..."
+  (
+    cd "$RELEASE_ROOT"
+    ditto -c -k --keepParent "$APP_NAME" "$NOTARY_UPLOAD_PATH"
+  )
+
+  echo "Submitting app for notarization..."
+  xcrun notarytool submit "$NOTARY_UPLOAD_PATH" \
+    --keychain-profile "$NOTARYTOOL_PROFILE" \
+    --wait \
+    --timeout "$NOTARY_TIMEOUT"
+
+  echo "Stapling notarization ticket..."
+  xcrun stapler staple "$STAGED_APP_PATH"
+
+  echo "Validating stapled ticket..."
+  xcrun stapler validate "$STAGED_APP_PATH"
+
+  echo "Verifying stapled app signature..."
+  codesign --verify --deep --strict --verbose=2 "$STAGED_APP_PATH"
+fi
+
 rm -f "$ARTIFACT_PATH"
 
 echo "Creating zip..."
@@ -136,4 +253,4 @@ echo
 echo "Created release artifact:"
 echo "  $ARTIFACT_PATH"
 echo
-echo "This artifact is not Developer ID signed or notarized."
+echo "Signing: $SIGNING_STATUS."

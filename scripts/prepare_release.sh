@@ -3,7 +3,10 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: scripts/prepare_release.sh <version> <build>"
+  echo "Usage: scripts/prepare_release.sh <version> <build> [--signed] [--notarize]"
+  echo
+  echo "  --signed     Package with Developer ID signing."
+  echo "  --notarize   Submit, staple, and validate before creating the release zip."
 }
 
 fail() {
@@ -15,6 +18,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 VERSION="${1:-}"
 BUILD="${2:-}"
+PACKAGE_ARGS=()
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
@@ -38,6 +42,25 @@ if [[ ! "$BUILD" =~ ^[1-9][0-9]*$ ]]; then
   fail "Build must be a positive integer, got '$BUILD'."
 fi
 
+shift 2
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --signed|--notarize)
+      PACKAGE_ARGS+=("$1")
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      fail "Unknown argument: $1"
+      ;;
+  esac
+done
+
 if [[ ! -d "$REPO_ROOT/.git" ]]; then
   fail "Run from a git checkout."
 fi
@@ -53,12 +76,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
   fail "Release prep must start from a clean working tree."
 fi
 
+"$SCRIPT_DIR/package_release.sh" --dry-run "${PACKAGE_ARGS[@]}"
 "$SCRIPT_DIR/set_version.sh" "$VERSION" "$BUILD"
 
 bash -n "$SCRIPT_DIR/set_version.sh" "$SCRIPT_DIR/package_release.sh" "$SCRIPT_DIR/prepare_release.sh"
 git diff --check
 xcodebuild test -project CodexUsageMenuBar.xcodeproj -scheme CodexUsageMenuBar -destination 'platform=macOS'
-"$SCRIPT_DIR/package_release.sh"
+"$SCRIPT_DIR/package_release.sh" "${PACKAGE_ARGS[@]}"
 
 echo
 echo "Release prep complete for v$VERSION build $BUILD."
