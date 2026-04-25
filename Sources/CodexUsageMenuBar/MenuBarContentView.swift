@@ -30,9 +30,7 @@ struct MenuBarContentView: View {
                     }
                 }
             } else {
-                selectableRow(viewModel.fiveHourRow)
-                selectableRow(viewModel.sevenDayRow)
-                selectableRow(viewModel.tightestRow)
+                limitSelectionRow
                 Divider()
                 historySection
                 Divider()
@@ -66,35 +64,55 @@ struct MenuBarContentView: View {
     }
 
     @ViewBuilder
-    private func selectableRow(_ row: MenuBarLimitRowPresentation) -> some View {
+    private var limitSelectionRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            compactSelectableRow(viewModel.fiveHourRow)
+            compactSelectableRow(viewModel.sevenDayRow)
+            compactSelectableRow(viewModel.tightestRow)
+        }
+    }
+
+    private func compactSelectableRow(_ row: MenuBarLimitRowPresentation) -> some View {
         Button {
             viewModel.selectMenuBarDisplayWindow(row.displayWindow)
         } label: {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 7) {
                 checkboxImage(isSelected: row.isSelected)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(row.title)
-                            .font(.system(size: 13))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(row.title.replacingOccurrences(of: " limit", with: ""))
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
 
                         if !row.remainingPercentText.isEmpty {
-                            Text(row.remainingPercentText)
-                                .font(.system(size: 13, weight: .semibold))
+                            Text(row.remainingPercentText.replacingOccurrences(of: " left", with: ""))
+                                .font(.system(size: 12, weight: .semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
                         }
                     }
 
                     if !row.detailText.isEmpty {
                         Text(row.detailText)
-                            .font(.system(size: 11))
+                            .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
                     }
                 }
 
                 Spacer(minLength: 0)
             }
             .foregroundStyle(.primary)
+            .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 62, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(row.isSelected ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -237,18 +255,22 @@ struct MenuBarContentView: View {
     }
 
     private var footer: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                if let footerStatusText = viewModel.footerStatusText {
-                    Text(footerStatusText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(viewModel.isStaleSnapshot ? .orange : .secondary)
-                }
+        HStack(alignment: .center, spacing: 8) {
+            if let footerStatusText = viewModel.footerStatusText {
+                Text(footerStatusText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(viewModel.isStaleSnapshot ? .orange : .secondary)
+                    .lineLimit(1)
 
-                Text(appVersionInfo.versionBuildText)
+                Text("•")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
+
+            Text(appVersionInfo.versionBuildText)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
 
             Spacer(minLength: 0)
 
