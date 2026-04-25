@@ -327,19 +327,7 @@ private struct CompactUsageHistoryPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             controls
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(viewModel.chartSubtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                Text(viewModel.chartPointCountSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+            hoverSummary
 
             if viewModel.hasVisiblePoints {
                 chart
@@ -399,11 +387,107 @@ private struct CompactUsageHistoryPanel: View {
                 .foregroundStyle(by: .value("Bucket", point.bucketName))
                 .opacity(point.bucketKind == .aggregate ? 0.84 : 0.66)
             }
+
+            if let hoverSelection = viewModel.hoverSelection {
+                RuleMark(x: .value("Selected Time", viewModel.chartXPosition(for: hoverSelection)))
+                    .foregroundStyle(.secondary.opacity(0.42))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                ForEach(hoverSelection.points) { point in
+                    PointMark(
+                        x: .value("Time", viewModel.chartXPosition(for: point)),
+                        y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric))
+                    )
+                    .foregroundStyle(by: .value("Bucket", point.bucketName))
+                    .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
+                }
+            }
         }
         .chartYScale(domain: viewModel.chartYDomain)
         .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
         .chartYAxisLabel(viewModel.chartYAxisTitle)
         .chartLegend(.hidden)
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        handleChartHover(phase, proxy: proxy, geometry: geometry)
+                    }
+            }
+        }
+    }
+
+    private var hoverSummary: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let hoverSelection = viewModel.hoverSelection {
+                Text(viewModel.formattedBucketInterval(hoverSelection))
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+
+                Spacer(minLength: 0)
+
+                Text(hoverValueSummary(for: hoverSelection))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Text(viewModel.chartSubtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Text(viewModel.chartPointCountSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .frame(height: 16)
+    }
+
+    private func hoverValueSummary(for selection: UsageHistoryHoverSelection) -> String {
+        selection.points
+            .map { point in
+                "\(point.bucketName) \(Int(point.value(for: viewModel.selectedMetric).rounded()))%"
+            }
+            .joined(separator: "  ")
+    }
+
+    private func handleChartHover(
+        _ phase: HoverPhase,
+        proxy: ChartProxy,
+        geometry: GeometryProxy
+    ) {
+        switch phase {
+        case .active(let location):
+            guard let plotFrame = proxy.plotFrame else {
+                viewModel.clearHoverSelection()
+                return
+            }
+
+            let plotRect = geometry[plotFrame]
+            guard plotRect.contains(location) else {
+                viewModel.clearHoverSelection()
+                return
+            }
+
+            let xPosition = location.x - plotRect.origin.x
+            guard let timestamp: Date = proxy.value(atX: xPosition) else {
+                viewModel.clearHoverSelection()
+                return
+            }
+
+            viewModel.scheduleHoverSelection(nearestTo: timestamp, xPosition: xPosition)
+        case .ended:
+            viewModel.scheduleClearHoverSelection()
+        }
     }
 
     private var emptyState: some View {
