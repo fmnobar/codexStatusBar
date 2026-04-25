@@ -110,7 +110,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Equatable {
         case .capacityLeft:
             return "Left %"
         case .usage:
-            return "Used %"
+            return "Consumed %"
         }
     }
 
@@ -119,7 +119,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Equatable {
         case .capacityLeft:
             return "Capacity left by \(range.chartBucketTitle)"
         case .usage:
-            return "Peak usage by \(range.chartBucketTitle)"
+            return "Usage consumed by \(range.chartBucketTitle)"
         }
     }
 }
@@ -133,6 +133,7 @@ struct UsageHistoryPoint: Equatable, Identifiable {
     let window: UsageLimitWindow
     let usedPercent: Double
     let peakUsedPercent: Double
+    let consumedPercent: Double
 
     init(
         timestamp: Date,
@@ -141,7 +142,8 @@ struct UsageHistoryPoint: Equatable, Identifiable {
         bucketKind: CodexUsageBucketKind,
         window: UsageLimitWindow,
         usedPercent: Double,
-        peakUsedPercent: Double? = nil
+        peakUsedPercent: Double? = nil,
+        consumedPercent: Double = 0
     ) {
         self.timestamp = timestamp
         self.bucketID = bucketID
@@ -150,6 +152,7 @@ struct UsageHistoryPoint: Equatable, Identifiable {
         self.window = window
         self.usedPercent = usedPercent
         self.peakUsedPercent = peakUsedPercent ?? usedPercent
+        self.consumedPercent = consumedPercent
         id = "\(bucketID)-\(window.rawValue)-\(Int(timestamp.timeIntervalSince1970))"
     }
 }
@@ -171,6 +174,7 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
     let window: UsageLimitWindow
     let latestUsedPercent: Double
     let peakUsedPercent: Double
+    let consumedPercent: Double
 
     init(
         bucketStart: Date,
@@ -181,7 +185,8 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         bucketKind: CodexUsageBucketKind,
         window: UsageLimitWindow,
         latestUsedPercent: Double,
-        peakUsedPercent: Double
+        peakUsedPercent: Double,
+        consumedPercent: Double
     ) {
         self.bucketStart = bucketStart
         self.bucketEnd = bucketEnd
@@ -192,6 +197,7 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         self.window = window
         self.latestUsedPercent = latestUsedPercent
         self.peakUsedPercent = peakUsedPercent
+        self.consumedPercent = consumedPercent
         id = "\(bucketID)-\(window.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
     }
 
@@ -200,7 +206,7 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         case .capacityLeft:
             return Self.clampedPercent(100 - latestUsedPercent)
         case .usage:
-            return Self.clampedPercent(peakUsedPercent)
+            return Self.clampedPercent(consumedPercent)
         }
     }
 

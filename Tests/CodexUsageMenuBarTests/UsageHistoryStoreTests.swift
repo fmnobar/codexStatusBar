@@ -95,6 +95,19 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.peakUsedPercent), [30])
     }
 
+    func testDuplicateMinuteConsumptionAdjustsRollupsWithoutDoubleCounting() throws {
+        let store = try makeStore()
+
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T19:50:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:10Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 25)), at: date("2026-04-14T20:00:50Z"))
+
+        let points = try store.points(range: .week, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [10, 25])
+        XCTAssertEqual(points.map(\.consumedPercent), [0, 15])
+    }
+
     func testRawSamplesCompactButRollupsRemain() throws {
         let store = try makeStore()
         let oldDate = date("2026-01-10T12:00:00Z")
@@ -302,18 +315,18 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.reload()
 
         XCTAssertEqual(viewModel.chartSemantics, .independentSignals)
-        XCTAssertEqual(viewModel.selectedMetric, .capacityLeft)
-        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by hour")
-        XCTAssertEqual(viewModel.chartYAxisTitle, "Left %")
+        XCTAssertEqual(viewModel.selectedMetric, .usage)
+        XCTAssertEqual(viewModel.chartSubtitle, "Usage consumed by hour")
+        XCTAssertEqual(viewModel.chartYAxisTitle, "Consumed %")
         XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), ["codex", "codex_gpt55"])
-        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [80, 93])
+        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [0, 0])
         XCTAssertTrue(viewModel.visibleContributorPoints.isEmpty)
 
-        viewModel.selectedMetric = .usage
+        viewModel.selectedMetric = .capacityLeft
 
-        XCTAssertEqual(viewModel.chartSubtitle, "Peak usage by hour")
-        XCTAssertEqual(viewModel.chartYAxisTitle, "Used %")
-        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [20, 7])
+        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by hour")
+        XCTAssertEqual(viewModel.chartYAxisTitle, "Left %")
+        XCTAssertEqual(viewModel.visibleBarPoints.map { $0.value(for: viewModel.selectedMetric) }, [80, 93])
     }
 
     @MainActor
@@ -329,7 +342,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.reload()
 
-        XCTAssertEqual(viewModel.chartSubtitle, "Capacity left by hour")
+        XCTAssertEqual(viewModel.chartSubtitle, "Usage consumed by hour")
         XCTAssertEqual(viewModel.visibleContributorPoints.map(\.bucketID), ["codex_gpt55"])
         XCTAssertEqual(viewModel.visibleAggregateReferencePoints.map(\.bucketID), ["codex"])
         XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), ["codex_gpt55"])
@@ -355,6 +368,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         ])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [9, 12])
         XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .capacityLeft) }, [91, 88])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .usage) }, [4, 3])
     }
 
     @MainActor
@@ -378,6 +392,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             date("2026-04-16T00:00:00Z"),
         ])
         XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .capacityLeft) }, [10, 30, 90])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .usage) }, [0, 70, 10])
     }
 
     @MainActor
@@ -412,10 +427,11 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testUsageMetricUsesPeakUsedPercentWithinBucket() throws {
+    func testUsageMetricUsesObservedConsumptionWithinBucket() throws {
         let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30)), at: date("2026-04-14T19:55:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-14T20:05:00Z"))
-        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 25)), at: date("2026-04-14T20:45:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 42)), at: date("2026-04-14T20:45:00Z"))
         let viewModel = UsageHistoryViewModel(
             store: store,
             now: { self.date("2026-04-14T21:00:00Z") },
@@ -423,16 +439,16 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.reload()
-        viewModel.selectedMetric = .usage
 
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [25])
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.peakUsedPercent), [40])
-        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: viewModel.selectedMetric) }, [40])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [30, 42])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.peakUsedPercent), [30, 42])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: viewModel.selectedMetric) }, [0, 12])
     }
 
     @MainActor
     func testChartCSVUsesVisibleBucketedDatasetAndSelectedMetric() throws {
         let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-14T19:30:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
             store: store,
@@ -444,7 +460,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         let csv = viewModel.chartCSV()
 
         XCTAssertTrue(csv.contains("range,limit,metric,bucket_start,bucket_end,bucket_id,bucket_name,bucket_kind,percent_value"))
-        XCTAssertTrue(csv.contains("day,sevenDay,capacityLeft,2026-04-14T20:00:00Z,2026-04-14T21:00:00Z,codex,All models,aggregate,80.000"))
+        XCTAssertTrue(csv.contains("day,sevenDay,usage,2026-04-14T20:00:00Z,2026-04-14T21:00:00Z,codex,All models,aggregate,8.000"))
     }
 
     @MainActor

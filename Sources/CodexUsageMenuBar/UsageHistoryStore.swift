@@ -356,6 +356,16 @@ final class UsageHistoryStore {
             column: "peak_used_percent",
             schema: "imported_usage_history"
         ) ? "IFNULL(peak_used_percent, used_percent)" : "used_percent"
+        let importedSampleConsumedExpression = try tableHasColumn(
+            table: "usage_samples",
+            column: "consumed_percent",
+            schema: "imported_usage_history"
+        ) ? "consumed_percent" : "NULL"
+        let importedRollupConsumedExpression = try tableHasColumn(
+            table: "usage_rollups",
+            column: "consumed_percent",
+            schema: "imported_usage_history"
+        ) ? "consumed_percent" : "NULL"
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -363,9 +373,11 @@ final class UsageHistoryStore {
             try execute(
                 """
                 INSERT INTO usage_samples (
-                    bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, reset_at
+                    bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent,
+                    consumed_percent, reset_at
                 )
-                SELECT bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, reset_at
+                SELECT bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent,
+                    \(importedSampleConsumedExpression), reset_at
                 FROM imported_usage_history.usage_samples
                 """
             )
@@ -373,10 +385,11 @@ final class UsageHistoryStore {
                 """
                 INSERT INTO usage_rollups (
                     granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
-                    sample_timestamp, used_percent, peak_used_percent, reset_at
+                    sample_timestamp, used_percent, peak_used_percent, consumed_percent, reset_at
                 )
                 SELECT granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
-                    sample_timestamp, used_percent, \(importedPeakExpression), reset_at
+                    sample_timestamp, used_percent, \(importedPeakExpression),
+                    \(importedRollupConsumedExpression), reset_at
                 FROM imported_usage_history.usage_rollups
                 """
             )
@@ -405,6 +418,7 @@ final class UsageHistoryStore {
                 window TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 used_percent INTEGER NOT NULL,
+                consumed_percent REAL,
                 reset_at INTEGER,
                 PRIMARY KEY (bucket_id, window, timestamp)
             )
@@ -423,12 +437,15 @@ final class UsageHistoryStore {
                 sample_timestamp INTEGER NOT NULL,
                 used_percent INTEGER NOT NULL,
                 peak_used_percent INTEGER,
+                consumed_percent REAL,
                 reset_at INTEGER,
                 PRIMARY KEY (granularity, bucket_id, window, period_start)
             )
             """
         )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
+        try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
+        try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
@@ -447,11 +464,19 @@ final class UsageHistoryStore {
             return
         }
 
+        let consumptionDelta = try observedConsumptionDelta(
+            bucketID: bucket.id,
+            window: window,
+            timestamp: timestamp,
+            usedPercent: rateLimitWindow.usedPercent
+        )
+
         try insertRawSample(
             bucket: bucket,
             window: window,
             timestamp: timestamp,
             usedPercent: rateLimitWindow.usedPercent,
+            consumedPercent: consumptionDelta.sampleConsumedPercent,
             resetAt: rateLimitWindow.resetsAt?.timeIntervalSince1970Int
         )
         try insertRollup(
@@ -460,6 +485,7 @@ final class UsageHistoryStore {
             window: window,
             timestamp: timestamp,
             usedPercent: rateLimitWindow.usedPercent,
+            consumedPercentAdjustment: consumptionDelta.rollupConsumedPercentAdjustment,
             resetAt: rateLimitWindow.resetsAt?.timeIntervalSince1970Int
         )
         try insertRollup(
@@ -468,8 +494,114 @@ final class UsageHistoryStore {
             window: window,
             timestamp: timestamp,
             usedPercent: rateLimitWindow.usedPercent,
+            consumedPercentAdjustment: consumptionDelta.rollupConsumedPercentAdjustment,
             resetAt: rateLimitWindow.resetsAt?.timeIntervalSince1970Int
         )
+    }
+
+    private struct ObservedConsumptionDelta {
+        let sampleConsumedPercent: Double
+        let rollupConsumedPercentAdjustment: Double
+    }
+
+    private struct ExistingSampleConsumption {
+        let usedPercent: Double
+        let consumedPercent: Double?
+    }
+
+    private func observedConsumptionDelta(
+        bucketID: String,
+        window: UsageLimitWindow,
+        timestamp: Int64,
+        usedPercent: Int
+    ) throws -> ObservedConsumptionDelta {
+        let previousUsedPercent = try previousUsedPercent(
+            bucketID: bucketID,
+            window: window,
+            before: timestamp
+        )
+        let sampleConsumedPercent = Self.observedConsumedPercent(
+            currentUsedPercent: Double(usedPercent),
+            previousUsedPercent: previousUsedPercent
+        )
+        let existingSample = try existingSampleConsumption(
+            bucketID: bucketID,
+            window: window,
+            timestamp: timestamp
+        )
+        let existingConsumedPercent = existingSample?.consumedPercent ?? existingSample.map { sample in
+            Self.observedConsumedPercent(
+                currentUsedPercent: sample.usedPercent,
+                previousUsedPercent: previousUsedPercent
+            )
+        } ?? 0
+
+        return ObservedConsumptionDelta(
+            sampleConsumedPercent: sampleConsumedPercent,
+            rollupConsumedPercentAdjustment: sampleConsumedPercent - existingConsumedPercent
+        )
+    }
+
+    private func previousUsedPercent(
+        bucketID: String,
+        window: UsageLimitWindow,
+        before timestamp: Int64
+    ) throws -> Double? {
+        let statement = try prepare(
+            """
+            SELECT used_percent
+            FROM usage_samples
+            WHERE bucket_id = ? AND window = ? AND timestamp < ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(bucketID, to: 1, in: statement)
+        bindText(window.rawValue, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, timestamp)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_double(statement, 0)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func existingSampleConsumption(
+        bucketID: String,
+        window: UsageLimitWindow,
+        timestamp: Int64
+    ) throws -> ExistingSampleConsumption? {
+        let statement = try prepare(
+            """
+            SELECT used_percent, consumed_percent
+            FROM usage_samples
+            WHERE bucket_id = ? AND window = ? AND timestamp = ?
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(bucketID, to: 1, in: statement)
+        bindText(window.rawValue, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, timestamp)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return ExistingSampleConsumption(
+                usedPercent: sqlite3_column_double(statement, 0),
+                consumedPercent: optionalColumnDouble(statement, index: 1)
+            )
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
     }
 
     private func insertRawSample(
@@ -477,17 +609,20 @@ final class UsageHistoryStore {
         window: UsageLimitWindow,
         timestamp: Int64,
         usedPercent: Int,
+        consumedPercent: Double,
         resetAt: Int64?
     ) throws {
         let statement = try prepare(
             """
             INSERT INTO usage_samples (
-                bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, reset_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent,
+                consumed_percent, reset_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bucket_id, window, timestamp) DO UPDATE SET
                 bucket_name = excluded.bucket_name,
                 bucket_kind = excluded.bucket_kind,
                 used_percent = excluded.used_percent,
+                consumed_percent = excluded.consumed_percent,
                 reset_at = excluded.reset_at
             """
         )
@@ -499,7 +634,8 @@ final class UsageHistoryStore {
         bindText(window.rawValue, to: 4, in: statement)
         sqlite3_bind_int64(statement, 5, timestamp)
         sqlite3_bind_int(statement, 6, Int32(usedPercent))
-        bindOptionalInt(resetAt, to: 7, in: statement)
+        sqlite3_bind_double(statement, 7, consumedPercent)
+        bindOptionalInt(resetAt, to: 8, in: statement)
 
         try step(statement)
     }
@@ -510,6 +646,7 @@ final class UsageHistoryStore {
         window: UsageLimitWindow,
         timestamp: Int64,
         usedPercent: Int,
+        consumedPercentAdjustment: Double,
         resetAt: Int64?
     ) throws {
         let periodStart = periodStart(for: timestamp, granularity: granularity)
@@ -517,8 +654,8 @@ final class UsageHistoryStore {
             """
             INSERT INTO usage_rollups (
                 granularity, bucket_id, bucket_name, bucket_kind, window, period_start,
-                sample_timestamp, used_percent, peak_used_percent, reset_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sample_timestamp, used_percent, peak_used_percent, consumed_percent, reset_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(granularity, bucket_id, window, period_start) DO UPDATE SET
                 bucket_name = excluded.bucket_name,
                 bucket_kind = excluded.bucket_kind,
@@ -535,6 +672,10 @@ final class UsageHistoryStore {
                 peak_used_percent = MAX(
                     IFNULL(usage_rollups.peak_used_percent, usage_rollups.used_percent),
                     excluded.peak_used_percent
+                ),
+                consumed_percent = MAX(
+                    IFNULL(usage_rollups.consumed_percent, 0) + excluded.consumed_percent,
+                    0
                 ),
                 reset_at = CASE
                     WHEN excluded.sample_timestamp >= usage_rollups.sample_timestamp
@@ -554,7 +695,8 @@ final class UsageHistoryStore {
         sqlite3_bind_int64(statement, 7, timestamp)
         sqlite3_bind_int(statement, 8, Int32(usedPercent))
         sqlite3_bind_int(statement, 9, Int32(usedPercent))
-        bindOptionalInt(resetAt, to: 10, in: statement)
+        sqlite3_bind_double(statement, 10, consumedPercentAdjustment)
+        bindOptionalInt(resetAt, to: 11, in: statement)
 
         try step(statement)
     }
@@ -562,7 +704,8 @@ final class UsageHistoryStore {
     private func rawPoints(window: UsageLimitWindow, startTimestamp: Int64, endTimestamp: Int64) throws -> [UsageHistoryPoint] {
         let statement = try prepare(
             """
-            SELECT bucket_id, bucket_name, bucket_kind, timestamp, used_percent, used_percent
+            SELECT bucket_id, bucket_name, bucket_kind, timestamp, used_percent,
+                used_percent, consumed_percent
             FROM usage_samples
             WHERE window = ? AND timestamp >= ? AND timestamp <= ?
             ORDER BY timestamp ASC, bucket_kind ASC, bucket_name ASC
@@ -586,7 +729,7 @@ final class UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT bucket_id, bucket_name, bucket_kind, sample_timestamp,
-                used_percent, IFNULL(peak_used_percent, used_percent)
+                used_percent, IFNULL(peak_used_percent, used_percent), consumed_percent
             FROM usage_rollups
             WHERE granularity = ? AND window = ? AND sample_timestamp >= ? AND sample_timestamp <= ?
             ORDER BY sample_timestamp ASC, bucket_kind ASC, bucket_name ASC
@@ -603,7 +746,41 @@ final class UsageHistoryStore {
     }
 
     private func readPoints(from statement: OpaquePointer, window: UsageLimitWindow) throws -> [UsageHistoryPoint] {
-        var points: [UsageHistoryPoint] = []
+        struct PointRow {
+            let timestamp: Date
+            let bucketID: String
+            let bucketName: String
+            let bucketKind: CodexUsageBucketKind
+            let usedPercent: Double
+            let peakUsedPercent: Double
+            let consumedPercent: Double?
+        }
+
+        var rows: [PointRow] = []
+
+        func points(from rows: [PointRow], window: UsageLimitWindow) -> [UsageHistoryPoint] {
+            var previousUsedPercentByBucket = [String: Double]()
+
+            return rows.map { row in
+                let key = "\(row.bucketID)-\(window.rawValue)"
+                let consumedPercent = row.consumedPercent ?? Self.observedConsumedPercent(
+                    currentUsedPercent: row.usedPercent,
+                    previousUsedPercent: previousUsedPercentByBucket[key]
+                )
+                previousUsedPercentByBucket[key] = row.usedPercent
+
+                return UsageHistoryPoint(
+                    timestamp: row.timestamp,
+                    bucketID: row.bucketID,
+                    bucketName: row.bucketName,
+                    bucketKind: row.bucketKind,
+                    window: window,
+                    usedPercent: row.usedPercent,
+                    peakUsedPercent: row.peakUsedPercent,
+                    consumedPercent: consumedPercent
+                )
+            }
+        }
 
         while true {
             let result = sqlite3_step(statement)
@@ -616,19 +793,20 @@ final class UsageHistoryStore {
                 let timestamp = sqlite3_column_int64(statement, 3)
                 let usedPercent = sqlite3_column_double(statement, 4)
                 let peakUsedPercent = sqlite3_column_double(statement, 5)
-                points.append(
-                    UsageHistoryPoint(
+                let consumedPercent = optionalColumnDouble(statement, index: 6)
+                rows.append(
+                    PointRow(
                         timestamp: Date(timeIntervalSince1970: TimeInterval(timestamp)),
                         bucketID: bucketID,
                         bucketName: bucketName,
                         bucketKind: bucketKind,
-                        window: window,
                         usedPercent: usedPercent,
-                        peakUsedPercent: peakUsedPercent
+                        peakUsedPercent: peakUsedPercent,
+                        consumedPercent: consumedPercent
                     )
                 )
             case SQLITE_DONE:
-                return points
+                return points(from: rows, window: window)
             default:
                 throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
             }
@@ -771,8 +949,33 @@ final class UsageHistoryStore {
         return String(cString: text)
     }
 
+    private func optionalColumnDouble(_ statement: OpaquePointer, index: Int32) -> Double? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
+            return nil
+        }
+
+        return sqlite3_column_double(statement, index)
+    }
+
     private var lastErrorMessage: String {
         String(cString: sqlite3_errmsg(database))
+    }
+
+    private static func observedConsumedPercent(
+        currentUsedPercent: Double,
+        previousUsedPercent: Double?
+    ) -> Double {
+        guard let previousUsedPercent else {
+            return 0
+        }
+
+        let consumedPercent = if currentUsedPercent >= previousUsedPercent {
+            currentUsedPercent - previousUsedPercent
+        } else {
+            currentUsedPercent
+        }
+
+        return min(max(consumedPercent, 0), 100)
     }
 
     private static func roundedToMinute(_ date: Date) -> Date {

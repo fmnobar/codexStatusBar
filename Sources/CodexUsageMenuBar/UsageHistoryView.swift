@@ -31,13 +31,13 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 @MainActor
 final class UsageHistoryViewModel: ObservableObject {
     @Published var selectedRange: UsageHistoryRange = .day {
-        didSet { reload() }
+        didSet { scheduleReload() }
     }
     @Published var selectedWindow: UsageLimitWindow = .sevenDay {
-        didSet { reload() }
+        didSet { scheduleReload() }
     }
-    @Published var selectedMetric: UsageHistoryMetric = .capacityLeft {
-        didSet { clearHoverSelection() }
+    @Published var selectedMetric: UsageHistoryMetric = .usage {
+        didSet { scheduleClearHoverSelection() }
     }
     @Published var seriesSearchText = ""
     @Published private(set) var points: [UsageHistoryPoint] = []
@@ -53,6 +53,8 @@ final class UsageHistoryViewModel: ObservableObject {
     private let calendar: Calendar
     private var userEditedSeriesSelection = false
     private var historyObserver: NSObjectProtocol?
+    private var reloadWorkItem: DispatchWorkItem?
+    private var hoverSelectionWorkItem: DispatchWorkItem?
 
     init(
         store: UsageHistoryStore,
@@ -76,6 +78,8 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     deinit {
+        reloadWorkItem?.cancel()
+        hoverSelectionWorkItem?.cancel()
         if let historyObserver {
             NotificationCenter.default.removeObserver(historyObserver)
         }
@@ -242,6 +246,15 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
+    func scheduleReload() {
+        reloadWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.reload()
+        }
+        reloadWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
     func binding(for series: UsageHistorySeries) -> Binding<Bool> {
         Binding(
             get: { self.selectedSeriesIDs.contains(series.id) },
@@ -321,6 +334,24 @@ final class UsageHistoryViewModel: ObservableObject {
 
     func clearHoverSelection() {
         hoverSelection = nil
+    }
+
+    func scheduleHoverSelection(nearestTo timestamp: Date, xPosition: CGFloat) {
+        hoverSelectionWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.updateHoverSelection(nearestTo: timestamp, xPosition: xPosition)
+        }
+        hoverSelectionWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
+    func scheduleClearHoverSelection() {
+        hoverSelectionWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.clearHoverSelection()
+        }
+        hoverSelectionWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
     }
 
     func chartXPosition(for point: UsageHistoryChartPoint) -> Date {
@@ -469,6 +500,9 @@ final class UsageHistoryViewModel: ObservableObject {
             let bucketStart = bucketStart(for: latestPoint.timestamp, component: bucketComponent, calendar: calendar)
             let uncappedBucketEnd = calendar.date(byAdding: bucketComponent, value: 1, to: bucketStart) ?? bucketStart
             let peakUsedPercent = bucketPoints.map(\.peakUsedPercent).max() ?? latestPoint.peakUsedPercent
+            let consumedPercent = bucketPoints.reduce(0) { total, point in
+                total + point.consumedPercent
+            }
 
             return UsageHistoryChartPoint(
                 bucketStart: bucketStart,
@@ -479,7 +513,8 @@ final class UsageHistoryViewModel: ObservableObject {
                 bucketKind: latestPoint.bucketKind,
                 window: window,
                 latestUsedPercent: latestPoint.usedPercent,
-                peakUsedPercent: peakUsedPercent
+                peakUsedPercent: peakUsedPercent,
+                consumedPercent: consumedPercent
             )
         }
         .sorted { lhs, rhs in
@@ -600,12 +635,12 @@ struct UsageHistoryView: View {
                 seriesSelector
             }
         }
-        .padding(.top, 34)
+        .padding(.top, 52)
         .padding(.horizontal, 20)
         .padding(.bottom, 20)
-        .frame(minWidth: 760, minHeight: 460)
+        .frame(minWidth: 760, minHeight: 600)
         .onAppear {
-            viewModel.reload()
+            viewModel.scheduleReload()
         }
         .confirmationDialog(
             "Clear all local usage history?",
@@ -639,45 +674,42 @@ struct UsageHistoryView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 16) {
-                Picker("Range", selection: $viewModel.selectedRange) {
-                    ForEach(UsageHistoryRange.allCases) { range in
-                        Text(range.displayTitle).tag(range)
-                    }
+        HStack(spacing: 12) {
+            Picker("Range", selection: $viewModel.selectedRange) {
+                ForEach(UsageHistoryRange.allCases) { range in
+                    Text(range.displayTitle).tag(range)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 300)
-
-                Picker("Limit", selection: $viewModel.selectedWindow) {
-                    ForEach(UsageLimitWindow.allCases) { window in
-                        Text(window.displayTitle).tag(window)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
-
-                Spacer()
-
-                Text(viewModel.chartPointCountSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .fixedSize()
             }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 240)
 
-            HStack(spacing: 16) {
-                Picker("Metric", selection: $viewModel.selectedMetric) {
-                    ForEach(UsageHistoryMetric.allCases) { metric in
-                        Text(metric.displayTitle).tag(metric)
-                    }
+            Picker("Limit", selection: $viewModel.selectedWindow) {
+                ForEach(UsageLimitWindow.allCases) { window in
+                    Text(window.displayTitle).tag(window)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 330)
-
-                Spacer()
             }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 104)
+
+            Picker("Metric", selection: $viewModel.selectedMetric) {
+                ForEach(UsageHistoryMetric.allCases) { metric in
+                    Text(metric.displayTitle).tag(metric)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 250)
+
+            Spacer()
+
+            Text(viewModel.chartPointCountSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
         }
     }
 
@@ -879,9 +911,9 @@ struct UsageHistoryView: View {
                 max(location.x, calloutHalfWidth),
                 max(calloutHalfWidth, geometry.size.width - calloutHalfWidth)
             )
-            viewModel.updateHoverSelection(nearestTo: timestamp, xPosition: clampedX)
+            viewModel.scheduleHoverSelection(nearestTo: timestamp, xPosition: clampedX)
         case .ended:
-            viewModel.clearHoverSelection()
+            viewModel.scheduleClearHoverSelection()
         }
     }
 }
