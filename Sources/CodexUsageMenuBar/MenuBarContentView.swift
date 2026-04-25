@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import SwiftUI
 
 private enum MenuBarPopoverExpandedSection: Equatable {
@@ -14,7 +15,7 @@ struct MenuBarContentView: View {
     @State private var expandedSection: MenuBarPopoverExpandedSection?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             if viewModel.isLoading && !viewModel.hasSnapshot {
                 Text("Loading…")
                     .font(.system(size: 13))
@@ -40,7 +41,7 @@ struct MenuBarContentView: View {
                 footer
             }
         }
-        .padding(12)
+        .padding(10)
         .frame(width: popoverWidth, alignment: .topLeading)
         .background(PopoverMaterialBackground())
         .background(contentSizeReader)
@@ -48,14 +49,7 @@ struct MenuBarContentView: View {
     }
 
     private var popoverWidth: CGFloat {
-        switch expandedSection {
-        case .history:
-            return 820
-        case .settings:
-            return 640
-        case nil:
-            return 340
-        }
+        560
     }
 
     private var contentSizeReader: some View {
@@ -111,9 +105,7 @@ struct MenuBarContentView: View {
             expandableHeader(title: "History", systemImage: "chart.xyaxis.line", section: .history)
 
             if expandedSection == .history {
-                UsageHistoryView(store: historyStore)
-                    .frame(height: 560)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                CompactUsageHistoryPanel(store: historyStore)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -160,48 +152,13 @@ struct MenuBarContentView: View {
     }
 
     private var inlineSettings: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Menu Bar")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
 
-                Toggle(
-                    "Show limit label",
-                    isOn: Binding(
-                        get: { viewModel.menuBarDisplayOptions.showsLimitLabel },
-                        set: { viewModel.setMenuBarShowsLimitLabel($0) }
-                    )
-                )
-                .toggleStyle(.checkbox)
-
-                Toggle(
-                    "Show reset date",
-                    isOn: Binding(
-                        get: { viewModel.menuBarDisplayOptions.showsResetDate },
-                        set: { viewModel.setMenuBarShowsResetDate($0) }
-                    )
-                )
-                .toggleStyle(.checkbox)
-
-                Toggle(
-                    "Show reset time",
-                    isOn: Binding(
-                        get: { viewModel.menuBarDisplayOptions.showsResetTime },
-                        set: { viewModel.setMenuBarShowsResetTime($0) }
-                    )
-                )
-                .toggleStyle(.checkbox)
-
-                HStack(spacing: 8) {
-                    Text("Preview")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    Text(viewModel.menuBarPercentText)
-                        .font(.system(size: 12, design: .monospaced))
-                        .lineLimit(1)
-                }
+                menuBarDisplayOptionsRow
             }
 
             Divider()
@@ -230,14 +187,53 @@ struct MenuBarContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            Divider()
-
-            DataManagementSettingsView(store: historyStore)
-                .frame(height: 560)
         }
-        .padding(10)
+        .padding(8)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var menuBarDisplayOptionsRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Toggle(
+                "7d/5h",
+                isOn: Binding(
+                    get: { viewModel.menuBarDisplayOptions.showsLimitLabel },
+                    set: { viewModel.setMenuBarShowsLimitLabel($0) }
+                )
+            )
+            .toggleStyle(.checkbox)
+
+            Toggle(
+                "Reset date",
+                isOn: Binding(
+                    get: { viewModel.menuBarDisplayOptions.showsResetDate },
+                    set: { viewModel.setMenuBarShowsResetDate($0) }
+                )
+            )
+            .toggleStyle(.checkbox)
+
+            Toggle(
+                "Reset time",
+                isOn: Binding(
+                    get: { viewModel.menuBarDisplayOptions.showsResetTime },
+                    set: { viewModel.setMenuBarShowsResetTime($0) }
+                )
+            )
+            .toggleStyle(.checkbox)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 6) {
+                Text("Preview")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                Text(viewModel.menuBarPercentText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1)
+            }
+        }
+        .font(.system(size: 12))
     }
 
     private var footer: some View {
@@ -293,6 +289,116 @@ struct MenuBarContentView: View {
         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
             .font(.system(size: 14))
             .frame(width: 14, alignment: .top)
+    }
+}
+
+private struct CompactUsageHistoryPanel: View {
+    @StateObject private var viewModel: UsageHistoryViewModel
+
+    init(store: UsageHistoryStore) {
+        _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(store: store))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            controls
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(viewModel.chartSubtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Text(viewModel.chartPointCountSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            if viewModel.hasVisiblePoints {
+                chart
+                    .frame(height: 190)
+            } else {
+                emptyState
+                    .frame(height: 190)
+            }
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            viewModel.scheduleReload()
+        }
+    }
+
+    private var controls: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Picker("Range", selection: $viewModel.selectedRange) {
+                ForEach(UsageHistoryRange.allCases) { range in
+                    Text(range.displayTitle).tag(range)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 200)
+
+            Picker("Limit", selection: $viewModel.selectedWindow) {
+                ForEach(UsageLimitWindow.allCases) { window in
+                    Text(window.displayTitle).tag(window)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 82)
+
+            Picker("Metric", selection: $viewModel.selectedMetric) {
+                ForEach(UsageHistoryMetric.allCases) { metric in
+                    Text(metric.displayTitle).tag(metric)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 200)
+        }
+        .controlSize(.small)
+    }
+
+    private var chart: some View {
+        Chart {
+            ForEach(viewModel.visibleBarPoints) { point in
+                BarMark(
+                    x: .value("Time", viewModel.chartXPosition(for: point)),
+                    y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
+                    stacking: .unstacked
+                )
+                .foregroundStyle(by: .value("Bucket", point.bucketName))
+                .opacity(point.bucketKind == .aggregate ? 0.84 : 0.66)
+            }
+        }
+        .chartYScale(domain: viewModel.chartYDomain)
+        .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+        .chartYAxisLabel(viewModel.chartYAxisTitle)
+        .chartLegend(.hidden)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Image(systemName: viewModel.emptyStatePresentation.systemImage)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Text(viewModel.emptyStatePresentation.title)
+                .font(.system(size: 12, weight: .semibold))
+
+            Text(viewModel.emptyStatePresentation.message)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16)
     }
 }
 
