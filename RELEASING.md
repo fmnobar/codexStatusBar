@@ -1,9 +1,13 @@
 # Releasing Codex Status Bar
 
-This project uses a GitHub Actions release workflow for public releases and a
-local script workflow for validation/fallback builds. Release assets are zip
-files containing `CodexStatusBar.app`. The public distribution path should use
-Developer ID signing and notarization.
+This project currently uses the local script workflow for public releases.
+Release assets are zip files containing `CodexStatusBar.app`. The public
+distribution path should use Developer ID signing and notarization.
+
+The GitHub Actions release workflow is intentionally disabled to avoid Actions
+notifications. Its source is kept at `.github/workflows/release.yml.disabled`
+for future reference; rename it back to `.github/workflows/release.yml` only
+when CI-based releases are needed again.
 
 ## Requirements
 
@@ -13,14 +17,13 @@ Developer ID signing and notarization.
 - Access to create GitHub Releases in `fmnobar/codexStatusBar`
 - For signed releases: a valid Developer ID Application certificate
 - For notarized releases: a notarytool keychain profile
-- For GitHub Actions releases: the repository secrets listed below
 
-## GitHub Actions Release
+## Disabled GitHub Actions Release
 
-Use the manual `Release` workflow in GitHub Actions for public releases. It
-bumps versions, runs validation and tests, builds a Developer ID signed and
-notarized app, pushes the release commit and `vX.Y.Z` tag, and publishes the zip
-asset to a GitHub Release.
+The manual `Release` workflow is disabled. When enabled, it bumps versions,
+runs validation and tests, builds a Developer ID signed and notarized app,
+pushes the release commit and `vX.Y.Z` tag, and publishes the zip asset to a
+GitHub Release.
 
 Required repository secrets:
 
@@ -42,13 +45,15 @@ base64 -i DeveloperIDApplication.p12 | pbcopy
 
 Then add the copied value as `DEVELOPER_ID_CERTIFICATE_BASE64`.
 
-To run the workflow:
+To re-enable and run the workflow:
 
-1. Open GitHub Actions.
-2. Select `Release`.
-3. Choose `Run workflow` on `main`.
-4. Enter `version` as `X.Y.Z` and `build` as a positive integer.
-5. Optionally enter release notes. If blank, the workflow uses commit subjects
+1. Rename `.github/workflows/release.yml.disabled` to `.github/workflows/release.yml`.
+2. Commit and push that change to `main`.
+3. Open GitHub Actions.
+4. Select `Release`.
+5. Choose `Run workflow` on `main`.
+6. Enter `version` as `X.Y.Z` and `build` as a positive integer.
+7. Optionally enter release notes. If blank, the workflow uses commit subjects
    since the previous `v*` tag.
 
 The generated release uses:
@@ -139,8 +144,9 @@ Then create a GitHub Release:
 - Notes: summarize user-facing changes since the previous release
 
 The app's live update checker reads GitHub's latest published release. Raw git
-tags are not enough; the GitHub Release must be published. The GitHub Actions
-workflow performs these publish steps automatically.
+tags are not enough; the GitHub Release must be published. The disabled GitHub
+Actions workflow can perform these publish steps automatically if it is
+re-enabled.
 
 ## In-App Updates
 

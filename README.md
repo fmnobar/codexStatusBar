@@ -37,7 +37,7 @@ git pull
 ./install.sh
 ```
 
-Release maintainers should follow [RELEASING.md](RELEASING.md) to publish signed and notarized GitHub Release assets with the manual GitHub Actions workflow or local fallback scripts.
+Release maintainers should follow [RELEASING.md](RELEASING.md) to publish signed and notarized GitHub Release assets with the local release scripts. The GitHub Actions release workflow is currently disabled.
 
 ## Uninstall
 
