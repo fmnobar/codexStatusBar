@@ -1,0 +1,244 @@
+name: Release
+
+run-name: Release v${{ inputs.version }} build ${{ inputs.build }}
+
+'on':
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic app version, for example 1.2.3"
+        required: true
+        type: string
+      build:
+        description: "Positive integer build number"
+        required: true
+        type: string
+      release_notes:
+        description: "Optional GitHub Release notes. Commit subjects are used when blank."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build signed release
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    env:
+      VERSION: ${{ inputs.version }}
+      BUILD_NUMBER: ${{ inputs.build }}
+      RELEASE_NOTES_INPUT: ${{ inputs.release_notes }}
+      DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+      DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+      DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+      DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      KEYCHAIN_PATH: ${{ runner.temp }}/codex-status-bar-signing.keychain-db
+      KEYCHAIN_PASSWORD: codex-status-bar-${{ github.run_id }}-${{ github.run_attempt }}
+      NOTARYTOOL_PROFILE: codex-status-bar-ci
+      NOTARY_KEYCHAIN: ${{ runner.temp }}/codex-status-bar-signing.keychain-db
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs and secrets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "::error::Release workflow must be run from main; current ref is '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must use X.Y.Z format, got '$VERSION'."
+            exit 1
+          fi
+
+          if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::build must be a positive integer, got '$BUILD_NUMBER'."
+            exit 1
+          fi
+
+          for name in \
+            DEVELOPER_ID_APPLICATION \
+            DEVELOPMENT_TEAM \
+            DEVELOPER_ID_CERTIFICATE_BASE64 \
+            DEVELOPER_ID_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APPLE_APP_SPECIFIC_PASSWORD
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name secret is required for signed release automation."
+              exit 1
+            fi
+          done
+
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag v$VERSION already exists."
+            exit 1
+          fi
+
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::GitHub Release v$VERSION already exists."
+            exit 1
+          fi
+
+          xcodebuild -version
+          gh --version
+
+      - name: Import Developer ID certificate
+        run: |
+          set -euo pipefail
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
+          printf '%s' "$DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          existing_keychains="$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $existing_keychains
+
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          rm -f "$CERTIFICATE_PATH"
+          security find-identity -p codesigning -v "$KEYCHAIN_PATH"
+
+      - name: Configure notarytool profile
+        run: |
+          set -euo pipefail
+
+          xcrun notarytool store-credentials "$NOTARYTOOL_PROFILE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$DEVELOPMENT_TEAM" \
+            --keychain "$KEYCHAIN_PATH" \
+            --validate
+
+      - name: Prepare signed notarized release
+        run: |
+          set -euo pipefail
+          scripts/prepare_release.sh "$VERSION" "$BUILD_NUMBER" --signed --notarize
+
+      - name: Validate release artifact
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_PATH="dist/CodexStatusBar-v$VERSION-build$BUILD_NUMBER.zip"
+          if [[ ! -f "$ARTIFACT_PATH" ]]; then
+            echo "::error::Expected release artifact was not created: $ARTIFACT_PATH"
+            exit 1
+          fi
+
+          tmpdir="$(mktemp -d)"
+          ditto -x -k "$ARTIFACT_PATH" "$tmpdir"
+
+          APP_PATH="$tmpdir/CodexStatusBar.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "::error::Release zip did not contain CodexStatusBar.app."
+            exit 1
+          fi
+
+          actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
+          actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
+
+          if [[ "$actual_version" != "$VERSION" || "$actual_build" != "$BUILD_NUMBER" ]]; then
+            echo "::error::Artifact has version $actual_version ($actual_build), expected $VERSION ($BUILD_NUMBER)."
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          spctl -a -vv --type execute "$APP_PATH"
+
+      - name: Build release notes
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$RELEASE_NOTES_INPUT" ]]; then
+            printf '%s\n' "$RELEASE_NOTES_INPUT" > release-notes.md
+            exit 0
+          fi
+
+          previous_tag="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
+          if [[ -n "$previous_tag" ]]; then
+            range="$previous_tag..HEAD"
+            heading="Changes since $previous_tag"
+          else
+            range="HEAD"
+            heading="Changes"
+          fi
+
+          {
+            echo "$heading"
+            echo
+            git log --no-merges --pretty=format:'- %s' "$range"
+            echo
+          } > release-notes.md
+
+          if ! grep -q '^- ' release-notes.md; then
+            printf 'Release v%s.\n' "$VERSION" > release-notes.md
+          fi
+
+      - name: Commit version and tag
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add CodexUsageMenuBar.xcodeproj/project.pbxproj
+          if git diff --cached --quiet; then
+            echo "Version metadata already matched v$VERSION build $BUILD_NUMBER; no commit created."
+          else
+            git commit -m "Bump version to $VERSION"
+          fi
+
+          git tag -a "v$VERSION" -m "Codex Status Bar v$VERSION"
+          git push origin HEAD:main
+          git push origin "v$VERSION"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_PATH="dist/CodexStatusBar-v$VERSION-build$BUILD_NUMBER.zip"
+          gh release create "v$VERSION" "$ARTIFACT_PATH" \
+            --title "Codex Status Bar v$VERSION" \
+            --notes-file release-notes.md
+
+      - name: Clean up temporary keychain
+        if: always()
+        run: |
+          set +e
+          rm -f "$RUNNER_TEMP/developer-id-application.p12"
+          if [[ -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi

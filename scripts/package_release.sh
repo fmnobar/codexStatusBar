@@ -96,6 +96,10 @@ if [[ "$NOTARIZE" == "1" ]]; then
   if ! xcrun -f stapler >/dev/null 2>&1; then
     fail "xcrun stapler is required for notarization."
   fi
+
+  if [[ -n "${NOTARY_KEYCHAIN:-}" && "$DRY_RUN" != "1" && ! -f "$NOTARY_KEYCHAIN" ]]; then
+    fail "NOTARY_KEYCHAIN does not exist: $NOTARY_KEYCHAIN"
+  fi
 fi
 
 if [[ "$SIGNED" == "1" && "$DRY_RUN" != "1" ]]; then
@@ -155,6 +159,9 @@ fi
 
 if [[ "$NOTARIZE" == "1" ]]; then
   echo "Notary profile: $NOTARYTOOL_PROFILE"
+  if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then
+    echo "Notary keychain: $NOTARY_KEYCHAIN"
+  fi
   echo "Notary timeout: $NOTARY_TIMEOUT"
 fi
 
@@ -222,10 +229,18 @@ if [[ "$NOTARIZE" == "1" ]]; then
   )
 
   echo "Submitting app for notarization..."
-  xcrun notarytool submit "$NOTARY_UPLOAD_PATH" \
-    --keychain-profile "$NOTARYTOOL_PROFILE" \
-    --wait \
+  notary_args=(
+    "$NOTARY_UPLOAD_PATH"
+    --keychain-profile "$NOTARYTOOL_PROFILE"
+    --wait
     --timeout "$NOTARY_TIMEOUT"
+  )
+
+  if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then
+    notary_args+=(--keychain "$NOTARY_KEYCHAIN")
+  fi
+
+  xcrun notarytool submit "${notary_args[@]}"
 
   echo "Stapling notarization ticket..."
   xcrun stapler staple "$STAGED_APP_PATH"

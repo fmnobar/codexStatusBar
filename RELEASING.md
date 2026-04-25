@@ -1,8 +1,9 @@
 # Releasing Codex Status Bar
 
-This project uses a local release workflow. Release assets are zip files
-containing `CodexStatusBar.app`. The default path is unsigned for local testing;
-the public distribution path should use Developer ID signing and notarization.
+This project uses a GitHub Actions release workflow for public releases and a
+local script workflow for validation/fallback builds. Release assets are zip
+files containing `CodexStatusBar.app`. The public distribution path should use
+Developer ID signing and notarization.
 
 ## Requirements
 
@@ -12,13 +13,61 @@ the public distribution path should use Developer ID signing and notarization.
 - Access to create GitHub Releases in `fmnobar/codexStatusBar`
 - For signed releases: a valid Developer ID Application certificate
 - For notarized releases: a notarytool keychain profile
+- For GitHub Actions releases: the repository secrets listed below
+
+## GitHub Actions Release
+
+Use the manual `Release` workflow in GitHub Actions for public releases. It
+bumps versions, runs validation and tests, builds a Developer ID signed and
+notarized app, pushes the release commit and `vX.Y.Z` tag, and publishes the zip
+asset to a GitHub Release.
+
+Required repository secrets:
+
+- `DEVELOPER_ID_APPLICATION`: exact certificate identity, for example
+  `Developer ID Application: Your Name (TEAMID)`
+- `DEVELOPMENT_TEAM`: Apple team ID
+- `DEVELOPER_ID_CERTIFICATE_BASE64`: base64-encoded Developer ID Application
+  `.p12`
+- `DEVELOPER_ID_CERTIFICATE_PASSWORD`: password for the `.p12`
+- `APPLE_ID`: Apple ID used for notarization
+- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for notarization
+
+To create the certificate secret, export the Developer ID Application identity
+as a password-protected `.p12` from Keychain Access, then encode it:
+
+```bash
+base64 -i DeveloperIDApplication.p12 | pbcopy
+```
+
+Then add the copied value as `DEVELOPER_ID_CERTIFICATE_BASE64`.
+
+To run the workflow:
+
+1. Open GitHub Actions.
+2. Select `Release`.
+3. Choose `Run workflow` on `main`.
+4. Enter `version` as `X.Y.Z` and `build` as a positive integer.
+5. Optionally enter release notes. If blank, the workflow uses commit subjects
+   since the previous `v*` tag.
+
+The generated release uses:
+
+- Tag: `vX.Y.Z`
+- Title: `Codex Status Bar vX.Y.Z`
+- Asset: `dist/CodexStatusBar-vX.Y.Z-buildN.zip`
+
+The workflow uses `GITHUB_TOKEN` with `contents: write` to push the version
+commit and tag. If branch protection blocks GitHub Actions from pushing to
+`main`, either allow GitHub Actions to bypass the protection for this workflow
+or use the local release flow below.
 
 ## Prepare A Release
 
 Use semantic versions in `X.Y.Z` format. Tags must use the matching `vX.Y.Z`
 format because the app checks GitHub Releases for updates.
 
-For the recommended signed and notarized release path:
+For the local signed and notarized fallback path:
 
 ```bash
 git checkout main
@@ -69,7 +118,7 @@ verifies the Developer ID signature, submits a temporary upload zip, staples the
 accepted ticket to `CodexStatusBar.app`, validates the staple, then creates the
 final GitHub Release zip.
 
-## Publish
+## Publish A Local Release
 
 After release prep succeeds:
 
@@ -90,7 +139,8 @@ Then create a GitHub Release:
 - Notes: summarize user-facing changes since the previous release
 
 The app's live update checker reads GitHub's latest published release. Raw git
-tags are not enough; the GitHub Release must be published.
+tags are not enough; the GitHub Release must be published. The GitHub Actions
+workflow performs these publish steps automatically.
 
 ## Validate The Artifact
 

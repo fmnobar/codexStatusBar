@@ -35,7 +35,7 @@ git pull
 ./install.sh
 ```
 
-Release maintainers should follow [RELEASING.md](RELEASING.md) to bump versions and publish GitHub Release assets.
+Release maintainers should follow [RELEASING.md](RELEASING.md) to publish signed and notarized GitHub Release assets with the manual GitHub Actions workflow or local fallback scripts.
 
 ## Uninstall
 

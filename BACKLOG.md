@@ -49,8 +49,13 @@
   - Added a default Capacity left metric with a Usage toggle for peak consumption.
   - Added peak rollups, bucket hover details, and chart-shaped CSV export.
 
+- Add GitHub Actions release automation
+  - Added a manual release workflow for signed, notarized GitHub Release assets.
+  - Kept local release scripts as the source of truth while adding CI keychain and notary support.
+  - Documented required repository secrets and protected-branch behavior.
+
 ## Next Candidates
 
-- Add GitHub Actions release automation
-  - Automate release validation and artifact creation after local signed distribution is proven.
-  - Keep signing and notarization secrets outside the repo and scoped to release workflows.
+- Add in-app update download/install flow
+  - Let the app download the latest GitHub Release asset and guide the user through replacing the installed app.
+  - Keep user confirmation and macOS trust prompts explicit.
