@@ -401,6 +401,15 @@ private struct CompactUsageHistoryPanel: View {
         }
         .chartYScale(domain: viewModel.chartYDomain)
         .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: viewModel.chartXAxisDesiredCount)) { value in
+                AxisGridLine()
+                AxisTick()
+                if let date = value.as(Date.self) {
+                    AxisValueLabel(viewModel.chartXAxisLabel(for: date))
+                }
+            }
+        }
         .chartYAxisLabel(viewModel.chartYAxisTitle)
         .chartLegend(.hidden)
         .chartOverlay { proxy in
@@ -436,6 +445,10 @@ private struct CompactUsageHistoryPanel: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                UsageHistoryPeriodNavigationView(viewModel: viewModel)
 
                 Spacer(minLength: 0)
 

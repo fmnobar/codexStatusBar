@@ -31,7 +31,10 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 @MainActor
 final class UsageHistoryViewModel: ObservableObject {
     @Published var selectedRange: UsageHistoryRange = .month {
-        didSet { scheduleReload() }
+        didSet {
+            selectedPeriodStart = currentPeriodStart()
+            scheduleReload()
+        }
     }
     @Published var selectedWindow: UsageLimitWindow = .sevenDay {
         didSet { scheduleReload() }
@@ -46,11 +49,15 @@ final class UsageHistoryViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var hoverSelection: UsageHistoryHoverSelection?
     @Published private(set) var hasAnyRecordedHistory = false
+    @Published private(set) var selectedPeriodStart = Date(timeIntervalSince1970: 0) {
+        didSet { scheduleReload() }
+    }
     let chartSemantics: UsageHistoryChartSemantics
 
     private let store: UsageHistoryStore
     private let now: () -> Date
     private let calendar: Calendar
+    private var historyBounds: UsageHistoryBounds?
     private var userEditedSeriesSelection = false
     private var historyObserver: NSObjectProtocol?
     private var reloadWorkItem: DispatchWorkItem?
@@ -66,6 +73,7 @@ final class UsageHistoryViewModel: ObservableObject {
         self.chartSemantics = chartSemantics
         self.now = now
         self.calendar = calendar
+        selectedPeriodStart = selectedRange.period(containing: now(), calendar: calendar).start
         historyObserver = NotificationCenter.default.addObserver(
             forName: UsageHistoryStore.didChangeNotification,
             object: store,
@@ -94,6 +102,7 @@ final class UsageHistoryViewModel: ObservableObject {
             from: points,
             range: selectedRange,
             window: selectedWindow,
+            period: selectedPeriod,
             now: now(),
             calendar: calendar
         )
@@ -135,12 +144,47 @@ final class UsageHistoryViewModel: ObservableObject {
         selectedMetric.displayTitle
     }
 
+    var selectedPeriod: UsageHistoryPeriod {
+        period(startingAt: selectedPeriodStart)
+    }
+
+    var periodTitle: String {
+        Self.periodTitle(for: selectedRange, period: selectedPeriod, calendar: calendar)
+    }
+
+    var canGoToPreviousPeriod: Bool {
+        guard let historyBounds else {
+            return false
+        }
+
+        let earliestPeriodStart = selectedRange.period(containing: historyBounds.earliest, calendar: calendar).start
+        let previousPeriodStart = periodOffset(from: selectedPeriodStart, value: -1)
+        return previousPeriodStart >= earliestPeriodStart
+    }
+
+    var canGoToNextPeriod: Bool {
+        selectedPeriodStart < currentPeriodStart()
+    }
+
+    var chartXAxisDesiredCount: Int {
+        switch selectedRange {
+        case .day:
+            return 5
+        case .week:
+            return 7
+        case .month:
+            return 6
+        case .year:
+            return 12
+        }
+    }
+
     var chartDomainStart: Date {
-        Self.bucketWindow(for: selectedRange, now: now(), calendar: calendar).start
+        selectedPeriod.start
     }
 
     var chartDomainEnd: Date {
-        Self.bucketWindow(for: selectedRange, now: now(), calendar: calendar).end
+        selectedPeriod.end
     }
 
     var visibleBarPoints: [UsageHistoryChartPoint] {
@@ -228,23 +272,29 @@ final class UsageHistoryViewModel: ObservableObject {
 
     func reload() {
         do {
+            let queryPeriod = periodForQuery()
             let loadedPoints = try store.points(
                 range: selectedRange,
                 window: selectedWindow,
-                now: now(),
-                calendar: calendar
+                periodStart: queryPeriod.start,
+                periodEnd: queryPeriod.end
             )
             let loadedSeries = try store.series(
                 range: selectedRange,
                 window: selectedWindow,
-                now: now(),
-                calendar: calendar
+                periodStart: queryPeriod.start,
+                periodEnd: queryPeriod.end
             )
             let loadedHasAnyHistory = try store.hasAnyHistory()
+            let loadedHistoryBounds = try store.historyBounds(
+                window: selectedWindow,
+                granularity: selectedRange.storageGranularity
+            )
 
             points = loadedPoints
             series = loadedSeries
             hasAnyRecordedHistory = loadedHasAnyHistory
+            historyBounds = loadedHistoryBounds
             reconcileSelectedSeries()
             clearHoverSelection()
             errorMessage = nil
@@ -253,6 +303,7 @@ final class UsageHistoryViewModel: ObservableObject {
             series = []
             selectedSeriesIDs = []
             hasAnyRecordedHistory = false
+            historyBounds = nil
             clearHoverSelection()
             errorMessage = "History could not be loaded."
         }
@@ -364,6 +415,28 @@ final class UsageHistoryViewModel: ObservableObject {
         }
         hoverSelectionWorkItem = workItem
         DispatchQueue.main.async(execute: workItem)
+    }
+
+    func goToPreviousPeriod() {
+        guard canGoToPreviousPeriod else {
+            return
+        }
+
+        selectedPeriodStart = periodOffset(from: selectedPeriodStart, value: -1)
+        clearHoverSelection()
+    }
+
+    func goToNextPeriod() {
+        guard canGoToNextPeriod else {
+            return
+        }
+
+        selectedPeriodStart = min(periodOffset(from: selectedPeriodStart, value: 1), currentPeriodStart())
+        clearHoverSelection()
+    }
+
+    func chartXAxisLabel(for date: Date) -> String {
+        Self.chartXAxisLabel(for: date, range: selectedRange, calendar: calendar)
     }
 
     func chartXPosition(for point: UsageHistoryChartPoint) -> Date {
@@ -489,16 +562,20 @@ final class UsageHistoryViewModel: ObservableObject {
         from points: [UsageHistoryPoint],
         range: UsageHistoryRange,
         window: UsageLimitWindow,
+        period: UsageHistoryPeriod,
         now: Date,
         calendar: Calendar
     ) -> [UsageHistoryChartPoint] {
         let bucketComponent = range.chartBucketComponent
-        let bucketWindow = bucketWindow(for: range, now: now, calendar: calendar)
         var buckets = [String: [UsageHistoryPoint]]()
 
         for point in points {
-            let bucketStart = bucketStart(for: point.timestamp, component: bucketComponent, calendar: calendar)
-            guard bucketStart >= bucketWindow.start, bucketStart < bucketWindow.end else {
+            let bucketStart = UsageHistoryRange.bucketStart(
+                for: point.timestamp,
+                component: bucketComponent,
+                calendar: calendar
+            )
+            guard bucketStart >= period.start, bucketStart < period.end else {
                 continue
             }
 
@@ -520,16 +597,21 @@ final class UsageHistoryViewModel: ObservableObject {
                 return nil
             }
 
-            let bucketStart = bucketStart(for: latestPoint.timestamp, component: bucketComponent, calendar: calendar)
+            let bucketStart = UsageHistoryRange.bucketStart(
+                for: latestPoint.timestamp,
+                component: bucketComponent,
+                calendar: calendar
+            )
             let uncappedBucketEnd = calendar.date(byAdding: bucketComponent, value: 1, to: bucketStart) ?? bucketStart
             let peakUsedPercent = bucketPoints.map(\.peakUsedPercent).max() ?? latestPoint.peakUsedPercent
             let consumedPercent = bucketPoints.reduce(0) { total, point in
                 total + point.consumedPercent
             }
+            let bucketEnd = min(uncappedBucketEnd, period.end, now)
 
             return UsageHistoryChartPoint(
                 bucketStart: bucketStart,
-                bucketEnd: min(uncappedBucketEnd, now),
+                bucketEnd: bucketEnd,
                 sampleTimestamp: latestPoint.timestamp,
                 bucketID: firstPoint.bucketID,
                 bucketName: latestPoint.bucketName,
@@ -553,52 +635,67 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
-    private static func bucketWindow(
-        for range: UsageHistoryRange,
-        now: Date,
-        calendar: Calendar
-    ) -> (start: Date, end: Date) {
-        let component = range.chartBucketComponent
-        let currentBucketStart = bucketStart(for: now, component: component, calendar: calendar)
-
-        let bucketCountBack: Int
-        switch range {
-        case .day:
-            bucketCountBack = 23
-        case .week:
-            bucketCountBack = 6
-        case .month:
-            let monthStart = range.startDate(before: now, calendar: calendar)
-            let start = bucketStart(for: monthStart, component: component, calendar: calendar)
-            let end = calendar.date(byAdding: component, value: 1, to: currentBucketStart) ?? now
-            return (start, end)
-        case .year:
-            bucketCountBack = 11
-        }
-
-        let start = calendar.date(byAdding: component, value: -bucketCountBack, to: currentBucketStart) ?? currentBucketStart
-        let end = calendar.date(byAdding: component, value: 1, to: currentBucketStart) ?? now
-        return (start, end)
+    private func periodForQuery() -> UsageHistoryPeriod {
+        let period = selectedPeriod
+        let cappedEnd = min(period.end, now().addingTimeInterval(1))
+        return UsageHistoryPeriod(start: period.start, end: cappedEnd)
     }
 
-    private static func bucketStart(
-        for date: Date,
-        component: Calendar.Component,
+    private func period(startingAt start: Date) -> UsageHistoryPeriod {
+        let end = calendar.date(byAdding: selectedRange.periodComponent, value: 1, to: start) ?? start
+        return UsageHistoryPeriod(start: start, end: end)
+    }
+
+    private func currentPeriodStart() -> Date {
+        selectedRange.period(containing: now(), calendar: calendar).start
+    }
+
+    private func periodOffset(from start: Date, value: Int) -> Date {
+        calendar.date(byAdding: selectedRange.periodComponent, value: value, to: start) ?? start
+    }
+
+    private static func periodTitle(
+        for range: UsageHistoryRange,
+        period: UsageHistoryPeriod,
         calendar: Calendar
-    ) -> Date {
-        let components: Set<Calendar.Component>
-        switch component {
-        case .hour:
-            components = [.year, .month, .day, .hour]
+    ) -> String {
+        switch range {
         case .day:
-            components = [.year, .month, .day]
+            return period.start.formatted(.dateTime.month(.abbreviated).day())
+        case .week:
+            let endDate = period.end.addingTimeInterval(-1)
+            let start = period.start.formatted(.dateTime.month(.abbreviated).day())
+            let end = endDate.formatted(.dateTime.month(.abbreviated).day())
+            return "\(start)-\(end)"
         case .month:
-            components = [.year, .month]
-        default:
-            components = [.year, .month, .day]
+            return period.start.formatted(.dateTime.month(.abbreviated).year())
+        case .year:
+            let year = calendar.component(.year, from: period.start)
+            return "\(year)"
+        }
+    }
+
+    private static func chartXAxisLabel(
+        for date: Date,
+        range: UsageHistoryRange,
+        calendar: Calendar
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = calendar.locale ?? Locale.autoupdatingCurrent
+        formatter.timeZone = calendar.timeZone
+
+        switch range {
+        case .day:
+            formatter.setLocalizedDateFormatFromTemplate("ha")
+        case .week:
+            formatter.setLocalizedDateFormatFromTemplate("EEE")
+        case .month:
+            formatter.setLocalizedDateFormatFromTemplate("d")
+        case .year:
+            formatter.setLocalizedDateFormatFromTemplate("MMM")
         }
 
-        return calendar.date(from: calendar.dateComponents(components, from: date)) ?? date
+        return formatter.string(from: date)
     }
 
     private static func csvEscaped(_ value: String) -> String {
@@ -676,6 +773,45 @@ private struct UsageHistoryLayoutMetrics {
     }
 }
 
+struct UsageHistoryPeriodNavigationView: View {
+    @ObservedObject var viewModel: UsageHistoryViewModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button {
+                viewModel.goToPreviousPeriod()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.canGoToPreviousPeriod)
+            .help("Previous \(viewModel.selectedRange.displayTitle.lowercased())")
+            .accessibilityLabel("Previous \(viewModel.selectedRange.displayTitle)")
+
+            Text(viewModel.periodTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(minWidth: 72, alignment: .center)
+
+            Button {
+                viewModel.goToNextPeriod()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.canGoToNextPeriod)
+            .help("Next \(viewModel.selectedRange.displayTitle.lowercased())")
+            .accessibilityLabel("Next \(viewModel.selectedRange.displayTitle)")
+        }
+    }
+}
+
 struct UsageHistoryView: View {
     @StateObject private var viewModel: UsageHistoryViewModel
     @State private var isConfirmingClear = false
@@ -717,9 +853,7 @@ struct UsageHistoryView: View {
     private func content(layout: UsageHistoryLayoutMetrics) -> some View {
         VStack(alignment: .leading, spacing: layout.verticalSpacing) {
             controls
-            Text(viewModel.chartSubtitle)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            chartHeader
 
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
@@ -763,6 +897,19 @@ struct UsageHistoryView: View {
                 Spacer(minLength: 0)
                 historyActions
             }
+        }
+    }
+
+    private var chartHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(viewModel.chartSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            UsageHistoryPeriodNavigationView(viewModel: viewModel)
         }
     }
 
@@ -886,6 +1033,15 @@ struct UsageHistoryView: View {
             }
             .chartYScale(domain: viewModel.chartYDomain)
             .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: viewModel.chartXAxisDesiredCount)) { value in
+                    AxisGridLine()
+                    AxisTick()
+                    if let date = value.as(Date.self) {
+                        AxisValueLabel(viewModel.chartXAxisLabel(for: date))
+                    }
+                }
+            }
             .chartYAxisLabel(viewModel.chartYAxisTitle)
             .chartLegend(position: .bottom, alignment: .leading)
             .chartOverlay { proxy in

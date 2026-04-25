@@ -9,6 +9,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         super.setUp()
         calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
     }
 
     func testRecordsAggregateAndModelSamples() throws {
@@ -117,10 +118,10 @@ final class UsageHistoryStoreTests: XCTestCase {
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: oldDate)
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: currentDate)
 
-        let oldRawPoints = try store.points(range: .day, window: .sevenDay, now: date("2026-01-10T13:00:00Z"), calendar: calendar)
+        let oldDayPoints = try store.points(range: .day, window: .sevenDay, now: date("2026-01-10T13:00:00Z"), calendar: calendar)
         let yearPoints = try store.points(range: .year, window: .sevenDay, now: currentDate, calendar: calendar)
 
-        XCTAssertTrue(oldRawPoints.isEmpty)
+        XCTAssertEqual(oldDayPoints.map(\.usedPercent), [12])
         XCTAssertTrue(yearPoints.contains { $0.usedPercent == 12 })
         XCTAssertTrue(yearPoints.contains { $0.usedPercent == 40 })
     }
@@ -193,12 +194,27 @@ final class UsageHistoryStoreTests: XCTestCase {
         retention = UsageHistoryRawRetention.sevenDays.timeInterval
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: currentDate)
 
-        let oldRawPoints = try store.points(range: .day, window: .sevenDay, now: date("2026-04-01T13:00:00Z"), calendar: calendar)
+        let oldDayPoints = try store.points(range: .day, window: .sevenDay, now: date("2026-04-01T13:00:00Z"), calendar: calendar)
         let yearPoints = try store.points(range: .year, window: .sevenDay, now: currentDate, calendar: calendar)
 
-        XCTAssertTrue(oldRawPoints.isEmpty)
+        XCTAssertEqual(oldDayPoints.map(\.usedPercent), [12])
         XCTAssertTrue(yearPoints.contains { $0.usedPercent == 12 })
         XCTAssertTrue(yearPoints.contains { $0.usedPercent == 40 })
+    }
+
+    func testHistoryBoundsUseRequestedRollupGranularity() throws {
+        let store = try makeStore()
+
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-01T12:30:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-14T20:00:00Z"))
+
+        let hourlyBounds = try store.historyBounds(window: .sevenDay, granularity: .hour)
+        let dailyBounds = try store.historyBounds(window: .sevenDay, granularity: .day)
+
+        XCTAssertEqual(hourlyBounds?.earliest, date("2026-04-01T12:30:00Z"))
+        XCTAssertEqual(hourlyBounds?.latest, date("2026-04-14T20:00:00Z"))
+        XCTAssertEqual(dailyBounds?.earliest, date("2026-04-01T12:30:00Z"))
+        XCTAssertEqual(dailyBounds?.latest, date("2026-04-14T20:00:00Z"))
     }
 
     func testBackupExportProducesImportableDatabase() throws {
@@ -334,6 +350,96 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryPeriodDefaultsUseCalendarBoundaries() throws {
+        var mondayCalendar = calendar!
+        mondayCalendar.firstWeekday = 2
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-15T14:45:00Z") },
+            calendar: mondayCalendar
+        )
+
+        viewModel.selectedRange = .day
+
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-15T00:00:00Z"))
+        XCTAssertEqual(viewModel.selectedPeriod.end, date("2026-04-16T00:00:00Z"))
+
+        viewModel.selectedRange = .week
+
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-13T00:00:00Z"))
+        XCTAssertEqual(viewModel.selectedPeriod.end, date("2026-04-20T00:00:00Z"))
+
+        viewModel.selectedRange = .month
+
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-01T00:00:00Z"))
+        XCTAssertEqual(viewModel.selectedPeriod.end, date("2026-05-01T00:00:00Z"))
+
+        viewModel.selectedRange = .year
+
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-01-01T00:00:00Z"))
+        XCTAssertEqual(viewModel.selectedPeriod.end, date("2027-01-01T00:00:00Z"))
+    }
+
+    @MainActor
+    func testHistoryPeriodNavigationRespectsBoundsAndCurrentPeriod() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-12T09:00:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-14T00:00:00Z"))
+        XCTAssertFalse(viewModel.canGoToNextPeriod)
+        XCTAssertTrue(viewModel.canGoToPreviousPeriod)
+
+        viewModel.goToPreviousPeriod()
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-13T00:00:00Z"))
+        XCTAssertTrue(viewModel.canGoToNextPeriod)
+        XCTAssertTrue(viewModel.canGoToPreviousPeriod)
+
+        viewModel.goToPreviousPeriod()
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-12T00:00:00Z"))
+        XCTAssertFalse(viewModel.canGoToPreviousPeriod)
+
+        viewModel.selectedRange = .month
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-01T00:00:00Z"))
+    }
+
+    @MainActor
+    func testHistoryXAxisLabelsUseSelectedRangeFormats() throws {
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-14T17:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        let dayLabel = viewModel.chartXAxisLabel(for: date("2026-04-14T17:00:00Z"))
+
+        XCTAssertTrue(dayLabel.contains("PM"))
+        XCTAssertFalse(dayLabel.contains("Apr"))
+        XCTAssertFalse(dayLabel.contains("14"))
+
+        viewModel.selectedRange = .week
+        XCTAssertEqual(viewModel.chartXAxisLabel(for: date("2026-04-14T00:00:00Z")), "Tue")
+
+        viewModel.selectedRange = .month
+        XCTAssertEqual(viewModel.chartXAxisLabel(for: date("2026-04-14T00:00:00Z")), "14")
+
+        viewModel.selectedRange = .year
+        XCTAssertEqual(viewModel.chartXAxisLabel(for: date("2026-04-01T00:00:00Z")), "Apr")
+    }
+
+    @MainActor
     func testComparableHistoryPresentationUsesContributorsAndAggregateReference() throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
@@ -355,7 +461,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testDayChartGroupsRawSamplesIntoHourlyBuckets() throws {
+    func testDayChartGroupsHourlyRollupsIntoHourlyBuckets() throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 5)), at: date("2026-04-14T17:05:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 9)), at: date("2026-04-14T17:55:00Z"))

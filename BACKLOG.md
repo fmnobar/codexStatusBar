@@ -49,6 +49,11 @@
   - Added a default Capacity left metric with a Usage toggle for peak consumption.
   - Added peak rollups, bucket hover details, and chart-shaped CSV export.
 
+- Add calendar-period History navigation and axis labels
+  - Changed History charts from rolling ranges to explicit local day, week, month, and year periods.
+  - Added bounded previous/next period navigation for both inline and full History charts.
+  - Simplified x-axis labels to hours, weekdays, day numbers, and month names by selected range.
+
 - Add GitHub Actions release automation
   - Added a manual release workflow for signed, notarized GitHub Release assets.
   - Kept local release scripts as the source of truth while adding CI keychain and notary support.
@@ -60,6 +65,10 @@
   - Added Settings UI states for downloading, verifying, ready-to-install, install fallback, and errors.
 
 ## Next Candidates
+
+- Add History chart period polish
+  - Add a compact jump-to-current control, clearer disabled navigation hints, and period-aware export filenames.
+  - Keep the current calendar-period model and local-only storage behavior.
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.

@@ -39,9 +39,7 @@ enum UsageHistoryRange: String, CaseIterable, Identifiable, Equatable {
 
     var storageGranularity: UsageHistoryGranularity {
         switch self {
-        case .day:
-            return .raw
-        case .week:
+        case .day, .week:
             return .hour
         case .month, .year:
             return .day
@@ -70,18 +68,62 @@ enum UsageHistoryRange: String, CaseIterable, Identifiable, Equatable {
         }
     }
 
-    func startDate(before date: Date, calendar: Calendar = .autoupdatingCurrent) -> Date {
+    var periodComponent: Calendar.Component {
         switch self {
         case .day:
-            return calendar.date(byAdding: .day, value: -1, to: date) ?? date.addingTimeInterval(-86_400)
+            return .day
         case .week:
-            return calendar.date(byAdding: .day, value: -7, to: date) ?? date.addingTimeInterval(-604_800)
+            return .weekOfYear
         case .month:
-            return calendar.date(byAdding: .month, value: -1, to: date) ?? date.addingTimeInterval(-2_592_000)
+            return .month
         case .year:
-            return calendar.date(byAdding: .year, value: -1, to: date) ?? date.addingTimeInterval(-31_536_000)
+            return .year
         }
     }
+
+    func period(containing date: Date, calendar: Calendar = .autoupdatingCurrent) -> UsageHistoryPeriod {
+        if let interval = calendar.dateInterval(of: periodComponent, for: date) {
+            return UsageHistoryPeriod(start: interval.start, end: interval.end)
+        }
+
+        let start = UsageHistoryRange.bucketStart(for: date, component: periodComponent, calendar: calendar)
+        let end = calendar.date(byAdding: periodComponent, value: 1, to: start) ?? date
+        return UsageHistoryPeriod(start: start, end: end)
+    }
+
+    static func bucketStart(
+        for date: Date,
+        component: Calendar.Component,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> Date {
+        let components: Set<Calendar.Component>
+        switch component {
+        case .hour:
+            components = [.year, .month, .day, .hour]
+        case .day:
+            components = [.year, .month, .day]
+        case .weekOfYear:
+            return calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? date
+        case .month:
+            components = [.year, .month]
+        case .year:
+            components = [.year]
+        default:
+            components = [.year, .month, .day]
+        }
+
+        return calendar.date(from: calendar.dateComponents(components, from: date)) ?? date
+    }
+}
+
+struct UsageHistoryPeriod: Equatable {
+    let start: Date
+    let end: Date
+}
+
+struct UsageHistoryBounds: Equatable {
+    let earliest: Date
+    let latest: Date
 }
 
 enum UsageHistoryGranularity: String, Equatable {

@@ -219,8 +219,23 @@ final class UsageHistoryStore {
         now: Date,
         calendar: Calendar = .autoupdatingCurrent
     ) throws -> [UsageHistoryPoint] {
-        let startTimestamp = range.startDate(before: now, calendar: calendar).timeIntervalSince1970Int
-        let endTimestamp = now.timeIntervalSince1970Int
+        let period = range.period(containing: now, calendar: calendar)
+        return try points(
+            range: range,
+            window: window,
+            periodStart: period.start,
+            periodEnd: min(period.end, now.addingTimeInterval(1))
+        )
+    }
+
+    func points(
+        range: UsageHistoryRange,
+        window: UsageLimitWindow,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [UsageHistoryPoint] {
+        let startTimestamp = periodStart.timeIntervalSince1970Int
+        let endTimestamp = periodEnd.timeIntervalSince1970Int
 
         switch range.storageGranularity {
         case .raw:
@@ -243,6 +258,28 @@ final class UsageHistoryStore {
     ) throws -> [UsageHistorySeries] {
         let points = try points(range: range, window: window, now: now, calendar: calendar)
         return Self.series(from: points)
+    }
+
+    func series(
+        range: UsageHistoryRange,
+        window: UsageLimitWindow,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [UsageHistorySeries] {
+        let points = try points(range: range, window: window, periodStart: periodStart, periodEnd: periodEnd)
+        return Self.series(from: points)
+    }
+
+    func historyBounds(
+        window: UsageLimitWindow,
+        granularity: UsageHistoryGranularity
+    ) throws -> UsageHistoryBounds? {
+        switch granularity {
+        case .raw:
+            return try rawHistoryBounds(window: window)
+        case .hour, .day:
+            return try rollupHistoryBounds(window: window, granularity: granularity)
+        }
     }
 
     func csv(
@@ -701,13 +738,67 @@ final class UsageHistoryStore {
         try step(statement)
     }
 
+    private func rawHistoryBounds(window: UsageLimitWindow) throws -> UsageHistoryBounds? {
+        let statement = try prepare(
+            """
+            SELECT MIN(timestamp), MAX(timestamp)
+            FROM usage_samples
+            WHERE window = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(window.rawValue, to: 1, in: statement)
+        return try readHistoryBounds(from: statement)
+    }
+
+    private func rollupHistoryBounds(
+        window: UsageLimitWindow,
+        granularity: UsageHistoryGranularity
+    ) throws -> UsageHistoryBounds? {
+        let statement = try prepare(
+            """
+            SELECT MIN(sample_timestamp), MAX(sample_timestamp)
+            FROM usage_rollups
+            WHERE granularity = ? AND window = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(granularity.rawValue, to: 1, in: statement)
+        bindText(window.rawValue, to: 2, in: statement)
+        return try readHistoryBounds(from: statement)
+    }
+
+    private func readHistoryBounds(from statement: OpaquePointer) throws -> UsageHistoryBounds? {
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            guard sqlite3_column_type(statement, 0) != SQLITE_NULL,
+                  sqlite3_column_type(statement, 1) != SQLITE_NULL
+            else {
+                return nil
+            }
+
+            let earliest = sqlite3_column_int64(statement, 0)
+            let latest = sqlite3_column_int64(statement, 1)
+            return UsageHistoryBounds(
+                earliest: Date(timeIntervalSince1970: TimeInterval(earliest)),
+                latest: Date(timeIntervalSince1970: TimeInterval(latest))
+            )
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     private func rawPoints(window: UsageLimitWindow, startTimestamp: Int64, endTimestamp: Int64) throws -> [UsageHistoryPoint] {
         let statement = try prepare(
             """
             SELECT bucket_id, bucket_name, bucket_kind, timestamp, used_percent,
                 used_percent, consumed_percent
             FROM usage_samples
-            WHERE window = ? AND timestamp >= ? AND timestamp <= ?
+            WHERE window = ? AND timestamp >= ? AND timestamp < ?
             ORDER BY timestamp ASC, bucket_kind ASC, bucket_name ASC
             """
         )
@@ -731,7 +822,7 @@ final class UsageHistoryStore {
             SELECT bucket_id, bucket_name, bucket_kind, sample_timestamp,
                 used_percent, IFNULL(peak_used_percent, used_percent), consumed_percent
             FROM usage_rollups
-            WHERE granularity = ? AND window = ? AND sample_timestamp >= ? AND sample_timestamp <= ?
+            WHERE granularity = ? AND window = ? AND sample_timestamp >= ? AND sample_timestamp < ?
             ORDER BY sample_timestamp ASC, bucket_kind ASC, bucket_name ASC
             """
         )
