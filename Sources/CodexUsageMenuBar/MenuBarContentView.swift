@@ -109,10 +109,6 @@ struct MenuBarContentView: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 44, alignment: .topLeading)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(row.isSelected ? Color.primary.opacity(0.08) : Color.primary.opacity(0.04))
-            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
