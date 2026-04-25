@@ -1,11 +1,17 @@
 import AppKit
 import SwiftUI
 
+private enum MenuBarPopoverExpandedSection: Equatable {
+    case history
+    case settings
+}
+
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
-    let onOpenHistory: () -> Void
-    let onOpenSettings: () -> Void
+    let historyStore: UsageHistoryStore
+    var onContentSizeChange: (NSSize) -> Void = { _ in }
     var appVersionInfo: AppVersionInfo = .current()
+    @State private var expandedSection: MenuBarPopoverExpandedSection?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -31,13 +37,38 @@ struct MenuBarContentView: View {
                 Divider()
                 settingsSection
                 Divider()
-                launchAtLoginSection
-                Divider()
                 footer
             }
         }
         .padding(12)
+        .frame(width: popoverWidth, alignment: .topLeading)
         .background(PopoverMaterialBackground())
+        .background(contentSizeReader)
+        .animation(.snappy(duration: 0.18), value: expandedSection)
+    }
+
+    private var popoverWidth: CGFloat {
+        switch expandedSection {
+        case .history:
+            return 820
+        case .settings:
+            return 640
+        case nil:
+            return 340
+        }
+    }
+
+    private var contentSizeReader: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: PopoverContentSizePreferenceKey.self, value: proxy.size)
+        }
+        .onPreferenceChange(PopoverContentSizePreferenceKey.self) { size in
+            guard size.width > 0, size.height > 0 else {
+                return
+            }
+
+            onContentSizeChange(NSSize(width: ceil(size.width), height: ceil(size.height)))
+        }
     }
 
     @ViewBuilder
@@ -76,45 +107,48 @@ struct MenuBarContentView: View {
     }
 
     private var historySection: some View {
-        Button {
-            onOpenHistory()
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "chart.xyaxis.line")
-                    .font(.system(size: 14))
-                    .frame(width: 14)
+        VStack(alignment: .leading, spacing: 10) {
+            expandableHeader(title: "History", systemImage: "chart.xyaxis.line", section: .history)
 
-                Text("History")
-                    .font(.system(size: 13))
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+            if expandedSection == .history {
+                UsageHistoryView(store: historyStore)
+                    .frame(height: 560)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
     }
 
     private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            expandableHeader(title: "Settings", systemImage: "gearshape", section: .settings)
+
+            if expandedSection == .settings {
+                inlineSettings
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func expandableHeader(
+        title: String,
+        systemImage: String,
+        section: MenuBarPopoverExpandedSection
+    ) -> some View {
         Button {
-            onOpenSettings()
+            expandedSection = expandedSection == section ? nil : section
         } label: {
             HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "gearshape")
+                Image(systemName: systemImage)
                     .font(.system(size: 14))
                     .frame(width: 14)
 
-                Text("Settings")
+                Text(title)
                     .font(.system(size: 13))
 
                 Spacer(minLength: 0)
 
-                Image(systemName: "chevron.right")
+                Image(systemName: expandedSection == section ? "chevron.down" : "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -125,31 +159,85 @@ struct MenuBarContentView: View {
         .buttonStyle(.plain)
     }
 
-    private var launchAtLoginSection: some View {
-        Button {
-            viewModel.setLaunchAtLoginEnabled(!viewModel.launchAtLoginEnabled)
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                checkboxImage(isSelected: viewModel.launchAtLoginEnabled)
+    private var inlineSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Menu Bar")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Launch at login")
-                        .font(.system(size: 13))
+                Toggle(
+                    "Show limit label",
+                    isOn: Binding(
+                        get: { viewModel.menuBarDisplayOptions.showsLimitLabel },
+                        set: { viewModel.setMenuBarShowsLimitLabel($0) }
+                    )
+                )
+                .toggleStyle(.checkbox)
 
-                    if let launchAtLoginError = viewModel.launchAtLoginError {
-                        Text(launchAtLoginError)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
+                Toggle(
+                    "Show reset date",
+                    isOn: Binding(
+                        get: { viewModel.menuBarDisplayOptions.showsResetDate },
+                        set: { viewModel.setMenuBarShowsResetDate($0) }
+                    )
+                )
+                .toggleStyle(.checkbox)
+
+                Toggle(
+                    "Show reset time",
+                    isOn: Binding(
+                        get: { viewModel.menuBarDisplayOptions.showsResetTime },
+                        set: { viewModel.setMenuBarShowsResetTime($0) }
+                    )
+                )
+                .toggleStyle(.checkbox)
+
+                HStack(spacing: 8) {
+                    Text("Preview")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    Text(viewModel.menuBarPercentText)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1)
                 }
-
-                Spacer(minLength: 0)
             }
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+
+            Divider()
+
+            Button {
+                viewModel.setLaunchAtLoginEnabled(!viewModel.launchAtLoginEnabled)
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    checkboxImage(isSelected: viewModel.launchAtLoginEnabled)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Launch at login")
+                            .font(.system(size: 13))
+
+                        if let launchAtLoginError = viewModel.launchAtLoginError {
+                            Text(launchAtLoginError)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+
+            DataManagementSettingsView(store: historyStore)
+                .frame(height: 560)
         }
-        .buttonStyle(.plain)
+        .padding(10)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var footer: some View {
@@ -205,6 +293,19 @@ struct MenuBarContentView: View {
         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
             .font(.system(size: 14))
             .frame(width: 14, alignment: .top)
+    }
+}
+
+private struct PopoverContentSizePreferenceKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let nextValue = nextValue()
+        guard nextValue != .zero else {
+            return
+        }
+
+        value = nextValue
     }
 }
 

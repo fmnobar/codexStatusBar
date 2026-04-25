@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
+    private let historyStore: UsageHistoryStore
     private let historyWindowController: UsageHistoryWindowController
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
@@ -22,6 +23,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     init(viewModel: MenuBarStatusViewModel, historyStore: UsageHistoryStore) {
         self.viewModel = viewModel
+        self.historyStore = historyStore
         self.historyWindowController = UsageHistoryWindowController(store: historyStore)
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
@@ -39,15 +41,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(
             rootView: MenuBarContentView(
                 viewModel: viewModel,
-                onOpenHistory: { [weak self] in
-                    self?.popover.performClose(nil)
-                    self?.showHistory()
-                },
-                onOpenSettings: { [weak self] in
-                    self?.showSettings()
+                historyStore: historyStore,
+                onContentSizeChange: { [weak self] size in
+                    self?.updatePopoverContentSize(size)
                 }
             )
-                .frame(width: 340)
         )
     }
 
@@ -164,6 +162,34 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         Task {
             await viewModel.popoverDidAppear()
         }
+    }
+
+    private func updatePopoverContentSize(_ size: NSSize) {
+        guard size.width > 0, size.height > 0 else {
+            return
+        }
+
+        let maxHeight = maxPopoverHeight()
+        let clampedSize = NSSize(
+            width: size.width,
+            height: min(size.height, maxHeight)
+        )
+
+        guard abs(popover.contentSize.width - clampedSize.width) > 0.5
+            || abs(popover.contentSize.height - clampedSize.height) > 0.5
+        else {
+            return
+        }
+
+        popover.contentSize = clampedSize
+    }
+
+    private func maxPopoverHeight() -> CGFloat {
+        let visibleFrame = statusItem.button?.window?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 820, height: 760)
+
+        return max(320, visibleFrame.height - 36)
     }
 
     private func showContextMenu() {

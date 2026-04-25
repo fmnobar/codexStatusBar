@@ -12,6 +12,35 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(MenuBarDisplayWindowStore.load(from: defaults), .tightest)
     }
 
+    func testMenuBarDisplayOptionsStoreDefaultsToLimitOnly() {
+        let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        XCTAssertEqual(MenuBarDisplayOptionsStore.load(from: defaults), .defaultValue)
+    }
+
+    func testMenuBarDisplayOptionsStorePersistsSelection() {
+        let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let options = MenuBarDisplayOptions(
+            showsLimitLabel: false,
+            showsResetDate: true,
+            showsResetTime: true
+        )
+
+        MenuBarDisplayOptionsStore.save(options, to: defaults)
+
+        XCTAssertEqual(MenuBarDisplayOptionsStore.load(from: defaults), options)
+    }
+
     func testRemainingPercentIsClamped() {
         XCTAssertEqual(CodexRateLimitWindow.clampedRemainingPercent(from: 2), 98)
         XCTAssertEqual(CodexRateLimitWindow.clampedRemainingPercent(from: -5), 100)
@@ -144,6 +173,58 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.menuBarPercentText, "5h: 84%")
+    }
+
+    func testMenuBarTextCanShowResetDateAndTime() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = ISO8601DateFormatter().date(from: "2026-04-25T16:00:00Z")!
+        let resetDate = ISO8601DateFormatter().date(from: "2026-04-28T19:58:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 37, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: resetDate)
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: now,
+            selectedMenuBarDisplayWindow: .tightest,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: true,
+                showsResetTime: true
+            ),
+            calendar: calendar,
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "7d: 39% 4/28 7:58PM")
+    }
+
+    func testMenuBarTextCanHideLimitLabelAndShowResetTimeOnly() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = ISO8601DateFormatter().date(from: "2026-04-25T16:00:00Z")!
+        let resetDate = ISO8601DateFormatter().date(from: "2026-04-25T19:58:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 37, windowDurationMinutes: 300, resetsAt: resetDate),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: now,
+            selectedMenuBarDisplayWindow: .fiveHour,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: false,
+                showsResetDate: false,
+                showsResetTime: true
+            ),
+            calendar: calendar,
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "63% 7:58PM")
     }
 
     func testCrossDayResetFormattingOmitsAt() {

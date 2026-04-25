@@ -56,6 +56,48 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
+    func testMenuBarDisplayOptionsUpdateAndPersistMenuBarText() async {
+        let resetDate = ISO8601DateFormatter().date(from: "2026-04-28T19:58:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: resetDate)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let persistedOptions = MenuBarDisplayOptionsBox(options: .defaultValue)
+        let now = ISO8601DateFormatter().date(from: "2026-04-25T16:00:00Z")!
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: { now },
+            refreshInterval: 3_600,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: persistedOptions.options,
+            persistSelection: { _ in },
+            loadMenuBarDisplayOptions: { persistedOptions.options },
+            persistMenuBarDisplayOptions: { persistedOptions.options = $0 },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39%")
+
+        viewModel.setMenuBarShowsResetDate(true)
+        viewModel.setMenuBarShowsResetTime(true)
+
+        XCTAssertEqual(persistedOptions.options.showsResetDate, true)
+        XCTAssertEqual(persistedOptions.options.showsResetTime, true)
+        XCTAssertTrue(viewModel.menuBarPercentText.contains("4/28"))
+        XCTAssertTrue(viewModel.menuBarPercentText.contains("PM"))
+
+        viewModel.setMenuBarShowsLimitLabel(false)
+
+        XCTAssertFalse(persistedOptions.options.showsLimitLabel)
+        XCTAssertFalse(viewModel.menuBarPercentText.contains("7d:"))
+
+        viewModel.stop()
+    }
+
     func testFailedRefreshWithCachedSnapshotShowsStaleOfflineState() async {
         let currentTime = MutableNow(date: ISO8601DateFormatter().date(from: "2026-04-14T20:00:00Z")!)
         let snapshot = CodexRateLimitSnapshot(
@@ -183,6 +225,45 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         viewModel.selectMenuBarDisplayWindow(.fiveHour)
         XCTAssertEqual(persistedSelection.selection, .fiveHour)
+
+        viewModel.stop()
+    }
+
+    func testPersistedMenuBarDisplayOptionsSyncBackIntoViewModel() async {
+        let resetDate = ISO8601DateFormatter().date(from: "2026-04-28T19:58:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 35, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: resetDate)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let persistedOptions = MenuBarDisplayOptionsBox(options: .defaultValue)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 60,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: persistedOptions.options,
+            persistSelection: { _ in },
+            loadMenuBarDisplayOptions: { persistedOptions.options },
+            persistMenuBarDisplayOptions: { persistedOptions.options = $0 },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39%")
+
+        persistedOptions.options = MenuBarDisplayOptions(
+            showsLimitLabel: true,
+            showsResetDate: true,
+            showsResetTime: false
+        )
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
+        await Task.yield()
+
+        XCTAssertEqual(viewModel.menuBarDisplayOptions, persistedOptions.options)
+        XCTAssertTrue(viewModel.menuBarPercentText.contains("4/28"))
 
         viewModel.stop()
     }
@@ -418,6 +499,14 @@ private final class SelectionBox {
 
     init(selection: MenuBarDisplayWindow) {
         self.selection = selection
+    }
+}
+
+private final class MenuBarDisplayOptionsBox {
+    var options: MenuBarDisplayOptions
+
+    init(options: MenuBarDisplayOptions) {
+        self.options = options
     }
 }
 

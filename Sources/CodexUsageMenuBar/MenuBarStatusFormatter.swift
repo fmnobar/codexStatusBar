@@ -36,6 +36,46 @@ enum MenuBarDisplayWindowStore {
     }
 }
 
+struct MenuBarDisplayOptions: Equatable {
+    var showsLimitLabel: Bool
+    var showsResetDate: Bool
+    var showsResetTime: Bool
+
+    static let defaultValue = MenuBarDisplayOptions(
+        showsLimitLabel: true,
+        showsResetDate: false,
+        showsResetTime: false
+    )
+}
+
+enum MenuBarDisplayOptionsStore {
+    private static let showsLimitLabelKey = "MenuBarDisplayOptionsShowsLimitLabel"
+    private static let showsResetDateKey = "MenuBarDisplayOptionsShowsResetDate"
+    private static let showsResetTimeKey = "MenuBarDisplayOptionsShowsResetTime"
+
+    static func load(from defaults: UserDefaults = .standard) -> MenuBarDisplayOptions {
+        MenuBarDisplayOptions(
+            showsLimitLabel: bool(forKey: showsLimitLabelKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsLimitLabel, from: defaults),
+            showsResetDate: bool(forKey: showsResetDateKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetDate, from: defaults),
+            showsResetTime: bool(forKey: showsResetTimeKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetTime, from: defaults)
+        )
+    }
+
+    static func save(_ options: MenuBarDisplayOptions, to defaults: UserDefaults = .standard) {
+        defaults.set(options.showsLimitLabel, forKey: showsLimitLabelKey)
+        defaults.set(options.showsResetDate, forKey: showsResetDateKey)
+        defaults.set(options.showsResetTime, forKey: showsResetTimeKey)
+    }
+
+    private static func bool(forKey key: String, defaultValue: Bool, from defaults: UserDefaults) -> Bool {
+        guard defaults.object(forKey: key) != nil else {
+            return defaultValue
+        }
+
+        return defaults.bool(forKey: key)
+    }
+}
+
 enum StatusItemVisualState: Equatable {
     case normal
     case stale
@@ -62,6 +102,7 @@ enum MenuBarStatusFormatter {
         snapshot: CodexRateLimitSnapshot?,
         now: Date,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow,
+        menuBarDisplayOptions: MenuBarDisplayOptions = .defaultValue,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
@@ -73,7 +114,9 @@ enum MenuBarStatusFormatter {
         return MenuBarStatusPresentation(
             menuBarPercentText: menuBarPercentText(
                 for: menuBarWindow.window,
-                sourceTitle: menuBarWindow.sourceTitle
+                sourceTitle: menuBarWindow.sourceTitle,
+                options: menuBarDisplayOptions,
+                calendar: calendar
             ),
             fiveHourRow: row(
                 title: "5h limit",
@@ -101,17 +144,34 @@ enum MenuBarStatusFormatter {
         )
     }
 
-    static func menuBarPercentText(for window: CodexRateLimitWindow?, sourceTitle: String? = nil) -> String {
+    static func menuBarPercentText(
+        for window: CodexRateLimitWindow?,
+        sourceTitle: String? = nil,
+        options: MenuBarDisplayOptions = .defaultValue,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> String {
         guard let window else {
             return "--"
         }
 
+        var components = [String]()
         let percentText = "\(window.remainingPercent)%"
-        guard let sourceTitle else {
-            return percentText
+
+        if options.showsLimitLabel, let sourceTitle {
+            components.append("\(sourceTitle): \(percentText)")
+        } else {
+            components.append(percentText)
         }
 
-        return "\(sourceTitle): \(percentText)"
+        if let resetText = menuBarResetText(
+            for: window.resetsAt,
+            options: options,
+            calendar: calendar
+        ) {
+            components.append(resetText)
+        }
+
+        return components.joined(separator: " ")
     }
 
     static func row(
@@ -247,5 +307,38 @@ enum MenuBarStatusFormatter {
 
             return "\(dateFormatter.string(from: resetDate)) \(timeFormatter.string(from: resetDate))"
         }
+    }
+
+    private static func menuBarResetText(
+        for resetDate: Date?,
+        options: MenuBarDisplayOptions,
+        calendar: Calendar
+    ) -> String? {
+        guard options.showsResetDate || options.showsResetTime else {
+            return nil
+        }
+        guard let resetDate else {
+            return "--"
+        }
+
+        var components = [String]()
+
+        if options.showsResetDate {
+            let dateFormatter = DateFormatter()
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+            dateFormatter.timeZone = calendar.timeZone
+            dateFormatter.dateFormat = "M/d"
+            components.append(dateFormatter.string(from: resetDate))
+        }
+
+        if options.showsResetTime {
+            let timeFormatter = DateFormatter()
+            timeFormatter.locale = Locale(identifier: "en_US_POSIX")
+            timeFormatter.timeZone = calendar.timeZone
+            timeFormatter.dateFormat = "h:mma"
+            components.append(timeFormatter.string(from: resetDate))
+        }
+
+        return components.joined(separator: " ")
     }
 }

@@ -37,6 +37,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         isSelected: true
     )
     @Published private(set) var selectedMenuBarDisplayWindow: MenuBarDisplayWindow
+    @Published private(set) var menuBarDisplayOptions: MenuBarDisplayOptions
     @Published private(set) var statusItemVisualState: StatusItemVisualState = .normal
     @Published private(set) var footerStatusText: String?
     @Published private(set) var isStaleSnapshot = false
@@ -54,6 +55,8 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let historyRecorder: UsageHistoryRecording
     private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
+    private let loadMenuBarDisplayOptions: () -> MenuBarDisplayOptions
+    private let persistMenuBarDisplayOptions: (MenuBarDisplayOptions) -> Void
     private let loadLaunchAtLoginEnabled: () -> Bool
     private let setLaunchAtLoginEnabledAction: (Bool) throws -> Void
 
@@ -74,8 +77,11 @@ final class MenuBarStatusViewModel: ObservableObject {
         refreshInterval: TimeInterval = 60,
         historyRecorder: UsageHistoryRecording = NoOpUsageHistoryRecorder(),
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
+        menuBarDisplayOptions: MenuBarDisplayOptions = MenuBarDisplayOptionsStore.load(),
         loadPersistedSelection: @escaping () -> MenuBarDisplayWindow = { MenuBarDisplayWindowStore.load() },
         persistSelection: @escaping (MenuBarDisplayWindow) -> Void = { MenuBarDisplayWindowStore.save($0) },
+        loadMenuBarDisplayOptions: @escaping () -> MenuBarDisplayOptions = { MenuBarDisplayOptionsStore.load() },
+        persistMenuBarDisplayOptions: @escaping (MenuBarDisplayOptions) -> Void = { MenuBarDisplayOptionsStore.save($0) },
         loadLaunchAtLoginEnabled: @escaping () -> Bool = { LaunchAtLoginController.isEnabled },
         setLaunchAtLoginEnabledAction: @escaping (Bool) throws -> Void = { try LaunchAtLoginController.setEnabled($0) }
     ) {
@@ -84,8 +90,11 @@ final class MenuBarStatusViewModel: ObservableObject {
         self.refreshInterval = refreshInterval
         self.historyRecorder = historyRecorder
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
+        self.menuBarDisplayOptions = menuBarDisplayOptions
         self.loadPersistedSelection = loadPersistedSelection
         self.persistSelection = persistSelection
+        self.loadMenuBarDisplayOptions = loadMenuBarDisplayOptions
+        self.persistMenuBarDisplayOptions = persistMenuBarDisplayOptions
         self.loadLaunchAtLoginEnabled = loadLaunchAtLoginEnabled
         self.setLaunchAtLoginEnabledAction = setLaunchAtLoginEnabledAction
         self.launchAtLoginEnabled = loadLaunchAtLoginEnabled()
@@ -127,6 +136,24 @@ final class MenuBarStatusViewModel: ObservableObject {
         selectedMenuBarDisplayWindow = displayWindow
         persistSelection(displayWindow)
         applyPresentation()
+    }
+
+    func setMenuBarShowsLimitLabel(_ isEnabled: Bool) {
+        var updatedOptions = menuBarDisplayOptions
+        updatedOptions.showsLimitLabel = isEnabled
+        setMenuBarDisplayOptions(updatedOptions)
+    }
+
+    func setMenuBarShowsResetDate(_ isEnabled: Bool) {
+        var updatedOptions = menuBarDisplayOptions
+        updatedOptions.showsResetDate = isEnabled
+        setMenuBarDisplayOptions(updatedOptions)
+    }
+
+    func setMenuBarShowsResetTime(_ isEnabled: Bool) {
+        var updatedOptions = menuBarDisplayOptions
+        updatedOptions.showsResetTime = isEnabled
+        setMenuBarDisplayOptions(updatedOptions)
     }
 
     func setLaunchAtLoginEnabled(_ isEnabled: Bool) {
@@ -225,7 +252,8 @@ final class MenuBarStatusViewModel: ObservableObject {
         let presentation = MenuBarStatusFormatter.presentation(
             snapshot: snapshot,
             now: currentNow,
-            selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow
+            selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow,
+            menuBarDisplayOptions: menuBarDisplayOptions
         )
         menuBarPercentText = presentation.menuBarPercentText
         fiveHourRow = presentation.fiveHourRow
@@ -323,18 +351,38 @@ final class MenuBarStatusViewModel: ObservableObject {
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.syncSelectionFromDefaults()
+                self?.syncPreferencesFromDefaults()
             }
         }
     }
 
-    private func syncSelectionFromDefaults() {
+    private func syncPreferencesFromDefaults() {
         let persistedSelection = loadPersistedSelection()
-        guard persistedSelection != selectedMenuBarDisplayWindow else {
+        let persistedMenuBarDisplayOptions = loadMenuBarDisplayOptions()
+        var needsPresentationUpdate = false
+
+        if persistedSelection != selectedMenuBarDisplayWindow {
+            selectedMenuBarDisplayWindow = persistedSelection
+            needsPresentationUpdate = true
+        }
+
+        if persistedMenuBarDisplayOptions != menuBarDisplayOptions {
+            menuBarDisplayOptions = persistedMenuBarDisplayOptions
+            needsPresentationUpdate = true
+        }
+
+        if needsPresentationUpdate {
+            applyPresentation()
+        }
+    }
+
+    private func setMenuBarDisplayOptions(_ options: MenuBarDisplayOptions) {
+        guard menuBarDisplayOptions != options else {
             return
         }
 
-        selectedMenuBarDisplayWindow = persistedSelection
+        menuBarDisplayOptions = options
+        persistMenuBarDisplayOptions(options)
         applyPresentation()
     }
 
