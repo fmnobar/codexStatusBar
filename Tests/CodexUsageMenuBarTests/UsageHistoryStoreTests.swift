@@ -454,9 +454,11 @@ final class UsageHistoryStoreTests: XCTestCase {
             viewModel.chartXAxisLabelValues,
             [
                 date("2026-04-14T00:30:00Z"),
-                date("2026-04-14T06:30:00Z"),
+                date("2026-04-14T04:30:00Z"),
+                date("2026-04-14T08:30:00Z"),
                 date("2026-04-14T12:30:00Z"),
-                date("2026-04-14T18:30:00Z"),
+                date("2026-04-14T16:30:00Z"),
+                date("2026-04-14T20:30:00Z"),
             ]
         )
 
@@ -479,10 +481,11 @@ final class UsageHistoryStoreTests: XCTestCase {
             viewModel.chartXAxisLabelValues,
             [
                 date("2026-04-01T12:00:00Z"),
-                date("2026-04-08T12:00:00Z"),
-                date("2026-04-15T12:00:00Z"),
-                date("2026-04-22T12:00:00Z"),
-                date("2026-04-29T12:00:00Z"),
+                date("2026-04-06T12:00:00Z"),
+                date("2026-04-11T12:00:00Z"),
+                date("2026-04-16T12:00:00Z"),
+                date("2026-04-21T12:00:00Z"),
+                date("2026-04-26T12:00:00Z"),
             ]
         )
 
@@ -501,6 +504,33 @@ final class UsageHistoryStoreTests: XCTestCase {
             return monthStart.addingTimeInterval(monthEnd.timeIntervalSince(monthStart) / 2)
         }
         XCTAssertEqual(viewModel.chartXAxisLabelValues, expectedYearLabelValues)
+    }
+
+    @MainActor
+    func testHistoryChartDomainAddsHalfBucketPaddingForEdgeLabels() throws {
+        var sundayCalendar = calendar!
+        sundayCalendar.firstWeekday = 1
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-14T17:00:00Z") },
+            calendar: sundayCalendar
+        )
+
+        viewModel.selectedRange = .day
+        XCTAssertEqual(viewModel.chartDomainStart, date("2026-04-13T23:30:00Z"))
+        XCTAssertEqual(viewModel.chartDomainEnd, date("2026-04-15T00:30:00Z"))
+
+        viewModel.selectedRange = .week
+        XCTAssertEqual(viewModel.chartDomainStart, date("2026-04-11T12:00:00Z"))
+        XCTAssertEqual(viewModel.chartDomainEnd, date("2026-04-19T12:00:00Z"))
+
+        viewModel.selectedRange = .month
+        XCTAssertEqual(viewModel.chartDomainStart, date("2026-03-31T12:00:00Z"))
+        XCTAssertEqual(viewModel.chartDomainEnd, date("2026-05-01T12:00:00Z"))
+
+        viewModel.selectedRange = .year
+        XCTAssertEqual(viewModel.chartDomainStart, date("2025-12-16T12:00:00Z"))
+        XCTAssertEqual(viewModel.chartDomainEnd, date("2027-01-16T12:00:00Z"))
     }
 
     @MainActor

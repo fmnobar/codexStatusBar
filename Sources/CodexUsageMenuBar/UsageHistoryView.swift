@@ -3,6 +3,38 @@ import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct NeutralCheckboxMark: View {
+    let isSelected: Bool
+    var size: CGFloat = 12
+
+    var body: some View {
+        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+            .symbolRenderingMode(.monochrome)
+            .font(.system(size: size, weight: .regular))
+            .foregroundStyle(.primary)
+            .frame(width: size, height: size, alignment: .center)
+    }
+}
+
+struct NeutralCheckboxToggleStyle: ToggleStyle {
+    var size: CGFloat = 12
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                NeutralCheckboxMark(isSelected: configuration.isOn, size: size)
+                configuration.label
+            }
+            .foregroundStyle(.primary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
+    }
+}
+
 enum UsageHistoryChartSemantics: Equatable {
     case independentSignals
     case comparableContributors
@@ -173,11 +205,11 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     var chartDomainStart: Date {
-        selectedPeriod.start
+        selectedPeriod.start.addingTimeInterval(-chartDomainBucketPadding)
     }
 
     var chartDomainEnd: Date {
-        selectedPeriod.end
+        selectedPeriod.end.addingTimeInterval(chartDomainBucketPadding)
     }
 
     var visibleBarPoints: [UsageHistoryChartPoint] {
@@ -696,11 +728,11 @@ final class UsageHistoryViewModel: ObservableObject {
         let step: Int
         switch selectedRange {
         case .day:
-            step = 6
+            step = 4
         case .week:
             step = 1
         case .month:
-            step = 7
+            step = 5
         case .year:
             step = 1
         }
@@ -735,6 +767,11 @@ final class UsageHistoryViewModel: ObservableObject {
         let bucketEnd = fullBucketEnd(for: bucketStart)
         let midpointOffset = max(bucketEnd.timeIntervalSince(bucketStart), 1) / 2
         return bucketStart.addingTimeInterval(midpointOffset)
+    }
+
+    private var chartDomainBucketPadding: TimeInterval {
+        let firstBucketEnd = fullBucketEnd(for: selectedPeriod.start)
+        return max(firstBucketEnd.timeIntervalSince(selectedPeriod.start), 1) / 2
     }
 
     private func fullBucketEnd(for bucketStart: Date) -> Date {
@@ -1063,7 +1100,7 @@ struct UsageHistoryView: View {
                     AxisGridLine()
                     AxisTick()
                     if let date = value.as(Date.self) {
-                        AxisValueLabel(viewModel.chartXAxisLabel(for: date))
+                        AxisValueLabel(viewModel.chartXAxisLabel(for: date), centered: false, anchor: .top)
                     }
                 }
             }
@@ -1110,7 +1147,7 @@ struct UsageHistoryView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .toggleStyle(.checkbox)
+                        .toggleStyle(NeutralCheckboxToggleStyle())
                         .disabled(series.kind == .aggregate)
                     }
                 }

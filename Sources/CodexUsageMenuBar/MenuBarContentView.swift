@@ -206,32 +206,29 @@ struct MenuBarContentView: View {
 
     private var menuBarDisplayOptionsRow: some View {
         HStack(alignment: .center, spacing: 14) {
-            Toggle(
-                "7d/5h",
-                isOn: Binding(
-                    get: { viewModel.menuBarDisplayOptions.showsLimitLabel },
-                    set: { viewModel.setMenuBarShowsLimitLabel($0) }
-                )
+            inlineCheckboxOption(
+                title: "7d/5h",
+                isSelected: viewModel.menuBarDisplayOptions.showsLimitLabel,
+                action: {
+                    viewModel.setMenuBarShowsLimitLabel(!viewModel.menuBarDisplayOptions.showsLimitLabel)
+                }
             )
-            .toggleStyle(.checkbox)
 
-            Toggle(
-                "Reset date",
-                isOn: Binding(
-                    get: { viewModel.menuBarDisplayOptions.showsResetDate },
-                    set: { viewModel.setMenuBarShowsResetDate($0) }
-                )
+            inlineCheckboxOption(
+                title: "Reset date",
+                isSelected: viewModel.menuBarDisplayOptions.showsResetDate,
+                action: {
+                    viewModel.setMenuBarShowsResetDate(!viewModel.menuBarDisplayOptions.showsResetDate)
+                }
             )
-            .toggleStyle(.checkbox)
 
-            Toggle(
-                "Reset time",
-                isOn: Binding(
-                    get: { viewModel.menuBarDisplayOptions.showsResetTime },
-                    set: { viewModel.setMenuBarShowsResetTime($0) }
-                )
+            inlineCheckboxOption(
+                title: "Reset time",
+                isSelected: viewModel.menuBarDisplayOptions.showsResetTime,
+                action: {
+                    viewModel.setMenuBarShowsResetTime(!viewModel.menuBarDisplayOptions.showsResetTime)
+                }
             )
-            .toggleStyle(.checkbox)
 
             Spacer(minLength: 0)
 
@@ -246,6 +243,27 @@ struct MenuBarContentView: View {
             }
         }
         .font(.system(size: 12))
+    }
+
+    private func inlineCheckboxOption(
+        title: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                checkboxImage(isSelected: isSelected)
+
+                Text(title)
+                    .font(.system(size: 12))
+            }
+            .foregroundStyle(.primary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "On" : "Off")
     }
 
     private var footer: some View {
@@ -302,13 +320,11 @@ struct MenuBarContentView: View {
     }
 
     private func checkboxImage(isSelected: Bool) -> some View {
-        checkboxImage(isSelected: isSelected, size: 14)
+        checkboxImage(isSelected: isSelected, size: 12)
     }
 
     private func checkboxImage(isSelected: Bool, size: CGFloat) -> some View {
-        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-            .font(.system(size: size))
-            .frame(width: size, alignment: .top)
+        NeutralCheckboxMark(isSelected: isSelected, size: size)
     }
 }
 
@@ -406,7 +422,7 @@ private struct CompactUsageHistoryPanel: View {
                 AxisGridLine()
                 AxisTick()
                 if let date = value.as(Date.self) {
-                    AxisValueLabel(viewModel.chartXAxisLabel(for: date))
+                    AxisValueLabel(viewModel.chartXAxisLabel(for: date), centered: false, anchor: .top)
                 }
             }
         }
