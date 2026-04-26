@@ -402,7 +402,7 @@ private struct CompactUsageHistoryPanel: View {
         .chartYScale(domain: viewModel.chartYDomain)
         .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: viewModel.chartXAxisDesiredCount)) { value in
+            AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
                 AxisGridLine()
                 AxisTick()
                 if let date = value.as(Date.self) {

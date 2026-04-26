@@ -166,16 +166,9 @@ final class UsageHistoryViewModel: ObservableObject {
         selectedPeriodStart < currentPeriodStart()
     }
 
-    var chartXAxisDesiredCount: Int {
-        switch selectedRange {
-        case .day:
-            return 5
-        case .week:
-            return 7
-        case .month:
-            return 6
-        case .year:
-            return 12
+    var chartXAxisLabelValues: [Date] {
+        chartXAxisLabelBucketStarts().map { bucketStart in
+            chartXPosition(forBucketStart: bucketStart)
         }
     }
 
@@ -698,6 +691,38 @@ final class UsageHistoryViewModel: ObservableObject {
         return formatter.string(from: date)
     }
 
+    private func chartXAxisLabelBucketStarts() -> [Date] {
+        let component = selectedRange.chartBucketComponent
+        let step: Int
+        switch selectedRange {
+        case .day:
+            step = 6
+        case .week:
+            step = 1
+        case .month:
+            step = 7
+        case .year:
+            step = 1
+        }
+
+        var bucketStarts = [Date]()
+        var cursor = selectedPeriod.start
+
+        while cursor < selectedPeriod.end {
+            bucketStarts.append(cursor)
+            guard
+                let next = calendar.date(byAdding: component, value: step, to: cursor),
+                next > cursor
+            else {
+                break
+            }
+
+            cursor = next
+        }
+
+        return bucketStarts
+    }
+
     private static func csvEscaped(_ value: String) -> String {
         if value.contains(",") || value.contains("\"") || value.contains("\n") {
             return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
@@ -1034,7 +1059,7 @@ struct UsageHistoryView: View {
             .chartYScale(domain: viewModel.chartYDomain)
             .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: viewModel.chartXAxisDesiredCount)) { value in
+                AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
                     AxisGridLine()
                     AxisTick()
                     if let date = value.as(Date.self) {

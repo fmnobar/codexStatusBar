@@ -440,6 +440,70 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryXAxisLabelValuesAreCenteredInBucketsForAllRanges() throws {
+        var sundayCalendar = calendar!
+        sundayCalendar.firstWeekday = 1
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-14T17:00:00Z") },
+            calendar: sundayCalendar
+        )
+
+        viewModel.selectedRange = .day
+        XCTAssertEqual(
+            viewModel.chartXAxisLabelValues,
+            [
+                date("2026-04-14T00:30:00Z"),
+                date("2026-04-14T06:30:00Z"),
+                date("2026-04-14T12:30:00Z"),
+                date("2026-04-14T18:30:00Z"),
+            ]
+        )
+
+        viewModel.selectedRange = .week
+        XCTAssertEqual(
+            viewModel.chartXAxisLabelValues,
+            [
+                date("2026-04-12T12:00:00Z"),
+                date("2026-04-13T12:00:00Z"),
+                date("2026-04-14T12:00:00Z"),
+                date("2026-04-15T12:00:00Z"),
+                date("2026-04-16T12:00:00Z"),
+                date("2026-04-17T12:00:00Z"),
+                date("2026-04-18T12:00:00Z"),
+            ]
+        )
+
+        viewModel.selectedRange = .month
+        XCTAssertEqual(
+            viewModel.chartXAxisLabelValues,
+            [
+                date("2026-04-01T12:00:00Z"),
+                date("2026-04-08T12:00:00Z"),
+                date("2026-04-15T12:00:00Z"),
+                date("2026-04-22T12:00:00Z"),
+                date("2026-04-29T12:00:00Z"),
+            ]
+        )
+
+        viewModel.selectedRange = .year
+        let monthStarts = (1...12).compactMap { month in
+            sundayCalendar.date(from: DateComponents(
+                calendar: sundayCalendar,
+                timeZone: sundayCalendar.timeZone,
+                year: 2026,
+                month: month,
+                day: 1
+            ))
+        }
+        let expectedYearLabelValues = monthStarts.map { monthStart in
+            let monthEnd = sundayCalendar.date(byAdding: .month, value: 1, to: monthStart)!
+            return monthStart.addingTimeInterval(monthEnd.timeIntervalSince(monthStart) / 2)
+        }
+        XCTAssertEqual(viewModel.chartXAxisLabelValues, expectedYearLabelValues)
+    }
+
+    @MainActor
     func testComparableHistoryPresentationUsesContributorsAndAggregateReference() throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
