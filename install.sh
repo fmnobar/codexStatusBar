@@ -5,12 +5,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_PATH="$SCRIPT_DIR/CodexUsageMenuBar.xcodeproj"
 SCHEME_NAME="CodexUsageMenuBar"
-DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$SCRIPT_DIR/.build/DerivedData}"
+DEFAULT_DERIVED_DATA_PATH="$SCRIPT_DIR/.build/DerivedData"
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$DEFAULT_DERIVED_DATA_PATH}"
 BUILT_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/CodexStatusBar.app"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 INSTALLED_APP_PATH="$INSTALL_DIR/CodexStatusBar.app"
 BUILD_ARCH="${BUILD_ARCH:-$(uname -m)}"
 OPEN_AFTER_INSTALL="${OPEN_AFTER_INSTALL:-1}"
+CLEAN_AFTER_INSTALL="${CLEAN_AFTER_INSTALL:-1}"
 
 resolve_codex_path() {
   local candidate
@@ -40,6 +42,27 @@ resolve_codex_path() {
   fi
 
   return 1
+}
+
+cleanup_build_output() {
+  if [[ "$CLEAN_AFTER_INSTALL" != "1" ]]; then
+    return
+  fi
+
+  if [[ "$DERIVED_DATA_PATH" != "$DEFAULT_DERIVED_DATA_PATH" ]]; then
+    echo
+    echo "Skipping build cache cleanup because DERIVED_DATA_PATH was customized:"
+    echo "  $DERIVED_DATA_PATH"
+    echo "Remove that directory manually when you no longer need it."
+    return
+  fi
+
+  rm -rf "$DERIVED_DATA_PATH"
+  rmdir "$SCRIPT_DIR/.build" >/dev/null 2>&1 || true
+
+  echo
+  echo "Cleaned build cache:"
+  echo "  $DERIVED_DATA_PATH"
 }
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -80,6 +103,8 @@ pkill -x "CodexUsageMenuBar" >/dev/null 2>&1 || true
 
 rm -rf "$INSTALLED_APP_PATH"
 ditto "$BUILT_APP_PATH" "$INSTALLED_APP_PATH"
+
+cleanup_build_output
 
 if [[ "$OPEN_AFTER_INSTALL" == "1" ]]; then
   open "$INSTALLED_APP_PATH"

@@ -16,6 +16,11 @@ cd codexStatusBar
 ```
 
 The installer builds the app locally, installs it to `~/Applications/CodexStatusBar.app`, and launches it.
+By default it deletes its temporary `.build/DerivedData` output after a successful install. During development, keep build output with:
+
+```bash
+CLEAN_AFTER_INSTALL=0 ./install.sh
+```
 
 ## Compatibility
 
