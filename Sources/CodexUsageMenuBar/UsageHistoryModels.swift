@@ -14,6 +14,10 @@ enum UsageLimitWindow: String, CaseIterable, Codable, Identifiable, Equatable {
             return "7d"
         }
     }
+
+    var filenameToken: String {
+        displayTitle
+    }
 }
 
 enum UsageHistoryRange: String, CaseIterable, Identifiable, Equatable {
@@ -162,6 +166,15 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Equatable {
             return "Capacity left by \(range.chartBucketTitle)"
         case .usage:
             return "Usage consumed by \(range.chartBucketTitle)"
+        }
+    }
+
+    var filenameToken: String {
+        switch self {
+        case .capacityLeft:
+            return "capacity-left"
+        case .usage:
+            return "usage"
         }
     }
 }

@@ -237,10 +237,11 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
         let persistedOptions = MenuBarDisplayOptionsBox(options: .defaultValue)
+        let now = ISO8601DateFormatter().date(from: "2026-04-25T16:00:00Z")!
 
         let viewModel = MenuBarStatusViewModel(
             client: client,
-            now: Date.init,
+            now: { now },
             refreshInterval: 60,
             selectedMenuBarDisplayWindow: .sevenDay,
             menuBarDisplayOptions: persistedOptions.options,

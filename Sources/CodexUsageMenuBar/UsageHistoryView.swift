@@ -184,6 +184,14 @@ final class UsageHistoryViewModel: ObservableObject {
         Self.periodTitle(for: selectedRange, period: selectedPeriod, calendar: calendar)
     }
 
+    var isCurrentPeriod: Bool {
+        selectedPeriodStart == currentPeriodStart()
+    }
+
+    var canJumpToCurrentPeriod: Bool {
+        !isCurrentPeriod
+    }
+
     var canGoToPreviousPeriod: Bool {
         guard let historyBounds else {
             return false
@@ -196,6 +204,60 @@ final class UsageHistoryViewModel: ObservableObject {
 
     var canGoToNextPeriod: Bool {
         selectedPeriodStart < currentPeriodStart()
+    }
+
+    var previousPeriodHelpText: String {
+        if canGoToPreviousPeriod {
+            return "Show previous \(periodDisplayNoun)"
+        }
+
+        return "No earlier history for this limit"
+    }
+
+    var previousPeriodAccessibilityLabel: String {
+        if canGoToPreviousPeriod {
+            return "Previous \(selectedRange.displayTitle)"
+        }
+
+        return previousPeriodHelpText
+    }
+
+    var nextPeriodHelpText: String {
+        if canGoToNextPeriod {
+            return "Show next \(periodDisplayNoun)"
+        }
+
+        return "Already showing the current \(periodDisplayNoun)"
+    }
+
+    var nextPeriodAccessibilityLabel: String {
+        if canGoToNextPeriod {
+            return "Next \(selectedRange.displayTitle)"
+        }
+
+        return nextPeriodHelpText
+    }
+
+    var currentPeriodHelpText: String {
+        if canJumpToCurrentPeriod {
+            return "Jump to current \(periodDisplayNoun)"
+        }
+
+        return "Already showing the current \(periodDisplayNoun)"
+    }
+
+    var currentPeriodAccessibilityLabel: String {
+        currentPeriodHelpText
+    }
+
+    var exportFilename: String {
+        [
+            "codex-usage",
+            selectedRange.rawValue,
+            periodFilenameToken,
+            selectedWindow.filenameToken,
+            selectedMetric.filenameToken,
+        ].joined(separator: "-") + ".csv"
     }
 
     var chartXAxisLabelValues: [Date] {
@@ -460,6 +522,15 @@ final class UsageHistoryViewModel: ObservableObject {
         clearHoverSelection()
     }
 
+    func jumpToCurrentPeriod() {
+        guard canJumpToCurrentPeriod else {
+            return
+        }
+
+        selectedPeriodStart = currentPeriodStart()
+        clearHoverSelection()
+    }
+
     func chartXAxisLabel(for date: Date) -> String {
         Self.chartXAxisLabel(for: date, range: selectedRange, calendar: calendar)
     }
@@ -506,7 +577,7 @@ final class UsageHistoryViewModel: ObservableObject {
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.commaSeparatedText]
             panel.canCreateDirectories = true
-            panel.nameFieldStringValue = "codex-usage-\(selectedRange.rawValue)-\(selectedWindow.rawValue)-\(selectedMetric.rawValue).csv"
+            panel.nameFieldStringValue = exportFilename
 
             guard panel.runModal() == .OK, let url = panel.url else {
                 return
@@ -679,6 +750,14 @@ final class UsageHistoryViewModel: ObservableObject {
         calendar.date(byAdding: selectedRange.periodComponent, value: value, to: start) ?? start
     }
 
+    private var periodDisplayNoun: String {
+        selectedRange.displayTitle.lowercased()
+    }
+
+    private var periodFilenameToken: String {
+        Self.periodFilenameToken(for: selectedRange, periodStart: selectedPeriod.start, calendar: calendar)
+    }
+
     private static func periodTitle(
         for range: UsageHistoryRange,
         period: UsageHistoryPeriod,
@@ -721,6 +800,27 @@ final class UsageHistoryViewModel: ObservableObject {
         }
 
         return formatter.string(from: date)
+    }
+
+    private static func periodFilenameToken(
+        for range: UsageHistoryRange,
+        periodStart: Date,
+        calendar: Calendar
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+
+        switch range {
+        case .day, .week:
+            formatter.dateFormat = "yyyy-MM-dd"
+        case .month:
+            formatter.dateFormat = "yyyy-MM"
+        case .year:
+            formatter.dateFormat = "yyyy"
+        }
+
+        return formatter.string(from: periodStart)
     }
 
     private func chartXAxisLabelBucketStarts() -> [Date] {
@@ -849,8 +949,8 @@ struct UsageHistoryPeriodNavigationView: View {
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToPreviousPeriod)
-            .help("Previous \(viewModel.selectedRange.displayTitle.lowercased())")
-            .accessibilityLabel("Previous \(viewModel.selectedRange.displayTitle)")
+            .help(viewModel.previousPeriodHelpText)
+            .accessibilityLabel(viewModel.previousPeriodAccessibilityLabel)
 
             Text(viewModel.periodTitle)
                 .font(.caption)
@@ -858,6 +958,18 @@ struct UsageHistoryPeriodNavigationView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .frame(minWidth: 72, alignment: .center)
+
+            Button {
+                viewModel.jumpToCurrentPeriod()
+            } label: {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 18, height: 16)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.canJumpToCurrentPeriod)
+            .help(viewModel.currentPeriodHelpText)
+            .accessibilityLabel(viewModel.currentPeriodAccessibilityLabel)
 
             Button {
                 viewModel.goToNextPeriod()
@@ -868,8 +980,8 @@ struct UsageHistoryPeriodNavigationView: View {
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToNextPeriod)
-            .help("Next \(viewModel.selectedRange.displayTitle.lowercased())")
-            .accessibilityLabel("Next \(viewModel.selectedRange.displayTitle)")
+            .help(viewModel.nextPeriodHelpText)
+            .accessibilityLabel(viewModel.nextPeriodAccessibilityLabel)
         }
     }
 }

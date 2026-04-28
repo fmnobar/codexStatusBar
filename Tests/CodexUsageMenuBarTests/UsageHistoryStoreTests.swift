@@ -415,6 +415,110 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryPeriodJumpToCurrentAndNavigationHints() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2025-12-31T09:00:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-28T10:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-28T15:00:00Z") },
+            calendar: calendar
+        )
+
+        for range in UsageHistoryRange.allCases {
+            viewModel.selectedRange = range
+            viewModel.reload()
+
+            let periodName = range.displayTitle.lowercased()
+            XCTAssertTrue(viewModel.isCurrentPeriod)
+            XCTAssertFalse(viewModel.canJumpToCurrentPeriod)
+            XCTAssertFalse(viewModel.canGoToNextPeriod)
+            XCTAssertEqual(viewModel.currentPeriodHelpText, "Already showing the current \(periodName)")
+            XCTAssertEqual(viewModel.currentPeriodAccessibilityLabel, "Already showing the current \(periodName)")
+            XCTAssertEqual(viewModel.nextPeriodHelpText, "Already showing the current \(periodName)")
+            XCTAssertEqual(viewModel.nextPeriodAccessibilityLabel, "Already showing the current \(periodName)")
+
+            XCTAssertTrue(viewModel.canGoToPreviousPeriod)
+            XCTAssertEqual(viewModel.previousPeriodHelpText, "Show previous \(periodName)")
+            XCTAssertEqual(viewModel.previousPeriodAccessibilityLabel, "Previous \(range.displayTitle)")
+
+            viewModel.goToPreviousPeriod()
+
+            XCTAssertFalse(viewModel.isCurrentPeriod)
+            XCTAssertTrue(viewModel.canJumpToCurrentPeriod)
+            XCTAssertTrue(viewModel.canGoToNextPeriod)
+            XCTAssertEqual(viewModel.currentPeriodHelpText, "Jump to current \(periodName)")
+            XCTAssertEqual(viewModel.currentPeriodAccessibilityLabel, "Jump to current \(periodName)")
+            XCTAssertEqual(viewModel.nextPeriodHelpText, "Show next \(periodName)")
+            XCTAssertEqual(viewModel.nextPeriodAccessibilityLabel, "Next \(range.displayTitle)")
+
+            viewModel.jumpToCurrentPeriod()
+
+            XCTAssertTrue(viewModel.isCurrentPeriod)
+            XCTAssertEqual(viewModel.selectedPeriodStart, range.period(containing: date("2026-04-28T15:00:00Z"), calendar: calendar).start)
+        }
+    }
+
+    @MainActor
+    func testHistoryPeriodPreviousHintExplainsNoEarlierHistory() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-28T10:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-28T15:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        viewModel.reload()
+
+        XCTAssertFalse(viewModel.canGoToPreviousPeriod)
+        XCTAssertEqual(viewModel.previousPeriodHelpText, "No earlier history for this limit")
+        XCTAssertEqual(viewModel.previousPeriodAccessibilityLabel, "No earlier history for this limit")
+    }
+
+    @MainActor
+    func testHistoryExportFilenameUsesSelectedPeriodWindowAndMetric() throws {
+        var sundayCalendar = calendar!
+        sundayCalendar.firstWeekday = 1
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-28T15:00:00Z") },
+            calendar: sundayCalendar
+        )
+
+        let periodExpectations: [(UsageHistoryRange, String)] = [
+            (.day, "2026-04-28"),
+            (.week, "2026-04-26"),
+            (.month, "2026-04"),
+            (.year, "2026"),
+        ]
+        let windowExpectations: [(UsageLimitWindow, String)] = [
+            (.fiveHour, "5h"),
+            (.sevenDay, "7d"),
+        ]
+        let metricExpectations: [(UsageHistoryMetric, String)] = [
+            (.capacityLeft, "capacity-left"),
+            (.usage, "usage"),
+        ]
+
+        for (range, periodToken) in periodExpectations {
+            viewModel.selectedRange = range
+            for (window, windowToken) in windowExpectations {
+                viewModel.selectedWindow = window
+                for (metric, metricToken) in metricExpectations {
+                    viewModel.selectedMetric = metric
+
+                    XCTAssertEqual(
+                        viewModel.exportFilename,
+                        "codex-usage-\(range.rawValue)-\(periodToken)-\(windowToken)-\(metricToken).csv"
+                    )
+                }
+            }
+        }
+    }
+
+    @MainActor
     func testHistoryXAxisLabelsUseSelectedRangeFormats() throws {
         let viewModel = UsageHistoryViewModel(
             store: try makeStore(),
