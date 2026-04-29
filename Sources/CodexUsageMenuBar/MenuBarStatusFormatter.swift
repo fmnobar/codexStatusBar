@@ -167,6 +167,7 @@ enum MenuBarStatusFormatter {
 
         if let resetText = menuBarResetText(
             for: window.resetsAt,
+            window: window,
             options: options,
             now: now,
             calendar: calendar
@@ -314,6 +315,7 @@ enum MenuBarStatusFormatter {
 
     private static func menuBarResetText(
         for resetDate: Date?,
+        window: CodexRateLimitWindow,
         options: MenuBarDisplayOptions,
         now: Date,
         calendar: Calendar
@@ -332,7 +334,7 @@ enum MenuBarStatusFormatter {
             dateFormatter.locale = Locale(identifier: "en_US_POSIX")
             dateFormatter.timeZone = calendar.timeZone
 
-            if calendar.isDate(resetDate, inSameDayAs: now), !options.showsResetTime {
+            if shouldShowSameDayResetAsTime(for: resetDate, window: window, options: options, now: now, calendar: calendar) {
                 dateFormatter.dateFormat = "h:mma"
             } else {
                 dateFormatter.dateFormat = "M/d"
@@ -350,5 +352,17 @@ enum MenuBarStatusFormatter {
         }
 
         return components.joined(separator: " ")
+    }
+
+    private static func shouldShowSameDayResetAsTime(
+        for resetDate: Date,
+        window: CodexRateLimitWindow,
+        options: MenuBarDisplayOptions,
+        now: Date,
+        calendar: Calendar
+    ) -> Bool {
+        window.windowDurationMinutes == 10_080
+            && calendar.isDate(resetDate, inSameDayAs: now)
+            && !options.showsResetTime
     }
 }
