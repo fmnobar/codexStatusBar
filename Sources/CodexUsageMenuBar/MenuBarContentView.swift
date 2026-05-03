@@ -348,6 +348,10 @@ private struct CompactUsageHistoryPanel: View {
                 emptyState
                     .frame(height: 190)
             }
+
+            if viewModel.hasHistory {
+                seriesSelector
+            }
         }
         .padding(8)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -438,6 +442,90 @@ private struct CompactUsageHistoryPanel: View {
                     }
             }
         }
+    }
+
+    private var seriesSelector: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            seriesActions
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(viewModel.filteredSeries) { series in
+                        Toggle(isOn: viewModel.binding(for: series)) {
+                            HStack(spacing: 8) {
+                                Text(series.name)
+                                    .font(.caption)
+                                    .lineLimit(1)
+
+                                if series.kind == .aggregate {
+                                    Text("Aggregate")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .toggleStyle(NeutralCheckboxToggleStyle())
+                        .disabled(series.kind == .aggregate)
+                    }
+                }
+            }
+            .frame(maxHeight: 72)
+        }
+    }
+
+    private var seriesActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                searchModelsField
+                selectAllButton
+                clearModelsButton
+                Spacer()
+                seriesSelectionCount
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    searchModelsField
+                    Spacer()
+                    seriesSelectionCount
+                }
+
+                HStack(spacing: 10) {
+                    selectAllButton
+                    clearModelsButton
+                    Spacer()
+                }
+            }
+        }
+        .font(.caption)
+    }
+
+    private var searchModelsField: some View {
+        TextField("Search models", text: $viewModel.seriesSearchText)
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 170)
+    }
+
+    private var selectAllButton: some View {
+        Button("Select All") {
+            viewModel.selectAllSeries()
+        }
+        .disabled(viewModel.selectedSeriesCount == viewModel.series.count)
+    }
+
+    private var clearModelsButton: some View {
+        Button("Clear Models") {
+            viewModel.clearModelSeries()
+        }
+        .disabled(!viewModel.hasSelectedModels)
+    }
+
+    private var seriesSelectionCount: some View {
+        Text(viewModel.seriesSelectionSummary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
     }
 
     private var hoverSummary: some View {
