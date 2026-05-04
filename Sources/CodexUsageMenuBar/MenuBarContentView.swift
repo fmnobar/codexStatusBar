@@ -358,7 +358,7 @@ private struct CompactUsageHistoryPanel: View {
         .padding(8)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onAppear {
-            viewModel.scheduleReload()
+            viewModel.activateCurrentPeriod()
         }
     }
 

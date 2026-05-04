@@ -415,6 +415,41 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryFollowsCurrentPeriodAcrossDayBoundary() throws {
+        let store = try makeStore()
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-28T09:00:00Z"))
+        try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-29T08:00:00Z"))
+        var currentDate = date("2026-04-28T15:00:00Z")
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { currentDate },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-28T00:00:00Z"))
+
+        currentDate = date("2026-04-29T08:00:00Z")
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-29T00:00:00Z"))
+        XCTAssertFalse(viewModel.canGoToNextPeriod)
+
+        viewModel.goToPreviousPeriod()
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-28T00:00:00Z"))
+
+        currentDate = date("2026-04-30T08:00:00Z")
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-28T00:00:00Z"))
+
+        viewModel.activateCurrentPeriod()
+        XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-30T00:00:00Z"))
+    }
+
+    @MainActor
     func testHistoryPeriodJumpToCurrentAndNavigationHints() throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2025-12-31T09:00:00Z"))

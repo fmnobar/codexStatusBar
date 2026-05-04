@@ -64,6 +64,7 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 final class UsageHistoryViewModel: ObservableObject {
     @Published var selectedRange: UsageHistoryRange = .month {
         didSet {
+            followsCurrentPeriod = true
             selectedPeriodStart = currentPeriodStart()
             scheduleReload()
         }
@@ -91,6 +92,7 @@ final class UsageHistoryViewModel: ObservableObject {
     private let calendar: Calendar
     private var historyBounds: UsageHistoryBounds?
     private var userEditedSeriesSelection = false
+    private var followsCurrentPeriod = true
     private var historyObserver: NSObjectProtocol?
     private var reloadWorkItem: DispatchWorkItem?
     private var hoverSelectionWorkItem: DispatchWorkItem?
@@ -358,6 +360,8 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func reload() {
+        syncCurrentPeriodIfNeeded()
+
         do {
             let queryPeriod = periodForQuery()
             let loadedPoints = try store.points(
@@ -403,6 +407,13 @@ final class UsageHistoryViewModel: ObservableObject {
         }
         reloadWorkItem = workItem
         DispatchQueue.main.async(execute: workItem)
+    }
+
+    func activateCurrentPeriod() {
+        followsCurrentPeriod = true
+        if !syncCurrentPeriodIfNeeded() {
+            scheduleReload()
+        }
     }
 
     func binding(for series: UsageHistorySeries) -> Binding<Bool> {
@@ -509,6 +520,7 @@ final class UsageHistoryViewModel: ObservableObject {
             return
         }
 
+        followsCurrentPeriod = false
         selectedPeriodStart = periodOffset(from: selectedPeriodStart, value: -1)
         clearHoverSelection()
     }
@@ -518,7 +530,9 @@ final class UsageHistoryViewModel: ObservableObject {
             return
         }
 
-        selectedPeriodStart = min(periodOffset(from: selectedPeriodStart, value: 1), currentPeriodStart())
+        let nextPeriodStart = min(periodOffset(from: selectedPeriodStart, value: 1), currentPeriodStart())
+        selectedPeriodStart = nextPeriodStart
+        followsCurrentPeriod = nextPeriodStart == currentPeriodStart()
         clearHoverSelection()
     }
 
@@ -527,6 +541,7 @@ final class UsageHistoryViewModel: ObservableObject {
             return
         }
 
+        followsCurrentPeriod = true
         selectedPeriodStart = currentPeriodStart()
         clearHoverSelection()
     }
@@ -641,6 +656,22 @@ final class UsageHistoryViewModel: ObservableObject {
             selectedSeriesIDs = Self.defaultSelectedSeriesIDs(from: series)
             userEditedSeriesSelection = false
         }
+    }
+
+    @discardableResult
+    private func syncCurrentPeriodIfNeeded() -> Bool {
+        guard followsCurrentPeriod else {
+            return false
+        }
+
+        let currentPeriodStart = currentPeriodStart()
+        guard selectedPeriodStart != currentPeriodStart else {
+            return false
+        }
+
+        selectedPeriodStart = currentPeriodStart
+        clearHoverSelection()
+        return true
     }
 
     private static func defaultSelectedSeriesIDs(from series: [UsageHistorySeries]) -> Set<String> {
@@ -1011,7 +1042,7 @@ struct UsageHistoryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            viewModel.scheduleReload()
+            viewModel.activateCurrentPeriod()
         }
         .confirmationDialog(
             "Clear all local usage history?",
