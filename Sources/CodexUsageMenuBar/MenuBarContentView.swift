@@ -330,6 +330,14 @@ struct MenuBarContentView: View {
 
 private struct CompactUsageHistoryPanel: View {
     @StateObject private var viewModel: UsageHistoryViewModel
+    private static let seriesColors: [Color] = [
+        .blue,
+        .green,
+        .orange,
+        .purple,
+        .pink,
+        .teal,
+    ]
 
     init(store: UsageHistoryStore) {
         _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(store: store))
@@ -339,14 +347,12 @@ private struct CompactUsageHistoryPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             controls
 
-            hoverSummary
-
             if viewModel.hasVisiblePoints {
                 chart
-                    .frame(height: 190)
+                    .frame(height: 206)
             } else {
                 emptyState
-                    .frame(height: 190)
+                    .frame(height: 206)
             }
         }
         .padding(8)
@@ -357,7 +363,7 @@ private struct CompactUsageHistoryPanel: View {
     }
 
     private var controls: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 6) {
             Picker("Range", selection: $viewModel.selectedRange) {
                 ForEach(UsageHistoryRange.allCases) { range in
                     Text(range.displayTitle).tag(range)
@@ -365,7 +371,7 @@ private struct CompactUsageHistoryPanel: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 200)
+            .frame(width: 162)
 
             Picker("Limit", selection: $viewModel.selectedWindow) {
                 ForEach(UsageLimitWindow.allCases) { window in
@@ -374,107 +380,161 @@ private struct CompactUsageHistoryPanel: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 82)
+            .frame(width: 70)
 
             Picker("Metric", selection: $viewModel.selectedMetric) {
                 ForEach(UsageHistoryMetric.allCases) { metric in
-                    Text(metric.displayTitle).tag(metric)
+                    Text(compactMetricTitle(metric)).tag(metric)
                 }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 200)
+            .frame(width: 142)
+
+            Spacer(minLength: 0)
+
+            UsageHistoryPeriodNavigationView(viewModel: viewModel)
+                .frame(width: 118, alignment: .trailing)
         }
         .controlSize(.small)
     }
 
     private var chart: some View {
-        Chart {
-            ForEach(viewModel.visibleBarPoints) { point in
-                BarMark(
-                    x: .value("Time", viewModel.chartXPosition(for: point)),
-                    y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
-                    stacking: .unstacked
-                )
-                .foregroundStyle(by: .value("Bucket", point.bucketName))
-                .opacity(point.bucketKind == .aggregate ? 0.84 : 0.66)
-            }
-
-            if let hoverSelection = viewModel.hoverSelection {
-                RuleMark(x: .value("Selected Time", viewModel.chartXPosition(for: hoverSelection)))
-                    .foregroundStyle(.secondary.opacity(0.42))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-
-                ForEach(hoverSelection.points) { point in
-                    PointMark(
+        ZStack(alignment: .topLeading) {
+            Chart {
+                ForEach(viewModel.visibleBarPoints) { point in
+                    BarMark(
                         x: .value("Time", viewModel.chartXPosition(for: point)),
-                        y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric))
+                        y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
+                        stacking: .unstacked
                     )
-                    .foregroundStyle(by: .value("Bucket", point.bucketName))
-                    .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
+                    .foregroundStyle(seriesColor(for: point.bucketID))
+                    .opacity(point.bucketKind == .aggregate ? 0.84 : 0.66)
                 }
-            }
-        }
-        .chartYScale(domain: viewModel.chartYDomain)
-        .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
-        .chartXAxis {
-            AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
-                AxisGridLine()
-                AxisTick()
-                if let date = value.as(Date.self) {
-                    AxisValueLabel(viewModel.chartXAxisLabel(for: date), centered: false, anchor: .top)
-                }
-            }
-        }
-        .chartYAxisLabel(viewModel.chartYAxisTitle)
-        .chartLegend(.hidden)
-        .chartOverlay { proxy in
-            GeometryReader { geometry in
-                Rectangle()
-                    .fill(.clear)
-                    .contentShape(Rectangle())
-                    .onContinuousHover { phase in
-                        handleChartHover(phase, proxy: proxy, geometry: geometry)
+
+                if let hoverSelection = viewModel.hoverSelection {
+                    RuleMark(x: .value("Selected Time", viewModel.chartXPosition(for: hoverSelection)))
+                        .foregroundStyle(.secondary.opacity(0.42))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                    ForEach(hoverSelection.points) { point in
+                        PointMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric))
+                        )
+                        .foregroundStyle(seriesColor(for: point.bucketID))
+                        .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
                     }
+                }
             }
+            .chartYScale(domain: viewModel.chartYDomain)
+            .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+            .chartXAxis {
+                AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
+                    AxisGridLine()
+                    AxisTick()
+                    if let date = value.as(Date.self) {
+                        AxisValueLabel(viewModel.chartXAxisLabel(for: date), centered: false, anchor: .top)
+                    }
+                }
+            }
+            .chartYAxisLabel(viewModel.chartYAxisTitle)
+            .chartLegend(.hidden)
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            handleChartHover(phase, proxy: proxy, geometry: geometry)
+                        }
+                }
+            }
+
+            chartTopOverlay
         }
     }
 
-    private var hoverSummary: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+    private var chartTopOverlay: some View {
+        HStack(alignment: .top, spacing: 8) {
+            compactSeriesLegend
+
+            Spacer(minLength: 0)
+
             if let hoverSelection = viewModel.hoverSelection {
-                Text(viewModel.formattedBucketInterval(hoverSelection))
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-
-                Spacer(minLength: 0)
-
-                Text(hoverValueSummary(for: hoverSelection))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } else {
-                Text(viewModel.chartSubtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                UsageHistoryPeriodNavigationView(viewModel: viewModel)
-
-                Spacer(minLength: 0)
-
-                Text(viewModel.chartPointCountSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                hoverSummary(for: hoverSelection)
+                    .allowsHitTesting(false)
             }
         }
-        .frame(height: 16)
+        .padding(.top, 4)
+        .padding(.horizontal, 6)
+    }
+
+    private var compactSeriesLegend: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(viewModel.sortedSeries) { series in
+                    compactSeriesButton(series)
+                }
+            }
+        }
+        .frame(maxWidth: 310, alignment: .leading)
+    }
+
+    private func compactSeriesButton(_ series: UsageHistorySeries) -> some View {
+        let isSelected = viewModel.selectedSeriesIDs.contains(series.id)
+
+        return Button {
+            if series.kind != .aggregate {
+                viewModel.setSeries(series.id, isSelected: !isSelected)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(seriesColor(for: series.id))
+                    .frame(width: 7, height: 7)
+                    .opacity(isSelected ? 1 : 0.28)
+                    .overlay {
+                        if !isSelected {
+                            Circle()
+                                .stroke(seriesColor(for: series.id).opacity(0.7), lineWidth: 1)
+                        }
+                    }
+
+                Text(series.name)
+                    .font(.system(size: 9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+            }
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.thinMaterial, in: Capsule())
+            .opacity(series.kind == .aggregate || isSelected ? 1 : 0.72)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(series.name)
+        .accessibilityValue(isSelected ? "Shown" : "Hidden")
+        .help(series.kind == .aggregate ? "\(series.name) is always shown" : "Toggle \(series.name)")
+    }
+
+    private func hoverSummary(for selection: UsageHistoryHoverSelection) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(viewModel.formattedBucketInterval(selection))
+                .font(.system(size: 9, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+
+            Text(hoverValueSummary(for: selection))
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
     private func hoverValueSummary(for selection: UsageHistoryHoverSelection) -> String {
@@ -483,6 +543,24 @@ private struct CompactUsageHistoryPanel: View {
                 "\(point.bucketName) \(Int(point.value(for: viewModel.selectedMetric).rounded()))%"
             }
             .joined(separator: "  ")
+    }
+
+    private func compactMetricTitle(_ metric: UsageHistoryMetric) -> String {
+        switch metric {
+        case .capacityLeft:
+            return "Capacity"
+        case .usage:
+            return metric.displayTitle
+        }
+    }
+
+    private func seriesColor(for seriesID: String) -> Color {
+        let orderedSeriesIDs = viewModel.sortedSeries.map(\.id)
+        guard let index = orderedSeriesIDs.firstIndex(of: seriesID) else {
+            return .secondary
+        }
+
+        return Self.seriesColors[index % Self.seriesColors.count]
     }
 
     private func handleChartHover(
