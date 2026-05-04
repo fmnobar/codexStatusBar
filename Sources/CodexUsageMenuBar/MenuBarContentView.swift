@@ -363,7 +363,7 @@ private struct CompactUsageHistoryPanel: View {
     }
 
     private var controls: some View {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .center, spacing: 9) {
             Picker("Range", selection: $viewModel.selectedRange) {
                 ForEach(UsageHistoryRange.allCases) { range in
                     Text(range.displayTitle).tag(range)
@@ -371,7 +371,7 @@ private struct CompactUsageHistoryPanel: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 162)
+            .frame(width: 156)
 
             Picker("Limit", selection: $viewModel.selectedWindow) {
                 ForEach(UsageLimitWindow.allCases) { window in
@@ -389,14 +389,49 @@ private struct CompactUsageHistoryPanel: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 142)
+            .frame(width: 130)
 
-            Spacer(minLength: 0)
-
-            UsageHistoryPeriodNavigationView(viewModel: viewModel)
-                .frame(width: 118, alignment: .trailing)
+            compactPeriodNavigation
         }
         .controlSize(.small)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+    }
+
+    private var compactPeriodNavigation: some View {
+        HStack(alignment: .center, spacing: 3) {
+            Button {
+                viewModel.goToPreviousPeriod()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 14, height: 16)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.canGoToPreviousPeriod)
+            .help(viewModel.previousPeriodHelpText)
+            .accessibilityLabel(viewModel.previousPeriodAccessibilityLabel)
+
+            Text(viewModel.periodTitle)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Button {
+                viewModel.goToNextPeriod()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 14, height: 16)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.canGoToNextPeriod)
+            .help(viewModel.nextPeriodHelpText)
+            .accessibilityLabel(viewModel.nextPeriodAccessibilityLabel)
+        }
+        .frame(width: 120, alignment: .center)
     }
 
     private var chart: some View {
