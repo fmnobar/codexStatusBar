@@ -328,6 +328,70 @@ struct MenuBarContentView: View {
     }
 }
 
+private enum CompactHistoryControlMetrics {
+    static let controlHeight: CGFloat = 24
+    static let groupSpacing: CGFloat = 10
+    static let rangeWidth: CGFloat = 148
+    static let limitWidth: CGFloat = 64
+    static let metricWidth: CGFloat = 124
+    static let periodWidth: CGFloat = 118
+    static let font = Font.system(size: 12)
+}
+
+private struct CompactHistorySegment<Value: Hashable>: Identifiable {
+    let value: Value
+    let title: String
+
+    var id: Value {
+        value
+    }
+}
+
+private struct CompactHistorySegmentedControl<Value: Hashable>: View {
+    let segments: [CompactHistorySegment<Value>]
+    @Binding var selection: Value
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(segments) { segment in
+                Button {
+                    selection = segment.value
+                } label: {
+                    Text(segment.title)
+                        .font(CompactHistoryControlMetrics.font.weight(isSelected(segment) ? .semibold : .regular))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: CompactHistoryControlMetrics.controlHeight - 2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                .background {
+                    if isSelected(segment) {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity(0.18))
+                    }
+                }
+                .accessibilityLabel(segment.title)
+                .accessibilityAddTraits(isSelected(segment) ? .isSelected : [])
+            }
+        }
+        .padding(1)
+        .frame(width: width, height: CompactHistoryControlMetrics.controlHeight)
+        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+        }
+    }
+
+    private func isSelected(_ segment: CompactHistorySegment<Value>) -> Bool {
+        selection == segment.value
+    }
+}
+
 private struct CompactUsageHistoryPanel: View {
     @StateObject private var viewModel: UsageHistoryViewModel
     private static let seriesColors: [Color] = [
@@ -344,7 +408,7 @@ private struct CompactUsageHistoryPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             controls
 
             if viewModel.hasVisiblePoints {
@@ -363,39 +427,35 @@ private struct CompactUsageHistoryPanel: View {
     }
 
     private var controls: some View {
-        HStack(alignment: .center, spacing: 9) {
-            Picker("Range", selection: $viewModel.selectedRange) {
-                ForEach(UsageHistoryRange.allCases) { range in
-                    Text(range.displayTitle).tag(range)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 156)
+        HStack(alignment: .center, spacing: CompactHistoryControlMetrics.groupSpacing) {
+            CompactHistorySegmentedControl(
+                segments: UsageHistoryRange.allCases.map {
+                    CompactHistorySegment(value: $0, title: $0.displayTitle)
+                },
+                selection: $viewModel.selectedRange,
+                width: CompactHistoryControlMetrics.rangeWidth
+            )
 
-            Picker("Limit", selection: $viewModel.selectedWindow) {
-                ForEach(UsageLimitWindow.allCases) { window in
-                    Text(window.displayTitle).tag(window)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 70)
+            CompactHistorySegmentedControl(
+                segments: UsageLimitWindow.allCases.map {
+                    CompactHistorySegment(value: $0, title: $0.displayTitle)
+                },
+                selection: $viewModel.selectedWindow,
+                width: CompactHistoryControlMetrics.limitWidth
+            )
 
-            Picker("Metric", selection: $viewModel.selectedMetric) {
-                ForEach(UsageHistoryMetric.allCases) { metric in
-                    Text(compactMetricTitle(metric)).tag(metric)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 130)
+            CompactHistorySegmentedControl(
+                segments: UsageHistoryMetric.allCases.map {
+                    CompactHistorySegment(value: $0, title: compactMetricTitle($0))
+                },
+                selection: $viewModel.selectedMetric,
+                width: CompactHistoryControlMetrics.metricWidth
+            )
 
             compactPeriodNavigation
         }
-        .controlSize(.small)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
     }
 
     private var compactPeriodNavigation: some View {
@@ -405,33 +465,33 @@ private struct CompactUsageHistoryPanel: View {
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 14, height: 16)
+                    .frame(width: 12, height: CompactHistoryControlMetrics.controlHeight)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToPreviousPeriod)
             .help(viewModel.previousPeriodHelpText)
             .accessibilityLabel(viewModel.previousPeriodAccessibilityLabel)
 
-            Text(viewModel.periodTitle)
-                .font(.system(size: 12))
+            Text(viewModel.compactPeriodTitle)
+                .font(CompactHistoryControlMetrics.font)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity)
 
             Button {
                 viewModel.goToNextPeriod()
             } label: {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 14, height: 16)
+                    .frame(width: 12, height: CompactHistoryControlMetrics.controlHeight)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToNextPeriod)
             .help(viewModel.nextPeriodHelpText)
             .accessibilityLabel(viewModel.nextPeriodAccessibilityLabel)
         }
-        .frame(width: 120, alignment: .center)
+        .frame(width: CompactHistoryControlMetrics.periodWidth, height: CompactHistoryControlMetrics.controlHeight)
     }
 
     private var chart: some View {
@@ -501,7 +561,7 @@ private struct CompactUsageHistoryPanel: View {
                     .allowsHitTesting(false)
             }
         }
-        .padding(.top, 4)
+        .padding(.top, 8)
         .padding(.horizontal, 6)
     }
 

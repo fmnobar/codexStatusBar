@@ -186,6 +186,10 @@ final class UsageHistoryViewModel: ObservableObject {
         Self.periodTitle(for: selectedRange, period: selectedPeriod, calendar: calendar)
     }
 
+    var compactPeriodTitle: String {
+        Self.compactPeriodTitle(for: selectedRange, period: selectedPeriod, calendar: calendar)
+    }
+
     var isCurrentPeriod: Bool {
         selectedPeriodStart == currentPeriodStart()
     }
@@ -808,6 +812,37 @@ final class UsageHistoryViewModel: ObservableObject {
             let year = calendar.component(.year, from: period.start)
             return "\(year)"
         }
+    }
+
+    private static func compactPeriodTitle(
+        for range: UsageHistoryRange,
+        period: UsageHistoryPeriod,
+        calendar: Calendar
+    ) -> String {
+        switch range {
+        case .day:
+            return formattedDate(period.start, template: "MMM d", calendar: calendar)
+        case .week:
+            let endDate = period.end.addingTimeInterval(-1)
+            let sameMonth = calendar.component(.year, from: period.start) == calendar.component(.year, from: endDate)
+                && calendar.component(.month, from: period.start) == calendar.component(.month, from: endDate)
+            let start = formattedDate(period.start, template: "MMM d", calendar: calendar)
+            let end = formattedDate(endDate, template: sameMonth ? "d" : "MMM d", calendar: calendar)
+            return "\(start)-\(end)"
+        case .month:
+            return formattedDate(period.start, template: "MMM y", calendar: calendar)
+        case .year:
+            return "\(calendar.component(.year, from: period.start))"
+        }
+    }
+
+    private static func formattedDate(_ date: Date, template: String, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = calendar.locale ?? Locale.autoupdatingCurrent
+        formatter.timeZone = calendar.timeZone
+        formatter.calendar = calendar
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
     }
 
     private static func chartXAxisLabel(

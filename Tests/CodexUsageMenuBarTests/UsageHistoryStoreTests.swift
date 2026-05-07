@@ -381,6 +381,42 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryCompactPeriodTitlesUseInlineFormats() throws {
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-05-06T12:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        XCTAssertEqual(viewModel.compactPeriodTitle, "May 6")
+
+        viewModel.selectedRange = .week
+        XCTAssertEqual(viewModel.compactPeriodTitle, "May 3-9")
+
+        viewModel.selectedRange = .month
+        XCTAssertEqual(viewModel.compactPeriodTitle, "May 2026")
+
+        viewModel.selectedRange = .year
+        XCTAssertEqual(viewModel.compactPeriodTitle, "2026")
+    }
+
+    @MainActor
+    func testHistoryCompactWeekPeriodTitleIncludesBothMonthsWhenNeeded() throws {
+        var mondayCalendar = calendar!
+        mondayCalendar.firstWeekday = 2
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-29T12:00:00Z") },
+            calendar: mondayCalendar
+        )
+
+        viewModel.selectedRange = .week
+
+        XCTAssertEqual(viewModel.compactPeriodTitle, "Apr 27-May 3")
+    }
+
+    @MainActor
     func testHistoryPeriodNavigationRespectsBoundsAndCurrentPeriod() throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-12T09:00:00Z"))
