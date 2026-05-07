@@ -32,7 +32,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         configureStatusItem()
         bindViewModel()
         updateStatusItemTitle(viewModel.menuBarPercentText)
-        updateStatusItemImage(viewModel.statusItemVisualState)
     }
 
     private func configurePopover() {
@@ -57,9 +56,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.target = self
         button.action = #selector(handleStatusItemClick(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.imagePosition = .imageLeading
-        button.imageScaling = .scaleProportionallyDown
-        button.image = makeStatusItemImage(for: .normal)
+        button.imagePosition = .noImage
+        button.image = nil
         button.appearsDisabled = false
     }
 
@@ -71,12 +69,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             }
             .store(in: &cancellables)
 
-        viewModel.$statusItemVisualState
-            .receive(on: RunLoop.main)
-            .sink { [weak self] visualState in
-                self?.updateStatusItemImage(visualState)
-            }
-            .store(in: &cancellables)
     }
 
     private func updateStatusItemTitle(_ text: String) {
@@ -92,33 +84,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         )
 
         button.attributedTitle = attributedTitle
-    }
-
-    private func updateStatusItemImage(_ visualState: StatusItemVisualState) {
-        statusItem.button?.image = makeStatusItemImage(for: visualState)
-    }
-
-    private func makeStatusItemImage(for visualState: StatusItemVisualState) -> NSImage? {
-        switch visualState {
-        case .normal:
-            let image = NSImage(named: "CodexMark")?.copy() as? NSImage
-            image?.size = NSSize(width: 22, height: 22)
-            image?.isTemplate = true
-            return image
-        case .stale:
-            return makeSymbolImage(systemName: "clock.badge.exclamationmark")
-        case .error:
-            return makeSymbolImage(systemName: "exclamationmark.triangle")
-        }
-    }
-
-    private func makeSymbolImage(systemName: String) -> NSImage? {
-        let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        let image = NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration)
-        image?.size = NSSize(width: 16, height: 16)
-        image?.isTemplate = true
-        return image
     }
 
     private func makeContextMenu() -> NSMenu {
