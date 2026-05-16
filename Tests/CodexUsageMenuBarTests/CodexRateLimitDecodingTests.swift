@@ -175,4 +175,44 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.secondary?.usedPercent, 8)
         XCTAssertEqual(snapshot.secondary?.windowDurationMinutes, 10080)
     }
+
+    func testDecodesThreadTokenUsageNotification() throws {
+        let data = Data(
+            """
+            {
+              "threadId": "thread-123",
+              "turnId": "turn-456",
+              "tokenUsage": {
+                "last": {
+                  "inputTokens": 1200,
+                  "cachedInputTokens": 900,
+                  "outputTokens": 300,
+                  "reasoningOutputTokens": 40,
+                  "totalTokens": 1500
+                },
+                "total": {
+                  "inputTokens": 10000,
+                  "cachedInputTokens": 7000,
+                  "outputTokens": 2000,
+                  "reasoningOutputTokens": 400,
+                  "totalTokens": 12000
+                },
+                "modelContextWindow": 258400
+              }
+            }
+            """.utf8
+        )
+
+        let payload = try JSONDecoder().decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: data)
+        let notification = payload.toDomainNotification()
+
+        XCTAssertEqual(notification.threadID, "thread-123")
+        XCTAssertEqual(notification.turnID, "turn-456")
+        XCTAssertNil(notification.model)
+        XCTAssertEqual(notification.tokenUsage.modelContextWindow, 258400)
+        XCTAssertEqual(notification.tokenUsage.last.cachedInputTokens, 900)
+        XCTAssertEqual(notification.tokenUsage.last.reasoningOutputTokens, 40)
+        XCTAssertEqual(notification.tokenUsage.total.inputTokens, 10000)
+        XCTAssertEqual(notification.tokenUsage.total.totalTokens, 12000)
+    }
 }

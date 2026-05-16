@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 protocol CodexRateLimitClientProtocol: AnyObject {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)? { get set }
+    var onTokenUsage: ((CodexTokenUsageNotification) -> Void)? { get set }
 
     func start() async throws -> CodexUsageSnapshot
     func refresh() async throws -> CodexUsageSnapshot
@@ -53,6 +54,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let now: () -> Date
     private let refreshInterval: TimeInterval
     private let historyRecorder: UsageHistoryRecording
+    private let tokenUsageRecorder: TokenUsageRecording
     private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
     private let loadMenuBarDisplayOptions: () -> MenuBarDisplayOptions
@@ -61,6 +63,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let setLaunchAtLoginEnabledAction: (Bool) throws -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
+    private var todayTokenTotal: Int64?
     private var lastUpdatedAt: Date?
     private var didStart = false
     private var didBootstrapClient = false
@@ -76,6 +79,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         now: @escaping () -> Date = Date.init,
         refreshInterval: TimeInterval = 60,
         historyRecorder: UsageHistoryRecording = NoOpUsageHistoryRecorder(),
+        tokenUsageRecorder: TokenUsageRecording = NoOpTokenUsageRecorder(),
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
         menuBarDisplayOptions: MenuBarDisplayOptions = MenuBarDisplayOptionsStore.load(),
         loadPersistedSelection: @escaping () -> MenuBarDisplayWindow = { MenuBarDisplayWindowStore.load() },
@@ -89,6 +93,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         self.now = now
         self.refreshInterval = refreshInterval
         self.historyRecorder = historyRecorder
+        self.tokenUsageRecorder = tokenUsageRecorder
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
         self.menuBarDisplayOptions = menuBarDisplayOptions
         self.loadPersistedSelection = loadPersistedSelection
@@ -102,6 +107,11 @@ final class MenuBarStatusViewModel: ObservableObject {
         client.onSnapshot = { [weak self] snapshot in
             Task { @MainActor in
                 self?.apply(usageSnapshot: snapshot)
+            }
+        }
+        client.onTokenUsage = { [weak self] notification in
+            Task { @MainActor in
+                self?.apply(tokenUsageNotification: notification)
             }
         }
     }
@@ -153,6 +163,12 @@ final class MenuBarStatusViewModel: ObservableObject {
     func setMenuBarShowsResetTime(_ isEnabled: Bool) {
         var updatedOptions = menuBarDisplayOptions
         updatedOptions.showsResetTime = isEnabled
+        setMenuBarDisplayOptions(updatedOptions)
+    }
+
+    func setMenuBarShowsTokens(_ isEnabled: Bool) {
+        var updatedOptions = menuBarDisplayOptions
+        updatedOptions.showsTokens = isEnabled
         setMenuBarDisplayOptions(updatedOptions)
     }
 
@@ -247,13 +263,25 @@ final class MenuBarStatusViewModel: ObservableObject {
         scheduleResetRefresh(for: usageSnapshot.displaySnapshot)
     }
 
+    private func apply(tokenUsageNotification notification: CodexTokenUsageNotification) {
+        let updateDate = now()
+        todayTokenTotal = tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
+        applyPresentation()
+    }
+
     private func applyPresentation() {
         let currentNow = now()
+        let tokenTotal = if menuBarDisplayOptions.showsTokens {
+            todayTokenTotal ?? tokenUsageRecorder.todayTotalTokens(at: currentNow, calendar: .autoupdatingCurrent)
+        } else {
+            Int64?.none
+        }
         let presentation = MenuBarStatusFormatter.presentation(
             snapshot: snapshot,
             now: currentNow,
             selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow,
-            menuBarDisplayOptions: menuBarDisplayOptions
+            menuBarDisplayOptions: menuBarDisplayOptions,
+            todayTokenTotal: tokenTotal
         )
         menuBarPercentText = presentation.menuBarPercentText
         fiveHourRow = presentation.fiveHourRow

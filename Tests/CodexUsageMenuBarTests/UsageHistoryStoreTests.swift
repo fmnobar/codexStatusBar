@@ -136,6 +136,143 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try store.points(range: .year, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar).isEmpty)
     }
 
+    func testRecordsAllTokenUsageFields() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 120,
+                lastCached: 80,
+                lastOutput: 40,
+                lastReasoning: 12,
+                lastTotal: 160,
+                totalInput: 1_200,
+                totalCached: 800,
+                totalOutput: 400,
+                totalReasoning: 120,
+                totalTotal: 1_600,
+                contextWindow: 258_400
+            ),
+            at: date("2026-04-14T20:00:00Z")
+        )
+
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.threadID, "thread-a")
+        XCTAssertEqual(samples.first?.turnID, "turn-a")
+        XCTAssertEqual(samples.first?.model, "gpt-5.5")
+        XCTAssertEqual(samples.first?.modelContextWindow, 258_400)
+        XCTAssertEqual(samples.first?.last.inputTokens, 120)
+        XCTAssertEqual(samples.first?.last.cachedInputTokens, 80)
+        XCTAssertEqual(samples.first?.last.outputTokens, 40)
+        XCTAssertEqual(samples.first?.last.reasoningOutputTokens, 12)
+        XCTAssertEqual(samples.first?.last.totalTokens, 160)
+        XCTAssertEqual(samples.first?.total.inputTokens, 1_200)
+        XCTAssertEqual(samples.first?.total.cachedInputTokens, 800)
+        XCTAssertEqual(samples.first?.total.outputTokens, 400)
+        XCTAssertEqual(samples.first?.total.reasoningOutputTokens, 120)
+        XCTAssertEqual(samples.first?.total.totalTokens, 1_600)
+        XCTAssertEqual(samples.first?.observedTotalTokens, 160)
+    }
+
+    func testTokenUsageDeduplicatesRepeatedThreadTurnAndCumulativeTotal() throws {
+        let store = try makeStore()
+        let notification = tokenNotification(
+            threadID: "thread-a",
+            turnID: "turn-a",
+            lastTotal: 250,
+            totalTotal: 2_000
+        )
+
+        try store.record(tokenUsage: notification, at: date("2026-04-14T20:00:00Z"))
+        try store.record(tokenUsage: notification, at: date("2026-04-14T20:00:05Z"))
+
+        XCTAssertEqual(try store.tokenUsageSamples().count, 1)
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 250)
+    }
+
+    func testTokenUsageComputesSameThreadCumulativeDeltas() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 250, totalTotal: 2_000),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-b", lastTotal: 400, totalTotal: 2_500),
+            at: date("2026-04-14T20:10:00Z")
+        )
+
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(samples.map(\.observedTotalTokens), [250, 500])
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 750)
+    }
+
+    func testTokenUsageFirstObservedSampleUsesLastTotalInsteadOfCumulativeTotal() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-late", lastTotal: 600, totalTotal: 12_000),
+            at: date("2026-04-14T20:00:00Z")
+        )
+
+        XCTAssertEqual(try store.tokenUsageSamples().first?.observedTotalTokens, 600)
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 600)
+    }
+
+    func testTokenTotalForDayUsesLocalCalendarDay() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 100, totalTotal: 100),
+            at: date("2026-04-13T23:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-b", turnID: "turn-a", lastTotal: 200, totalTotal: 200),
+            at: date("2026-04-14T20:00:00Z")
+        )
+
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 200)
+        XCTAssertNil(try store.tokenTotalForDay(containing: date("2026-04-15T21:00:00Z"), calendar: calendar))
+    }
+
+    func testMigratesExistingDatabaseForTokenUsageSamples() throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        try createLegacyHistoryDatabase(at: databaseURL)
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 120, totalTotal: 120),
+            at: date("2026-04-14T20:00:00Z")
+        )
+
+        XCTAssertEqual(try store.tokenUsageSamples().count, 1)
+    }
+
+    func testClearHistoryDeletesTokenUsageSamples() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 120, totalTotal: 120),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        XCTAssertTrue(try store.hasAnyHistory())
+
+        try store.clearHistory()
+
+        XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
+        XCTAssertFalse(try store.hasAnyHistory())
+    }
+
     func testExportsCSVRows() throws {
         let store = try makeStore()
 
@@ -220,6 +357,10 @@ final class UsageHistoryStoreTests: XCTestCase {
     func testBackupExportProducesImportableDatabase() throws {
         let (sourceStore, _) = try makeTemporaryStore()
         try sourceStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
+        try sourceStore.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 120, totalTotal: 120),
+            at: date("2026-04-14T20:10:00Z")
+        )
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
 
         try sourceStore.exportBackup(to: backupURL)
@@ -233,6 +374,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         let points = try destinationStore.points(range: .day, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
 
         XCTAssertEqual(points.map(\.usedPercent), [20])
+        XCTAssertEqual(try destinationStore.tokenUsageSamples().map(\.observedTotalTokens), [120])
     }
 
     func testImportBackupReplacesHistoryAndNotifies() throws {
@@ -1208,6 +1350,46 @@ final class UsageHistoryStoreTests: XCTestCase {
         CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 5, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: sevenDayUsedPercent, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+    }
+
+    private func tokenNotification(
+        threadID: String,
+        turnID: String,
+        model: String? = nil,
+        lastInput: Int64 = 0,
+        lastCached: Int64 = 0,
+        lastOutput: Int64 = 0,
+        lastReasoning: Int64 = 0,
+        lastTotal: Int64,
+        totalInput: Int64 = 0,
+        totalCached: Int64 = 0,
+        totalOutput: Int64 = 0,
+        totalReasoning: Int64 = 0,
+        totalTotal: Int64,
+        contextWindow: Int64? = nil
+    ) -> CodexTokenUsageNotification {
+        CodexTokenUsageNotification(
+            threadID: threadID,
+            turnID: turnID,
+            model: model,
+            tokenUsage: CodexThreadTokenUsage(
+                last: CodexTokenUsageBreakdown(
+                    inputTokens: lastInput,
+                    cachedInputTokens: lastCached,
+                    outputTokens: lastOutput,
+                    reasoningOutputTokens: lastReasoning,
+                    totalTokens: lastTotal
+                ),
+                total: CodexTokenUsageBreakdown(
+                    inputTokens: totalInput,
+                    cachedInputTokens: totalCached,
+                    outputTokens: totalOutput,
+                    reasoningOutputTokens: totalReasoning,
+                    totalTokens: totalTotal
+                ),
+                modelContextWindow: contextWindow
+            )
         )
     }
 

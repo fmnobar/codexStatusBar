@@ -29,6 +29,7 @@ enum CodexClientError: LocalizedError {
 @MainActor
 final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)?
+    var onTokenUsage: ((CodexTokenUsageNotification) -> Void)?
 
     private let decoder = JSONDecoder()
     private let urlSession: URLSession
@@ -399,6 +400,10 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
                     }
                 }
             }
+        } else if method == "thread/tokenUsage/updated", let params = object["params"] {
+            let notificationData = try makeJSONData(from: params)
+            let notification = try decoder.decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: notificationData)
+            onTokenUsage?(notification.toDomainNotification())
         }
     }
 

@@ -40,11 +40,25 @@ struct MenuBarDisplayOptions: Equatable {
     var showsLimitLabel: Bool
     var showsResetDate: Bool
     var showsResetTime: Bool
+    var showsTokens: Bool
+
+    init(
+        showsLimitLabel: Bool,
+        showsResetDate: Bool,
+        showsResetTime: Bool,
+        showsTokens: Bool = false
+    ) {
+        self.showsLimitLabel = showsLimitLabel
+        self.showsResetDate = showsResetDate
+        self.showsResetTime = showsResetTime
+        self.showsTokens = showsTokens
+    }
 
     static let defaultValue = MenuBarDisplayOptions(
         showsLimitLabel: true,
         showsResetDate: false,
-        showsResetTime: false
+        showsResetTime: false,
+        showsTokens: false
     )
 }
 
@@ -52,12 +66,14 @@ enum MenuBarDisplayOptionsStore {
     private static let showsLimitLabelKey = "MenuBarDisplayOptionsShowsLimitLabel"
     private static let showsResetDateKey = "MenuBarDisplayOptionsShowsResetDate"
     private static let showsResetTimeKey = "MenuBarDisplayOptionsShowsResetTime"
+    private static let showsTokensKey = "MenuBarDisplayOptionsShowsTokens"
 
     static func load(from defaults: UserDefaults = .standard) -> MenuBarDisplayOptions {
         MenuBarDisplayOptions(
             showsLimitLabel: bool(forKey: showsLimitLabelKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsLimitLabel, from: defaults),
             showsResetDate: bool(forKey: showsResetDateKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetDate, from: defaults),
-            showsResetTime: bool(forKey: showsResetTimeKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetTime, from: defaults)
+            showsResetTime: bool(forKey: showsResetTimeKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetTime, from: defaults),
+            showsTokens: bool(forKey: showsTokensKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsTokens, from: defaults)
         )
     }
 
@@ -65,6 +81,7 @@ enum MenuBarDisplayOptionsStore {
         defaults.set(options.showsLimitLabel, forKey: showsLimitLabelKey)
         defaults.set(options.showsResetDate, forKey: showsResetDateKey)
         defaults.set(options.showsResetTime, forKey: showsResetTimeKey)
+        defaults.set(options.showsTokens, forKey: showsTokensKey)
     }
 
     private static func bool(forKey key: String, defaultValue: Bool, from defaults: UserDefaults) -> Bool {
@@ -103,6 +120,7 @@ enum MenuBarStatusFormatter {
         now: Date,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow,
         menuBarDisplayOptions: MenuBarDisplayOptions = .defaultValue,
+        todayTokenTotal: Int64? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
@@ -116,6 +134,7 @@ enum MenuBarStatusFormatter {
                 for: menuBarWindow.window,
                 sourceTitle: menuBarWindow.sourceTitle,
                 options: menuBarDisplayOptions,
+                todayTokenTotal: todayTokenTotal,
                 now: now,
                 calendar: calendar
             ),
@@ -149,6 +168,7 @@ enum MenuBarStatusFormatter {
         for window: CodexRateLimitWindow?,
         sourceTitle: String? = nil,
         options: MenuBarDisplayOptions = .defaultValue,
+        todayTokenTotal: Int64? = nil,
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
@@ -175,7 +195,31 @@ enum MenuBarStatusFormatter {
             components.append(resetText)
         }
 
+        if options.showsTokens {
+            components.append("· \(compactTokenText(todayTokenTotal))")
+        }
+
         return components.joined(separator: " ")
+    }
+
+    static func compactTokenText(_ tokenCount: Int64?) -> String {
+        guard let tokenCount else {
+            return "-- tok"
+        }
+
+        let count = max(tokenCount, 0)
+        switch count {
+        case 0..<1_000:
+            return "\(count) tok"
+        case 1_000..<10_000:
+            return "\(compactNumber(Double(count) / 1_000))k tok"
+        case 10_000..<1_000_000:
+            return "\(Int((Double(count) / 1_000).rounded()))k tok"
+        case 1_000_000..<10_000_000:
+            return "\(compactNumber(Double(count) / 1_000_000))M tok"
+        default:
+            return "\(Int((Double(count) / 1_000_000).rounded()))M tok"
+        }
     }
 
     static func row(
@@ -364,5 +408,14 @@ enum MenuBarStatusFormatter {
         window.windowDurationMinutes == 10_080
             && calendar.isDate(resetDate, inSameDayAs: now)
             && !options.showsResetTime
+    }
+
+    private static func compactNumber(_ value: Double) -> String {
+        let rounded = (value * 10).rounded() / 10
+        if rounded.rounded() == rounded {
+            return "\(Int(rounded))"
+        }
+
+        return String(format: "%.1f", rounded)
     }
 }

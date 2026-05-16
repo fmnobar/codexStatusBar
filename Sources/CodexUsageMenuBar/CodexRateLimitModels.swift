@@ -65,6 +65,27 @@ struct CodexUsageSnapshot: Equatable {
     }
 }
 
+struct CodexTokenUsageBreakdown: Equatable {
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let totalTokens: Int64
+}
+
+struct CodexThreadTokenUsage: Equatable {
+    let last: CodexTokenUsageBreakdown
+    let total: CodexTokenUsageBreakdown
+    let modelContextWindow: Int64?
+}
+
+struct CodexTokenUsageNotification: Equatable {
+    let threadID: String
+    let turnID: String
+    let model: String?
+    let tokenUsage: CodexThreadTokenUsage
+}
+
 struct GetAuthStatusResponse: Decodable {
     let authMethod: String
     let authToken: String?
@@ -128,6 +149,53 @@ struct AccountRateLimitsUpdatedNotificationPayload: Decodable {
 
     var isCodexRelated: Bool {
         rateLimits.limitId?.hasPrefix("codex") ?? true
+    }
+}
+
+struct ThreadTokenUsageUpdatedNotificationPayload: Decodable {
+    let threadId: String
+    let turnId: String
+    let tokenUsage: ThreadTokenUsagePayload
+
+    func toDomainNotification() -> CodexTokenUsageNotification {
+        CodexTokenUsageNotification(
+            threadID: threadId,
+            turnID: turnId,
+            model: nil,
+            tokenUsage: tokenUsage.toDomainUsage()
+        )
+    }
+}
+
+struct ThreadTokenUsagePayload: Decodable {
+    let last: TokenUsageBreakdownPayload
+    let total: TokenUsageBreakdownPayload
+    let modelContextWindow: Int64?
+
+    func toDomainUsage() -> CodexThreadTokenUsage {
+        CodexThreadTokenUsage(
+            last: last.toDomainBreakdown(),
+            total: total.toDomainBreakdown(),
+            modelContextWindow: modelContextWindow
+        )
+    }
+}
+
+struct TokenUsageBreakdownPayload: Decodable {
+    let cachedInputTokens: Int64
+    let inputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let totalTokens: Int64
+
+    func toDomainBreakdown() -> CodexTokenUsageBreakdown {
+        CodexTokenUsageBreakdown(
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            totalTokens: totalTokens
+        )
     }
 }
 

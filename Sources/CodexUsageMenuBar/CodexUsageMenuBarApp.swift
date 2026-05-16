@@ -20,10 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let resolvedHistoryStore = (try? UsageHistoryStore.applicationSupportStore()) ?? (try! UsageHistoryStore.inMemory())
+        let historyRecorder = UsageHistoryRecorder(store: resolvedHistoryStore)
         historyStore = resolvedHistoryStore
         viewModel = MenuBarStatusViewModel(
             client: CodexAppServerClient(),
-            historyRecorder: UsageHistoryRecorder(store: resolvedHistoryStore)
+            historyRecorder: historyRecorder,
+            tokenUsageRecorder: historyRecorder
         )
         super.init()
     }

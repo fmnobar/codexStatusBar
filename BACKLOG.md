@@ -68,7 +68,27 @@
   - Added a compact jump-to-current control and clearer disabled navigation hints.
   - Added period-aware CSV filenames while keeping the current calendar-period model and local-only storage behavior.
 
+- Add token usage telemetry capture
+  - Added app-server `thread/tokenUsage/updated` notification decoding.
+  - Persisted live token telemetry with input, cached input, output, reasoning output, total, last-turn, cumulative, context-window, thread, turn, timestamp, and nullable model fields.
+  - Added deduped observed-token deltas so repeated streaming updates do not inflate daily totals.
+
+- Add menu-bar token display option
+  - Added a persisted `Tokens` menu-bar display option, default off.
+  - Appends today's captured token total to the existing capacity text when enabled.
+  - Shows `-- tok` when selected before token telemetry has been captured.
+
 ## Next Candidates
+
+- Add token history charts
+  - Add a History metric surface for token volume by selected period, limit/model when available, and token category.
+  - Support input, cached input, output, reasoning output, and total tokens in local storage and CSV export.
+  - Keep rate-limit capacity/usage charts separate so token volume is not confused with quota capacity.
+
+- Backfill token history from local Codex sessions
+  - Parse metadata-only token records from `~/.codex/sessions` and `~/.codex/archived_sessions`.
+  - Avoid reading or displaying message content, prompt history, auth tokens, or logs.
+  - Use this as an optional one-time import after live token capture is proven.
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.

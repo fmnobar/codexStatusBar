@@ -230,6 +230,14 @@ struct MenuBarContentView: View {
                 }
             )
 
+            inlineCheckboxOption(
+                title: "Tokens",
+                isSelected: viewModel.menuBarDisplayOptions.showsTokens,
+                action: {
+                    viewModel.setMenuBarShowsTokens(!viewModel.menuBarDisplayOptions.showsTokens)
+                }
+            )
+
             Spacer(minLength: 0)
 
             HStack(spacing: 6) {

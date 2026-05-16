@@ -5,8 +5,24 @@ protocol UsageHistoryRecording {
     func record(snapshot: CodexUsageSnapshot, at date: Date)
 }
 
+protocol TokenUsageRecording {
+    @discardableResult
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64?
+    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64?
+}
+
 struct NoOpUsageHistoryRecorder: UsageHistoryRecording {
     func record(snapshot: CodexUsageSnapshot, at date: Date) {}
+}
+
+struct NoOpTokenUsageRecorder: TokenUsageRecording {
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64? {
+        nil
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
+        nil
+    }
 }
 
 final class UsageHistoryRecorder: UsageHistoryRecording {
@@ -22,6 +38,22 @@ final class UsageHistoryRecorder: UsageHistoryRecording {
         } catch {
             // History should never interrupt the live menu bar status.
         }
+    }
+}
+
+extension UsageHistoryRecorder: TokenUsageRecording {
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64? {
+        do {
+            try store.record(tokenUsage: tokenUsage, at: date)
+            return try store.tokenTotalForDay(containing: date, calendar: .autoupdatingCurrent)
+        } catch {
+            // Token telemetry should never interrupt the live menu bar status.
+            return nil
+        }
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
+        try? store.tokenTotalForDay(containing: date, calendar: calendar)
     }
 }
 
@@ -54,6 +86,17 @@ enum UsageHistoryStoreError: LocalizedError {
 struct UsageHistoryDatabaseInfo: Equatable {
     let databaseURL: URL
     let totalByteSize: Int64
+}
+
+struct StoredTokenUsageSample: Equatable {
+    let threadID: String
+    let turnID: String
+    let model: String?
+    let receivedAt: Date
+    let modelContextWindow: Int64?
+    let last: CodexTokenUsageBreakdown
+    let total: CodexTokenUsageBreakdown
+    let observedTotalTokens: Int64
 }
 
 enum UsageHistoryRawRetention: Int, CaseIterable, Identifiable, Equatable {
@@ -213,6 +256,106 @@ final class UsageHistoryStore {
         notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
 
+    func record(tokenUsage notification: CodexTokenUsageNotification, at date: Date) throws {
+        let timestamp = Self.roundedToSecond(date).timeIntervalSince1970Int
+
+        try transaction {
+            let observedTotalTokens = try observedTokenDelta(
+                threadID: notification.threadID,
+                cumulativeTotalTokens: notification.tokenUsage.total.totalTokens,
+                lastTotalTokens: notification.tokenUsage.last.totalTokens
+            )
+            try insertTokenUsageSample(
+                notification: notification,
+                timestamp: timestamp,
+                observedTotalTokens: observedTotalTokens
+            )
+        }
+
+        notificationCenter.post(name: Self.didChangeNotification, object: self)
+    }
+
+    func tokenUsageSamples() throws -> [StoredTokenUsageSample] {
+        let statement = try prepare(
+            """
+            SELECT thread_id, turn_id, model, received_at, model_context_window,
+                last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                last_reasoning_output_tokens, last_total_tokens,
+                total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+            FROM token_usage_samples
+            ORDER BY received_at ASC, thread_id ASC, turn_id ASC, total_total_tokens ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var samples: [StoredTokenUsageSample] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                samples.append(
+                    StoredTokenUsageSample(
+                        threadID: columnText(statement, index: 0),
+                        turnID: columnText(statement, index: 1),
+                        model: optionalColumnText(statement, index: 2),
+                        receivedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 3))),
+                        modelContextWindow: optionalColumnInt(statement, index: 4),
+                        last: CodexTokenUsageBreakdown(
+                            inputTokens: sqlite3_column_int64(statement, 5),
+                            cachedInputTokens: sqlite3_column_int64(statement, 6),
+                            outputTokens: sqlite3_column_int64(statement, 7),
+                            reasoningOutputTokens: sqlite3_column_int64(statement, 8),
+                            totalTokens: sqlite3_column_int64(statement, 9)
+                        ),
+                        total: CodexTokenUsageBreakdown(
+                            inputTokens: sqlite3_column_int64(statement, 10),
+                            cachedInputTokens: sqlite3_column_int64(statement, 11),
+                            outputTokens: sqlite3_column_int64(statement, 12),
+                            reasoningOutputTokens: sqlite3_column_int64(statement, 13),
+                            totalTokens: sqlite3_column_int64(statement, 14)
+                        ),
+                        observedTotalTokens: sqlite3_column_int64(statement, 15)
+                    )
+                )
+            case SQLITE_DONE:
+                return samples
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func tokenTotalForDay(containing date: Date, calendar: Calendar = .autoupdatingCurrent) throws -> Int64? {
+        guard let interval = calendar.dateInterval(of: .day, for: date) else {
+            return nil
+        }
+
+        let statement = try prepare(
+            """
+            SELECT COUNT(*), IFNULL(SUM(observed_total_tokens), 0)
+            FROM token_usage_samples
+            WHERE received_at >= ? AND received_at < ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, interval.end.timeIntervalSince1970Int)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            guard sqlite3_column_int64(statement, 0) > 0 else {
+                return nil
+            }
+
+            return sqlite3_column_int64(statement, 1)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     func points(
         range: UsageHistoryRange,
         window: UsageLimitWindow,
@@ -310,6 +453,7 @@ final class UsageHistoryStore {
         try transaction {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
+            try execute("DELETE FROM token_usage_samples")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -320,6 +464,7 @@ final class UsageHistoryStore {
             """
             SELECT EXISTS(SELECT 1 FROM usage_samples LIMIT 1)
                 OR EXISTS(SELECT 1 FROM usage_rollups LIMIT 1)
+                OR EXISTS(SELECT 1 FROM token_usage_samples LIMIT 1)
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -403,10 +548,15 @@ final class UsageHistoryStore {
             column: "consumed_percent",
             schema: "imported_usage_history"
         ) ? "consumed_percent" : "NULL"
+        let importedHasTokenUsageSamples = try tableExists(
+            table: "token_usage_samples",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
+            try execute("DELETE FROM token_usage_samples")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -430,6 +580,25 @@ final class UsageHistoryStore {
                 FROM imported_usage_history.usage_rollups
                 """
             )
+            if importedHasTokenUsageSamples {
+                try execute(
+                    """
+                    INSERT INTO token_usage_samples (
+                        thread_id, turn_id, model, received_at, model_context_window,
+                        last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                        last_reasoning_output_tokens, last_total_tokens,
+                        total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                        total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+                    )
+                    SELECT thread_id, turn_id, model, received_at, model_context_window,
+                        last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                        last_reasoning_output_tokens, last_total_tokens,
+                        total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                        total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+                    FROM imported_usage_history.token_usage_samples
+                    """
+                )
+            }
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -480,12 +649,36 @@ final class UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_usage_samples (
+                thread_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                model TEXT,
+                received_at INTEGER NOT NULL,
+                model_context_window INTEGER,
+                last_input_tokens INTEGER NOT NULL,
+                last_cached_input_tokens INTEGER NOT NULL,
+                last_output_tokens INTEGER NOT NULL,
+                last_reasoning_output_tokens INTEGER NOT NULL,
+                last_total_tokens INTEGER NOT NULL,
+                total_input_tokens INTEGER NOT NULL,
+                total_cached_input_tokens INTEGER NOT NULL,
+                total_output_tokens INTEGER NOT NULL,
+                total_reasoning_output_tokens INTEGER NOT NULL,
+                total_total_tokens INTEGER NOT NULL,
+                observed_total_tokens INTEGER NOT NULL,
+                PRIMARY KEY (thread_id, turn_id, total_total_tokens)
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_received_at ON token_usage_samples(received_at)")
     }
 
     private func addColumnIfNeeded(table: String, column: String, definition: String) throws {
@@ -738,6 +931,133 @@ final class UsageHistoryStore {
         try step(statement)
     }
 
+    private func observedTokenDelta(
+        threadID: String,
+        cumulativeTotalTokens: Int64,
+        lastTotalTokens: Int64
+    ) throws -> Int64 {
+        if try hasTokenSampleAtOrAbove(threadID: threadID, cumulativeTotalTokens: cumulativeTotalTokens) {
+            return 0
+        }
+
+        if let previousTotalTokens = try previousCumulativeTokenTotal(
+            threadID: threadID,
+            before: cumulativeTotalTokens
+        ) {
+            return max(cumulativeTotalTokens - previousTotalTokens, 0)
+        }
+
+        return max(lastTotalTokens, 0)
+    }
+
+    private func hasTokenSampleAtOrAbove(threadID: String, cumulativeTotalTokens: Int64) throws -> Bool {
+        let statement = try prepare(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM token_usage_samples
+                WHERE thread_id = ? AND total_total_tokens >= ?
+                LIMIT 1
+            )
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(threadID, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, cumulativeTotalTokens)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0) != 0
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func previousCumulativeTokenTotal(threadID: String, before cumulativeTotalTokens: Int64) throws -> Int64? {
+        let statement = try prepare(
+            """
+            SELECT MAX(total_total_tokens)
+            FROM token_usage_samples
+            WHERE thread_id = ? AND total_total_tokens < ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(threadID, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, cumulativeTotalTokens)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            guard sqlite3_column_type(statement, 0) != SQLITE_NULL else {
+                return nil
+            }
+
+            return sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func insertTokenUsageSample(
+        notification: CodexTokenUsageNotification,
+        timestamp: Int64,
+        observedTotalTokens: Int64
+    ) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO token_usage_samples (
+                thread_id, turn_id, model, received_at, model_context_window,
+                last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                last_reasoning_output_tokens, last_total_tokens,
+                total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(thread_id, turn_id, total_total_tokens) DO UPDATE SET
+                model = excluded.model,
+                received_at = excluded.received_at,
+                model_context_window = excluded.model_context_window,
+                last_input_tokens = excluded.last_input_tokens,
+                last_cached_input_tokens = excluded.last_cached_input_tokens,
+                last_output_tokens = excluded.last_output_tokens,
+                last_reasoning_output_tokens = excluded.last_reasoning_output_tokens,
+                last_total_tokens = excluded.last_total_tokens,
+                total_input_tokens = excluded.total_input_tokens,
+                total_cached_input_tokens = excluded.total_cached_input_tokens,
+                total_output_tokens = excluded.total_output_tokens,
+                total_reasoning_output_tokens = excluded.total_reasoning_output_tokens,
+                observed_total_tokens = token_usage_samples.observed_total_tokens
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        let last = notification.tokenUsage.last
+        let total = notification.tokenUsage.total
+
+        bindText(notification.threadID, to: 1, in: statement)
+        bindText(notification.turnID, to: 2, in: statement)
+        bindOptionalText(notification.model, to: 3, in: statement)
+        sqlite3_bind_int64(statement, 4, timestamp)
+        bindOptionalInt(notification.tokenUsage.modelContextWindow, to: 5, in: statement)
+        sqlite3_bind_int64(statement, 6, last.inputTokens)
+        sqlite3_bind_int64(statement, 7, last.cachedInputTokens)
+        sqlite3_bind_int64(statement, 8, last.outputTokens)
+        sqlite3_bind_int64(statement, 9, last.reasoningOutputTokens)
+        sqlite3_bind_int64(statement, 10, last.totalTokens)
+        sqlite3_bind_int64(statement, 11, total.inputTokens)
+        sqlite3_bind_int64(statement, 12, total.cachedInputTokens)
+        sqlite3_bind_int64(statement, 13, total.outputTokens)
+        sqlite3_bind_int64(statement, 14, total.reasoningOutputTokens)
+        sqlite3_bind_int64(statement, 15, total.totalTokens)
+        sqlite3_bind_int64(statement, 16, observedTotalTokens)
+
+        try step(statement)
+    }
+
     private func rawHistoryBounds(window: UsageLimitWindow) throws -> UsageHistoryBounds? {
         let statement = try prepare(
             """
@@ -971,6 +1291,25 @@ final class UsageHistoryStore {
         }
     }
 
+    private func tableExists(table: String, schema: String? = nil) throws -> Bool {
+        let schemaName = schema ?? "main"
+        let statement = try prepare(
+            "SELECT EXISTS(SELECT 1 FROM \(schemaName).sqlite_master WHERE type = 'table' AND name = ?)"
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(table, to: 1, in: statement)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0) != 0
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     private func periodStart(for timestamp: Int64, granularity: UsageHistoryGranularity) -> Int64 {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
         let components: Set<Calendar.Component> = if granularity == .hour {
@@ -1024,6 +1363,14 @@ final class UsageHistoryStore {
         sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
     }
 
+    private func bindOptionalText(_ value: String?, to index: Int32, in statement: OpaquePointer) {
+        if let value {
+            bindText(value, to: index, in: statement)
+        } else {
+            sqlite3_bind_null(statement, index)
+        }
+    }
+
     private func bindOptionalInt(_ value: Int64?, to index: Int32, in statement: OpaquePointer) {
         if let value {
             sqlite3_bind_int64(statement, index, value)
@@ -1038,6 +1385,22 @@ final class UsageHistoryStore {
         }
 
         return String(cString: text)
+    }
+
+    private func optionalColumnText(_ statement: OpaquePointer, index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
+            return nil
+        }
+
+        return columnText(statement, index: index)
+    }
+
+    private func optionalColumnInt(_ statement: OpaquePointer, index: Int32) -> Int64? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
+            return nil
+        }
+
+        return sqlite3_column_int64(statement, index)
     }
 
     private func optionalColumnDouble(_ statement: OpaquePointer, index: Int32) -> Double? {
@@ -1071,6 +1434,10 @@ final class UsageHistoryStore {
 
     private static func roundedToMinute(_ date: Date) -> Date {
         Date(timeIntervalSince1970: TimeInterval((date.timeIntervalSince1970Int / 60) * 60))
+    }
+
+    private static func roundedToSecond(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(date.timeIntervalSince1970Int))
     }
 
     private static func totalByteSize(for databaseURL: URL, fileManager: FileManager) -> Int64 {
@@ -1123,6 +1490,46 @@ final class UsageHistoryStore {
             """,
             database: backupDatabase
         )
+
+        if try backupTableExists("token_usage_samples", database: backupDatabase) {
+            try validateBackupQuery(
+                """
+                SELECT thread_id, turn_id, model, received_at, model_context_window,
+                    last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                    last_reasoning_output_tokens, last_total_tokens,
+                    total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                    total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+                FROM token_usage_samples
+                LIMIT 1
+                """,
+                database: backupDatabase
+            )
+        }
+    }
+
+    private static func backupTableExists(_ table: String, database: OpaquePointer) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.invalidBackup
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, table, -1, SQLITE_TRANSIENT)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0) != 0
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.invalidBackup
+        }
     }
 
     private static func validateBackupQuery(_ sql: String, database: OpaquePointer) throws {
