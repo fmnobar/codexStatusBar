@@ -96,6 +96,10 @@ struct StoredTokenUsageSample: Equatable {
     let modelContextWindow: Int64?
     let last: CodexTokenUsageBreakdown
     let total: CodexTokenUsageBreakdown
+    let observedInputTokens: Int64?
+    let observedCachedInputTokens: Int64?
+    let observedOutputTokens: Int64?
+    let observedReasoningOutputTokens: Int64?
     let observedTotalTokens: Int64
 }
 
@@ -260,15 +264,15 @@ final class UsageHistoryStore {
         let timestamp = Self.roundedToSecond(date).timeIntervalSince1970Int
 
         try transaction {
-            let observedTotalTokens = try observedTokenDelta(
+            let observedTokens = try observedTokenDelta(
                 threadID: notification.threadID,
-                cumulativeTotalTokens: notification.tokenUsage.total.totalTokens,
-                lastTotalTokens: notification.tokenUsage.last.totalTokens
+                cumulative: notification.tokenUsage.total,
+                last: notification.tokenUsage.last
             )
             try insertTokenUsageSample(
                 notification: notification,
                 timestamp: timestamp,
-                observedTotalTokens: observedTotalTokens
+                observedTokens: observedTokens
             )
         }
 
@@ -282,7 +286,9 @@ final class UsageHistoryStore {
                 last_input_tokens, last_cached_input_tokens, last_output_tokens,
                 last_reasoning_output_tokens, last_total_tokens,
                 total_input_tokens, total_cached_input_tokens, total_output_tokens,
-                total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+                total_reasoning_output_tokens, total_total_tokens,
+                observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                observed_reasoning_output_tokens, observed_total_tokens
             FROM token_usage_samples
             ORDER BY received_at ASC, thread_id ASC, turn_id ASC, total_total_tokens ASC
             """
@@ -314,7 +320,11 @@ final class UsageHistoryStore {
                             reasoningOutputTokens: sqlite3_column_int64(statement, 13),
                             totalTokens: sqlite3_column_int64(statement, 14)
                         ),
-                        observedTotalTokens: sqlite3_column_int64(statement, 15)
+                        observedInputTokens: optionalColumnInt(statement, index: 15),
+                        observedCachedInputTokens: optionalColumnInt(statement, index: 16),
+                        observedOutputTokens: optionalColumnInt(statement, index: 17),
+                        observedReasoningOutputTokens: optionalColumnInt(statement, index: 18),
+                        observedTotalTokens: sqlite3_column_int64(statement, 19)
                     )
                 )
             case SQLITE_DONE:
@@ -354,6 +364,100 @@ final class UsageHistoryStore {
         default:
             throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
         }
+    }
+
+    func tokenPoints(
+        category: TokenHistoryCategory,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [TokenHistoryPoint] {
+        let startTimestamp = periodStart.timeIntervalSince1970Int
+        let endTimestamp = periodEnd.timeIntervalSince1970Int
+        let valueExpression = tokenValueExpression(for: category)
+        let statement = try prepare(
+            """
+            SELECT received_at, series_id, series_name, series_kind, token_count
+            FROM (
+                SELECT received_at,
+                    'tokens_all' AS series_id,
+                    'All tokens' AS series_name,
+                    'aggregate' AS series_kind,
+                    \(valueExpression) AS token_count
+                FROM token_usage_samples
+                WHERE received_at >= ? AND received_at < ?
+
+                UNION ALL
+
+                SELECT received_at,
+                    'model:' || model AS series_id,
+                    model AS series_name,
+                    'model' AS series_kind,
+                    \(valueExpression) AS token_count
+                FROM token_usage_samples
+                WHERE received_at >= ? AND received_at < ?
+                    AND model IS NOT NULL AND model != ''
+            )
+            WHERE token_count > 0
+            ORDER BY received_at ASC, series_kind ASC, series_name ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, startTimestamp)
+        sqlite3_bind_int64(statement, 2, endTimestamp)
+        sqlite3_bind_int64(statement, 3, startTimestamp)
+        sqlite3_bind_int64(statement, 4, endTimestamp)
+
+        var points: [TokenHistoryPoint] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let timestamp = sqlite3_column_int64(statement, 0)
+                points.append(
+                    TokenHistoryPoint(
+                        timestamp: Date(timeIntervalSince1970: TimeInterval(timestamp)),
+                        seriesID: columnText(statement, index: 1),
+                        seriesName: columnText(statement, index: 2),
+                        seriesKind: CodexUsageBucketKind(rawValue: columnText(statement, index: 3)) ?? .model,
+                        tokenCount: sqlite3_column_int64(statement, 4)
+                    )
+                )
+            case SQLITE_DONE:
+                return points
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func tokenSeries(
+        category: TokenHistoryCategory,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [UsageHistorySeries] {
+        let points = try tokenPoints(
+            category: category,
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        return Self.series(from: points)
+    }
+
+    func tokenHistoryBounds(category: TokenHistoryCategory) throws -> UsageHistoryBounds? {
+        let valueExpression = tokenValueExpression(for: category)
+        let statement = try prepare(
+            """
+            SELECT MIN(received_at), MAX(received_at)
+            FROM token_usage_samples
+            WHERE \(valueExpression) > 0
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        return try readHistoryBounds(from: statement)
     }
 
     func points(
@@ -552,6 +656,26 @@ final class UsageHistoryStore {
             table: "token_usage_samples",
             schema: "imported_usage_history"
         )
+        let importedObservedInputExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "observed_input_tokens",
+            schema: "imported_usage_history"
+        ) ? "observed_input_tokens" : "NULL"
+        let importedObservedCachedExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "observed_cached_input_tokens",
+            schema: "imported_usage_history"
+        ) ? "observed_cached_input_tokens" : "NULL"
+        let importedObservedOutputExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "observed_output_tokens",
+            schema: "imported_usage_history"
+        ) ? "observed_output_tokens" : "NULL"
+        let importedObservedReasoningExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "observed_reasoning_output_tokens",
+            schema: "imported_usage_history"
+        ) ? "observed_reasoning_output_tokens" : "NULL"
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -588,13 +712,18 @@ final class UsageHistoryStore {
                         last_input_tokens, last_cached_input_tokens, last_output_tokens,
                         last_reasoning_output_tokens, last_total_tokens,
                         total_input_tokens, total_cached_input_tokens, total_output_tokens,
-                        total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+                        total_reasoning_output_tokens, total_total_tokens,
+                        observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                        observed_reasoning_output_tokens, observed_total_tokens
                     )
                     SELECT thread_id, turn_id, model, received_at, model_context_window,
                         last_input_tokens, last_cached_input_tokens, last_output_tokens,
                         last_reasoning_output_tokens, last_total_tokens,
                         total_input_tokens, total_cached_input_tokens, total_output_tokens,
-                        total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
+                        total_reasoning_output_tokens, total_total_tokens,
+                        \(importedObservedInputExpression), \(importedObservedCachedExpression),
+                        \(importedObservedOutputExpression), \(importedObservedReasoningExpression),
+                        observed_total_tokens
                     FROM imported_usage_history.token_usage_samples
                     """
                 )
@@ -667,6 +796,10 @@ final class UsageHistoryStore {
                 total_output_tokens INTEGER NOT NULL,
                 total_reasoning_output_tokens INTEGER NOT NULL,
                 total_total_tokens INTEGER NOT NULL,
+                observed_input_tokens INTEGER,
+                observed_cached_input_tokens INTEGER,
+                observed_output_tokens INTEGER,
+                observed_reasoning_output_tokens INTEGER,
                 observed_total_tokens INTEGER NOT NULL,
                 PRIMARY KEY (thread_id, turn_id, total_total_tokens)
             )
@@ -675,6 +808,10 @@ final class UsageHistoryStore {
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "observed_input_tokens", definition: "INTEGER")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "observed_cached_input_tokens", definition: "INTEGER")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "observed_output_tokens", definition: "INTEGER")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "observed_reasoning_output_tokens", definition: "INTEGER")
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
@@ -933,21 +1070,39 @@ final class UsageHistoryStore {
 
     private func observedTokenDelta(
         threadID: String,
-        cumulativeTotalTokens: Int64,
-        lastTotalTokens: Int64
-    ) throws -> Int64 {
-        if try hasTokenSampleAtOrAbove(threadID: threadID, cumulativeTotalTokens: cumulativeTotalTokens) {
-            return 0
+        cumulative: CodexTokenUsageBreakdown,
+        last: CodexTokenUsageBreakdown
+    ) throws -> CodexTokenUsageBreakdown {
+        if try hasTokenSampleAtOrAbove(threadID: threadID, cumulativeTotalTokens: cumulative.totalTokens) {
+            return CodexTokenUsageBreakdown(
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                totalTokens: 0
+            )
         }
 
-        if let previousTotalTokens = try previousCumulativeTokenTotal(
+        if let previous = try previousCumulativeTokenUsage(
             threadID: threadID,
-            before: cumulativeTotalTokens
+            before: cumulative.totalTokens
         ) {
-            return max(cumulativeTotalTokens - previousTotalTokens, 0)
+            return CodexTokenUsageBreakdown(
+                inputTokens: max(cumulative.inputTokens - previous.inputTokens, 0),
+                cachedInputTokens: max(cumulative.cachedInputTokens - previous.cachedInputTokens, 0),
+                outputTokens: max(cumulative.outputTokens - previous.outputTokens, 0),
+                reasoningOutputTokens: max(cumulative.reasoningOutputTokens - previous.reasoningOutputTokens, 0),
+                totalTokens: max(cumulative.totalTokens - previous.totalTokens, 0)
+            )
         }
 
-        return max(lastTotalTokens, 0)
+        return CodexTokenUsageBreakdown(
+            inputTokens: max(last.inputTokens, 0),
+            cachedInputTokens: max(last.cachedInputTokens, 0),
+            outputTokens: max(last.outputTokens, 0),
+            reasoningOutputTokens: max(last.reasoningOutputTokens, 0),
+            totalTokens: max(last.totalTokens, 0)
+        )
     }
 
     private func hasTokenSampleAtOrAbove(threadID: String, cumulativeTotalTokens: Int64) throws -> Bool {
@@ -976,12 +1131,18 @@ final class UsageHistoryStore {
         }
     }
 
-    private func previousCumulativeTokenTotal(threadID: String, before cumulativeTotalTokens: Int64) throws -> Int64? {
+    private func previousCumulativeTokenUsage(
+        threadID: String,
+        before cumulativeTotalTokens: Int64
+    ) throws -> CodexTokenUsageBreakdown? {
         let statement = try prepare(
             """
-            SELECT MAX(total_total_tokens)
+            SELECT total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                total_reasoning_output_tokens, total_total_tokens
             FROM token_usage_samples
             WHERE thread_id = ? AND total_total_tokens < ?
+            ORDER BY total_total_tokens DESC
+            LIMIT 1
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -991,11 +1152,13 @@ final class UsageHistoryStore {
 
         switch sqlite3_step(statement) {
         case SQLITE_ROW:
-            guard sqlite3_column_type(statement, 0) != SQLITE_NULL else {
-                return nil
-            }
-
-            return sqlite3_column_int64(statement, 0)
+            return CodexTokenUsageBreakdown(
+                inputTokens: sqlite3_column_int64(statement, 0),
+                cachedInputTokens: sqlite3_column_int64(statement, 1),
+                outputTokens: sqlite3_column_int64(statement, 2),
+                reasoningOutputTokens: sqlite3_column_int64(statement, 3),
+                totalTokens: sqlite3_column_int64(statement, 4)
+            )
         case SQLITE_DONE:
             return nil
         default:
@@ -1006,7 +1169,7 @@ final class UsageHistoryStore {
     private func insertTokenUsageSample(
         notification: CodexTokenUsageNotification,
         timestamp: Int64,
-        observedTotalTokens: Int64
+        observedTokens: CodexTokenUsageBreakdown
     ) throws {
         let statement = try prepare(
             """
@@ -1015,8 +1178,10 @@ final class UsageHistoryStore {
                 last_input_tokens, last_cached_input_tokens, last_output_tokens,
                 last_reasoning_output_tokens, last_total_tokens,
                 total_input_tokens, total_cached_input_tokens, total_output_tokens,
-                total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_reasoning_output_tokens, total_total_tokens,
+                observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                observed_reasoning_output_tokens, observed_total_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(thread_id, turn_id, total_total_tokens) DO UPDATE SET
                 model = excluded.model,
                 received_at = excluded.received_at,
@@ -1030,6 +1195,10 @@ final class UsageHistoryStore {
                 total_cached_input_tokens = excluded.total_cached_input_tokens,
                 total_output_tokens = excluded.total_output_tokens,
                 total_reasoning_output_tokens = excluded.total_reasoning_output_tokens,
+                observed_input_tokens = token_usage_samples.observed_input_tokens,
+                observed_cached_input_tokens = token_usage_samples.observed_cached_input_tokens,
+                observed_output_tokens = token_usage_samples.observed_output_tokens,
+                observed_reasoning_output_tokens = token_usage_samples.observed_reasoning_output_tokens,
                 observed_total_tokens = token_usage_samples.observed_total_tokens
             """
         )
@@ -1053,9 +1222,28 @@ final class UsageHistoryStore {
         sqlite3_bind_int64(statement, 13, total.outputTokens)
         sqlite3_bind_int64(statement, 14, total.reasoningOutputTokens)
         sqlite3_bind_int64(statement, 15, total.totalTokens)
-        sqlite3_bind_int64(statement, 16, observedTotalTokens)
+        sqlite3_bind_int64(statement, 16, observedTokens.inputTokens)
+        sqlite3_bind_int64(statement, 17, observedTokens.cachedInputTokens)
+        sqlite3_bind_int64(statement, 18, observedTokens.outputTokens)
+        sqlite3_bind_int64(statement, 19, observedTokens.reasoningOutputTokens)
+        sqlite3_bind_int64(statement, 20, observedTokens.totalTokens)
 
         try step(statement)
+    }
+
+    private func tokenValueExpression(for category: TokenHistoryCategory) -> String {
+        switch category {
+        case .total:
+            return "observed_total_tokens"
+        case .input:
+            return "IFNULL(observed_input_tokens, last_input_tokens)"
+        case .cached:
+            return "IFNULL(observed_cached_input_tokens, last_cached_input_tokens)"
+        case .output:
+            return "IFNULL(observed_output_tokens, last_output_tokens)"
+        case .reasoning:
+            return "IFNULL(observed_reasoning_output_tokens, last_reasoning_output_tokens)"
+        }
     }
 
     private func rawHistoryBounds(window: UsageLimitWindow) throws -> UsageHistoryBounds? {
@@ -1233,6 +1421,25 @@ final class UsageHistoryStore {
                 }
 
                 return UsageHistorySeries(id: point.bucketID, name: point.bucketName, kind: point.bucketKind)
+            }
+            .sorted { lhs, rhs in
+                if lhs.kind != rhs.kind {
+                    return lhs.kind == .aggregate
+                }
+
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private static func series(from points: [TokenHistoryPoint]) -> [UsageHistorySeries] {
+        var seen = Set<String>()
+        return points
+            .compactMap { point in
+                guard seen.insert(point.seriesID).inserted else {
+                    return nil
+                }
+
+                return UsageHistorySeries(id: point.seriesID, name: point.seriesName, kind: point.seriesKind)
             }
             .sorted { lhs, rhs in
                 if lhs.kind != rhs.kind {

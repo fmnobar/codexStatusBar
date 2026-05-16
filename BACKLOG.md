@@ -78,12 +78,12 @@
   - Appends today's captured token total to the existing capacity text when enabled.
   - Shows `-- tok` when selected before token telemetry has been captured.
 
-## Next Candidates
-
 - Add token history charts
-  - Add a History metric surface for token volume by selected period, limit/model when available, and token category.
-  - Support input, cached input, output, reasoning output, and total tokens in local storage and CSV export.
-  - Keep rate-limit capacity/usage charts separate so token volume is not confused with quota capacity.
+  - Added token-volume History charts for the existing day, week, month, and year periods.
+  - Added total, input, cached input, output, and reasoning token categories with local SQLite queries and CSV export.
+  - Kept token volume separate from rate-limit capacity and usage charts.
+
+## Next Candidates
 
 - Backfill token history from local Codex sessions
   - Parse metadata-only token records from `~/.codex/sessions` and `~/.codex/archived_sessions`.

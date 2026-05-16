@@ -136,6 +136,38 @@ enum UsageHistoryGranularity: String, Equatable {
     case day
 }
 
+enum UsageHistoryChartKind: String, CaseIterable, Identifiable, Equatable {
+    case capacity
+    case usage
+    case tokens
+
+    var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .capacity:
+            return "Capacity"
+        case .usage:
+            return "Usage"
+        case .tokens:
+            return "Tokens"
+        }
+    }
+
+    var filenameToken: String {
+        rawValue
+    }
+
+    init(metric: UsageHistoryMetric) {
+        switch metric {
+        case .capacityLeft:
+            self = .capacity
+        case .usage:
+            self = .usage
+        }
+    }
+}
+
 enum UsageHistoryMetric: String, CaseIterable, Identifiable, Equatable {
     case capacityLeft
     case usage
@@ -179,6 +211,39 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
+enum TokenHistoryCategory: String, CaseIterable, Identifiable, Equatable {
+    case total
+    case input
+    case cached
+    case output
+    case reasoning
+
+    var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .total:
+            return "Total"
+        case .input:
+            return "Input"
+        case .cached:
+            return "Cached"
+        case .output:
+            return "Output"
+        case .reasoning:
+            return "Reasoning"
+        }
+    }
+
+    var filenameToken: String {
+        rawValue
+    }
+
+    func subtitle(for range: UsageHistoryRange) -> String {
+        "\(displayTitle) tokens by \(range.chartBucketTitle)"
+    }
+}
+
 struct UsageHistoryPoint: Equatable, Identifiable {
     let id: String
     let timestamp: Date
@@ -218,6 +283,30 @@ struct UsageHistorySeries: Equatable, Identifiable {
     let kind: CodexUsageBucketKind
 }
 
+struct TokenHistoryPoint: Equatable, Identifiable {
+    let id: String
+    let timestamp: Date
+    let seriesID: String
+    let seriesName: String
+    let seriesKind: CodexUsageBucketKind
+    let tokenCount: Int64
+
+    init(
+        timestamp: Date,
+        seriesID: String,
+        seriesName: String,
+        seriesKind: CodexUsageBucketKind,
+        tokenCount: Int64
+    ) {
+        self.timestamp = timestamp
+        self.seriesID = seriesID
+        self.seriesName = seriesName
+        self.seriesKind = seriesKind
+        self.tokenCount = tokenCount
+        id = "\(seriesID)-\(Int(timestamp.timeIntervalSince1970))-\(tokenCount)"
+    }
+}
+
 struct UsageHistoryChartPoint: Equatable, Identifiable {
     let id: String
     let bucketStart: Date
@@ -226,10 +315,11 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
     let bucketID: String
     let bucketName: String
     let bucketKind: CodexUsageBucketKind
-    let window: UsageLimitWindow
+    let window: UsageLimitWindow?
     let latestUsedPercent: Double
     let peakUsedPercent: Double
     let consumedPercent: Double
+    let tokenCount: Int64?
 
     init(
         bucketStart: Date,
@@ -253,7 +343,31 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         self.latestUsedPercent = latestUsedPercent
         self.peakUsedPercent = peakUsedPercent
         self.consumedPercent = consumedPercent
+        tokenCount = nil
         id = "\(bucketID)-\(window.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
+    }
+
+    init(
+        bucketStart: Date,
+        bucketEnd: Date,
+        sampleTimestamp: Date,
+        bucketID: String,
+        bucketName: String,
+        bucketKind: CodexUsageBucketKind,
+        tokenCount: Int64
+    ) {
+        self.bucketStart = bucketStart
+        self.bucketEnd = bucketEnd
+        self.sampleTimestamp = sampleTimestamp
+        self.bucketID = bucketID
+        self.bucketName = bucketName
+        self.bucketKind = bucketKind
+        window = nil
+        latestUsedPercent = 0
+        peakUsedPercent = 0
+        consumedPercent = 0
+        self.tokenCount = tokenCount
+        id = "\(bucketID)-tokens-\(Int(bucketStart.timeIntervalSince1970))"
     }
 
     func value(for metric: UsageHistoryMetric) -> Double {

@@ -338,11 +338,12 @@ struct MenuBarContentView: View {
 
 private enum CompactHistoryControlMetrics {
     static let controlHeight: CGFloat = 24
-    static let groupSpacing: CGFloat = 10
-    static let rangeWidth: CGFloat = 148
-    static let limitWidth: CGFloat = 64
-    static let metricWidth: CGFloat = 124
-    static let periodWidth: CGFloat = 118
+    static let groupSpacing: CGFloat = 6
+    static let rangeWidth: CGFloat = 140
+    static let limitWidth: CGFloat = 58
+    static let tokenCategoryWidth: CGFloat = 82
+    static let chartKindWidth: CGFloat = 134
+    static let periodWidth: CGFloat = 104
     static let font = Font.system(size: 12)
 }
 
@@ -400,6 +401,54 @@ private struct CompactHistorySegmentedControl<Value: Hashable>: View {
     }
 }
 
+private struct CompactHistoryMenuControl<Value: Hashable>: View {
+    let segments: [CompactHistorySegment<Value>]
+    @Binding var selection: Value
+    let width: CGFloat
+
+    var body: some View {
+        Menu {
+            ForEach(segments) { segment in
+                Button {
+                    selection = segment.value
+                } label: {
+                    if selection == segment.value {
+                        Label(segment.title, systemImage: "checkmark")
+                    } else {
+                        Text(segment.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(selectedTitle)
+                    .font(CompactHistoryControlMetrics.font.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: CompactHistoryControlMetrics.controlHeight - 2)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .padding(1)
+        .frame(width: width, height: CompactHistoryControlMetrics.controlHeight)
+        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+        }
+    }
+
+    private var selectedTitle: String {
+        segments.first { $0.value == selection }?.title ?? ""
+    }
+}
+
 private struct CompactUsageHistoryPanel: View {
     @StateObject private var viewModel: UsageHistoryViewModel
     private static let seriesColors: [Color] = [
@@ -444,6 +493,33 @@ private struct CompactUsageHistoryPanel: View {
                 width: CompactHistoryControlMetrics.rangeWidth
             )
 
+            compactSecondarySelector
+
+            CompactHistorySegmentedControl(
+                segments: UsageHistoryChartKind.allCases.map {
+                    CompactHistorySegment(value: $0, title: $0.displayTitle)
+                },
+                selection: $viewModel.selectedChartKind,
+                width: CompactHistoryControlMetrics.chartKindWidth
+            )
+
+            compactPeriodNavigation
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+
+    @ViewBuilder
+    private var compactSecondarySelector: some View {
+        if viewModel.selectedChartKind == .tokens {
+            CompactHistoryMenuControl(
+                segments: TokenHistoryCategory.allCases.map {
+                    CompactHistorySegment(value: $0, title: compactTokenCategoryTitle($0))
+                },
+                selection: $viewModel.selectedTokenCategory,
+                width: CompactHistoryControlMetrics.tokenCategoryWidth
+            )
+        } else {
             CompactHistorySegmentedControl(
                 segments: UsageLimitWindow.allCases.map {
                     CompactHistorySegment(value: $0, title: $0.displayTitle)
@@ -451,19 +527,7 @@ private struct CompactUsageHistoryPanel: View {
                 selection: $viewModel.selectedWindow,
                 width: CompactHistoryControlMetrics.limitWidth
             )
-
-            CompactHistorySegmentedControl(
-                segments: UsageHistoryMetric.allCases.map {
-                    CompactHistorySegment(value: $0, title: compactMetricTitle($0))
-                },
-                selection: $viewModel.selectedMetric,
-                width: CompactHistoryControlMetrics.metricWidth
-            )
-
-            compactPeriodNavigation
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
     }
 
     private var compactPeriodNavigation: some View {
@@ -508,7 +572,7 @@ private struct CompactUsageHistoryPanel: View {
                 ForEach(viewModel.visibleBarPoints) { point in
                     BarMark(
                         x: .value("Time", viewModel.chartXPosition(for: point)),
-                        y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric)),
+                        y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point)),
                         stacking: .unstacked
                     )
                     .foregroundStyle(seriesColor(for: point.bucketID))
@@ -523,7 +587,7 @@ private struct CompactUsageHistoryPanel: View {
                     ForEach(hoverSelection.points) { point in
                         PointMark(
                             x: .value("Time", viewModel.chartXPosition(for: point)),
-                            y: .value(viewModel.chartYAxisTitle, point.value(for: viewModel.selectedMetric))
+                            y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point))
                         )
                         .foregroundStyle(seriesColor(for: point.bucketID))
                         .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
@@ -542,6 +606,17 @@ private struct CompactUsageHistoryPanel: View {
                 }
             }
             .chartYAxisLabel(viewModel.chartYAxisTitle)
+            .chartYAxis {
+                AxisMarks { value in
+                    AxisGridLine()
+                    AxisTick()
+                    if let doubleValue = value.as(Double.self) {
+                        AxisValueLabel {
+                            Text(viewModel.formattedYAxisValue(doubleValue))
+                        }
+                    }
+                }
+            }
             .chartLegend(.hidden)
             .chartOverlay { proxy in
                 GeometryReader { geometry in
@@ -643,17 +718,23 @@ private struct CompactUsageHistoryPanel: View {
     private func hoverValueSummary(for selection: UsageHistoryHoverSelection) -> String {
         selection.points
             .map { point in
-                "\(point.bucketName) \(Int(point.value(for: viewModel.selectedMetric).rounded()))%"
+                "\(point.bucketName) \(viewModel.formattedChartValue(for: point))"
             }
             .joined(separator: "  ")
     }
 
-    private func compactMetricTitle(_ metric: UsageHistoryMetric) -> String {
-        switch metric {
-        case .capacityLeft:
-            return "Capacity"
-        case .usage:
-            return metric.displayTitle
+    private func compactTokenCategoryTitle(_ category: TokenHistoryCategory) -> String {
+        switch category {
+        case .total:
+            return "Total"
+        case .input:
+            return "Input"
+        case .cached:
+            return "Cache"
+        case .output:
+            return "Out"
+        case .reasoning:
+            return "Reason"
         }
     }
 
