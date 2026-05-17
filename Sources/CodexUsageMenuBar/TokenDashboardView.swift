@@ -427,7 +427,7 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     func formattedTokenValue(_ tokenCount: Int64) -> String {
-        Self.compactTokenText(tokenCount)
+        Self.compactTokenNumber(Double(tokenCount))
     }
 
     func formattedYAxisValue(_ value: Double) -> String {
@@ -633,10 +633,6 @@ final class TokenDashboardViewModel: ObservableObject {
         return value
     }
 
-    private static func compactTokenText(_ tokenCount: Int64) -> String {
-        "\(compactTokenNumber(Double(tokenCount))) tok"
-    }
-
     private static func compactModelSuffixTitle(_ value: String) -> String {
         guard let first = value.first else {
             return value
@@ -646,7 +642,11 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     private static func compactTokenAxisText(_ value: Double) -> String {
-        compactTokenNumber(value)
+        if abs(value) < 1_000_000 {
+            return groupedInteger(value)
+        }
+
+        return compactTokenNumber(value)
     }
 
     private static func compactTokenNumber(_ value: Double) -> String {
@@ -654,22 +654,29 @@ final class TokenDashboardViewModel: ObservableObject {
         let scaledValue: Double
         let suffix: String
 
-        if absolute >= 1_000_000 {
+        if absolute >= 1_000_000_000 {
+            scaledValue = value / 1_000_000_000
+            suffix = "B"
+        } else if absolute >= 1_000_000 {
             scaledValue = value / 1_000_000
             suffix = "M"
         } else if absolute >= 1_000 {
             scaledValue = value / 1_000
             suffix = "k"
         } else {
-            return "\(Int(value.rounded()))"
+            return groupedInteger(value)
         }
 
         let rounded = (scaledValue * 10).rounded() / 10
-        if rounded == rounded.rounded() {
+        if rounded == rounded.rounded() || abs(rounded) >= 100 {
             return "\(Int(rounded))\(suffix)"
         }
 
         return String(format: "%.1f%@", rounded, suffix)
+    }
+
+    private static func groupedInteger(_ value: Double) -> String {
+        Int64(value.rounded()).formatted(.number.grouping(.automatic))
     }
 
     private static func tokenAxisUpperBound(for value: Double) -> Double {
@@ -704,6 +711,11 @@ private struct TokenDashboardComponentPointAccumulator {
 
 struct TokenDashboardView: View {
     @StateObject private var viewModel: TokenDashboardViewModel
+    private let modelColumnWidth: CGFloat = 118
+    private let primaryNumberColumnWidth: CGFloat = 88
+    private let numberColumnWidth: CGFloat = 84
+    private let outputColumnWidth: CGFloat = 76
+    private let reasoningColumnWidth: CGFloat = 88
 
     init(store: UsageHistoryStore) {
         _viewModel = StateObject(wrappedValue: TokenDashboardViewModel(store: store))
@@ -723,10 +735,12 @@ struct TokenDashboardView: View {
 
             HStack(alignment: .top, spacing: 16) {
                 chartPanel
-                    .frame(minWidth: 460, maxWidth: .infinity)
+                    .frame(minWidth: 520, maxWidth: .infinity)
+                    .layoutPriority(1)
 
                 modelBreakdown
-                    .frame(width: 360)
+                    .frame(width: 606)
+                    .layoutPriority(2)
             }
         }
         .padding(18)
@@ -756,49 +770,41 @@ struct TokenDashboardView: View {
             Button {
                 viewModel.exportCSV()
             } label: {
-                Label("Export CSV", systemImage: "square.and.arrow.up")
+                Image(systemName: "square.and.arrow.up")
+                    .frame(width: 18, height: 18)
             }
+            .buttonStyle(.bordered)
             .disabled(!viewModel.hasVisiblePoints)
-            .help("Export visible token dashboard data")
+            .help("Export CSV")
+            .accessibilityLabel("Export CSV")
         }
     }
 
     private var periodNavigation: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Button {
                 viewModel.goToPreviousPeriod()
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 18, height: 18)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 16, height: 20)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToPreviousPeriod)
             .help(viewModel.previousPeriodHelpText)
 
             Text(viewModel.periodTitle)
-                .font(.callout.weight(.semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(minWidth: 130)
-
-            Button {
-                viewModel.jumpToCurrentPeriod()
-            } label: {
-                Image(systemName: "calendar.badge.clock")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 20, height: 18)
-            }
-            .buttonStyle(.plain)
-            .disabled(!viewModel.canJumpToCurrentPeriod)
-            .help(viewModel.currentPeriodHelpText)
+                .frame(minWidth: 112)
 
             Button {
                 viewModel.goToNextPeriod()
             } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 18, height: 18)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 16, height: 20)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToNextPeriod)
@@ -807,7 +813,7 @@ struct TokenDashboardView: View {
     }
 
     private var summaryTiles: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 10) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 150), spacing: 10), count: 5), spacing: 10) {
             ForEach(viewModel.summaryTiles) { tile in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
@@ -837,22 +843,15 @@ struct TokenDashboardView: View {
     }
 
     private var chartPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Token volume")
-                    .font(.headline)
-
-                Spacer()
-
-                componentLegend
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            componentLegend
 
             if viewModel.hasVisiblePoints {
                 Chart {
                     ForEach(viewModel.chartPoints) { point in
                         BarMark(
                             x: .value("Time", viewModel.chartXPosition(for: point)),
-                            y: .value("Tokens", Double(point.tokenCount)),
+                            y: .value("Value", Double(point.tokenCount)),
                             stacking: .standard
                         )
                         .foregroundStyle(viewModel.color(for: point.component))
@@ -869,7 +868,6 @@ struct TokenDashboardView: View {
                         }
                     }
                 }
-                .chartYAxisLabel("Tokens")
                 .chartYAxis {
                     AxisMarks { value in
                         AxisGridLine()
@@ -903,6 +901,8 @@ struct TokenDashboardView: View {
                     Text(component.displayTitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
         }
@@ -910,18 +910,20 @@ struct TokenDashboardView: View {
 
     private var modelBreakdown: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Model Breakdown")
-                .font(.headline)
-
-            Grid(alignment: .trailing, horizontalSpacing: 8, verticalSpacing: 7) {
+            Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 7) {
                 GridRow {
                     Text("Model")
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: modelColumnWidth, alignment: .leading)
                     Text("Total")
+                        .frame(width: primaryNumberColumnWidth, alignment: .trailing)
                     Text("In")
+                        .frame(width: numberColumnWidth, alignment: .trailing)
                     Text("Cache")
+                        .frame(width: numberColumnWidth, alignment: .trailing)
                     Text("Out")
-                    Text("Reason")
+                        .frame(width: outputColumnWidth, alignment: .trailing)
+                    Text("Reasoning")
+                        .frame(width: reasoningColumnWidth, alignment: .trailing)
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -939,19 +941,21 @@ struct TokenDashboardView: View {
 
                                 Text(viewModel.compactSeriesTitle(row.series.name))
                                     .lineLimit(1)
-                                    .truncationMode(.tail)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(width: modelColumnWidth, alignment: .leading)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
 
                         Text(viewModel.formattedTokenValue(row.totalTokens))
                             .fontWeight(.semibold)
+                            .frame(width: primaryNumberColumnWidth, alignment: .trailing)
 
                         ForEach(TokenHistoryComponent.allCases) { component in
                             Text(viewModel.formattedTokenValue(row.totalsByComponent[component] ?? 0))
                                 .foregroundStyle(.secondary)
+                                .frame(width: width(for: component), alignment: .trailing)
                         }
                     }
                     .font(.caption)
@@ -962,6 +966,17 @@ struct TokenDashboardView: View {
         .padding(14)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func width(for component: TokenHistoryComponent) -> CGFloat {
+        switch component {
+        case .input, .cached:
+            return numberColumnWidth
+        case .output:
+            return outputColumnWidth
+        case .reasoning:
+            return reasoningColumnWidth
+        }
     }
 
     private var emptyState: some View {

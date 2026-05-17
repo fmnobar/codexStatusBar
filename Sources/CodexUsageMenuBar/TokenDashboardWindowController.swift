@@ -19,13 +19,13 @@ final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Codex Token Dashboard"
-        window.minSize = NSSize(width: 780, height: 560)
+        window.minSize = NSSize(width: 1120, height: 560)
         window.delegate = self
         window.setFrameAutosaveName("CodexTokenDashboardWindow")
         window.contentViewController = NSHostingController(rootView: TokenDashboardView(store: store))

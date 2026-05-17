@@ -116,7 +116,40 @@
   - Show totals and trends for all captured token categories, including input, cached input, output, reasoning output, and total tokens.
   - Reuse existing token history storage, calendar-period navigation, model series, and export behavior where practical.
 
+- Polish detailed token dashboard readability
+  - Removed redundant labels from the dashboard chrome, chart, table, export button, and token values.
+  - Improved compact number formatting with billions, separators, and unit-free dashboard values.
+  - Gave the model breakdown enough room for full category and model labels when the dashboard opens.
+
 ## Next Candidates
+
+- Optimize History hover selection
+  - Cache visible bucketed chart data during reload instead of rebuilding computed arrays during high-frequency pointer movement.
+  - Pre-index hover data by bucket start so nearest-bucket lookup and detail rendering do not block the main thread.
+
+- Pre-aggregate token History data in SQLite
+  - Return period-bucketed token component totals directly from store queries for compact History.
+  - Keep the model-level breakdown in the Token Dashboard while reducing the inline History row count.
+
+- Move history database work off the main actor
+  - Put `UsageHistoryStore` calls behind a database actor or serial worker queue.
+  - Publish immutable view snapshots back to SwiftUI after SQLite reads, writes, and imports complete.
+
+- Add targeted SQLite indexes and bounded series queries
+  - Add indexes or summary tables for token component availability and period-scoped dashboard/history queries.
+  - Avoid full-table scans for model/series lists once token history grows.
+
+- Clean malformed token model labels
+  - Add a one-time normalization pass for stored token model values with newlines or unrelated text.
+  - Harden log/session import parsing so malformed model strings cannot become visible series.
+
+- Split History store, History view, and store tests by responsibility
+  - Split migrations, write paths, read queries, import/export, and dashboard queries into focused files.
+  - Split large History UI and store test files so future feature work has smaller blast radius.
+
+- Add performance regression coverage for History and token charts
+  - Add measured tests or fixtures for History reload, token dashboard reload, and hover selection with realistic sample counts.
+  - Add query-plan expectations for the SQLite hot paths.
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.
