@@ -687,12 +687,23 @@ private struct CompactUsageHistoryPanel: View {
     private var compactSeriesLegend: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(viewModel.sortedSeries) { series in
+                ForEach(compactLegendSeries) { series in
                     compactSeriesButton(series)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var compactLegendSeries: [UsageHistorySeries] {
+        viewModel.sortedSeries.filter { series in
+            if viewModel.selectedChartKind == .tokens {
+                return true
+            }
+
+            return viewModel.selectedSeriesIDs.contains(series.id)
+                || !viewModel.isDefaultHiddenSeries(series)
+        }
     }
 
     private var compactTokenLegendRows: some View {
@@ -802,6 +813,7 @@ private struct CompactUsageHistoryPanel: View {
 
     private func compactSeriesButton(_ series: UsageHistorySeries) -> some View {
         let isSelected = viewModel.selectedSeriesIDs.contains(series.id)
+        let displayTitle = viewModel.compactSeriesTitle(for: series.name)
 
         return Button {
             if !viewModel.isPinnedSeries(series) {
@@ -825,7 +837,7 @@ private struct CompactUsageHistoryPanel: View {
                         }
                 }
 
-                Text(series.name)
+                Text(displayTitle)
                     .font(.system(size: viewModel.selectedChartKind == .tokens ? 9.5 : 9))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
@@ -838,7 +850,7 @@ private struct CompactUsageHistoryPanel: View {
             .opacity(series.kind == .aggregate || isSelected ? 1 : 0.72)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(series.name)
+        .accessibilityLabel(displayTitle)
         .accessibilityValue(isSelected ? "Shown" : "Hidden")
         .help(viewModel.isPinnedSeries(series) ? "\(series.name) is always shown" : "Toggle \(series.name)")
     }

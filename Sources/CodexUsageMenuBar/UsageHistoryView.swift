@@ -610,6 +610,10 @@ final class UsageHistoryViewModel: ObservableObject {
         selectedChartKind != .tokens && series.kind == .aggregate
     }
 
+    func isDefaultHiddenSeries(_ series: UsageHistorySeries) -> Bool {
+        Self.isHiddenByDefault(series)
+    }
+
     func selectAllSeries() {
         selectedSeriesIDs = Set(series.map(\.id))
         userEditedSeriesSelection = true

@@ -2768,7 +2768,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
     }
 
-    func testAvailableRateLimitSeriesUsesCapturedTokenModelsInsteadOfLegacySparkOnlyBucket() throws {
+    func testAvailableRateLimitSeriesDoesNotExposeTokenOnlyModels() throws {
         let store = try makeStore()
         try store.record(
             snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
@@ -2815,11 +2815,11 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(
             availableSeries.map(\.id),
-            ["codex", "model:gpt-5.4", "model:gpt-5.4-mini"]
+            ["codex", "codex_gpt53_spark"]
         )
         XCTAssertEqual(
             availableSeries.map(\.name),
-            ["All models", "gpt-5.4", "gpt-5.4-mini"]
+            ["All models", "GPT-5.3-Codex-Spark"]
         )
     }
 
