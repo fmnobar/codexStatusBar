@@ -465,12 +465,14 @@ private struct CompactUsageHistoryPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             controls
 
+            compactChartContext
+
             if viewModel.hasVisiblePoints {
                 chart
-                    .frame(height: 206)
+                    .frame(height: 186)
             } else {
                 emptyState
-                    .frame(height: 206)
+                    .frame(height: 186)
             }
         }
         .padding(8)
@@ -625,28 +627,31 @@ private struct CompactUsageHistoryPanel: View {
                         }
                 }
             }
-
-            chartTopOverlay
         }
     }
 
-    private var chartTopOverlay: some View {
-        HStack(alignment: .top, spacing: 8) {
+    private var compactChartContext: some View {
+        VStack(alignment: .leading, spacing: 5) {
             if viewModel.selectedChartKind == .tokens {
-                compactTokenComponentLegend
-            }
+                compactTokenLegendRows
 
-            compactSeriesLegend
+                if let hoverSelection = viewModel.hoverSelection {
+                    compactHoverReadout(for: hoverSelection)
+                } else {
+                    compactTokenEncodingHint
+                }
+            } else {
+                if let hoverSelection = viewModel.hoverSelection {
+                    compactHoverReadout(for: hoverSelection)
+                } else {
+                    compactSeriesLegend
+                }
 
-            Spacer(minLength: 0)
-
-            if let hoverSelection = viewModel.hoverSelection {
-                hoverSummary(for: hoverSelection)
-                    .allowsHitTesting(false)
             }
         }
-        .padding(.top, 8)
-        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: viewModel.selectedChartKind == .tokens ? 62 : 21, alignment: .topLeading)
+        .padding(.horizontal, 10)
     }
 
     private var compactSeriesLegend: some View {
@@ -657,27 +662,79 @@ private struct CompactUsageHistoryPanel: View {
                 }
             }
         }
-        .frame(maxWidth: viewModel.selectedChartKind == .tokens ? 180 : 310, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var compactTokenEncodingHint: some View {
+        Text("Bars show selected models. Colors show token parts.")
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var compactTokenLegendRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Bars")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .leading)
+
+                compactSeriesLegend
+            }
+
+            HStack(spacing: 6) {
+                Text("Colors")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .leading)
+
+                compactTokenComponentLegend
+            }
+        }
     }
 
     private var compactTokenComponentLegend: some View {
-        HStack(spacing: 5) {
-            ForEach(TokenHistoryComponent.allCases) { component in
-                HStack(spacing: 3) {
-                    Circle()
-                        .fill(tokenComponentColor(for: component))
-                        .frame(width: 6, height: 6)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(TokenHistoryComponent.allCases) { component in
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(tokenComponentColor(for: component))
+                            .frame(width: 7, height: 7)
 
-                    Text(component.displayTitle)
-                        .font(.system(size: 9))
-                        .lineLimit(1)
+                        Text(component.displayTitle)
+                            .font(.system(size: 9.5))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.055), in: Capsule())
                 }
-                .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(.thinMaterial, in: Capsule())
+    }
+
+    private func compactHoverReadout(for selection: UsageHistoryHoverSelection) -> some View {
+        HStack(spacing: 8) {
+            Text(viewModel.formattedBucketInterval(selection))
+                .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Text(hoverValueSummary(for: selection))
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
     private func compactSeriesButton(_ series: UsageHistorySeries) -> some View {
@@ -706,8 +763,9 @@ private struct CompactUsageHistoryPanel: View {
                 }
 
                 Text(series.name)
-                    .font(.system(size: 9))
+                    .font(.system(size: viewModel.selectedChartKind == .tokens ? 9.5 : 9))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .truncationMode(.tail)
                     .foregroundStyle(isSelected ? .primary : .secondary)
             }
@@ -720,25 +778,6 @@ private struct CompactUsageHistoryPanel: View {
         .accessibilityLabel(series.name)
         .accessibilityValue(isSelected ? "Shown" : "Hidden")
         .help(series.kind == .aggregate ? "\(series.name) is always shown" : "Toggle \(series.name)")
-    }
-
-    private func hoverSummary(for selection: UsageHistoryHoverSelection) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(viewModel.formattedBucketInterval(selection))
-                .font(.system(size: 9, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-
-            Text(hoverValueSummary(for: selection))
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
     private func hoverValueSummary(for selection: UsageHistoryHoverSelection) -> String {
