@@ -7,7 +7,8 @@ protocol UsageHistoryRecording {
 
 protocol TokenUsageRecording {
     @discardableResult
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64?
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals?
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals?
     func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64?
 }
 
@@ -16,7 +17,11 @@ struct NoOpUsageHistoryRecorder: UsageHistoryRecording {
 }
 
 struct NoOpTokenUsageRecorder: TokenUsageRecording {
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64? {
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
         nil
     }
 
@@ -42,14 +47,18 @@ final class UsageHistoryRecorder: UsageHistoryRecording {
 }
 
 extension UsageHistoryRecorder: TokenUsageRecording {
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64? {
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
         do {
             try store.record(tokenUsage: tokenUsage, at: date)
-            return try store.tokenTotalForDay(containing: date, calendar: .autoupdatingCurrent)
+            return try store.tokenCategoryTotalsForDay(containing: date, calendar: .autoupdatingCurrent)
         } catch {
             // Token telemetry should never interrupt the live menu bar status.
             return nil
         }
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
+        try? store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)
     }
 
     func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
@@ -381,7 +390,8 @@ final class UsageHistoryStore {
 
         let statement = try prepare(
             """
-            SELECT COUNT(*), IFNULL(SUM(observed_total_tokens), 0)
+            SELECT COUNT(*),
+                IFNULL(SUM(observed_total_tokens), 0)
             FROM token_usage_samples
             WHERE received_at >= ? AND received_at < ?
             """
@@ -398,6 +408,59 @@ final class UsageHistoryStore {
             }
 
             return sqlite3_column_int64(statement, 1)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    func tokenCategoryTotalsForDay(containing date: Date, calendar: Calendar = .autoupdatingCurrent) throws -> TokenCategoryTotals? {
+        guard let interval = calendar.dateInterval(of: .day, for: date) else {
+            return nil
+        }
+
+        let statement = try prepare(
+            """
+            SELECT COUNT(*),
+                SUM(CASE
+                    WHEN observed_input_tokens IS NULL
+                        OR observed_cached_input_tokens IS NULL
+                        OR observed_output_tokens IS NULL
+                        OR observed_reasoning_output_tokens IS NULL
+                    THEN 1 ELSE 0
+                END),
+                IFNULL(SUM(observed_input_tokens), 0),
+                IFNULL(SUM(observed_cached_input_tokens), 0),
+                IFNULL(SUM(observed_output_tokens), 0),
+                IFNULL(SUM(observed_reasoning_output_tokens), 0),
+                IFNULL(SUM(observed_total_tokens), 0)
+            FROM token_usage_samples
+            WHERE received_at >= ? AND received_at < ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, interval.end.timeIntervalSince1970Int)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            guard sqlite3_column_int64(statement, 0) > 0 else {
+                return nil
+            }
+
+            guard sqlite3_column_int64(statement, 1) == 0 else {
+                return nil
+            }
+
+            return TokenCategoryTotals(
+                inputTokens: sqlite3_column_int64(statement, 2),
+                cachedInputTokens: sqlite3_column_int64(statement, 3),
+                outputTokens: sqlite3_column_int64(statement, 4),
+                reasoningOutputTokens: sqlite3_column_int64(statement, 5),
+                totalTokens: sqlite3_column_int64(statement, 6)
+            )
         case SQLITE_DONE:
             return nil
         default:

@@ -94,7 +94,17 @@
   - Made History model selectors use all locally tracked series for the selected limit or token category.
   - Kept Spark visible but unchecked by default.
 
+- Show menu-bar tokens as compact category parts
+  - Replaced the single total-token suffix with a compact input, cache, output, and reasoning breakdown.
+  - Kept the same menu-bar tone and spacing as the current capacity/token text, with a readable fallback when category data is unavailable.
+  - Avoided turning the menu bar into a dashboard by keeping category labels concise.
+
 ## Next Candidates
+
+- Add detailed token dashboard
+  - Add a separate dashboard surface outside the compact menu popover for deeper token analysis.
+  - Show totals and trends for all captured token categories, including input, cached input, output, reasoning output, and total tokens.
+  - Reuse existing token history storage, calendar-period navigation, model series, and export behavior where practical.
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.

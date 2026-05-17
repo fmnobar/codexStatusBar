@@ -98,14 +98,22 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
-    func testMenuBarTokenOptionAppendsTodayTokensAndPersists() async {
+    func testMenuBarTokenOptionAppendsTodayTokenCategoriesAndPersists() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
         let persistedOptions = MenuBarDisplayOptionsBox(options: .defaultValue)
-        let tokenRecorder = MockTokenUsageRecorder(todayTotal: 118_400)
+        let tokenRecorder = MockTokenUsageRecorder(
+            todayTotals: TokenCategoryTotals(
+                inputTokens: 3_125_000,
+                cachedInputTokens: 1_400_000,
+                outputTokens: 240_400,
+                reasoningOutputTokens: 18_400,
+                totalTokens: 4_783_800
+            )
+        )
 
         let viewModel = MenuBarStatusViewModel(
             client: client,
@@ -127,7 +135,11 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.setMenuBarShowsTokens(true)
 
         XCTAssertTrue(persistedOptions.options.showsTokens)
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 118k tok")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · in 3.1M cache 1.4M out 240k reason 18k")
+        XCTAssertEqual(
+            viewModel.menuBarToolTipText,
+            "Today's captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+        )
 
         viewModel.stop()
     }
@@ -399,7 +411,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMinutes: 10080, resetsAt: nil)
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
-        let tokenRecorder = MockTokenUsageRecorder(todayTotal: nil)
+        let tokenRecorder = MockTokenUsageRecorder(todayTotals: nil)
         let viewModel = MenuBarStatusViewModel(
             client: client,
             now: Date.init,
@@ -421,12 +433,25 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         await viewModel.start()
         XCTAssertEqual(client.refreshCallCount, 0)
 
-        client.onTokenUsage?(Self.tokenNotification(lastTotal: 1_200, totalTotal: 1_200))
+        client.onTokenUsage?(
+            Self.tokenNotification(
+                lastInput: 900,
+                lastCached: 100,
+                lastOutput: 250,
+                lastReasoning: 50,
+                lastTotal: 1_200,
+                totalInput: 900,
+                totalCached: 100,
+                totalOutput: 250,
+                totalReasoning: 50,
+                totalTotal: 1_200
+            )
+        )
         await Task.yield()
 
         XCTAssertEqual(tokenRecorder.records.count, 1)
         XCTAssertEqual(client.refreshCallCount, 0)
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · 1.2k tok")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · in 900 cache 100 out 250 reason 50")
 
         viewModel.stop()
     }
@@ -518,24 +543,35 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         )
     }
 
-    private static func tokenNotification(lastTotal: Int64, totalTotal: Int64) -> CodexTokenUsageNotification {
+    private static func tokenNotification(
+        lastInput: Int64 = 0,
+        lastCached: Int64 = 0,
+        lastOutput: Int64 = 0,
+        lastReasoning: Int64 = 0,
+        lastTotal: Int64,
+        totalInput: Int64 = 0,
+        totalCached: Int64 = 0,
+        totalOutput: Int64 = 0,
+        totalReasoning: Int64 = 0,
+        totalTotal: Int64
+    ) -> CodexTokenUsageNotification {
         CodexTokenUsageNotification(
             threadID: "thread-a",
             turnID: "turn-a",
             model: nil,
             tokenUsage: CodexThreadTokenUsage(
                 last: CodexTokenUsageBreakdown(
-                    inputTokens: 0,
-                    cachedInputTokens: 0,
-                    outputTokens: 0,
-                    reasoningOutputTokens: 0,
+                    inputTokens: lastInput,
+                    cachedInputTokens: lastCached,
+                    outputTokens: lastOutput,
+                    reasoningOutputTokens: lastReasoning,
                     totalTokens: lastTotal
                 ),
                 total: CodexTokenUsageBreakdown(
-                    inputTokens: 0,
-                    cachedInputTokens: 0,
-                    outputTokens: 0,
-                    reasoningOutputTokens: 0,
+                    inputTokens: totalInput,
+                    cachedInputTokens: totalCached,
+                    outputTokens: totalOutput,
+                    reasoningOutputTokens: totalReasoning,
                     totalTokens: totalTotal
                 ),
                 modelContextWindow: nil
@@ -658,20 +694,30 @@ private final class MockUsageHistoryRecorder: UsageHistoryRecording {
 
 private final class MockTokenUsageRecorder: TokenUsageRecording {
     private(set) var records: [(tokenUsage: CodexTokenUsageNotification, date: Date)] = []
-    var todayTotal: Int64?
+    var todayTotals: TokenCategoryTotals?
 
-    init(todayTotal: Int64?) {
-        self.todayTotal = todayTotal
+    init(todayTotals: TokenCategoryTotals?) {
+        self.todayTotals = todayTotals
     }
 
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> Int64? {
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
         records.append((tokenUsage, date))
-        todayTotal = tokenUsage.tokenUsage.last.totalTokens
-        return todayTotal
+        todayTotals = TokenCategoryTotals(
+            inputTokens: tokenUsage.tokenUsage.last.inputTokens,
+            cachedInputTokens: tokenUsage.tokenUsage.last.cachedInputTokens,
+            outputTokens: tokenUsage.tokenUsage.last.outputTokens,
+            reasoningOutputTokens: tokenUsage.tokenUsage.last.reasoningOutputTokens,
+            totalTokens: tokenUsage.tokenUsage.last.totalTokens
+        )
+        return todayTotals
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
+        todayTotals
     }
 
     func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
-        todayTotal
+        todayTotals?.totalTokens
     }
 }
 

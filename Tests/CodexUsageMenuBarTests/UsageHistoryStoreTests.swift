@@ -374,6 +374,104 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertNil(try store.tokenTotalForDay(containing: date("2026-04-15T21:00:00Z"), calendar: calendar))
     }
 
+    func testTokenCategoryTotalsForDaySumsObservedCategories() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                lastInput: 100,
+                lastCached: 25,
+                lastOutput: 40,
+                lastReasoning: 5,
+                lastTotal: 145,
+                totalInput: 1_000,
+                totalCached: 250,
+                totalOutput: 400,
+                totalReasoning: 50,
+                totalTotal: 1_450
+            ),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-b",
+                lastInput: 80,
+                lastCached: 30,
+                lastOutput: 50,
+                lastReasoning: 15,
+                lastTotal: 175,
+                totalInput: 1_150,
+                totalCached: 280,
+                totalOutput: 450,
+                totalReasoning: 65,
+                totalTotal: 1_625
+            ),
+            at: date("2026-04-14T21:00:00Z")
+        )
+
+        let totals = try store.tokenCategoryTotalsForDay(
+            containing: date("2026-04-14T22:00:00Z"),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(
+            totals,
+            TokenCategoryTotals(
+                inputTokens: 250,
+                cachedInputTokens: 55,
+                outputTokens: 90,
+                reasoningOutputTokens: 20,
+                totalTokens: 320
+            )
+        )
+    }
+
+    func testTokenCategoryTotalsForDayReturnsNilWithoutSamples() throws {
+        let store = try makeStore()
+
+        XCTAssertNil(
+            try store.tokenCategoryTotalsForDay(
+                containing: date("2026-04-14T22:00:00Z"),
+                calendar: calendar
+            )
+        )
+    }
+
+    func testTokenCategoryTotalsForDayDeduplicatesRepeatedNotifications() throws {
+        let store = try makeStore()
+        let notification = tokenNotification(
+            threadID: "thread-a",
+            turnID: "turn-a",
+            lastInput: 100,
+            lastCached: 20,
+            lastOutput: 30,
+            lastReasoning: 5,
+            lastTotal: 155,
+            totalInput: 100,
+            totalCached: 20,
+            totalOutput: 30,
+            totalReasoning: 5,
+            totalTotal: 155
+        )
+
+        try store.record(tokenUsage: notification, at: date("2026-04-14T20:00:00Z"))
+        try store.record(tokenUsage: notification, at: date("2026-04-14T20:00:05Z"))
+
+        XCTAssertEqual(
+            try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T22:00:00Z"), calendar: calendar),
+            TokenCategoryTotals(
+                inputTokens: 100,
+                cachedInputTokens: 20,
+                outputTokens: 30,
+                reasoningOutputTokens: 5,
+                totalTokens: 155
+            )
+        )
+    }
+
     func testMigratesExistingDatabaseForTokenUsageSamples() throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyHistoryDatabase(at: databaseURL)
@@ -410,6 +508,8 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(samples.first?.observedInputTokens, nil)
         XCTAssertEqual(inputPoints.map(\.tokenCount), [120])
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 200)
+        XCTAssertNil(try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
     }
 
     func testSessionTokenBackfillImportsMetadataOnlyTokenEvents() throws {

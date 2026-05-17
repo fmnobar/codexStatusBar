@@ -73,6 +73,14 @@ struct CodexTokenUsageBreakdown: Equatable {
     let totalTokens: Int64
 }
 
+struct TokenCategoryTotals: Equatable {
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let totalTokens: Int64
+}
+
 struct CodexThreadTokenUsage: Equatable {
     let last: CodexTokenUsageBreakdown
     let total: CodexTokenUsageBreakdown

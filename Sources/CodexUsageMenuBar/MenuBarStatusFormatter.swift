@@ -121,6 +121,7 @@ struct MenuBarLimitRowPresentation: Equatable {
 
 struct MenuBarStatusPresentation: Equatable {
     let menuBarPercentText: String
+    let menuBarToolTipText: String?
     let fiveHourRow: MenuBarLimitRowPresentation
     let sevenDayRow: MenuBarLimitRowPresentation
     let tightestRow: MenuBarLimitRowPresentation
@@ -132,7 +133,7 @@ enum MenuBarStatusFormatter {
         now: Date,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow,
         menuBarDisplayOptions: MenuBarDisplayOptions = .defaultValue,
-        todayTokenTotal: Int64? = nil,
+        todayTokenTotals: TokenCategoryTotals? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
@@ -146,9 +147,13 @@ enum MenuBarStatusFormatter {
                 for: menuBarWindow.window,
                 sourceTitle: menuBarWindow.sourceTitle,
                 options: menuBarDisplayOptions,
-                todayTokenTotal: todayTokenTotal,
+                todayTokenTotals: todayTokenTotals,
                 now: now,
                 calendar: calendar
+            ),
+            menuBarToolTipText: menuBarToolTipText(
+                options: menuBarDisplayOptions,
+                todayTokenTotals: todayTokenTotals
             ),
             fiveHourRow: row(
                 title: "5h limit",
@@ -180,7 +185,7 @@ enum MenuBarStatusFormatter {
         for window: CodexRateLimitWindow?,
         sourceTitle: String? = nil,
         options: MenuBarDisplayOptions = .defaultValue,
-        todayTokenTotal: Int64? = nil,
+        todayTokenTotals: TokenCategoryTotals? = nil,
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
@@ -208,10 +213,23 @@ enum MenuBarStatusFormatter {
         }
 
         if options.showsTokens {
-            components.append("· \(compactTokenText(todayTokenTotal))")
+            components.append("· \(compactTokenCategoryText(todayTokenTotals))")
         }
 
         return components.joined(separator: " ")
+    }
+
+    static func compactTokenCategoryText(_ totals: TokenCategoryTotals?) -> String {
+        guard let totals else {
+            return "-- tok"
+        }
+
+        return [
+            "in \(compactTokenValue(totals.inputTokens))",
+            "cache \(compactTokenValue(totals.cachedInputTokens))",
+            "out \(compactTokenValue(totals.outputTokens))",
+            "reason \(compactTokenValue(totals.reasoningOutputTokens))",
+        ].joined(separator: " ")
     }
 
     static func compactTokenText(_ tokenCount: Int64?) -> String {
@@ -219,18 +237,22 @@ enum MenuBarStatusFormatter {
             return "-- tok"
         }
 
+        return "\(compactTokenValue(tokenCount)) tok"
+    }
+
+    private static func compactTokenValue(_ tokenCount: Int64) -> String {
         let count = max(tokenCount, 0)
         switch count {
         case 0..<1_000:
-            return "\(count) tok"
+            return "\(count)"
         case 1_000..<10_000:
-            return "\(compactNumber(Double(count) / 1_000))k tok"
+            return "\(compactNumber(Double(count) / 1_000))k"
         case 10_000..<1_000_000:
-            return "\(Int((Double(count) / 1_000).rounded()))k tok"
+            return "\(Int((Double(count) / 1_000).rounded()))k"
         case 1_000_000..<10_000_000:
-            return "\(compactNumber(Double(count) / 1_000_000))M tok"
+            return "\(compactNumber(Double(count) / 1_000_000))M"
         default:
-            return "\(Int((Double(count) / 1_000_000).rounded()))M tok"
+            return "\(Int((Double(count) / 1_000_000).rounded()))M"
         }
     }
 
@@ -300,6 +322,28 @@ enum MenuBarStatusFormatter {
 
     static func tightestWindow(primary: CodexRateLimitWindow?, secondary: CodexRateLimitWindow?) -> CodexRateLimitWindow? {
         tightestWindowWithSource(primary: primary, secondary: secondary)?.window
+    }
+
+    static func menuBarToolTipText(
+        options: MenuBarDisplayOptions,
+        todayTokenTotals: TokenCategoryTotals?
+    ) -> String? {
+        guard options.showsTokens else {
+            return nil
+        }
+
+        guard let totals = todayTokenTotals else {
+            return "No token data captured today."
+        }
+
+        return [
+            "Today's captured tokens:",
+            "input \(compactTokenText(totals.inputTokens)),",
+            "cached input \(compactTokenText(totals.cachedInputTokens)),",
+            "output \(compactTokenText(totals.outputTokens)),",
+            "reasoning \(compactTokenText(totals.reasoningOutputTokens)),",
+            "total \(compactTokenText(totals.totalTokens)).",
+        ].joined(separator: " ")
     }
 
     private static func resolvedMenuBarWindow(

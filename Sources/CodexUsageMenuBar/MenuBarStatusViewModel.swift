@@ -16,6 +16,7 @@ protocol CodexRateLimitClientProtocol: AnyObject {
 @MainActor
 final class MenuBarStatusViewModel: ObservableObject {
     @Published private(set) var menuBarPercentText = "--"
+    @Published private(set) var menuBarToolTipText: String?
     @Published private(set) var fiveHourRow = MenuBarLimitRowPresentation(
         title: "5h limit",
         remainingPercentText: "--% left",
@@ -63,7 +64,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let setLaunchAtLoginEnabledAction: (Bool) throws -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
-    private var todayTokenTotal: Int64?
+    private var todayTokenTotals: TokenCategoryTotals?
     private var lastUpdatedAt: Date?
     private var didStart = false
     private var didBootstrapClient = false
@@ -265,25 +266,26 @@ final class MenuBarStatusViewModel: ObservableObject {
 
     private func apply(tokenUsageNotification notification: CodexTokenUsageNotification) {
         let updateDate = now()
-        todayTokenTotal = tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
+        todayTokenTotals = tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
         applyPresentation()
     }
 
     private func applyPresentation() {
         let currentNow = now()
-        let tokenTotal = if menuBarDisplayOptions.showsTokens {
-            todayTokenTotal ?? tokenUsageRecorder.todayTotalTokens(at: currentNow, calendar: .autoupdatingCurrent)
+        let tokenTotals = if menuBarDisplayOptions.showsTokens {
+            todayTokenTotals ?? tokenUsageRecorder.todayTokenCategoryTotals(at: currentNow, calendar: .autoupdatingCurrent)
         } else {
-            Int64?.none
+            TokenCategoryTotals?.none
         }
         let presentation = MenuBarStatusFormatter.presentation(
             snapshot: snapshot,
             now: currentNow,
             selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow,
             menuBarDisplayOptions: menuBarDisplayOptions,
-            todayTokenTotal: tokenTotal
+            todayTokenTotals: tokenTotals
         )
         menuBarPercentText = presentation.menuBarPercentText
+        menuBarToolTipText = presentation.menuBarToolTipText
         fiveHourRow = presentation.fiveHourRow
         sevenDayRow = presentation.sevenDayRow
         tightestRow = presentation.tightestRow

@@ -64,6 +64,22 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(MenuBarStatusFormatter.compactTokenText(1_250_000), "1.3M tok")
     }
 
+    func testCompactTokenCategoryTextFormatsAvailableParts() {
+        let totals = TokenCategoryTotals(
+            inputTokens: 3_125_000,
+            cachedInputTokens: 1_400_000,
+            outputTokens: 240_400,
+            reasoningOutputTokens: 18_400,
+            totalTokens: 4_783_800
+        )
+
+        XCTAssertEqual(
+            MenuBarStatusFormatter.compactTokenCategoryText(totals),
+            "in 3.1M cache 1.4M out 240k reason 18k"
+        )
+        XCTAssertEqual(MenuBarStatusFormatter.compactTokenCategoryText(nil), "-- tok")
+    }
+
     func testRemainingPercentIsClamped() {
         XCTAssertEqual(CodexRateLimitWindow.clampedRemainingPercent(from: 2), 98)
         XCTAssertEqual(CodexRateLimitWindow.clampedRemainingPercent(from: -5), 100)
@@ -181,10 +197,17 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "5h: 84%")
     }
 
-    func testMenuBarTextCanAppendTodayTokenTotal() {
+    func testMenuBarTextCanAppendTodayTokenCategories() {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 5, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let tokenTotals = TokenCategoryTotals(
+            inputTokens: 3_125_000,
+            cachedInputTokens: 1_400_000,
+            outputTokens: 240_400,
+            reasoningOutputTokens: 18_400,
+            totalTokens: 4_783_800
         )
 
         let presentation = MenuBarStatusFormatter.presentation(
@@ -197,12 +220,16 @@ final class MenuBarStatusFormatterTests: XCTestCase {
                 showsResetTime: false,
                 showsTokens: true
             ),
-            todayTokenTotal: 118_400,
+            todayTokenTotals: tokenTotals,
             calendar: Calendar(identifier: .gregorian),
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · 118k tok")
+        XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · in 3.1M cache 1.4M out 240k reason 18k")
+        XCTAssertEqual(
+            presentation.menuBarToolTipText,
+            "Today's captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+        )
     }
 
     func testMenuBarTextShowsTokenPlaceholderWhenEnabledWithoutData() {
@@ -221,12 +248,13 @@ final class MenuBarStatusFormatterTests: XCTestCase {
                 showsResetTime: false,
                 showsTokens: true
             ),
-            todayTokenTotal: nil,
+            todayTokenTotals: nil,
             calendar: Calendar(identifier: .gregorian),
             locale: Locale(identifier: "en_US_POSIX")
         )
 
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · -- tok")
+        XCTAssertEqual(presentation.menuBarToolTipText, "No token data captured today.")
     }
 
     func testTightestSelectionUsesLowerRemainingPercent() {
