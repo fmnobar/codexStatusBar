@@ -782,9 +782,31 @@ final class UsageHistoryViewModel: ObservableObject {
             return "Spark"
         }
 
-        if let range = seriesName.range(of: #"(?i)gpt-([0-9]+(?:\.[0-9]+)*)"#, options: .regularExpression) {
+        if let range = seriesName.range(
+            of: #"(?i)^gpt-([0-9]+(?:\.[0-9]+)*)(?:[-_ ](.+))?$"#,
+            options: .regularExpression
+        ) {
             let matched = String(seriesName[range])
-            return matched.replacingOccurrences(of: #"(?i)^gpt-"#, with: "", options: .regularExpression)
+            let withoutPrefix = matched.replacingOccurrences(
+                of: #"(?i)^gpt-"#,
+                with: "",
+                options: .regularExpression
+            )
+            let parts = withoutPrefix.split(separator: "-", omittingEmptySubsequences: true)
+            guard let version = parts.first else {
+                return withoutPrefix
+            }
+
+            let suffix = parts
+                .dropFirst()
+                .filter { $0.localizedCaseInsensitiveCompare("codex") != .orderedSame }
+                .map { Self.compactModelSuffixTitle(String($0)) }
+
+            guard !suffix.isEmpty else {
+                return String(version)
+            }
+
+            return ([String(version)] + suffix).joined(separator: " ")
         }
 
         return seriesName
@@ -929,6 +951,14 @@ final class UsageHistoryViewModel: ObservableObject {
 
     private static func defaultSelectedSeriesIDs(from series: [UsageHistorySeries]) -> Set<String> {
         Set(series.filter { !isHiddenByDefault($0) }.map(\.id))
+    }
+
+    private static func compactModelSuffixTitle(_ value: String) -> String {
+        guard let first = value.first else {
+            return value
+        }
+
+        return first.uppercased() + value.dropFirst().lowercased()
     }
 
     private static func isHiddenByDefault(_ series: UsageHistorySeries) -> Bool {

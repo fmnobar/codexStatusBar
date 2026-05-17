@@ -729,6 +729,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
         XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 215)
         XCTAssertEqual(viewModel.exportFilename, "codex-token-dashboard-month-2026-05.csv")
+        XCTAssertEqual(viewModel.compactSeriesTitle("gpt-5.4-mini"), "5.4 Mini")
         XCTAssertTrue(viewModel.csvText.contains("month,2026-05-01T00:00:00Z,2026-06-01T00:00:00Z,2026-05-02T00:00:00Z,2026-05-03T00:00:00Z,tokens_all,All captured,aggregate,input,100"))
 
         viewModel.selectSeries("model:gpt-5.5")
@@ -1932,7 +1933,23 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.chartYDomain, 0...200)
         XCTAssertEqual(viewModel.compactSeriesTitle(for: "All tokens"), "Total")
         XCTAssertEqual(viewModel.compactSeriesTitle(for: "gpt-5.5"), "5.5")
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "gpt-5.4-mini"), "5.4 Mini")
         XCTAssertEqual(viewModel.compactSeriesTitle(for: "GPT-5.3-Codex-Spark"), "Spark")
+    }
+
+    @MainActor
+    func testTokenCompactSeriesTitlesKeepModelVariantsDistinct() throws {
+        let store = try makeStore()
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "gpt-5.4"), "5.4")
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "gpt-5.4-mini"), "5.4 Mini")
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "gpt-5.4-codex-mini"), "5.4 Mini")
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "o-series-next"), "o-series-next")
     }
 
     @MainActor
@@ -2749,6 +2766,61 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.clearModelSeries()
 
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
+    }
+
+    func testAvailableRateLimitSeriesUsesCapturedTokenModelsInsteadOfLegacySparkOnlyBucket() throws {
+        let store = try makeStore()
+        try store.record(
+            snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-54",
+                turnID: "turn-54",
+                model: "gpt-5.4",
+                lastInput: 100,
+                lastCached: 10,
+                lastOutput: 8,
+                lastReasoning: 2,
+                lastTotal: 110,
+                totalInput: 100,
+                totalCached: 10,
+                totalOutput: 8,
+                totalReasoning: 2,
+                totalTotal: 110
+            ),
+            at: date("2026-04-14T20:10:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-54-mini",
+                turnID: "turn-54-mini",
+                model: "gpt-5.4-mini",
+                lastInput: 50,
+                lastCached: 5,
+                lastOutput: 4,
+                lastReasoning: 1,
+                lastTotal: 55,
+                totalInput: 50,
+                totalCached: 5,
+                totalOutput: 4,
+                totalReasoning: 1,
+                totalTotal: 55
+            ),
+            at: date("2026-04-14T20:12:00Z")
+        )
+
+        let availableSeries = try store.availableSeries(window: .sevenDay)
+
+        XCTAssertEqual(
+            availableSeries.map(\.id),
+            ["codex", "model:gpt-5.4", "model:gpt-5.4-mini"]
+        )
+        XCTAssertEqual(
+            availableSeries.map(\.name),
+            ["All models", "gpt-5.4", "gpt-5.4-mini"]
+        )
     }
 
     @MainActor

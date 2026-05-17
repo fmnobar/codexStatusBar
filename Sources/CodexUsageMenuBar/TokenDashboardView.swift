@@ -459,9 +459,31 @@ final class TokenDashboardViewModel: ObservableObject {
             return "Spark"
         }
 
-        if let range = name.range(of: #"(?i)gpt-([0-9]+(?:\.[0-9]+)*)"#, options: .regularExpression) {
+        if let range = name.range(
+            of: #"(?i)^gpt-([0-9]+(?:\.[0-9]+)*)(?:[-_ ](.+))?$"#,
+            options: .regularExpression
+        ) {
             let matched = String(name[range])
-            return matched.replacingOccurrences(of: #"(?i)^gpt-"#, with: "", options: .regularExpression)
+            let withoutPrefix = matched.replacingOccurrences(
+                of: #"(?i)^gpt-"#,
+                with: "",
+                options: .regularExpression
+            )
+            let parts = withoutPrefix.split(separator: "-", omittingEmptySubsequences: true)
+            guard let version = parts.first else {
+                return withoutPrefix
+            }
+
+            let suffix = parts
+                .dropFirst()
+                .filter { $0.localizedCaseInsensitiveCompare("codex") != .orderedSame }
+                .map { Self.compactModelSuffixTitle(String($0)) }
+
+            guard !suffix.isEmpty else {
+                return String(version)
+            }
+
+            return ([String(version)] + suffix).joined(separator: " ")
         }
 
         return name
@@ -613,6 +635,14 @@ final class TokenDashboardViewModel: ObservableObject {
 
     private static func compactTokenText(_ tokenCount: Int64) -> String {
         "\(compactTokenNumber(Double(tokenCount))) tok"
+    }
+
+    private static func compactModelSuffixTitle(_ value: String) -> String {
+        guard let first = value.first else {
+            return value
+        }
+
+        return first.uppercased() + value.dropFirst().lowercased()
     }
 
     private static func compactTokenAxisText(_ value: Double) -> String {

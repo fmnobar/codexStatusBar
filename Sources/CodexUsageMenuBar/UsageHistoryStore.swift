@@ -1200,7 +1200,16 @@ final class UsageHistoryStore: @unchecked Sendable {
         bindText(window.rawValue, to: 1, in: statement)
         bindText(window.rawValue, to: 2, in: statement)
 
-        return try readAvailableSeries(from: statement)
+        let rateLimitSeries = try readAvailableSeries(from: statement)
+        let tokenModelSeries = try availableTokenModelSeriesForRateLimitControls()
+        guard !tokenModelSeries.isEmpty else {
+            return rateLimitSeries
+        }
+
+        return Self.mergedRateLimitSeries(
+            rateLimitSeries,
+            tokenModelSeries: tokenModelSeries
+        )
     }
 
     func historyBounds(
@@ -2227,6 +2236,58 @@ final class UsageHistoryStore: @unchecked Sendable {
             }
     }
 
+    private static func mergedRateLimitSeries(
+        _ rateLimitSeries: [UsageHistorySeries],
+        tokenModelSeries: [UsageHistorySeries]
+    ) -> [UsageHistorySeries] {
+        var merged: [UsageHistorySeries] = []
+        var seenSeriesIDs = Set<String>()
+        var seenModelKeys = Set<String>()
+
+        for series in rateLimitSeries where !isSparkSeries(series) {
+            guard seenSeriesIDs.insert(series.id).inserted else {
+                continue
+            }
+            if series.kind == .model {
+                seenModelKeys.insert(modelSeriesKey(series))
+            }
+            merged.append(series)
+        }
+
+        for series in tokenModelSeries {
+            let modelKey = modelSeriesKey(series)
+            guard !seenModelKeys.contains(modelKey),
+                  seenSeriesIDs.insert(series.id).inserted
+            else {
+                continue
+            }
+
+            seenModelKeys.insert(modelKey)
+            merged.append(series)
+        }
+
+        return merged.sorted { lhs, rhs in
+            if lhs.kind != rhs.kind {
+                return lhs.kind == .aggregate
+            }
+
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private static func isSparkSeries(_ series: UsageHistorySeries) -> Bool {
+        guard series.kind == .model else {
+            return false
+        }
+
+        return modelSeriesKey(series).contains("spark")
+    }
+
+    private static func modelSeriesKey(_ series: UsageHistorySeries) -> String {
+        let normalizedName = CodexModelIdentifier.normalized(series.name) ?? series.name
+        return normalizedName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
     private func readAvailableSeries(from statement: OpaquePointer) throws -> [UsageHistorySeries] {
         var seen = Set<String>()
         var series: [UsageHistorySeries] = []
@@ -2258,6 +2319,37 @@ final class UsageHistoryStore: @unchecked Sendable {
                 throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
             }
         }
+    }
+
+    private func availableTokenModelSeriesForRateLimitControls() throws -> [UsageHistorySeries] {
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
+        let statement = try prepare(
+            """
+            WITH samples AS (
+                SELECT
+                    received_at,
+                    \(normalizedModelExpression) AS normalized_model,
+                    IFNULL(observed_input_tokens, 0)
+                        + IFNULL(observed_cached_input_tokens, 0)
+                        + IFNULL(observed_output_tokens, 0)
+                        + IFNULL(observed_reasoning_output_tokens, 0) AS token_count
+                FROM token_usage_samples
+            )
+            SELECT
+                'model:' || normalized_model AS series_id,
+                normalized_model AS series_name,
+                'model' AS series_kind,
+                received_at AS seen_at
+            FROM samples
+            WHERE normalized_model IS NOT NULL
+                AND token_count > 0
+                AND LOWER(normalized_model) NOT LIKE '%spark%'
+            ORDER BY seen_at DESC, series_name ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        return try readAvailableSeries(from: statement)
     }
 
     private func compactRawSamples(olderThan date: Date) throws {
