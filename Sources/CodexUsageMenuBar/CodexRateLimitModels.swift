@@ -85,7 +85,12 @@ enum CodexModelIdentifier {
     static func normalized(_ value: String?) -> String? {
         let trimSet = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
         let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
-        return trimmedValue.isEmpty ? nil : trimmedValue
+        guard !trimmedValue.isEmpty else {
+            return nil
+        }
+
+        let firstTokenScalars = trimmedValue.unicodeScalars.split { trimSet.contains($0) }.first
+        return firstTokenScalars.map { String(String.UnicodeScalarView($0)) }
     }
 
     static func firstNormalized(_ values: [String?]) -> String? {

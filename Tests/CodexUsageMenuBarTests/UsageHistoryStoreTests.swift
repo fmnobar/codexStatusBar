@@ -490,6 +490,24 @@ final class UsageHistoryStoreTests: XCTestCase {
             ),
             at: date("2026-04-14T20:05:00Z")
         )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-c",
+                turnID: "turn-a",
+                model: "gpt-5.5\nTests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:",
+                lastInput: 60,
+                lastCached: 10,
+                lastOutput: 8,
+                lastReasoning: 2,
+                lastTotal: 80,
+                totalInput: 60,
+                totalCached: 10,
+                totalOutput: 8,
+                totalReasoning: 2,
+                totalTotal: 80
+            ),
+            at: date("2026-04-14T20:10:00Z")
+        )
 
         let points = try store.tokenPoints(
             category: .total,

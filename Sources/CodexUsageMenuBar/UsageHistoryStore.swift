@@ -518,11 +518,12 @@ final class UsageHistoryStore {
         let startTimestamp = periodStart.timeIntervalSince1970Int
         let endTimestamp = periodEnd.timeIntervalSince1970Int
         let valueExpression = tokenValueExpression(for: category)
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
         let statement = try prepare(
             """
             WITH period_samples AS (
                 SELECT received_at,
-                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS normalized_model,
+                    \(normalizedModelExpression) AS normalized_model,
                     \(valueExpression) AS token_count
                 FROM token_usage_samples
                 WHERE received_at >= ? AND received_at < ?
@@ -584,11 +585,12 @@ final class UsageHistoryStore {
     ) throws -> [TokenHistoryComponentPoint] {
         let startTimestamp = periodStart.timeIntervalSince1970Int
         let endTimestamp = periodEnd.timeIntervalSince1970Int
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
         let statement = try prepare(
             """
             WITH period_samples AS (
                 SELECT received_at,
-                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS model,
+                    \(normalizedModelExpression) AS model,
                     observed_input_tokens,
                     observed_cached_input_tokens,
                     observed_output_tokens,
@@ -707,11 +709,12 @@ final class UsageHistoryStore {
 
     func availableTokenSeries(category: TokenHistoryCategory) throws -> [UsageHistorySeries] {
         let valueExpression = tokenValueExpression(for: category)
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
         let statement = try prepare(
             """
             WITH samples AS (
                 SELECT received_at,
-                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS normalized_model,
+                    \(normalizedModelExpression) AS normalized_model,
                     \(valueExpression) AS token_count
                 FROM token_usage_samples
             )
@@ -746,11 +749,12 @@ final class UsageHistoryStore {
     }
 
     func availableTokenComponentSeries() throws -> [UsageHistorySeries] {
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
         let statement = try prepare(
             """
             WITH samples AS (
                 SELECT received_at,
-                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS normalized_model,
+                    \(normalizedModelExpression) AS normalized_model,
                     observed_input_tokens,
                     observed_cached_input_tokens,
                     observed_output_tokens,
@@ -2076,6 +2080,19 @@ final class UsageHistoryStore {
 
     private func normalizedModelName(_ value: String?) -> String? {
         CodexModelIdentifier.normalized(value)
+    }
+
+    private static func normalizedModelSQLExpression(column: String) -> String {
+        let cleanedModelExpression = """
+        TRIM(REPLACE(REPLACE(REPLACE(\(column), char(9), ' '), char(10), ' '), char(13), ' '))
+        """
+        return """
+        NULLIF(CASE
+            WHEN INSTR(\(cleanedModelExpression), ' ') > 0
+                THEN SUBSTR(\(cleanedModelExpression), 1, INSTR(\(cleanedModelExpression), ' ') - 1)
+            ELSE \(cleanedModelExpression)
+        END, '')
+        """
     }
 
     private func columnText(_ statement: OpaquePointer, index: Int32) -> String {
