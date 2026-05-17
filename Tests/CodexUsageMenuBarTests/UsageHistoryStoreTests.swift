@@ -26,6 +26,34 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.timestamp), [date("2026-04-14T20:00:00Z"), date("2026-04-14T20:00:00Z")])
     }
 
+    func testRecordsDisplaySnapshotForAggregateWhenBucketAggregateDiffers() throws {
+        let store = try makeStore()
+        let now = date("2026-04-14T20:00:10Z")
+        let displaySnapshot = rateLimitSnapshot(
+            sevenDayUsedPercent: 20,
+            sevenDayResetAt: date("2026-04-20T13:25:00Z")
+        )
+        let bucketAggregateSnapshot = rateLimitSnapshot(
+            sevenDayUsedPercent: 0,
+            sevenDayResetAt: date("2026-04-23T21:19:00Z")
+        )
+        let modelSnapshot = rateLimitSnapshot(sevenDayUsedPercent: 7)
+        let snapshot = CodexUsageSnapshot(
+            displaySnapshot: displaySnapshot,
+            buckets: [
+                CodexUsageBucket(id: "codex", name: "All models", kind: .aggregate, snapshot: bucketAggregateSnapshot),
+                CodexUsageBucket(id: "codex_gpt55", name: "GPT-5.5", kind: .model, snapshot: modelSnapshot),
+            ]
+        )
+
+        try store.record(snapshot: snapshot, at: now)
+
+        let points = try store.points(range: .day, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.bucketID), ["codex", "codex_gpt55"])
+        XCTAssertEqual(points.map(\.usedPercent), [20, 7])
+    }
+
     func testAvailableSeriesIncludesTrackedModelsOutsideSelectedPeriod() throws {
         let store = try makeStore()
 
@@ -129,6 +157,93 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(points.map(\.usedPercent), [10, 25])
         XCTAssertEqual(points.map(\.consumedPercent), [0, 15])
+    }
+
+    func testUsageConsumptionIgnoresTransientZeroFromDifferentResetCohort() throws {
+        let store = try makeStore()
+        let stableReset = date("2026-05-20T13:25:36Z")
+        let transientReset = date("2026-05-23T19:05:55Z")
+
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 27, sevenDayResetAt: stableReset)
+            ),
+            at: date("2026-05-16T19:00:00Z")
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 28, sevenDayResetAt: stableReset)
+            ),
+            at: date("2026-05-16T19:04:00Z")
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 0, sevenDayResetAt: transientReset)
+            ),
+            at: date("2026-05-16T19:05:00Z")
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 28, sevenDayResetAt: stableReset)
+            ),
+            at: date("2026-05-16T19:09:00Z")
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30, sevenDayResetAt: stableReset)
+            ),
+            at: date("2026-05-16T19:50:00Z")
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 0, sevenDayResetAt: transientReset.addingTimeInterval(52 * 60))
+            ),
+            at: date("2026-05-16T19:57:00Z")
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 33, sevenDayResetAt: stableReset)
+            ),
+            at: date("2026-05-16T20:28:00Z")
+        )
+
+        let points = try store.points(range: .month, window: .sevenDay, now: date("2026-05-17T00:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [33])
+        XCTAssertEqual(points.map(\.peakUsedPercent), [33])
+        XCTAssertEqual(points.map(\.consumedPercent), [6])
+    }
+
+    func testMigrationRecomputesInflatedUsageConsumption() throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        try createInflatedConsumptionHistoryDatabase(at: databaseURL)
+
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let points = try store.points(range: .month, window: .sevenDay, now: date("2026-05-17T00:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [33])
+        XCTAssertEqual(points.map(\.peakUsedPercent), [33])
+        XCTAssertEqual(points.map(\.consumedPercent), [6])
+    }
+
+    func testMigrationRecreatesMissingRollupsFromRawSamples() throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        try createInflatedConsumptionHistoryDatabase(at: databaseURL, includeLegacyRollup: false)
+
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let points = try store.points(range: .month, window: .sevenDay, now: date("2026-05-17T00:00:00Z"), calendar: calendar)
+
+        XCTAssertEqual(points.map(\.usedPercent), [33])
+        XCTAssertEqual(points.map(\.peakUsedPercent), [33])
+        XCTAssertEqual(points.map(\.consumedPercent), [6])
     }
 
     func testRawSamplesCompactButRollupsRemain() throws {
@@ -2433,7 +2548,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             date("2026-04-16T00:00:00Z"),
         ])
         XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .capacityLeft) }, [10, 30, 90])
-        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .usage) }, [0, 70, 10])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { $0.value(for: .usage) }, [0, 0, 0])
     }
 
     @MainActor
@@ -3038,6 +3153,95 @@ final class UsageHistoryStoreTests: XCTestCase {
         }
     }
 
+    private func createInflatedConsumptionHistoryDatabase(
+        at databaseURL: URL,
+        includeLegacyRollup: Bool = true
+    ) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected history database to open")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        let stableReset = Int64(date("2026-05-20T13:25:36Z").timeIntervalSince1970)
+        let transientReset = Int64(date("2026-05-23T19:05:55Z").timeIntervalSince1970)
+        let sampleRows: [(String, Int, Double, Int64)] = [
+            ("2026-05-16T19:00:00Z", 27, 0, stableReset),
+            ("2026-05-16T19:04:00Z", 28, 1, stableReset),
+            ("2026-05-16T19:05:00Z", 0, 0, transientReset),
+            ("2026-05-16T19:09:00Z", 28, 28, stableReset),
+            ("2026-05-16T19:50:00Z", 30, 2, stableReset),
+            ("2026-05-16T19:57:00Z", 0, 0, transientReset + 52 * 60),
+            ("2026-05-16T20:28:00Z", 33, 33, stableReset),
+            ("2026-05-16T21:33:00Z", 1, 1, transientReset + 2 * 60 * 60),
+            ("2026-05-16T21:45:00Z", 2, 1, transientReset + 2 * 60 * 60),
+            ("2026-05-16T21:56:00Z", 3, 1, transientReset + 2 * 60 * 60),
+            ("2026-05-16T22:12:00Z", 4, 1, transientReset + 2 * 60 * 60),
+            ("2026-05-16T22:38:00Z", 5, 1, transientReset + 2 * 60 * 60),
+            ("2026-05-16T23:22:00Z", 6, 1, transientReset + 2 * 60 * 60),
+        ]
+        let insertedSamples = sampleRows.map { timestamp, usedPercent, consumedPercent, resetAt in
+            """
+            ('codex', 'All models', 'aggregate', 'sevenDay', \(Int64(date(timestamp).timeIntervalSince1970)),
+                \(usedPercent), \(consumedPercent), \(resetAt))
+            """
+        }.joined(separator: ",\n")
+        let dayStart = Int64(date("2026-05-16T00:00:00Z").timeIntervalSince1970)
+        let lastSampleTimestamp = Int64(date("2026-05-16T23:22:00Z").timeIntervalSince1970)
+        let legacyRollupSQL = includeLegacyRollup ? """
+        INSERT INTO usage_rollups (
+            granularity, bucket_id, bucket_name, bucket_kind, window,
+            period_start, sample_timestamp, used_percent, peak_used_percent, consumed_percent, reset_at
+        ) VALUES (
+            'day', 'codex', 'All models', 'aggregate', 'sevenDay',
+            \(dayStart), \(lastSampleTimestamp), 6, 33, 120, \(transientReset + 2 * 60 * 60)
+        );
+        """ : ""
+
+        let sql = """
+        CREATE TABLE usage_samples (
+            bucket_id TEXT NOT NULL,
+            bucket_name TEXT NOT NULL,
+            bucket_kind TEXT NOT NULL,
+            window TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            used_percent INTEGER NOT NULL,
+            consumed_percent REAL,
+            reset_at INTEGER,
+            PRIMARY KEY (bucket_id, window, timestamp)
+        );
+        CREATE TABLE usage_rollups (
+            granularity TEXT NOT NULL,
+            bucket_id TEXT NOT NULL,
+            bucket_name TEXT NOT NULL,
+            bucket_kind TEXT NOT NULL,
+            window TEXT NOT NULL,
+            period_start INTEGER NOT NULL,
+            sample_timestamp INTEGER NOT NULL,
+            used_percent INTEGER NOT NULL,
+            peak_used_percent INTEGER,
+            consumed_percent REAL,
+            reset_at INTEGER,
+            PRIMARY KEY (granularity, bucket_id, window, period_start)
+        );
+        INSERT INTO usage_samples (
+            bucket_id, bucket_name, bucket_kind, window, timestamp, used_percent, consumed_percent, reset_at
+        ) VALUES
+        \(insertedSamples);
+        \(legacyRollupSQL)
+        """
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        if result != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail(message)
+        }
+    }
+
     private func createLegacyTokenHistoryDatabase(at databaseURL: URL) throws {
         try createLegacyHistoryDatabase(at: databaseURL)
 
@@ -3207,10 +3411,23 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
-    private func rateLimitSnapshot(sevenDayUsedPercent: Int) -> CodexRateLimitSnapshot {
+    private func rateLimitSnapshot(
+        sevenDayUsedPercent: Int,
+        sevenDayResetAt: Date? = nil,
+        fiveHourUsedPercent: Int = 5,
+        fiveHourResetAt: Date? = nil
+    ) -> CodexRateLimitSnapshot {
         CodexRateLimitSnapshot(
-            primary: CodexRateLimitWindow(usedPercent: 5, windowDurationMinutes: 300, resetsAt: nil),
-            secondary: CodexRateLimitWindow(usedPercent: sevenDayUsedPercent, windowDurationMinutes: 10080, resetsAt: nil)
+            primary: CodexRateLimitWindow(
+                usedPercent: fiveHourUsedPercent,
+                windowDurationMinutes: 300,
+                resetsAt: fiveHourResetAt
+            ),
+            secondary: CodexRateLimitWindow(
+                usedPercent: sevenDayUsedPercent,
+                windowDurationMinutes: 10080,
+                resetsAt: sevenDayResetAt
+            )
         )
     }
 

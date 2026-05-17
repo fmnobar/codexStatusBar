@@ -50,10 +50,6 @@ struct CodexUsageSnapshot: Equatable {
     }
 
     var bucketsForRecording: [CodexUsageBucket] {
-        if buckets.contains(where: { $0.kind == .aggregate }) {
-            return buckets
-        }
-
         return [
             CodexUsageBucket(
                 id: "codex",
@@ -61,7 +57,7 @@ struct CodexUsageSnapshot: Equatable {
                 kind: .aggregate,
                 snapshot: displaySnapshot
             ),
-        ] + buckets
+        ] + buckets.filter { $0.kind == .model }
     }
 }
 
