@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 struct ImportedCodexTokenUsageSample: Equatable {
     let notification: CodexTokenUsageNotification
@@ -8,6 +9,8 @@ struct ImportedCodexTokenUsageSample: Equatable {
 struct TokenUsageImportResult: Equatable {
     let insertedCount: Int
     let duplicateCount: Int
+
+    static let empty = TokenUsageImportResult(insertedCount: 0, duplicateCount: 0)
 }
 
 struct CodexSessionTokenBackfillSummary: Equatable {
@@ -34,6 +37,153 @@ struct CodexSessionTokenBackfillSummary: Equatable {
         }
 
         return parts.joined(separator: " ")
+    }
+}
+
+struct CodexLogTokenUsageImporter {
+    let logsDatabaseURL: URL
+
+    init(logsDatabaseURL: URL = Self.defaultLogsDatabaseURL()) {
+        self.logsDatabaseURL = logsDatabaseURL
+    }
+
+    static func defaultLogsDatabaseURL(fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("logs_2.sqlite")
+    }
+
+    func importTokenHistory(
+        into store: UsageHistoryStore,
+        containing date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) throws -> TokenUsageImportResult {
+        guard FileManager.default.fileExists(atPath: logsDatabaseURL.path),
+              let interval = calendar.dateInterval(of: .day, for: date)
+        else {
+            return .empty
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(logsDatabaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return .empty
+        }
+        defer { sqlite3_close(database) }
+
+        let sql = """
+        SELECT id, ts, feedback_log_body
+        FROM logs
+        WHERE ts >= ? AND ts < ?
+            AND feedback_log_body LIKE '%event.name="codex.sse_event"%'
+            AND feedback_log_body LIKE '%event.kind=response.completed%'
+        ORDER BY ts ASC, id ASC
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return .empty
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, Int64(interval.start.timeIntervalSince1970))
+        sqlite3_bind_int64(statement, 2, Int64(interval.end.timeIntervalSince1970))
+
+        var samples: [ImportedCodexTokenUsageSample] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard
+                let bodyPointer = sqlite3_column_text(statement, 2),
+                let sample = Self.sample(
+                    logID: sqlite3_column_int64(statement, 0),
+                    fallbackTimestamp: sqlite3_column_int64(statement, 1),
+                    body: String(cString: bodyPointer)
+                )
+            else {
+                continue
+            }
+
+            samples.append(sample)
+        }
+
+        return try store.importTokenUsageSamples(samples)
+    }
+
+    private static func sample(
+        logID _: Int64,
+        fallbackTimestamp: Int64,
+        body: String
+    ) -> ImportedCodexTokenUsageSample? {
+        guard
+            let inputTokens = intValue(for: "input_token_count", in: body),
+            let outputTokens = intValue(for: "output_token_count", in: body),
+            let cachedInputTokens = intValue(for: "cached_token_count", in: body),
+            let reasoningOutputTokens = intValue(for: "reasoning_token_count", in: body)
+        else {
+            return nil
+        }
+
+        let totalTokens = intValue(for: "tool_token_count", in: body) ?? (inputTokens + outputTokens)
+        let timestampText = value(for: "event.timestamp", in: body)
+        let receivedAt = timestampText.flatMap(CodexSessionTokenBackfillImporter.parseTimestamp)
+            ?? Date(timeIntervalSince1970: TimeInterval(fallbackTimestamp))
+        let conversationID = value(for: "conversation.id", in: body) ?? "unknown-conversation"
+        let model = value(for: "slug", in: body) ?? value(for: "model", in: body)
+        let eventID = [
+            timestampText ?? "\(fallbackTimestamp)",
+            "\(inputTokens)",
+            "\(cachedInputTokens)",
+            "\(outputTokens)",
+            "\(reasoningOutputTokens)",
+            model ?? "unknown-model",
+        ].joined(separator: ":")
+        let tokenUsage = CodexThreadTokenUsage(
+            last: CodexTokenUsageBreakdown(
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedInputTokens,
+                outputTokens: outputTokens,
+                reasoningOutputTokens: reasoningOutputTokens,
+                totalTokens: totalTokens
+            ),
+            total: CodexTokenUsageBreakdown(
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedInputTokens,
+                outputTokens: outputTokens,
+                reasoningOutputTokens: reasoningOutputTokens,
+                totalTokens: totalTokens
+            ),
+            modelContextWindow: nil
+        )
+        let notification = CodexTokenUsageNotification(
+            threadID: "codex-log:\(conversationID):\(eventID)",
+            turnID: "response.completed",
+            model: model,
+            tokenUsage: tokenUsage
+        )
+
+        return ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt)
+    }
+
+    private static func intValue(for key: String, in body: String) -> Int64? {
+        value(for: key, in: body).flatMap(Int64.init)
+    }
+
+    private static func value(for key: String, in body: String) -> String? {
+        let pattern = "(?:^| )\(NSRegularExpression.escapedPattern(for: key))=([^ ]+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let range = NSRange(body.startIndex..<body.endIndex, in: body)
+        guard let match = regex.firstMatch(in: body, range: range),
+              let valueRange = Range(match.range(at: 1), in: body)
+        else {
+            return nil
+        }
+
+        return String(body[valueRange]).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
     }
 }
 
@@ -82,7 +232,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
     }
 
     private func sessionFileURLs() -> [URL] {
-        sourceDirectories.flatMap { directoryURL -> [URL] in
+        return sourceDirectories.flatMap { directoryURL -> [URL] in
             guard fileManager.fileExists(atPath: directoryURL.path) else {
                 return []
             }
@@ -158,7 +308,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
         "session:\(fileURL.deletingPathExtension().lastPathComponent)"
     }
 
-    private static func parseTimestamp(_ rawValue: String?) -> Date? {
+    static func parseTimestamp(_ rawValue: String?) -> Date? {
         guard let rawValue else {
             return nil
         }

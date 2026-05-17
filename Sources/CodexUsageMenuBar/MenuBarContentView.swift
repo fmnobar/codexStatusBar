@@ -165,12 +165,9 @@ struct MenuBarContentView: View {
 
     private var inlineSettings: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Menu Bar")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
+            VStack(alignment: .leading, spacing: 6) {
                 menuBarDisplayOptionsRow
+                menuBarPreviewRow
             }
 
             Divider()
@@ -237,20 +234,17 @@ struct MenuBarContentView: View {
                     viewModel.setMenuBarShowsTokens(!viewModel.menuBarDisplayOptions.showsTokens)
                 }
             )
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 6) {
-                Text("Preview")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-
-                Text(viewModel.menuBarPercentText)
-                    .font(.system(size: 12, design: .monospaced))
-                    .lineLimit(1)
-            }
         }
         .font(.system(size: 12))
+    }
+
+    private var menuBarPreviewRow: some View {
+        Text(viewModel.menuBarPercentText)
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func inlineCheckboxOption(
@@ -461,7 +455,10 @@ private struct CompactUsageHistoryPanel: View {
     ]
 
     init(store: UsageHistoryStore) {
-        _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(store: store))
+        _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
+            store: store,
+            recentTokenHistoryImporter: UsageHistoryViewModel.liveRecentTokenHistoryImporter
+        ))
     }
 
     var body: some View {
@@ -511,15 +508,7 @@ private struct CompactUsageHistoryPanel: View {
 
     @ViewBuilder
     private var compactSecondarySelector: some View {
-        if viewModel.selectedChartKind == .tokens {
-            CompactHistoryMenuControl(
-                segments: TokenHistoryCategory.allCases.map {
-                    CompactHistorySegment(value: $0, title: compactTokenCategoryTitle($0))
-                },
-                selection: $viewModel.selectedTokenCategory,
-                width: CompactHistoryControlMetrics.tokenCategoryWidth
-            )
-        } else {
+        if viewModel.selectedChartKind != .tokens {
             CompactHistorySegmentedControl(
                 segments: UsageLimitWindow.allCases.map {
                     CompactHistorySegment(value: $0, title: $0.displayTitle)
@@ -573,9 +562,13 @@ private struct CompactUsageHistoryPanel: View {
                     BarMark(
                         x: .value("Time", viewModel.chartXPosition(for: point)),
                         y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point)),
-                        stacking: .unstacked
+                        stacking: viewModel.selectedChartKind == .tokens ? .standard : .unstacked
                     )
-                    .foregroundStyle(seriesColor(for: point.bucketID))
+                    .foregroundStyle(
+                        viewModel.selectedChartKind == .tokens
+                            ? tokenComponentColor(for: point)
+                            : seriesColor(for: point.bucketID)
+                    )
                     .opacity(point.bucketKind == .aggregate ? 0.84 : 0.66)
                 }
 
@@ -589,7 +582,11 @@ private struct CompactUsageHistoryPanel: View {
                             x: .value("Time", viewModel.chartXPosition(for: point)),
                             y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point))
                         )
-                        .foregroundStyle(seriesColor(for: point.bucketID))
+                        .foregroundStyle(
+                            viewModel.selectedChartKind == .tokens
+                                ? tokenComponentColor(for: point)
+                                : seriesColor(for: point.bucketID)
+                        )
                         .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
                     }
                 }
@@ -635,6 +632,10 @@ private struct CompactUsageHistoryPanel: View {
 
     private var chartTopOverlay: some View {
         HStack(alignment: .top, spacing: 8) {
+            if viewModel.selectedChartKind == .tokens {
+                compactTokenComponentLegend
+            }
+
             compactSeriesLegend
 
             Spacer(minLength: 0)
@@ -656,7 +657,27 @@ private struct CompactUsageHistoryPanel: View {
                 }
             }
         }
-        .frame(maxWidth: 310, alignment: .leading)
+        .frame(maxWidth: viewModel.selectedChartKind == .tokens ? 180 : 310, alignment: .leading)
+    }
+
+    private var compactTokenComponentLegend: some View {
+        HStack(spacing: 5) {
+            ForEach(TokenHistoryComponent.allCases) { component in
+                HStack(spacing: 3) {
+                    Circle()
+                        .fill(tokenComponentColor(for: component))
+                        .frame(width: 6, height: 6)
+
+                    Text(component.displayTitle)
+                        .font(.system(size: 9))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(.thinMaterial, in: Capsule())
     }
 
     private func compactSeriesButton(_ series: UsageHistorySeries) -> some View {
@@ -668,16 +689,21 @@ private struct CompactUsageHistoryPanel: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Circle()
-                    .fill(seriesColor(for: series.id))
-                    .frame(width: 7, height: 7)
-                    .opacity(isSelected ? 1 : 0.28)
-                    .overlay {
-                        if !isSelected {
-                            Circle()
-                                .stroke(seriesColor(for: series.id).opacity(0.7), lineWidth: 1)
+                if viewModel.selectedChartKind == .tokens {
+                    NeutralCheckboxMark(isSelected: isSelected, size: 9)
+                        .opacity(series.kind == .aggregate || isSelected ? 1 : 0.56)
+                } else {
+                    Circle()
+                        .fill(seriesColor(for: series.id))
+                        .frame(width: 7, height: 7)
+                        .opacity(isSelected ? 1 : 0.28)
+                        .overlay {
+                            if !isSelected {
+                                Circle()
+                                    .stroke(seriesColor(for: series.id).opacity(0.7), lineWidth: 1)
+                            }
                         }
-                    }
+                }
 
                 Text(series.name)
                     .font(.system(size: 9))
@@ -718,24 +744,9 @@ private struct CompactUsageHistoryPanel: View {
     private func hoverValueSummary(for selection: UsageHistoryHoverSelection) -> String {
         selection.points
             .map { point in
-                "\(point.bucketName) \(viewModel.formattedChartValue(for: point))"
+                "\(viewModel.chartPointLabel(for: point)) \(viewModel.formattedChartValue(for: point))"
             }
             .joined(separator: "  ")
-    }
-
-    private func compactTokenCategoryTitle(_ category: TokenHistoryCategory) -> String {
-        switch category {
-        case .total:
-            return "Total"
-        case .input:
-            return "Input"
-        case .cached:
-            return "Cache"
-        case .output:
-            return "Out"
-        case .reasoning:
-            return "Reason"
-        }
     }
 
     private func seriesColor(for seriesID: String) -> Color {
@@ -745,6 +756,25 @@ private struct CompactUsageHistoryPanel: View {
         }
 
         return Self.seriesColors[index % Self.seriesColors.count]
+    }
+
+    private func tokenComponentColor(for point: UsageHistoryChartPoint) -> Color {
+        tokenComponentColor(for: point.tokenComponent)
+    }
+
+    private func tokenComponentColor(for component: TokenHistoryComponent?) -> Color {
+        switch component {
+        case .input:
+            return .blue
+        case .cached:
+            return .green
+        case .output:
+            return .orange
+        case .reasoning:
+            return .purple
+        case nil:
+            return .secondary
+        }
     }
 
     private func handleChartHover(

@@ -244,6 +244,32 @@ enum TokenHistoryCategory: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
+enum TokenHistoryComponent: String, CaseIterable, Identifiable, Equatable {
+    case input
+    case cached
+    case output
+    case reasoning
+
+    var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .input:
+            return "Input"
+        case .cached:
+            return "Cache"
+        case .output:
+            return "Output"
+        case .reasoning:
+            return "Reasoning"
+        }
+    }
+
+    var filenameToken: String {
+        rawValue
+    }
+}
+
 struct UsageHistoryPoint: Equatable, Identifiable {
     let id: String
     let timestamp: Date
@@ -307,6 +333,33 @@ struct TokenHistoryPoint: Equatable, Identifiable {
     }
 }
 
+struct TokenHistoryComponentPoint: Equatable, Identifiable {
+    let id: String
+    let timestamp: Date
+    let seriesID: String
+    let seriesName: String
+    let seriesKind: CodexUsageBucketKind
+    let component: TokenHistoryComponent
+    let tokenCount: Int64
+
+    init(
+        timestamp: Date,
+        seriesID: String,
+        seriesName: String,
+        seriesKind: CodexUsageBucketKind,
+        component: TokenHistoryComponent,
+        tokenCount: Int64
+    ) {
+        self.timestamp = timestamp
+        self.seriesID = seriesID
+        self.seriesName = seriesName
+        self.seriesKind = seriesKind
+        self.component = component
+        self.tokenCount = tokenCount
+        id = "\(seriesID)-\(component.rawValue)-\(Int(timestamp.timeIntervalSince1970))-\(tokenCount)"
+    }
+}
+
 struct UsageHistoryChartPoint: Equatable, Identifiable {
     let id: String
     let bucketStart: Date
@@ -320,6 +373,7 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
     let peakUsedPercent: Double
     let consumedPercent: Double
     let tokenCount: Int64?
+    let tokenComponent: TokenHistoryComponent?
 
     init(
         bucketStart: Date,
@@ -344,6 +398,7 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         self.peakUsedPercent = peakUsedPercent
         self.consumedPercent = consumedPercent
         tokenCount = nil
+        tokenComponent = nil
         id = "\(bucketID)-\(window.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
     }
 
@@ -354,6 +409,7 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         bucketID: String,
         bucketName: String,
         bucketKind: CodexUsageBucketKind,
+        tokenComponent: TokenHistoryComponent? = nil,
         tokenCount: Int64
     ) {
         self.bucketStart = bucketStart
@@ -366,8 +422,9 @@ struct UsageHistoryChartPoint: Equatable, Identifiable {
         latestUsedPercent = 0
         peakUsedPercent = 0
         consumedPercent = 0
+        self.tokenComponent = tokenComponent
         self.tokenCount = tokenCount
-        id = "\(bucketID)-tokens-\(Int(bucketStart.timeIntervalSince1970))"
+        id = "\(bucketID)-tokens-\(tokenComponent?.rawValue ?? "total")-\(Int(bucketStart.timeIntervalSince1970))"
     }
 
     func value(for metric: UsageHistoryMetric) -> Double {

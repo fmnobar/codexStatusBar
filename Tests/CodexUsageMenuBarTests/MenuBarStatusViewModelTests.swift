@@ -98,7 +98,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
-    func testMenuBarTokenOptionAppendsTodayTokenCategoriesAndPersists() async {
+    func testMenuBarTokenOptionAppendsTodayTokenTotalAndPersists() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
@@ -135,7 +135,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.setMenuBarShowsTokens(true)
 
         XCTAssertTrue(persistedOptions.options.showsTokens)
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · in 3.1M cache 1.4M out 240k reason 18k")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
             "Today's captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
@@ -170,7 +170,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         await viewModel.start()
 
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · -- tok")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · --")
 
         viewModel.stop()
     }
@@ -451,7 +451,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         XCTAssertEqual(tokenRecorder.records.count, 1)
         XCTAssertEqual(client.refreshCallCount, 0)
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · in 900 cache 100 out 250 reason 50")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · 1.2k")
 
         viewModel.stop()
     }

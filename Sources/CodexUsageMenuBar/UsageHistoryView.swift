@@ -62,6 +62,12 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 
 @MainActor
 final class UsageHistoryViewModel: ObservableObject {
+    typealias RecentTokenHistoryImporter = (UsageHistoryStore, Date, Calendar) -> Void
+
+    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar in
+        store.importRecentTokenHistoryIfAvailable(containing: date, calendar: calendar)
+    }
+
     @Published var selectedRange: UsageHistoryRange = .month {
         didSet {
             followsCurrentPeriod = true
@@ -88,9 +94,6 @@ final class UsageHistoryViewModel: ObservableObject {
     }
     @Published var selectedTokenCategory: TokenHistoryCategory = .total {
         didSet {
-            if selectedChartKind == .tokens {
-                scheduleReload()
-            }
             scheduleClearHoverSelection()
         }
     }
@@ -108,6 +111,7 @@ final class UsageHistoryViewModel: ObservableObject {
     @Published var seriesSearchText = ""
     @Published private(set) var points: [UsageHistoryPoint] = []
     @Published private(set) var tokenPoints: [TokenHistoryPoint] = []
+    @Published private(set) var tokenComponentPoints: [TokenHistoryComponentPoint] = []
     @Published private(set) var series: [UsageHistorySeries] = []
     @Published private(set) var selectedSeriesIDs = Set<String>()
     @Published private(set) var errorMessage: String?
@@ -121,6 +125,7 @@ final class UsageHistoryViewModel: ObservableObject {
     private let store: UsageHistoryStore
     private let now: () -> Date
     private let calendar: Calendar
+    private let recentTokenHistoryImporter: RecentTokenHistoryImporter
     private var historyBounds: UsageHistoryBounds?
     private var userEditedSeriesSelection = false
     private var followsCurrentPeriod = true
@@ -132,12 +137,14 @@ final class UsageHistoryViewModel: ObservableObject {
         store: UsageHistoryStore,
         chartSemantics: UsageHistoryChartSemantics = .independentSignals,
         now: @escaping () -> Date = Date.init,
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = { _, _, _ in }
     ) {
         self.store = store
         self.chartSemantics = chartSemantics
         self.now = now
         self.calendar = calendar
+        self.recentTokenHistoryImporter = recentTokenHistoryImporter
         selectedPeriodStart = selectedRange.period(containing: now(), calendar: calendar).start
         historyObserver = NotificationCenter.default.addObserver(
             forName: UsageHistoryStore.didChangeNotification,
@@ -178,8 +185,8 @@ final class UsageHistoryViewModel: ObservableObject {
                 calendar: calendar
             )
         case .tokens:
-            return Self.bucketedTokenChartPoints(
-                from: tokenPoints,
+            return Self.bucketedTokenComponentChartPoints(
+                from: tokenComponentPoints,
                 range: selectedRange,
                 period: selectedPeriod,
                 now: now(),
@@ -205,7 +212,7 @@ final class UsageHistoryViewModel: ObservableObject {
         case .capacity, .usage:
             return selectedMetric.subtitle(for: selectedRange)
         case .tokens:
-            return selectedTokenCategory.subtitle(for: selectedRange)
+            return "Tokens by \(selectedRange.chartBucketTitle)"
         }
     }
 
@@ -228,7 +235,7 @@ final class UsageHistoryViewModel: ObservableObject {
             }
             return hasHighUsage ? 0...100 : 0...50
         case .tokens:
-            let maximumValue = visibleChartPoints.map { chartValue(for: $0) }.max() ?? 0
+            let maximumValue = Self.maximumTokenStackValue(in: visibleChartPoints)
             return 0...Self.tokenAxisUpperBound(for: maximumValue)
         }
     }
@@ -277,7 +284,7 @@ final class UsageHistoryViewModel: ObservableObject {
         }
 
         if selectedChartKind == .tokens {
-            return "No earlier history for this token category"
+            return "No earlier token history"
         }
 
         return "No earlier history for this limit"
@@ -325,8 +332,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 "codex-usage",
                 selectedChartKind.filenameToken,
                 selectedRange.rawValue,
-                periodFilenameToken,
-                selectedTokenCategory.filenameToken,
+                periodFilenameToken
             ].joined(separator: "-") + ".csv"
         }
 
@@ -402,7 +408,14 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     var chartPointCountSummary: String {
-        "\(visibleChartPoints.count) bars"
+        if selectedChartKind == .tokens {
+            let stackedBarCount = Set(visibleChartPoints.map { point in
+                "\(Int(point.bucketStart.timeIntervalSince1970))-\(point.bucketID)"
+            }).count
+            return "\(stackedBarCount) bars"
+        }
+
+        return "\(visibleChartPoints.count) bars"
     }
 
     var hasSelectedModels: Bool {
@@ -441,7 +454,7 @@ final class UsageHistoryViewModel: ObservableObject {
         case .capacity, .usage:
             return "No \(selectedWindow.displayTitle) data for \(selectedRange.displayTitle)"
         case .tokens:
-            return "No \(selectedTokenCategory.displayTitle.lowercased()) token data for \(selectedRange.displayTitle)"
+            return "No token data for \(selectedRange.displayTitle)"
         }
     }
 
@@ -450,7 +463,7 @@ final class UsageHistoryViewModel: ObservableObject {
         case .capacity, .usage:
             return "Choose a different range or limit window to inspect recorded samples."
         case .tokens:
-            return "Choose a different range or token category to inspect captured tokens."
+            return "Choose a different range to inspect captured tokens."
         }
     }
 
@@ -459,7 +472,7 @@ final class UsageHistoryViewModel: ObservableObject {
         case .capacity, .usage:
             return !points.isEmpty
         case .tokens:
-            return !tokenPoints.isEmpty
+            return !tokenComponentPoints.isEmpty
         }
     }
 
@@ -470,6 +483,7 @@ final class UsageHistoryViewModel: ObservableObject {
             let queryPeriod = periodForQuery()
             let loadedPoints: [UsageHistoryPoint]
             let loadedTokenPoints: [TokenHistoryPoint]
+            let loadedTokenComponentPoints: [TokenHistoryComponentPoint]
             let loadedSeries: [UsageHistorySeries]
             let loadedHistoryBounds: UsageHistoryBounds?
 
@@ -482,6 +496,7 @@ final class UsageHistoryViewModel: ObservableObject {
                     periodEnd: queryPeriod.end
                 )
                 loadedTokenPoints = []
+                loadedTokenComponentPoints = []
                 loadedSeries = try store.availableSeries(window: selectedWindow)
                 loadedHistoryBounds = try store.historyBounds(
                     window: selectedWindow,
@@ -489,19 +504,21 @@ final class UsageHistoryViewModel: ObservableObject {
                 )
             case .tokens:
                 loadedPoints = []
-                loadedTokenPoints = try store.tokenPoints(
-                    category: selectedTokenCategory,
+                recentTokenHistoryImporter(store, now(), calendar)
+                loadedTokenPoints = []
+                loadedTokenComponentPoints = try store.tokenComponentPoints(
                     range: selectedRange,
                     periodStart: queryPeriod.start,
                     periodEnd: queryPeriod.end
                 )
-                loadedSeries = try store.availableTokenSeries(category: selectedTokenCategory)
-                loadedHistoryBounds = try store.tokenHistoryBounds(category: selectedTokenCategory)
+                loadedSeries = try store.availableTokenComponentSeries()
+                loadedHistoryBounds = try store.tokenComponentHistoryBounds()
             }
             let loadedHasAnyHistory = try store.hasAnyHistory()
 
             points = loadedPoints
             tokenPoints = loadedTokenPoints
+            tokenComponentPoints = loadedTokenComponentPoints
             series = loadedSeries
             hasAnyRecordedHistory = loadedHasAnyHistory
             historyBounds = loadedHistoryBounds
@@ -511,6 +528,7 @@ final class UsageHistoryViewModel: ObservableObject {
         } catch {
             points = []
             tokenPoints = []
+            tokenComponentPoints = []
             series = []
             selectedSeriesIDs = []
             hasAnyRecordedHistory = false
@@ -714,6 +732,18 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
+    func chartPointLabel(for point: UsageHistoryChartPoint) -> String {
+        guard selectedChartKind == .tokens else {
+            return point.bucketName
+        }
+
+        return "\(point.bucketName) \(tokenComponentTitle(for: point))"
+    }
+
+    func tokenComponentTitle(for point: UsageHistoryChartPoint) -> String {
+        point.tokenComponent?.displayTitle ?? "Tokens"
+    }
+
     func formattedYAxisValue(_ value: Double) -> String {
         switch selectedChartKind {
         case .capacity, .usage:
@@ -778,18 +808,18 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     private func tokenChartCSV() -> String {
-        var rows = ["range,category,bucket_start,bucket_end,series_id,series_name,series_kind,token_count"]
+        var rows = ["range,bucket_start,bucket_end,series_id,series_name,series_kind,token_component,token_count"]
         let formatter = ISO8601DateFormatter()
 
         rows += visibleChartPoints.map { point in
             [
                 selectedRange.rawValue,
-                selectedTokenCategory.rawValue,
                 formatter.string(from: point.bucketStart),
                 formatter.string(from: point.bucketEnd),
                 Self.csvEscaped(point.bucketID),
                 Self.csvEscaped(point.bucketName),
                 point.bucketKind.rawValue,
+                point.tokenComponent?.rawValue ?? "unknown",
                 "\(point.tokenCount ?? 0)",
             ].joined(separator: ",")
         }
@@ -936,15 +966,15 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
-    private static func bucketedTokenChartPoints(
-        from points: [TokenHistoryPoint],
+    private static func bucketedTokenComponentChartPoints(
+        from points: [TokenHistoryComponentPoint],
         range: UsageHistoryRange,
         period: UsageHistoryPeriod,
         now: Date,
         calendar: Calendar
     ) -> [UsageHistoryChartPoint] {
         let bucketComponent = range.chartBucketComponent
-        var buckets = [String: [TokenHistoryPoint]]()
+        var buckets = [String: [TokenHistoryComponentPoint]]()
 
         for point in points {
             let bucketStart = UsageHistoryRange.bucketStart(
@@ -956,7 +986,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 continue
             }
 
-            let key = "\(point.seriesID)-\(Int(bucketStart.timeIntervalSince1970))"
+            let key = "\(point.seriesID)-\(point.component.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
             buckets[key, default: []].append(point)
         }
 
@@ -992,6 +1022,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 bucketID: firstPoint.seriesID,
                 bucketName: latestPoint.seriesName,
                 bucketKind: latestPoint.seriesKind,
+                tokenComponent: latestPoint.component,
                 tokenCount: tokenCount
             )
         }
@@ -1004,8 +1035,36 @@ final class UsageHistoryViewModel: ObservableObject {
                 return lhs.bucketKind == .aggregate
             }
 
-            return lhs.bucketName.localizedStandardCompare(rhs.bucketName) == .orderedAscending
+            if lhs.bucketName != rhs.bucketName {
+                return lhs.bucketName.localizedStandardCompare(rhs.bucketName) == .orderedAscending
+            }
+
+            return tokenComponentSortIndex(lhs.tokenComponent) < tokenComponentSortIndex(rhs.tokenComponent)
         }
+    }
+
+    nonisolated fileprivate static func tokenComponentSortIndex(_ component: TokenHistoryComponent?) -> Int {
+        guard
+            let component,
+            let index = TokenHistoryComponent.allCases.firstIndex(of: component)
+        else {
+            return TokenHistoryComponent.allCases.count
+        }
+
+        return index
+    }
+
+    private static func maximumTokenStackValue(in points: [UsageHistoryChartPoint]) -> Double {
+        let totals = Dictionary(grouping: points) { point in
+            "\(Int(point.bucketStart.timeIntervalSince1970))-\(point.bucketID)"
+        }
+        .mapValues { stackPoints in
+            stackPoints.reduce(0) { total, point in
+                total + Double(point.tokenCount ?? 0)
+            }
+        }
+
+        return totals.values.max() ?? 0
     }
 
     private func periodForQuery() -> UsageHistoryPeriod {
@@ -1357,7 +1416,8 @@ struct UsageHistoryView: View {
     ) {
         _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
             store: store,
-            chartSemantics: chartSemantics
+            chartSemantics: chartSemantics,
+            recentTokenHistoryImporter: UsageHistoryViewModel.liveRecentTokenHistoryImporter
         ))
     }
 
@@ -1472,9 +1532,7 @@ struct UsageHistoryView: View {
 
     @ViewBuilder
     private var secondaryHistorySelector: some View {
-        if viewModel.selectedChartKind == .tokens {
-            tokenCategoryPicker
-        } else {
+        if viewModel.selectedChartKind != .tokens {
             limitPicker
         }
     }
@@ -1539,7 +1597,17 @@ struct UsageHistoryView: View {
     private var chart: some View {
         ZStack(alignment: .topLeading) {
             Chart {
-                if viewModel.chartSemantics == .comparableContributors {
+                if viewModel.selectedChartKind == .tokens {
+                    ForEach(viewModel.visibleBarPoints) { point in
+                        BarMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point)),
+                            stacking: .standard
+                        )
+                        .foregroundStyle(by: .value("Token", viewModel.tokenComponentTitle(for: point)))
+                        .opacity(point.bucketKind == .aggregate ? 0.86 : 0.72)
+                    }
+                } else if viewModel.chartSemantics == .comparableContributors {
                     ForEach(viewModel.visibleContributorPoints) { point in
                         BarMark(
                             x: .value("Time", viewModel.chartXPosition(for: point)),
@@ -1581,7 +1649,12 @@ struct UsageHistoryView: View {
                             x: .value("Time", viewModel.chartXPosition(for: point)),
                             y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point))
                         )
-                        .foregroundStyle(by: .value("Bucket", point.bucketName))
+                        .foregroundStyle(
+                            by: .value(
+                                viewModel.selectedChartKind == .tokens ? "Token" : "Bucket",
+                                viewModel.selectedChartKind == .tokens ? viewModel.tokenComponentTitle(for: point) : point.bucketName
+                            )
+                        )
                         .symbolSize(point.bucketKind == .aggregate ? 58 : 42)
                     }
                 }
@@ -1738,7 +1811,7 @@ struct UsageHistoryView: View {
 
             ForEach(selection.points) { point in
                 HStack(spacing: 8) {
-                    Text(point.bucketName)
+                    Text(viewModel.chartPointLabel(for: point))
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     Text(viewModel.formattedChartValue(for: point))
@@ -1823,7 +1896,12 @@ private extension Array where Element == UsageHistoryChartPoint {
                 return lhs.bucketKind == .aggregate
             }
 
-            return lhs.bucketName.localizedStandardCompare(rhs.bucketName) == .orderedAscending
+            if lhs.bucketName != rhs.bucketName {
+                return lhs.bucketName.localizedStandardCompare(rhs.bucketName) == .orderedAscending
+            }
+
+            return UsageHistoryViewModel.tokenComponentSortIndex(lhs.tokenComponent) <
+                UsageHistoryViewModel.tokenComponentSortIndex(rhs.tokenComponent)
         }
     }
 }

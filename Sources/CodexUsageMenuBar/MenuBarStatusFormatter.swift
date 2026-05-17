@@ -213,10 +213,18 @@ enum MenuBarStatusFormatter {
         }
 
         if options.showsTokens {
-            components.append("· \(compactTokenCategoryText(todayTokenTotals))")
+            components.append("· \(compactMenuBarTokenText(todayTokenTotals?.totalTokens))")
         }
 
         return components.joined(separator: " ")
+    }
+
+    static func compactMenuBarTokenText(_ tokenCount: Int64?) -> String {
+        guard let tokenCount else {
+            return "--"
+        }
+
+        return compactTokenValue(tokenCount)
     }
 
     static func compactTokenCategoryText(_ totals: TokenCategoryTotals?) -> String {

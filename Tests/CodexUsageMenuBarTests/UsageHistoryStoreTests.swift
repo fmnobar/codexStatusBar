@@ -358,6 +358,62 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(availableSeries.map(\.name), ["All tokens", "gpt-5.5"])
     }
 
+    func testTokenComponentPointsIncludeAggregateAndModelSeries() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 120,
+                lastCached: 80,
+                lastOutput: 30,
+                lastReasoning: 10,
+                lastTotal: 240,
+                totalInput: 120,
+                totalCached: 80,
+                totalOutput: 30,
+                totalReasoning: 10,
+                totalTotal: 240
+            ),
+            at: date("2026-04-14T20:00:00Z")
+        )
+
+        let points = try store.tokenComponentPoints(
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+        let availableSeries = try store.availableTokenComponentSeries()
+        let bounds = try store.tokenComponentHistoryBounds()
+
+        XCTAssertEqual(points.map(\.seriesID), [
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+        ])
+        XCTAssertEqual(points.map(\.component), [
+            .input,
+            .cached,
+            .output,
+            .reasoning,
+            .input,
+            .cached,
+            .output,
+            .reasoning,
+        ])
+        XCTAssertEqual(points.map(\.tokenCount), [120, 80, 30, 10, 120, 80, 30, 10])
+        XCTAssertEqual(availableSeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(bounds?.earliest, date("2026-04-14T20:00:00Z"))
+        XCTAssertEqual(bounds?.latest, date("2026-04-14T20:00:00Z"))
+    }
+
     func testTokenTotalForDayUsesLocalCalendarDay() throws {
         let store = try makeStore()
 
@@ -470,6 +526,151 @@ final class UsageHistoryStoreTests: XCTestCase {
                 totalTokens: 155
             )
         )
+    }
+
+    func testCodexLogTokenImporterImportsTodayResponseCompletedCategories() throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=146059 output_token_count=37 cached_token_count=145280 reasoning_token_count=0 tool_token_count=146096 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=019dd6bb-c26b-72c2-bb51-0fff5324362a model=gpt-5.5 slug=gpt-5.5
+        """
+        let duplicateBody = body + " user.email=\"private@example.com\""
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (timestamp, body),
+                (timestamp, duplicateBody),
+                (date("2026-05-16T12:00:00Z"), body.replacingOccurrences(of: "2026-05-17T12:48:13.035Z", with: "2026-05-16T12:00:00.000Z")),
+            ]
+        )
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let totals = try store.tokenCategoryTotalsForDay(containing: timestamp, calendar: calendar)
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(result.insertedCount, 1)
+        XCTAssertEqual(result.duplicateCount, 1)
+        XCTAssertEqual(
+            totals,
+            TokenCategoryTotals(
+                inputTokens: 146_059,
+                cachedInputTokens: 145_280,
+                outputTokens: 37,
+                reasoningOutputTokens: 0,
+                totalTokens: 146_096
+            )
+        )
+        XCTAssertEqual(samples.map(\.model), ["gpt-5.5"])
+        XCTAssertFalse(samples.contains { $0.threadID.contains("private") || $0.turnID.contains("private") })
+    }
+
+    func testRecentTokenHistoryImportUsesCodexDesktopLogs() throws {
+        let store = try makeStore()
+        let tempDirectory = try makeTemporaryDirectory()
+        let databaseURL = tempDirectory.appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (
+                    timestamp,
+                    """
+                    event.name="codex.sse_event" event.kind=response.completed input_token_count=1000 output_token_count=20 cached_token_count=800 reasoning_token_count=5 tool_token_count=1020 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation model=gpt-5.5 slug=gpt-5.5
+                    """
+                ),
+            ]
+        )
+
+        let result = store.importRecentTokenHistoryIfAvailable(
+            containing: timestamp,
+            calendar: calendar,
+            logsDatabaseURL: databaseURL
+        )
+        let totals = try store.tokenCategoryTotalsForDay(containing: timestamp, calendar: calendar)
+
+        XCTAssertEqual(result, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(
+            totals,
+            TokenCategoryTotals(
+                inputTokens: 1_000,
+                cachedInputTokens: 800,
+                outputTokens: 20,
+                reasoningOutputTokens: 5,
+                totalTokens: 1_020
+            )
+        )
+    }
+
+    @MainActor
+    func testTokenHistoryReloadCanImportRecentCodexDesktopLogs() throws {
+        let store = try makeStore()
+        let tempDirectory = try makeTemporaryDirectory()
+        let databaseURL = tempDirectory.appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (
+                    timestamp,
+                    """
+                    event.name="codex.sse_event" event.kind=response.completed input_token_count=1200 output_token_count=30 cached_token_count=900 reasoning_token_count=7 tool_token_count=1230 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation model=gpt-5.5 slug=gpt-5.5
+                    """
+                ),
+            ]
+        )
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { timestamp },
+            calendar: calendar,
+            recentTokenHistoryImporter: { store, date, calendar in
+                store.importRecentTokenHistoryIfAvailable(
+                    containing: date,
+                    calendar: calendar,
+                    logsDatabaseURL: databaseURL
+                )
+            }
+        )
+
+        viewModel.selectedRange = .day
+        viewModel.selectedChartKind = .tokens
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketName), [
+            "All tokens",
+            "All tokens",
+            "All tokens",
+            "All tokens",
+            "gpt-5.5",
+            "gpt-5.5",
+            "gpt-5.5",
+            "gpt-5.5",
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenComponent), [
+            .input,
+            .cached,
+            .output,
+            .reasoning,
+            .input,
+            .cached,
+            .output,
+            .reasoning,
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [
+            1_200,
+            900,
+            30,
+            7,
+            1_200,
+            900,
+            30,
+            7,
+        ])
     }
 
     func testMigratesExistingDatabaseForTokenUsageSamples() throws {
@@ -704,28 +905,44 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.reload()
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [date("2026-04-15T09:00:00Z")])
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [400])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-04-15T09:00:00Z"),
+            date("2026-04-15T09:00:00Z"),
+            date("2026-04-15T09:00:00Z"),
+            date("2026-04-15T09:00:00Z"),
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenComponent), [.input, .cached, .output, .reasoning])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [250, 60, 70, 20])
 
         viewModel.selectedRange = .week
         viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-14T00:00:00Z"),
+            date("2026-04-14T00:00:00Z"),
+            date("2026-04-14T00:00:00Z"),
+            date("2026-04-14T00:00:00Z"),
+            date("2026-04-15T00:00:00Z"),
+            date("2026-04-15T00:00:00Z"),
+            date("2026-04-15T00:00:00Z"),
             date("2026-04-15T00:00:00Z"),
         ])
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [200, 400])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120, 30, 40, 10, 250, 60, 70, 20])
 
         viewModel.selectedRange = .month
         viewModel.reload()
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [200, 400])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120, 30, 40, 10, 250, 60, 70, 20])
 
         viewModel.selectedRange = .year
         viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-01-01T00:00:00Z"),
+            date("2026-01-01T00:00:00Z"),
+            date("2026-04-01T00:00:00Z"),
+            date("2026-04-01T00:00:00Z"),
+            date("2026-04-01T00:00:00Z"),
             date("2026-04-01T00:00:00Z"),
         ])
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [100, 600])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [80, 20, 370, 90, 110, 30])
     }
 
     func testSessionTokenBackfillMissingDirectoriesReturnsEmptySummary() throws {
@@ -1027,15 +1244,21 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenChartPresentationUsesTokenCategoryInsteadOfLimitWindow() throws {
+    func testTokenChartPresentationUsesStackedComponentsInsteadOfLimitWindow() throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
                 threadID: "thread-a",
                 turnID: "turn-a",
                 lastInput: 120,
+                lastCached: 50,
+                lastOutput: 25,
+                lastReasoning: 5,
                 lastTotal: 200,
                 totalInput: 120,
+                totalCached: 50,
+                totalOutput: 25,
+                totalReasoning: 5,
                 totalTotal: 200
             ),
             at: date("2026-04-14T20:10:00Z")
@@ -1048,16 +1271,17 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
-        viewModel.selectedTokenCategory = .input
         viewModel.selectedWindow = .fiveHour
         viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedChartKind, .tokens)
-        XCTAssertEqual(viewModel.chartSubtitle, "Input tokens by hour")
+        XCTAssertEqual(viewModel.chartSubtitle, "Tokens by hour")
         XCTAssertEqual(viewModel.chartYAxisTitle, "Tokens")
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), ["tokens_all"])
-        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120])
-        XCTAssertEqual(viewModel.visibleChartPoints.map { viewModel.chartValue(for: $0) }, [120])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), ["tokens_all", "tokens_all", "tokens_all", "tokens_all"])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenComponent), [.input, .cached, .output, .reasoning])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120, 50, 25, 5])
+        XCTAssertEqual(viewModel.visibleChartPoints.map { viewModel.chartValue(for: $0) }, [120, 50, 25, 5])
+        XCTAssertEqual(viewModel.chartYDomain, 0...200)
     }
 
     @MainActor
@@ -1523,19 +1747,19 @@ final class UsageHistoryStoreTests: XCTestCase {
     func testTokenChartsBucketBySelectedPeriod() throws {
         let store = try makeStore()
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 100, totalTotal: 100),
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastInput: 100, lastTotal: 100, totalInput: 100, totalTotal: 100),
             at: date("2026-01-10T12:00:00Z")
         )
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-b", turnID: "turn-a", lastTotal: 200, totalTotal: 200),
+            tokenUsage: tokenNotification(threadID: "thread-b", turnID: "turn-a", lastInput: 200, lastTotal: 200, totalInput: 200, totalTotal: 200),
             at: date("2026-04-14T12:10:00Z")
         )
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-c", turnID: "turn-a", lastTotal: 300, totalTotal: 300),
+            tokenUsage: tokenNotification(threadID: "thread-c", turnID: "turn-a", lastInput: 300, lastTotal: 300, totalInput: 300, totalTotal: 300),
             at: date("2026-04-14T12:40:00Z")
         )
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-d", turnID: "turn-a", lastTotal: 400, totalTotal: 400),
+            tokenUsage: tokenNotification(threadID: "thread-d", turnID: "turn-a", lastInput: 400, lastTotal: 400, totalInput: 400, totalTotal: 400),
             at: date("2026-04-15T09:00:00Z")
         )
         var currentDate = date("2026-04-14T21:00:00Z")
@@ -1626,8 +1850,10 @@ final class UsageHistoryStoreTests: XCTestCase {
                 threadID: "thread-a",
                 turnID: "turn-a",
                 lastInput: 120,
+                lastCached: 80,
                 lastTotal: 200,
                 totalInput: 120,
+                totalCached: 80,
                 totalTotal: 200
             ),
             at: date("2026-04-14T20:10:00Z")
@@ -1640,15 +1866,15 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
-        viewModel.selectedTokenCategory = .input
         viewModel.reload()
 
-        XCTAssertEqual(viewModel.exportFilename, "codex-usage-tokens-day-2026-04-14-input.csv")
+        XCTAssertEqual(viewModel.exportFilename, "codex-usage-tokens-day-2026-04-14.csv")
 
         let csv = viewModel.chartCSV()
 
-        XCTAssertTrue(csv.contains("range,category,bucket_start,bucket_end,series_id,series_name,series_kind,token_count"))
-        XCTAssertTrue(csv.contains("day,input,2026-04-14T20:00:00Z,2026-04-14T21:00:00Z,tokens_all,All tokens,aggregate,120"))
+        XCTAssertTrue(csv.contains("range,bucket_start,bucket_end,series_id,series_name,series_kind,token_component,token_count"))
+        XCTAssertTrue(csv.contains("day,2026-04-14T20:00:00Z,2026-04-14T21:00:00Z,tokens_all,All tokens,aggregate,input,120"))
+        XCTAssertTrue(csv.contains("day,2026-04-14T20:00:00Z,2026-04-14T21:00:00Z,tokens_all,All tokens,aggregate,cached,80"))
     }
 
     @MainActor
@@ -1679,7 +1905,11 @@ final class UsageHistoryStoreTests: XCTestCase {
                 threadID: "thread-a",
                 turnID: "turn-a",
                 model: "gpt-5.5",
+                lastInput: 120,
+                lastCached: 80,
                 lastTotal: 200,
+                totalInput: 120,
+                totalCached: 80,
                 totalTotal: 200
             ),
             at: date("2026-04-14T20:10:00Z")
@@ -1696,9 +1926,15 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:15:00Z"), xPosition: 120)
 
         XCTAssertEqual(viewModel.hoverSelection?.bucketStart, date("2026-04-14T20:00:00Z"))
-        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.bucketID), ["tokens_all", "model:gpt-5.5"])
-        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenCount), [200, 200])
-        XCTAssertEqual(viewModel.hoverSelection?.points.map { viewModel.formattedChartValue(for: $0) }, ["200 tok", "200 tok"])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.bucketID), [
+            "tokens_all",
+            "tokens_all",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+        ])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenComponent), [.input, .cached, .input, .cached])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenCount), [120, 80, 120, 80])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map { viewModel.formattedChartValue(for: $0) }, ["120 tok", "80 tok", "120 tok", "80 tok"])
     }
 
     @MainActor
@@ -2063,6 +2299,52 @@ final class UsageHistoryStoreTests: XCTestCase {
             let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
             sqlite3_free(errorMessage)
             XCTFail(message)
+        }
+    }
+
+    private func createCodexLogsDatabase(at databaseURL: URL, rows: [(Date, String)]) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected Codex logs database to open")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let createResult = sqlite3_exec(
+            database,
+            """
+            CREATE TABLE logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                feedback_log_body TEXT
+            );
+            """,
+            nil,
+            nil,
+            &errorMessage
+        )
+        if createResult != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail(message)
+            return
+        }
+
+        for (timestamp, body) in rows {
+            let escapedBody = body.replacingOccurrences(of: "'", with: "''")
+            let sql = """
+            INSERT INTO logs (ts, feedback_log_body)
+            VALUES (\(Int64(timestamp.timeIntervalSince1970)), '\(escapedBody)');
+            """
+            let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+            if result != SQLITE_OK {
+                let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+                sqlite3_free(errorMessage)
+                XCTFail(message)
+                return
+            }
         }
     }
 

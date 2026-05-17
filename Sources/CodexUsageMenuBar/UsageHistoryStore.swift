@@ -32,6 +32,7 @@ struct NoOpTokenUsageRecorder: TokenUsageRecording {
 
 final class UsageHistoryRecorder: UsageHistoryRecording {
     private let store: UsageHistoryStore
+    private var lastRecentTokenImportAt: Date?
 
     init(store: UsageHistoryStore) {
         self.store = store
@@ -58,11 +59,41 @@ extension UsageHistoryRecorder: TokenUsageRecording {
     }
 
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
-        try? store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)
+        importRecentTokenHistoryIfNeeded(at: date, calendar: calendar)
+        return try? store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)
     }
 
     func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
-        try? store.tokenTotalForDay(containing: date, calendar: calendar)
+        importRecentTokenHistoryIfNeeded(at: date, calendar: calendar)
+        return try? store.tokenTotalForDay(containing: date, calendar: calendar)
+    }
+
+    private func importRecentTokenHistoryIfNeeded(at date: Date, calendar: Calendar) {
+        if let lastRecentTokenImportAt,
+           date.timeIntervalSince(lastRecentTokenImportAt) < 60,
+           calendar.isDate(lastRecentTokenImportAt, inSameDayAs: date)
+        {
+            return
+        }
+
+        _ = store.importRecentTokenHistoryIfAvailable(containing: date, calendar: calendar)
+        lastRecentTokenImportAt = date
+    }
+}
+
+extension UsageHistoryStore {
+    @discardableResult
+    func importRecentTokenHistoryIfAvailable(
+        containing date: Date,
+        calendar: Calendar = .autoupdatingCurrent,
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()
+    ) -> TokenUsageImportResult {
+        let logImporter = CodexLogTokenUsageImporter(logsDatabaseURL: logsDatabaseURL)
+        return (try? logImporter.importTokenHistory(
+            into: self,
+            containing: date,
+            calendar: calendar
+        )) ?? .empty
     }
 }
 
@@ -533,6 +564,118 @@ final class UsageHistoryStore {
         }
     }
 
+    func tokenComponentPoints(
+        range _: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [TokenHistoryComponentPoint] {
+        let startTimestamp = periodStart.timeIntervalSince1970Int
+        let endTimestamp = periodEnd.timeIntervalSince1970Int
+        let statement = try prepare(
+            """
+            WITH period_samples AS (
+                SELECT received_at, model,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM token_usage_samples
+                WHERE received_at >= ? AND received_at < ?
+            ),
+            series_samples AS (
+                SELECT received_at,
+                    'tokens_all' AS series_id,
+                    'All tokens' AS series_name,
+                    'aggregate' AS series_kind,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM period_samples
+
+                UNION ALL
+
+                SELECT received_at,
+                    'model:' || model AS series_id,
+                    model AS series_name,
+                    'model' AS series_kind,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM period_samples
+                WHERE model IS NOT NULL AND model != ''
+            ),
+            component_points AS (
+                SELECT received_at, series_id, series_name, series_kind,
+                    'input' AS component, observed_input_tokens AS token_count
+                FROM series_samples
+
+                UNION ALL
+
+                SELECT received_at, series_id, series_name, series_kind,
+                    'cached' AS component, observed_cached_input_tokens AS token_count
+                FROM series_samples
+
+                UNION ALL
+
+                SELECT received_at, series_id, series_name, series_kind,
+                    'output' AS component, observed_output_tokens AS token_count
+                FROM series_samples
+
+                UNION ALL
+
+                SELECT received_at, series_id, series_name, series_kind,
+                    'reasoning' AS component, observed_reasoning_output_tokens AS token_count
+                FROM series_samples
+            )
+            SELECT received_at, series_id, series_name, series_kind, component, token_count
+            FROM component_points
+            WHERE token_count > 0
+            ORDER BY received_at ASC,
+                series_kind ASC,
+                series_name ASC,
+                CASE component
+                    WHEN 'input' THEN 0
+                    WHEN 'cached' THEN 1
+                    WHEN 'output' THEN 2
+                    WHEN 'reasoning' THEN 3
+                    ELSE 4
+                END ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, startTimestamp)
+        sqlite3_bind_int64(statement, 2, endTimestamp)
+
+        var points: [TokenHistoryComponentPoint] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let component = TokenHistoryComponent(rawValue: columnText(statement, index: 4)) else {
+                    continue
+                }
+
+                let timestamp = sqlite3_column_int64(statement, 0)
+                points.append(
+                    TokenHistoryComponentPoint(
+                        timestamp: Date(timeIntervalSince1970: TimeInterval(timestamp)),
+                        seriesID: columnText(statement, index: 1),
+                        seriesName: columnText(statement, index: 2),
+                        seriesKind: CodexUsageBucketKind(rawValue: columnText(statement, index: 3)) ?? .model,
+                        component: component,
+                        tokenCount: sqlite3_column_int64(statement, 5)
+                    )
+                )
+            case SQLITE_DONE:
+                return points
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func tokenSeries(
         category: TokenHistoryCategory,
         range: UsageHistoryRange,
@@ -582,6 +725,48 @@ final class UsageHistoryStore {
         return try readAvailableSeries(from: statement)
     }
 
+    func availableTokenComponentSeries() throws -> [UsageHistorySeries] {
+        let statement = try prepare(
+            """
+            SELECT series_id, series_name, series_kind, seen_at
+            FROM (
+                SELECT
+                    'tokens_all' AS series_id,
+                    'All tokens' AS series_name,
+                    'aggregate' AS series_kind,
+                    received_at AS seen_at,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM token_usage_samples
+
+                UNION ALL
+
+                SELECT
+                    'model:' || model AS series_id,
+                    model AS series_name,
+                    'model' AS series_kind,
+                    received_at AS seen_at,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM token_usage_samples
+                WHERE model IS NOT NULL AND model != ''
+            )
+            WHERE IFNULL(observed_input_tokens, 0) > 0
+                OR IFNULL(observed_cached_input_tokens, 0) > 0
+                OR IFNULL(observed_output_tokens, 0) > 0
+                OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+            ORDER BY seen_at DESC, series_kind ASC, series_name ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        return try readAvailableSeries(from: statement)
+    }
+
     func tokenHistoryBounds(category: TokenHistoryCategory) throws -> UsageHistoryBounds? {
         let valueExpression = tokenValueExpression(for: category)
         let statement = try prepare(
@@ -595,6 +780,23 @@ final class UsageHistoryStore {
 
         return try readHistoryBounds(from: statement)
     }
+
+    func tokenComponentHistoryBounds() throws -> UsageHistoryBounds? {
+        let statement = try prepare(
+            """
+            SELECT MIN(received_at), MAX(received_at)
+            FROM token_usage_samples
+            WHERE IFNULL(observed_input_tokens, 0) > 0
+                OR IFNULL(observed_cached_input_tokens, 0) > 0
+                OR IFNULL(observed_output_tokens, 0) > 0
+                OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        return try readHistoryBounds(from: statement)
+    }
+
 
     func points(
         range: UsageHistoryRange,
