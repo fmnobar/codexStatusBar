@@ -113,6 +113,18 @@ final class DataManagementSettingsViewModel: ObservableObject {
     }
 
     func importTokenHistoryFromCodexSessions() {
+        importRecentTokenHistoryFromCodexSessions()
+    }
+
+    func importRecentTokenHistoryFromCodexSessions(now: Date = Date()) {
+        importTokenHistoryFromCodexSessions(request: .recent(now: now))
+    }
+
+    func importAllTokenHistoryFromCodexSessions() {
+        importTokenHistoryFromCodexSessions(request: .allHistory())
+    }
+
+    private func importTokenHistoryFromCodexSessions(request: CodexSessionTokenBackfillRequest) {
         guard !isImportingTokenHistory else {
             return
         }
@@ -120,16 +132,29 @@ final class DataManagementSettingsViewModel: ObservableObject {
         isImportingTokenHistory = true
         statusMessage = nil
         errorMessage = nil
+        tokenImportSummaryText = nil
 
-        defer {
-            isImportingTokenHistory = false
+        let store = store
+        let tokenBackfillImporter = tokenBackfillImporter
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result {
+                try tokenBackfillImporter.importTokenHistory(into: store, request: request)
+            }
+
+            Task { @MainActor [weak self] in
+                self?.finishTokenHistoryImport(result)
+            }
         }
+    }
 
-        do {
-            let summary = try tokenBackfillImporter.importTokenHistory(into: store)
+    private func finishTokenHistoryImport(_ result: Result<CodexSessionTokenBackfillSummary, Error>) {
+        isImportingTokenHistory = false
+
+        switch result {
+        case .success(let summary):
             tokenImportSummaryText = summary.statusMessage
             refreshDatabaseInfo()
-        } catch {
+        case .failure:
             tokenImportSummaryText = nil
             errorMessage = "Token history could not be imported."
         }
@@ -252,12 +277,19 @@ struct DataManagementSettingsView: View {
 
     private var tokenHistorySection: some View {
         Section("Token History") {
-            Button(viewModel.isImportingTokenHistory ? "Importing..." : "Import From Codex Sessions...") {
-                viewModel.importTokenHistoryFromCodexSessions()
-            }
-            .disabled(viewModel.isImportingTokenHistory)
+            HStack {
+                Button(viewModel.isImportingTokenHistory ? "Importing..." : "Import Recent Sessions...") {
+                    viewModel.importRecentTokenHistoryFromCodexSessions()
+                }
+                .disabled(viewModel.isImportingTokenHistory)
 
-            Text("Imports local token-count metadata without message content.")
+                Button("Import All History...") {
+                    viewModel.importAllTokenHistoryFromCodexSessions()
+                }
+                .disabled(viewModel.isImportingTokenHistory)
+            }
+
+                        Text("Recent import scans active sessions from the last 30 days. All history includes archives and can take a long time.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

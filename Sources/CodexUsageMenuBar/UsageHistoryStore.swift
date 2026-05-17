@@ -174,7 +174,7 @@ enum UsageHistoryRawRetentionStore {
     }
 }
 
-final class UsageHistoryStore {
+final class UsageHistoryStore: @unchecked Sendable {
     static let didChangeNotification = Notification.Name("UsageHistoryStoreDidChange")
     static let defaultRawRetention: TimeInterval = 14 * 24 * 60 * 60
 
@@ -365,7 +365,107 @@ final class UsageHistoryStore {
             notificationCenter.post(name: Self.didChangeNotification, object: self)
         }
 
-        return TokenUsageImportResult(insertedCount: insertedCount, duplicateCount: duplicateCount)
+        return TokenUsageImportResult(
+            insertedCount: insertedCount,
+            duplicateCount: duplicateCount,
+            repairedModelCount: repairedModelCount
+        )
+    }
+
+    func codexSessionTokenImportFileRecord(path: String) throws -> CodexSessionTokenImportFileRecord? {
+        let statement = try prepare(
+            """
+            SELECT file_path, file_size, modified_at, imported_at, status
+            FROM codex_session_token_imports
+            WHERE file_path = ?
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(path, to: 1, in: statement)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            let metadata = CodexSessionTokenImportFileMetadata(
+                path: columnText(statement, index: 0),
+                fileSize: sqlite3_column_int64(statement, 1),
+                modifiedAt: sqlite3_column_int64(statement, 2)
+            )
+            let status = CodexSessionTokenImportFileStatus(rawValue: columnText(statement, index: 4)) ?? .failed
+            return CodexSessionTokenImportFileRecord(
+                metadata: metadata,
+                importedAt: sqlite3_column_int64(statement, 3),
+                status: status
+            )
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    func recordCodexSessionTokenImportFile(
+        _ metadata: CodexSessionTokenImportFileMetadata,
+        importedAt: Int64,
+        status: CodexSessionTokenImportFileStatus
+    ) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO codex_session_token_imports (
+                file_path, file_size, modified_at, imported_at, status
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(file_path) DO UPDATE SET
+                file_size = excluded.file_size,
+                modified_at = excluded.modified_at,
+                imported_at = excluded.imported_at,
+                status = excluded.status
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(metadata.path, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, metadata.fileSize)
+        sqlite3_bind_int64(statement, 3, metadata.modifiedAt)
+        sqlite3_bind_int64(statement, 4, importedAt)
+        bindText(status.rawValue, to: 5, in: statement)
+
+        try step(statement)
+    }
+
+    func codexSessionTokenImportFileRecords() throws -> [CodexSessionTokenImportFileRecord] {
+        let statement = try prepare(
+            """
+            SELECT file_path, file_size, modified_at, imported_at, status
+            FROM codex_session_token_imports
+            ORDER BY file_path
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var records: [CodexSessionTokenImportFileRecord] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let metadata = CodexSessionTokenImportFileMetadata(
+                    path: columnText(statement, index: 0),
+                    fileSize: sqlite3_column_int64(statement, 1),
+                    modifiedAt: sqlite3_column_int64(statement, 2)
+                )
+                let status = CodexSessionTokenImportFileStatus(rawValue: columnText(statement, index: 4)) ?? .failed
+                records.append(
+                    CodexSessionTokenImportFileRecord(
+                        metadata: metadata,
+                        importedAt: sqlite3_column_int64(statement, 3),
+                        status: status
+                    )
+                )
+            case SQLITE_DONE:
+                return records
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
     }
 
     func tokenUsageSamples() throws -> [StoredTokenUsageSample] {
@@ -955,6 +1055,7 @@ final class UsageHistoryStore {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
+            try execute("DELETE FROM codex_session_token_imports")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -1073,11 +1174,16 @@ final class UsageHistoryStore {
             column: "observed_reasoning_output_tokens",
             schema: "imported_usage_history"
         ) ? "observed_reasoning_output_tokens" : "NULL"
+        let importedHasSessionTokenImports = try tableExists(
+            table: "codex_session_token_imports",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
+            try execute("DELETE FROM codex_session_token_imports")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -1122,6 +1228,17 @@ final class UsageHistoryStore {
                         \(importedObservedOutputExpression), \(importedObservedReasoningExpression),
                         observed_total_tokens
                     FROM imported_usage_history.token_usage_samples
+                    """
+                )
+            }
+            if importedHasSessionTokenImports {
+                try execute(
+                    """
+                    INSERT INTO codex_session_token_imports (
+                        file_path, file_size, modified_at, imported_at, status
+                    )
+                    SELECT file_path, file_size, modified_at, imported_at, status
+                    FROM imported_usage_history.codex_session_token_imports
                     """
                 )
             }
@@ -1202,6 +1319,17 @@ final class UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_session_token_imports (
+                file_path TEXT PRIMARY KEY,
+                file_size INTEGER NOT NULL,
+                modified_at INTEGER NOT NULL,
+                imported_at INTEGER NOT NULL,
+                status TEXT NOT NULL
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -1213,6 +1341,7 @@ final class UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_received_at ON token_usage_samples(received_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_token_imports_status ON codex_session_token_imports(status, imported_at)")
     }
 
     private func addColumnIfNeeded(table: String, column: String, definition: String) throws {

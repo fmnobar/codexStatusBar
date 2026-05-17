@@ -297,7 +297,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         let samples = try store.tokenUsageSamples()
 
         XCTAssertEqual(firstImport, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
-        XCTAssertEqual(repairImport, TokenUsageImportResult(insertedCount: 0, duplicateCount: 1))
+        XCTAssertEqual(repairImport, TokenUsageImportResult(insertedCount: 0, duplicateCount: 1, repairedModelCount: 1))
         XCTAssertEqual(samples.count, 1)
         XCTAssertEqual(samples.first?.model, "gpt-future-1")
         XCTAssertEqual(samples.first?.observedTotalTokens, 125)
@@ -901,7 +901,7 @@ final class UsageHistoryStoreTests: XCTestCase {
                 """
                 {"timestamp":"2026-04-14T20:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}
                 """,
-                "{not valid json",
+                "{not valid json \"token_count\"",
                 tokenCountLine(
                     timestamp: "2026-04-14T20:00:02.123Z",
                     lastInput: 10,
@@ -1083,13 +1083,152 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         let firstSummary = try importer.importTokenHistory(into: store)
         let secondSummary = try importer.importTokenHistory(into: store)
+        let forcedSummary = try importer.importTokenHistory(into: store, request: .allHistory(forceRescan: true))
 
         XCTAssertEqual(firstSummary.tokenEventsImported, 2)
         XCTAssertEqual(firstSummary.duplicateEventsSkipped, 0)
         XCTAssertEqual(secondSummary.tokenEventsImported, 0)
-        XCTAssertEqual(secondSummary.duplicateEventsSkipped, 2)
+        XCTAssertEqual(secondSummary.duplicateEventsSkipped, 0)
+        XCTAssertEqual(secondSummary.filesScanned, 0)
+        XCTAssertEqual(secondSummary.filesSkippedUnchanged, 1)
+        XCTAssertEqual(forcedSummary.tokenEventsImported, 0)
+        XCTAssertEqual(forcedSummary.duplicateEventsSkipped, 2)
         XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [125, 95])
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 220)
+    }
+
+    func testSessionTokenBackfillRecentRequestUsesBounds() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        let archivedURL = sessionsURL.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archivedURL, withIntermediateDirectories: true)
+        let oldURL = sessionsURL.appendingPathComponent("rollout-2026-03-01T10-00-00-old.jsonl")
+        let recentURL = sessionsURL.appendingPathComponent("rollout-2026-05-10T10-00-00-recent.jsonl")
+        let archivedRecentURL = archivedURL.appendingPathComponent("rollout-2026-05-12T10-00-00-archived.jsonl")
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-03-01T18:00:00Z",
+                    lastInput: 10,
+                    lastCached: 0,
+                    lastOutput: 2,
+                    lastReasoning: 0,
+                    lastTotal: 12,
+                    totalInput: 10,
+                    totalCached: 0,
+                    totalOutput: 2,
+                    totalReasoning: 0,
+                    totalTotal: 12
+                ),
+            ],
+            to: oldURL
+        )
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-05-10T18:00:00Z",
+                    lastInput: 20,
+                    lastCached: 5,
+                    lastOutput: 3,
+                    lastReasoning: 1,
+                    lastTotal: 29,
+                    totalInput: 20,
+                    totalCached: 5,
+                    totalOutput: 3,
+                    totalReasoning: 1,
+                    totalTotal: 29
+                ),
+            ],
+            to: recentURL
+        )
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-05-12T18:00:00Z",
+                    lastInput: 30,
+                    lastCached: 5,
+                    lastOutput: 4,
+                    lastReasoning: 1,
+                    lastTotal: 40,
+                    totalInput: 30,
+                    totalCached: 5,
+                    totalOutput: 4,
+                    totalReasoning: 1,
+                    totalTotal: 40
+                ),
+            ],
+            to: archivedRecentURL
+        )
+        try setModificationDate(date("2026-05-17T18:10:00Z"), for: oldURL)
+        try setModificationDate(date("2026-05-10T18:10:00Z"), for: recentURL)
+        try setModificationDate(date("2026-05-12T18:10:00Z"), for: archivedRecentURL)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL, archivedURL])
+
+        let summary = try importer.importTokenHistory(
+            into: store,
+            request: .recent(now: date("2026-05-17T12:00:00Z"), days: 30)
+        )
+
+        XCTAssertEqual(summary.filesDiscovered, 3)
+        XCTAssertEqual(summary.filesSkippedByBounds, 2)
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.receivedAt), [date("2026-05-10T18:00:00Z")])
+    }
+
+    func testSessionTokenBackfillReimportsChangedFilesAndRepairsModel() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-repair.jsonl")
+        let tokenLineWithoutModel = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 10,
+            lastOutput: 15,
+            lastReasoning: 0,
+            lastTotal: 125,
+            totalInput: 100,
+            totalCached: 10,
+            totalOutput: 15,
+            totalReasoning: 0,
+            totalTotal: 125
+        )
+        try writeSessionLines([tokenLineWithoutModel], to: sessionURL)
+        try setModificationDate(date("2026-05-17T15:01:00Z"), for: sessionURL)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let firstSummary = try importer.importTokenHistory(into: store)
+
+        let tokenLineWithModel = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 10,
+            lastOutput: 15,
+            lastReasoning: 0,
+            lastTotal: 125,
+            totalInput: 100,
+            totalCached: 10,
+            totalOutput: 15,
+            totalReasoning: 0,
+            totalTotal: 125,
+            model: " gpt-future-2 "
+        )
+        try writeSessionLines([tokenLineWithModel], to: sessionURL)
+        try setModificationDate(date("2026-05-17T15:05:00Z"), for: sessionURL)
+
+        let repairSummary = try importer.importTokenHistory(into: store)
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(firstSummary.tokenEventsImported, 1)
+        XCTAssertEqual(repairSummary.filesScanned, 1)
+        XCTAssertEqual(repairSummary.tokenEventsImported, 0)
+        XCTAssertEqual(repairSummary.duplicateEventsSkipped, 1)
+        XCTAssertEqual(repairSummary.modelEventsRepaired, 1)
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.model, "gpt-future-2")
+        XCTAssertEqual(samples.first?.observedTotalTokens, 125)
     }
 
     @MainActor
@@ -1220,18 +1359,40 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
     }
 
+    func testSessionTokenImportMetadataMigratesFromExistingDatabase() throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        try createLegacyTokenHistoryDatabase(at: databaseURL)
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let metadata = CodexSessionTokenImportFileMetadata(path: "/tmp/session.jsonl", fileSize: 123, modifiedAt: 456)
+
+        try store.recordCodexSessionTokenImportFile(metadata, importedAt: 789, status: .imported)
+
+        XCTAssertEqual(
+            try store.codexSessionTokenImportFileRecord(path: "/tmp/session.jsonl"),
+            CodexSessionTokenImportFileRecord(metadata: metadata, importedAt: 789, status: .imported)
+        )
+    }
+
     func testClearHistoryDeletesTokenUsageSamples() throws {
         let store = try makeStore()
+        let metadata = CodexSessionTokenImportFileMetadata(path: "/tmp/session.jsonl", fileSize: 123, modifiedAt: 456)
 
         try store.record(
             tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 120, totalTotal: 120),
             at: date("2026-04-14T20:00:00Z")
         )
+        try store.recordCodexSessionTokenImportFile(metadata, importedAt: 789, status: .imported)
         XCTAssertTrue(try store.hasAnyHistory())
+        XCTAssertEqual(try store.codexSessionTokenImportFileRecords().count, 1)
 
         try store.clearHistory()
 
         XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
+        XCTAssertTrue(try store.codexSessionTokenImportFileRecords().isEmpty)
         XCTAssertFalse(try store.hasAnyHistory())
     }
 
@@ -1426,12 +1587,22 @@ final class UsageHistoryStoreTests: XCTestCase {
     @MainActor
     func testSettingsViewModelImportsTokenHistoryAndReportsFailure() throws {
         let store = try makeStore()
-        let successImporter = StubTokenBackfillImporter { _ in
-            CodexSessionTokenBackfillSummary(
+        let releaseSuccessfulImport = DispatchSemaphore(value: 0)
+        let successfulImportStarted = expectation(description: "Successful import started")
+        let successImporter = StubTokenBackfillImporter { _, _ in
+            successfulImportStarted.fulfill()
+            releaseSuccessfulImport.wait()
+            return CodexSessionTokenBackfillSummary(
+                request: .recent(now: self.date("2026-05-17T12:00:00Z")),
+                filesDiscovered: 7,
                 filesScanned: 3,
+                filesSkippedByBounds: 2,
+                filesSkippedUnchanged: 2,
                 tokenEventsImported: 12,
                 duplicateEventsSkipped: 4,
-                failedLinesSkipped: 1
+                modelEventsRepaired: 1,
+                failedLinesSkipped: 1,
+                elapsedTime: 0.1
             )
         }
         let successViewModel = DataManagementSettingsViewModel(
@@ -1439,31 +1610,47 @@ final class UsageHistoryStoreTests: XCTestCase {
             defaults: makeIsolatedDefaults(),
             tokenBackfillImporter: successImporter
         )
-        var didCallImporter = false
-        successImporter.onImport = {
-            didCallImporter = true
-        }
 
-        successViewModel.importTokenHistoryFromCodexSessions()
+        successViewModel.importRecentTokenHistoryFromCodexSessions(now: date("2026-05-17T12:00:00Z"))
+        wait(for: [successfulImportStarted], timeout: 1)
 
-        XCTAssertTrue(didCallImporter)
+        XCTAssertTrue(successViewModel.isImportingTokenHistory)
+        XCTAssertEqual(successImporter.receivedRequests.map(\.mode), [.recent])
+        releaseSuccessfulImport.signal()
+        waitForImportToFinish(successViewModel)
+
         XCTAssertFalse(successViewModel.isImportingTokenHistory)
         XCTAssertEqual(
             successViewModel.tokenImportSummaryText,
-            "Imported 12 token events from 3 files. 4 duplicates skipped. 1 unreadable lines skipped."
+            "Recent sessions: scanned 3 of 7 files. Imported 12 token events. 2 outside this import scope. 2 unchanged files skipped. 4 duplicates skipped. 1 model labels repaired. 1 unreadable lines skipped. 0.1s elapsed."
         )
         XCTAssertNil(successViewModel.statusMessage)
         XCTAssertNil(successViewModel.errorMessage)
 
+        let allHistoryImporter = StubTokenBackfillImporter { _, _ in
+            CodexSessionTokenBackfillSummary(filesScanned: 1, tokenEventsImported: 0, duplicateEventsSkipped: 0, failedLinesSkipped: 0)
+        }
+        let allHistoryViewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            tokenBackfillImporter: allHistoryImporter
+        )
+
+        allHistoryViewModel.importAllTokenHistoryFromCodexSessions()
+        waitForImportToFinish(allHistoryViewModel)
+
+        XCTAssertEqual(allHistoryImporter.receivedRequests.map(\.mode), [.allHistory])
+
         let failingViewModel = DataManagementSettingsViewModel(
             store: store,
             defaults: makeIsolatedDefaults(),
-            tokenBackfillImporter: StubTokenBackfillImporter { _ in
+            tokenBackfillImporter: StubTokenBackfillImporter { _, _ in
                 throw UsageHistoryStoreError.databaseUnavailable
             }
         )
 
         failingViewModel.importTokenHistoryFromCodexSessions()
+        waitForImportToFinish(failingViewModel)
 
         XCTAssertFalse(failingViewModel.isImportingTokenHistory)
         XCTAssertNil(failingViewModel.tokenImportSummaryText)
@@ -2808,6 +2995,18 @@ final class UsageHistoryStoreTests: XCTestCase {
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    private func setModificationDate(_ date: Date, for url: URL) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+
+    @MainActor
+    private func waitForImportToFinish(_ viewModel: DataManagementSettingsViewModel, timeout: TimeInterval = 2) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while viewModel.isImportingTokenHistory && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+    }
+
     private func tokenCountLine(
         timestamp: String,
         lastInput: Int64,
@@ -2841,16 +3040,22 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 }
 
-private final class StubTokenBackfillImporter: CodexSessionTokenBackfillImporting {
-    var onImport: (() -> Void)?
-    private let result: (UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary
+private final class StubTokenBackfillImporter: CodexSessionTokenBackfillImporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var receivedRequests: [CodexSessionTokenBackfillRequest] = []
+    private let result: (UsageHistoryStore, CodexSessionTokenBackfillRequest) throws -> CodexSessionTokenBackfillSummary
 
-    init(result: @escaping (UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary) {
+    init(result: @escaping (UsageHistoryStore, CodexSessionTokenBackfillRequest) throws -> CodexSessionTokenBackfillSummary) {
         self.result = result
     }
 
-    func importTokenHistory(into store: UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary {
-        onImport?()
-        return try result(store)
+    func importTokenHistory(
+        into store: UsageHistoryStore,
+        request: CodexSessionTokenBackfillRequest
+    ) throws -> CodexSessionTokenBackfillSummary {
+        lock.lock()
+        receivedRequests.append(request)
+        lock.unlock()
+        return try result(store, request)
     }
 }

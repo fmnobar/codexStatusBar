@@ -105,12 +105,13 @@
   - Added session-token backfill attribution from safe `turn_context` and token-count metadata.
   - Let repeated metadata imports repair previously model-less token rows without inflating totals.
 
-## Next Candidates
-
 - Make Codex session token backfill incremental and bounded
-  - Avoid scanning the entire local Codex session archive on every import.
-  - Track imported session file metadata and let users import recent sessions first, with clear progress for large archives.
-  - Keep the importer metadata-only while making model-attribution repair practical on multi-GB local histories.
+  - Made Data settings default to a bounded recent session import before offering all-history import.
+  - Added local session-file metadata so unchanged JSONL files are skipped on repeat imports.
+  - Streamed JSONL parsing line by line while preserving metadata-only token/model attribution.
+  - Reported discovered, scanned, skipped, imported, duplicate, repaired, failed-line, and elapsed-time import counts.
+
+## Next Candidates
 
 - Add detailed token dashboard
   - Add a separate dashboard surface outside the compact menu popover for deeper token analysis.

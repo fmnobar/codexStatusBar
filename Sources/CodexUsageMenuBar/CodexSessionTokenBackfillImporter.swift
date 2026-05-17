@@ -6,36 +6,142 @@ struct ImportedCodexTokenUsageSample: Equatable {
     let receivedAt: Date
 }
 
-struct TokenUsageImportResult: Equatable {
+struct TokenUsageImportResult: Equatable, Sendable {
     let insertedCount: Int
     let duplicateCount: Int
+    let repairedModelCount: Int
+
+    init(insertedCount: Int, duplicateCount: Int, repairedModelCount: Int = 0) {
+        self.insertedCount = insertedCount
+        self.duplicateCount = duplicateCount
+        self.repairedModelCount = repairedModelCount
+    }
 
     static let empty = TokenUsageImportResult(insertedCount: 0, duplicateCount: 0)
 }
 
-struct CodexSessionTokenBackfillSummary: Equatable {
+struct CodexSessionTokenBackfillRequest: Equatable, Sendable {
+    enum Mode: String, Equatable, Sendable {
+        case recent
+        case allHistory
+    }
+
+    static let defaultRecentDayCount = 30
+
+    let mode: Mode
+    let since: Date?
+    let forceRescan: Bool
+
+    static func recent(
+        now: Date = Date(),
+        days: Int = Self.defaultRecentDayCount,
+        forceRescan: Bool = false
+    ) -> CodexSessionTokenBackfillRequest {
+        CodexSessionTokenBackfillRequest(
+            mode: .recent,
+            since: Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: now) ?? now,
+            forceRescan: forceRescan
+        )
+    }
+
+    static func allHistory(forceRescan: Bool = false) -> CodexSessionTokenBackfillRequest {
+        CodexSessionTokenBackfillRequest(mode: .allHistory, since: nil, forceRescan: forceRescan)
+    }
+
+    var displayTitle: String {
+        switch mode {
+        case .recent:
+            "Recent sessions"
+        case .allHistory:
+            "All history"
+        }
+    }
+}
+
+enum CodexSessionTokenImportFileStatus: String, Sendable {
+    case imported
+    case failed
+}
+
+struct CodexSessionTokenImportFileMetadata: Equatable, Sendable {
+    let path: String
+    let fileSize: Int64
+    let modifiedAt: Int64
+}
+
+struct CodexSessionTokenImportFileRecord: Equatable, Sendable {
+    let metadata: CodexSessionTokenImportFileMetadata
+    let importedAt: Int64
+    let status: CodexSessionTokenImportFileStatus
+}
+
+struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
+    let request: CodexSessionTokenBackfillRequest
+    let filesDiscovered: Int
     let filesScanned: Int
+    let filesSkippedByBounds: Int
+    let filesSkippedUnchanged: Int
     let tokenEventsImported: Int
     let duplicateEventsSkipped: Int
+    let modelEventsRepaired: Int
     let failedLinesSkipped: Int
+    let elapsedTime: TimeInterval
+
+    init(
+        request: CodexSessionTokenBackfillRequest = .allHistory(),
+        filesDiscovered: Int? = nil,
+        filesScanned: Int,
+        filesSkippedByBounds: Int = 0,
+        filesSkippedUnchanged: Int = 0,
+        tokenEventsImported: Int,
+        duplicateEventsSkipped: Int,
+        modelEventsRepaired: Int = 0,
+        failedLinesSkipped: Int,
+        elapsedTime: TimeInterval = 0
+    ) {
+        self.request = request
+        self.filesDiscovered = filesDiscovered ?? filesScanned
+        self.filesScanned = filesScanned
+        self.filesSkippedByBounds = filesSkippedByBounds
+        self.filesSkippedUnchanged = filesSkippedUnchanged
+        self.tokenEventsImported = tokenEventsImported
+        self.duplicateEventsSkipped = duplicateEventsSkipped
+        self.modelEventsRepaired = modelEventsRepaired
+        self.failedLinesSkipped = failedLinesSkipped
+        self.elapsedTime = elapsedTime
+    }
 
     var statusMessage: String {
-        if filesScanned == 0 {
+        if filesDiscovered == 0 {
             return "No Codex session files found."
         }
 
         var parts = [
-            "Imported \(tokenEventsImported) token events from \(filesScanned) files.",
+            "\(request.displayTitle): scanned \(filesScanned) of \(filesDiscovered) files.",
+            "Imported \(tokenEventsImported) token events.",
         ]
+
+        if filesSkippedByBounds > 0 {
+            parts.append("\(filesSkippedByBounds) outside this import scope.")
+        }
+
+        if filesSkippedUnchanged > 0 {
+            parts.append("\(filesSkippedUnchanged) unchanged files skipped.")
+        }
 
         if duplicateEventsSkipped > 0 {
             parts.append("\(duplicateEventsSkipped) duplicates skipped.")
+        }
+
+        if modelEventsRepaired > 0 {
+            parts.append("\(modelEventsRepaired) model labels repaired.")
         }
 
         if failedLinesSkipped > 0 {
             parts.append("\(failedLinesSkipped) unreadable lines skipped.")
         }
 
+        parts.append(String(format: "%.1fs elapsed.", elapsedTime))
         return parts.joined(separator: " ")
     }
 }
@@ -190,13 +296,24 @@ struct CodexLogTokenUsageImporter {
     }
 }
 
-protocol CodexSessionTokenBackfillImporting {
-    func importTokenHistory(into store: UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary
+protocol CodexSessionTokenBackfillImporting: Sendable {
+    func importTokenHistory(
+        into store: UsageHistoryStore,
+        request: CodexSessionTokenBackfillRequest
+    ) throws -> CodexSessionTokenBackfillSummary
 }
 
-struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
+extension CodexSessionTokenBackfillImporting {
+    func importTokenHistory(into store: UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary {
+        try importTokenHistory(into: store, request: .allHistory())
+    }
+}
+
+struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @unchecked Sendable {
     let sourceDirectories: [URL]
     let fileManager: FileManager
+    private static let tokenCountLineNeedle = Data(#""token_count""#.utf8)
+    private static let turnContextLineNeedle = Data(#""turn_context""#.utf8)
 
     init(
         sourceDirectories: [URL] = Self.defaultSourceDirectories(),
@@ -214,27 +331,69 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
         ]
     }
 
-    func importTokenHistory(into store: UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary {
-        let sessionFiles = sessionFileURLs()
-        var parsedSamples: [ImportedCodexTokenUsageSample] = []
+    func importTokenHistory(
+        into store: UsageHistoryStore,
+        request: CodexSessionTokenBackfillRequest
+    ) throws -> CodexSessionTokenBackfillSummary {
+        let startedAt = Date()
+        let discoveredFiles = sessionFileCandidates()
+        var filesSkippedByBounds = 0
+        var filesSkippedUnchanged = 0
         var failedLinesSkipped = 0
+        var tokenEventsImported = 0
+        var duplicateEventsSkipped = 0
+        var modelEventsRepaired = 0
 
-        for fileURL in sessionFiles {
-            let fileResult = parseSessionFile(fileURL)
-            parsedSamples += fileResult.samples
-            failedLinesSkipped += fileResult.failedLinesSkipped
+        let sessionFiles = discoveredFiles.filter { candidate in
+            guard shouldInclude(candidate: candidate, request: request) else {
+                filesSkippedByBounds += 1
+                return false
+            }
+
+            guard !shouldSkipUnchanged(candidate.metadata, store: store, request: request) else {
+                filesSkippedUnchanged += 1
+                return false
+            }
+
+            return true
         }
 
-        let importResult = try store.importTokenUsageSamples(parsedSamples)
+        for candidate in sessionFiles {
+            let fileResult = parseSessionFile(candidate.url)
+            failedLinesSkipped += fileResult.failedLinesSkipped
+            let importResult = try store.importTokenUsageSamples(fileResult.samples)
+            tokenEventsImported += importResult.insertedCount
+            duplicateEventsSkipped += importResult.duplicateCount
+            modelEventsRepaired += importResult.repairedModelCount
+            try store.recordCodexSessionTokenImportFile(
+                candidate.metadata,
+                importedAt: Int64(Date().timeIntervalSince1970),
+                status: fileResult.readSucceeded ? .imported : .failed
+            )
+        }
+
         return CodexSessionTokenBackfillSummary(
+            request: request,
+            filesDiscovered: discoveredFiles.count,
             filesScanned: sessionFiles.count,
-            tokenEventsImported: importResult.insertedCount,
-            duplicateEventsSkipped: importResult.duplicateCount,
-            failedLinesSkipped: failedLinesSkipped
+            filesSkippedByBounds: filesSkippedByBounds,
+            filesSkippedUnchanged: filesSkippedUnchanged,
+            tokenEventsImported: tokenEventsImported,
+            duplicateEventsSkipped: duplicateEventsSkipped,
+            modelEventsRepaired: modelEventsRepaired,
+            failedLinesSkipped: failedLinesSkipped,
+            elapsedTime: Date().timeIntervalSince(startedAt)
         )
     }
 
-    private func sessionFileURLs() -> [URL] {
+    private struct SessionFileCandidate {
+        let url: URL
+        let metadata: CodexSessionTokenImportFileMetadata
+        let sessionDate: Date?
+        let isArchived: Bool
+    }
+
+    private func sessionFileCandidates() -> [SessionFileCandidate] {
         return sourceDirectories.flatMap { directoryURL -> [URL] in
             guard fileManager.fileExists(atPath: directoryURL.path) else {
                 return []
@@ -257,13 +416,88 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
                 return values?.isRegularFile == true ? fileURL : nil
             }
         }
-        .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        .compactMap { fileURL in
+            guard let metadata = fileMetadata(for: fileURL) else {
+                return nil
+            }
+
+            return SessionFileCandidate(
+                url: fileURL,
+                metadata: metadata,
+                sessionDate: Self.sessionDate(from: fileURL),
+                isArchived: Self.isArchivedSessionFile(fileURL)
+            )
+        }
+        .sorted { $0.metadata.path.localizedStandardCompare($1.metadata.path) == .orderedAscending }
     }
 
-    private func parseSessionFile(_ fileURL: URL) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int) {
-        guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else {
-            return ([], 1)
+    private static func isArchivedSessionFile(_ fileURL: URL) -> Bool {
+        fileURL.pathComponents.contains("archived_sessions")
+    }
+
+    private func fileMetadata(for fileURL: URL) -> CodexSessionTokenImportFileMetadata? {
+        let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        return CodexSessionTokenImportFileMetadata(
+            path: fileURL.path,
+            fileSize: Int64(values?.fileSize ?? 0),
+            modifiedAt: values?.contentModificationDate.map { Int64($0.timeIntervalSince1970) } ?? 0
+        )
+    }
+
+    private func shouldInclude(
+        candidate: SessionFileCandidate,
+        request: CodexSessionTokenBackfillRequest
+    ) -> Bool {
+        guard let since = request.since else {
+            return true
         }
+
+        guard !candidate.isArchived else {
+            return false
+        }
+
+        if let sessionDate = candidate.sessionDate {
+            return sessionDate >= since
+        }
+
+        let modifiedAt = Date(timeIntervalSince1970: TimeInterval(candidate.metadata.modifiedAt))
+        return modifiedAt >= since
+    }
+
+    private func shouldSkipUnchanged(
+        _ metadata: CodexSessionTokenImportFileMetadata,
+        store: UsageHistoryStore,
+        request: CodexSessionTokenBackfillRequest
+    ) -> Bool {
+        guard !request.forceRescan,
+              let record = try? store.codexSessionTokenImportFileRecord(path: metadata.path)
+        else {
+            return false
+        }
+
+        return record.status == .imported
+            && record.metadata.fileSize == metadata.fileSize
+            && record.metadata.modifiedAt == metadata.modifiedAt
+    }
+
+    private func parseSessionFile(_ fileURL: URL) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
+        if let lineReader = try? GrepRelevantLineReader(fileURL: fileURL) {
+            return parseSessionFile(fileURL, relevantLineReader: lineReader)
+        }
+
+        guard let lineReader = try? FileLineReader(fileURL: fileURL) else {
+            return ([], 1, false)
+        }
+        defer { lineReader.close() }
+
+        return parseSessionFile(fileURL, fallbackLineReader: lineReader)
+    }
+
+    private func parseSessionFile(
+        _ fileURL: URL,
+        relevantLineReader lineReader: GrepRelevantLineReader
+    ) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
+        defer { lineReader.close() }
 
         let decoder = JSONDecoder()
         var samples: [ImportedCodexTokenUsageSample] = []
@@ -271,45 +505,251 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
         let sessionID = Self.sessionIdentifier(for: fileURL)
         var currentModel: String?
 
-        for (lineIndex, rawLine) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
-            guard let lineData = rawLine.data(using: .utf8) else {
-                failedLinesSkipped += 1
-                continue
+        do {
+            while let line = try lineReader.nextRelevantLineData() {
+                do {
+                    let decodedLine = try decoder.decode(CodexSessionTokenBackfillLine.self, from: line.data)
+                    if let modelIdentifier = decodedLine.payload?.modelIdentifier {
+                        currentModel = modelIdentifier
+                    }
+
+                    guard let payload = decodedLine.payload, payload.type == "token_count", let info = payload.info else {
+                        continue
+                    }
+
+                    guard let receivedAt = Self.parseTimestamp(decodedLine.timestamp) else {
+                        failedLinesSkipped += 1
+                        continue
+                    }
+
+                    let tokenUsage = CodexThreadTokenUsage(
+                        last: info.lastTokenUsage.toDomainBreakdown(),
+                        total: info.totalTokenUsage.toDomainBreakdown(),
+                        modelContextWindow: info.modelContextWindow
+                    )
+                    let notification = CodexTokenUsageNotification(
+                        threadID: sessionID,
+                        turnID: "line:\(line.lineNumber)",
+                        model: info.modelIdentifier ?? currentModel,
+                        tokenUsage: tokenUsage
+                    )
+                    samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
+                } catch {
+                    failedLinesSkipped += 1
+                }
+            }
+        } catch {
+            return (samples, failedLinesSkipped + 1, false)
+        }
+
+        return (samples, failedLinesSkipped, lineReader.readSucceeded)
+    }
+
+    private func parseSessionFile(
+        _ fileURL: URL,
+        fallbackLineReader lineReader: FileLineReader
+    ) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
+        let decoder = JSONDecoder()
+        var samples: [ImportedCodexTokenUsageSample] = []
+        var failedLinesSkipped = 0
+        let sessionID = Self.sessionIdentifier(for: fileURL)
+        var currentModel: String?
+        var lineIndex = 0
+
+        do {
+            while let lineData = try lineReader.nextLineData() {
+                guard !lineData.isEmpty else {
+                    lineIndex += 1
+                    continue
+                }
+
+                lineIndex += 1
+                guard Self.shouldDecodeSessionLine(lineData) else {
+                    continue
+                }
+
+                do {
+                    let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
+                    if let modelIdentifier = line.payload?.modelIdentifier {
+                        currentModel = modelIdentifier
+                    }
+
+                    guard let payload = line.payload, payload.type == "token_count", let info = payload.info else {
+                        continue
+                    }
+
+                    guard let receivedAt = Self.parseTimestamp(line.timestamp) else {
+                        failedLinesSkipped += 1
+                        continue
+                    }
+
+                    let tokenUsage = CodexThreadTokenUsage(
+                        last: info.lastTokenUsage.toDomainBreakdown(),
+                        total: info.totalTokenUsage.toDomainBreakdown(),
+                        modelContextWindow: info.modelContextWindow
+                    )
+                    let notification = CodexTokenUsageNotification(
+                        threadID: sessionID,
+                        turnID: "line:\(lineIndex)",
+                        model: info.modelIdentifier ?? currentModel,
+                        tokenUsage: tokenUsage
+                    )
+                    samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
+                } catch {
+                    failedLinesSkipped += 1
+                }
+            }
+        } catch {
+            return (samples, failedLinesSkipped + 1, false)
+        }
+
+        return (samples, failedLinesSkipped, true)
+    }
+
+    private static func shouldDecodeSessionLine(_ lineData: Data) -> Bool {
+        let searchablePrefix = lineData.prefix(4_096)
+        return searchablePrefix.range(of: tokenCountLineNeedle) != nil
+            || searchablePrefix.range(of: turnContextLineNeedle) != nil
+    }
+
+    private final class GrepRelevantLineReader {
+        private let process: Process
+        private let lineReader: FileLineReader
+        private var hasClosed = false
+
+        var readSucceeded = true
+
+        init(fileURL: URL) throws {
+            let pipe = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
+            process.arguments = [
+                "-anE",
+                #""token_count"|"turn_context""#,
+                fileURL.path,
+            ]
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            try process.run()
+
+            self.process = process
+            self.lineReader = FileLineReader(handle: pipe.fileHandleForReading)
+        }
+
+        func nextRelevantLineData() throws -> (lineNumber: Int, data: Data)? {
+            while let lineData = try lineReader.nextLineData() {
+                guard let parsedLine = Self.parseGrepLine(lineData) else {
+                    continue
+                }
+
+                return parsedLine
             }
 
-            do {
-                let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
-                if let modelIdentifier = line.payload?.modelIdentifier {
-                    currentModel = modelIdentifier
+            close()
+            return nil
+        }
+
+        func close() {
+            guard !hasClosed else {
+                return
+            }
+
+            hasClosed = true
+            lineReader.close()
+            process.waitUntilExit()
+            readSucceeded = process.terminationStatus == 0 || process.terminationStatus == 1
+        }
+
+        private static func parseGrepLine(_ lineData: Data) -> (lineNumber: Int, data: Data)? {
+            guard let separator = lineData.firstIndex(of: 0x3A), separator > lineData.startIndex else {
+                return nil
+            }
+
+            let prefix = lineData[lineData.startIndex..<separator]
+            guard let rawLineNumber = String(data: prefix, encoding: .utf8),
+                  let lineNumber = Int(rawLineNumber)
+            else {
+                return nil
+            }
+
+            let payloadStart = lineData.index(after: separator)
+            return (lineNumber, Data(lineData[payloadStart...]))
+        }
+    }
+
+    private final class FileLineReader {
+        private let handle: FileHandle
+        private var buffer = Data()
+        private var reachedEnd = false
+
+        init(fileURL: URL) throws {
+            handle = try FileHandle(forReadingFrom: fileURL)
+        }
+
+        init(handle: FileHandle) {
+            self.handle = handle
+        }
+
+        func nextLineData() throws -> Data? {
+            while true {
+                if let newlineRange = buffer.firstRange(of: Data([0x0A])) {
+                    var line = buffer[..<newlineRange.lowerBound]
+                    buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
+                    if line.last == 0x0D {
+                        line = line.dropLast()
+                    }
+                    return Data(line)
                 }
 
-                guard let payload = line.payload, payload.type == "token_count", let info = payload.info else {
-                    continue
+                if reachedEnd {
+                    guard !buffer.isEmpty else {
+                        return nil
+                    }
+
+                    var line = buffer
+                    buffer.removeAll(keepingCapacity: false)
+                    if line.last == 0x0D {
+                        line.removeLast()
+                    }
+                    return line
                 }
 
-                guard let receivedAt = Self.parseTimestamp(line.timestamp) else {
-                    failedLinesSkipped += 1
-                    continue
+                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                if chunk.isEmpty {
+                    reachedEnd = true
+                } else {
+                    buffer.append(chunk)
                 }
-
-                let tokenUsage = CodexThreadTokenUsage(
-                    last: info.lastTokenUsage.toDomainBreakdown(),
-                    total: info.totalTokenUsage.toDomainBreakdown(),
-                    modelContextWindow: info.modelContextWindow
-                )
-                let notification = CodexTokenUsageNotification(
-                    threadID: sessionID,
-                    turnID: "line:\(lineIndex + 1)",
-                    model: info.modelIdentifier ?? currentModel,
-                    tokenUsage: tokenUsage
-                )
-                samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
-            } catch {
-                failedLinesSkipped += 1
             }
         }
 
-        return (samples, failedLinesSkipped)
+        func close() {
+            try? handle.close()
+        }
+    }
+
+    private static func sessionDate(from fileURL: URL) -> Date? {
+        let name = fileURL.deletingPathExtension().lastPathComponent
+        let pattern = #"rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..<name.endIndex, in: name)),
+              match.numberOfRanges == 7
+        else {
+            return nil
+        }
+
+        let parts = (1..<7).compactMap { index -> String? in
+            guard let range = Range(match.range(at: index), in: name) else {
+                return nil
+            }
+            return String(name[range])
+        }
+
+        guard parts.count == 6 else {
+            return nil
+        }
+
+        return parseTimestamp("\(parts[0])-\(parts[1])-\(parts[2])T\(parts[3]):\(parts[4]):\(parts[5])Z")
     }
 
     private static func sessionIdentifier(for fileURL: URL) -> String {
