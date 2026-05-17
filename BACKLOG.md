@@ -126,11 +126,11 @@
   - Added local freshness checks for newer source checkouts and newer installed bundles than the running process.
   - Added a compact stale-build warning in the popover plus Local Build status and relaunch/install guidance in Updates settings.
 
-## Next Candidates
-
 - Optimize History hover selection
   - Cache visible bucketed chart data during reload instead of rebuilding computed arrays during high-frequency pointer movement.
   - Pre-index hover data by bucket start so nearest-bucket lookup and detail rendering do not block the main thread.
+
+## Next Candidates
 
 - Pre-aggregate token History data in SQLite
   - Return period-bucketed token component totals directly from store queries for compact History.

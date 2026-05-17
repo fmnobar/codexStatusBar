@@ -2744,6 +2744,57 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.hoverSelection?.xPosition, 180)
     }
 
+    func testHoverIndexChoosesNearestBucketWithoutScanningVisiblePoints() throws {
+        let firstPoint = UsageHistoryChartPoint(
+            bucketStart: date("2026-04-14T00:00:00Z"),
+            bucketEnd: date("2026-04-14T01:00:00Z"),
+            sampleTimestamp: date("2026-04-14T00:30:00Z"),
+            bucketID: "codex",
+            bucketName: "All models",
+            bucketKind: .aggregate,
+            window: .sevenDay,
+            latestUsedPercent: 20,
+            peakUsedPercent: 20,
+            consumedPercent: 4
+        )
+        let secondPoint = UsageHistoryChartPoint(
+            bucketStart: date("2026-04-14T01:00:00Z"),
+            bucketEnd: date("2026-04-14T02:00:00Z"),
+            sampleTimestamp: date("2026-04-14T01:30:00Z"),
+            bucketID: "codex",
+            bucketName: "All models",
+            bucketKind: .aggregate,
+            window: .sevenDay,
+            latestUsedPercent: 30,
+            peakUsedPercent: 30,
+            consumedPercent: 5
+        )
+        let index = UsageHistoryHoverIndex(buckets: [
+            UsageHistoryHoverBucket(
+                bucketStart: firstPoint.bucketStart,
+                bucketEnd: firstPoint.bucketEnd,
+                xDate: date("2026-04-14T00:30:00Z"),
+                points: [firstPoint]
+            ),
+            UsageHistoryHoverBucket(
+                bucketStart: secondPoint.bucketStart,
+                bucketEnd: secondPoint.bucketEnd,
+                xDate: date("2026-04-14T01:30:00Z"),
+                points: [secondPoint]
+            ),
+        ])
+
+        let firstSelection = index.selection(nearestTo: date("2026-04-14T00:55:00Z"), xPosition: 64)
+        let secondSelection = index.selection(nearestTo: date("2026-04-14T01:15:00Z"), xPosition: 96)
+
+        XCTAssertEqual(firstSelection?.bucketStart, firstPoint.bucketStart)
+        XCTAssertEqual(firstSelection?.points, [firstPoint])
+        XCTAssertEqual(firstSelection?.xPosition, 64)
+        XCTAssertEqual(secondSelection?.bucketStart, secondPoint.bucketStart)
+        XCTAssertEqual(secondSelection?.points, [secondPoint])
+        XCTAssertEqual(secondSelection?.xPosition, 96)
+    }
+
     @MainActor
     func testTokenHoverSelectionGroupsVisibleSeriesInBucket() throws {
         let store = try makeStore()
@@ -2780,6 +2831,57 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenComponent), [.input, .cached])
         XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenCount), [120, 80])
         XCTAssertEqual(viewModel.hoverSelection?.points.map { viewModel.formattedChartValue(for: $0) }, ["120 tok", "80 tok"])
+    }
+
+    @MainActor
+    func testHoverSelectionUsesRebuiltCacheAfterSeriesSelectionChanges() throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.selectedRange = .day
+        viewModel.reload()
+
+        viewModel.setSeries("codex_gpt55", isSelected: false)
+        viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
+
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.bucketID), ["codex"])
+    }
+
+    @MainActor
+    func testScheduledHoverSelectionIgnoresStaleWorkAfterSeriesChanges() async throws {
+        let store = try makeStore()
+        try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.selectedRange = .day
+        viewModel.reload()
+
+        viewModel.scheduleHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
+        viewModel.setSeries("codex_gpt55", isSelected: false)
+        await Task.yield()
+
+        XCTAssertNil(viewModel.hoverSelection)
+    }
+
+    @MainActor
+    func testHoverSelectionClearsWhenNoVisibleBucketsExist() throws {
+        let viewModel = UsageHistoryViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.reload()
+
+        viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
+
+        XCTAssertNil(viewModel.hoverSelection)
     }
 
     @MainActor

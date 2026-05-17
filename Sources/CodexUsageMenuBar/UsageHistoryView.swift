@@ -47,6 +47,71 @@ struct UsageHistoryHoverSelection: Equatable {
     let xPosition: CGFloat
 }
 
+struct UsageHistoryHoverBucket: Equatable {
+    let bucketStart: Date
+    let bucketEnd: Date
+    let xDate: Date
+    let points: [UsageHistoryChartPoint]
+}
+
+struct UsageHistoryHoverIndex: Equatable {
+    static let empty = UsageHistoryHoverIndex(buckets: [])
+
+    let buckets: [UsageHistoryHoverBucket]
+
+    var isEmpty: Bool {
+        buckets.isEmpty
+    }
+
+    func selection(nearestTo timestamp: Date, xPosition: CGFloat) -> UsageHistoryHoverSelection? {
+        guard let bucket = nearestBucket(to: timestamp), !bucket.points.isEmpty else {
+            return nil
+        }
+
+        return UsageHistoryHoverSelection(
+            bucketStart: bucket.bucketStart,
+            bucketEnd: bucket.bucketEnd,
+            points: bucket.points,
+            xPosition: xPosition
+        )
+    }
+
+    private func nearestBucket(to timestamp: Date) -> UsageHistoryHoverBucket? {
+        guard !buckets.isEmpty else {
+            return nil
+        }
+
+        var lowerBound = 0
+        var upperBound = buckets.count
+        while lowerBound < upperBound {
+            let midpoint = (lowerBound + upperBound) / 2
+            if buckets[midpoint].xDate < timestamp {
+                lowerBound = midpoint + 1
+            } else {
+                upperBound = midpoint
+            }
+        }
+
+        if lowerBound == 0 {
+            return buckets[0]
+        }
+
+        if lowerBound == buckets.count {
+            return buckets[buckets.count - 1]
+        }
+
+        let previous = buckets[lowerBound - 1]
+        let next = buckets[lowerBound]
+        let previousDistance = abs(previous.xDate.timeIntervalSince(timestamp))
+        let nextDistance = abs(next.xDate.timeIntervalSince(timestamp))
+        if previousDistance == nextDistance {
+            return previous.bucketStart <= next.bucketStart ? previous : next
+        }
+
+        return previousDistance < nextDistance ? previous : next
+    }
+}
+
 enum UsageHistoryEmptyStateKind: Equatable {
     case noHistory
     case noDataForSelection
@@ -72,11 +137,15 @@ final class UsageHistoryViewModel: ObservableObject {
         didSet {
             followsCurrentPeriod = true
             selectedPeriodStart = currentPeriodStart()
+            refreshChartCachesForPendingReload()
             scheduleReload()
         }
     }
     @Published var selectedWindow: UsageLimitWindow = .sevenDay {
-        didSet { scheduleReload() }
+        didSet {
+            refreshChartCachesForPendingReload()
+            scheduleReload()
+        }
     }
     @Published var selectedChartKind: UsageHistoryChartKind = .capacity {
         didSet {
@@ -88,8 +157,9 @@ final class UsageHistoryViewModel: ObservableObject {
             case .tokens:
                 break
             }
+            refreshChartCachesForPendingReload()
             scheduleReload()
-            scheduleClearHoverSelection()
+            clearHoverSelectionAndCancelPendingWork()
         }
     }
     @Published var selectedTokenCategory: TokenHistoryCategory = .total {
@@ -118,7 +188,10 @@ final class UsageHistoryViewModel: ObservableObject {
     @Published private(set) var hoverSelection: UsageHistoryHoverSelection?
     @Published private(set) var hasAnyRecordedHistory = false
     @Published private(set) var selectedPeriodStart = Date(timeIntervalSince1970: 0) {
-        didSet { scheduleReload() }
+        didSet {
+            refreshChartCachesForPendingReload()
+            scheduleReload()
+        }
     }
     let chartSemantics: UsageHistoryChartSemantics
 
@@ -132,6 +205,14 @@ final class UsageHistoryViewModel: ObservableObject {
     private var historyObserver: NSObjectProtocol?
     private var reloadWorkItem: DispatchWorkItem?
     private var hoverSelectionWorkItem: DispatchWorkItem?
+    private var cachedChartPoints: [UsageHistoryChartPoint] = []
+    private var cachedVisibleChartPoints: [UsageHistoryChartPoint] = []
+    private var cachedVisibleBarPoints: [UsageHistoryChartPoint] = []
+    private var cachedVisibleContributorPoints: [UsageHistoryChartPoint] = []
+    private var cachedVisibleAggregateReferencePoints: [UsageHistoryChartPoint] = []
+    private var cachedTokenDetailPoints: [UsageHistoryChartPoint] = []
+    private var hoverIndex = UsageHistoryHoverIndex.empty
+    private var hoverCacheVersion = 0
 
     init(
         store: UsageHistoryStore,
@@ -174,29 +255,11 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     var chartPoints: [UsageHistoryChartPoint] {
-        switch selectedChartKind {
-        case .capacity, .usage:
-            return Self.bucketedChartPoints(
-                from: points,
-                range: selectedRange,
-                window: selectedWindow,
-                period: selectedPeriod,
-                now: now(),
-                calendar: calendar
-            )
-        case .tokens:
-            return Self.bucketedTokenComponentChartPoints(
-                from: tokenComponentPoints,
-                range: selectedRange,
-                period: selectedPeriod,
-                now: now(),
-                calendar: calendar
-            )
-        }
+        cachedChartPoints
     }
 
     var visibleChartPoints: [UsageHistoryChartPoint] {
-        chartPoints.filter { selectedSeriesIDs.contains($0.bucketID) }
+        cachedVisibleChartPoints
     }
 
     var hasVisiblePoints: Bool {
@@ -360,44 +423,19 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     var visibleBarPoints: [UsageHistoryChartPoint] {
-        if selectedChartKind == .tokens {
-            return tokenBarPoints
-        }
-
-        switch chartSemantics {
-        case .independentSignals:
-            return visibleChartPoints
-        case .comparableContributors:
-            return visibleContributorPoints
-        }
+        cachedVisibleBarPoints
     }
 
     var visibleContributorPoints: [UsageHistoryChartPoint] {
-        guard chartSemantics == .comparableContributors else {
-            return []
-        }
-
-        return visibleChartPoints.filter { $0.bucketKind == .model }
+        cachedVisibleContributorPoints
     }
 
     var visibleAggregateReferencePoints: [UsageHistoryChartPoint] {
-        visibleChartPoints.filter { $0.bucketKind == .aggregate }
+        cachedVisibleAggregateReferencePoints
     }
 
     var tokenDetailPoints: [UsageHistoryChartPoint] {
-        guard selectedChartKind == .tokens else {
-            return []
-        }
-
-        return visibleChartPoints.filter { $0.bucketKind == .aggregate }
-    }
-
-    private var tokenBarPoints: [UsageHistoryChartPoint] {
-        guard selectedChartKind == .tokens else {
-            return []
-        }
-
-        return Self.combinedTokenBarPoints(from: tokenDetailPoints)
+        cachedTokenDetailPoints
     }
 
     var sortedSeries: [UsageHistorySeries] {
@@ -540,7 +578,8 @@ final class UsageHistoryViewModel: ObservableObject {
             hasAnyRecordedHistory = loadedHasAnyHistory
             historyBounds = loadedHistoryBounds
             reconcileSelectedSeries()
-            clearHoverSelection()
+            rebuildChartCaches()
+            clearHoverSelectionAndCancelPendingWork()
             errorMessage = nil
         } catch {
             points = []
@@ -550,7 +589,8 @@ final class UsageHistoryViewModel: ObservableObject {
             selectedSeriesIDs = []
             hasAnyRecordedHistory = false
             historyBounds = nil
-            clearHoverSelection()
+            rebuildChartCaches()
+            clearHoverSelectionAndCancelPendingWork()
             errorMessage = "History could not be loaded."
         }
     }
@@ -596,7 +636,8 @@ final class UsageHistoryViewModel: ObservableObject {
         } else {
             selectedSeriesIDs.remove(targetSeries.id)
         }
-        clearHoverSelection()
+        rebuildChartCaches()
+        clearHoverSelectionAndCancelPendingWork()
     }
 
     func isPinnedSeries(_ series: UsageHistorySeries) -> Bool {
@@ -610,50 +651,24 @@ final class UsageHistoryViewModel: ObservableObject {
     func selectAllSeries() {
         selectedSeriesIDs = Set(series.map(\.id))
         userEditedSeriesSelection = true
-        clearHoverSelection()
+        rebuildChartCaches()
+        clearHoverSelectionAndCancelPendingWork()
     }
 
     func clearModelSeries() {
         selectedSeriesIDs = Set(series.filter { $0.kind == .aggregate }.map(\.id))
         userEditedSeriesSelection = true
-        clearHoverSelection()
+        rebuildChartCaches()
+        clearHoverSelectionAndCancelPendingWork()
     }
 
     func updateHoverSelection(nearestTo timestamp: Date, xPosition: CGFloat) {
-        let candidates = selectedChartKind == .tokens ? visibleBarPoints : visibleChartPoints
-        guard !candidates.isEmpty else {
+        guard let selection = hoverIndex.selection(nearestTo: timestamp, xPosition: xPosition) else {
             clearHoverSelection()
             return
         }
 
-        let bucketStarts = Array(Set(candidates.map(\.bucketStart))).sorted()
-        guard let nearestBucketStart = bucketStarts.min(by: { lhs, rhs in
-            let lhsDistance = abs(chartXPosition(forBucketStart: lhs).timeIntervalSince(timestamp))
-            let rhsDistance = abs(chartXPosition(forBucketStart: rhs).timeIntervalSince(timestamp))
-            if lhsDistance == rhsDistance {
-                return lhs < rhs
-            }
-
-            return lhsDistance < rhsDistance
-        }) else {
-            clearHoverSelection()
-            return
-        }
-
-        let selectedPoints = (selectedChartKind == .tokens ? tokenDetailPoints : candidates)
-            .filter { $0.bucketStart == nearestBucketStart }
-            .sortedByDisplayOrder()
-        guard let bucketEnd = selectedPoints.first?.bucketEnd else {
-            clearHoverSelection()
-            return
-        }
-
-        hoverSelection = UsageHistoryHoverSelection(
-            bucketStart: nearestBucketStart,
-            bucketEnd: bucketEnd,
-            points: selectedPoints,
-            xPosition: xPosition
-        )
+        hoverSelection = selection
     }
 
     func clearHoverSelection() {
@@ -662,8 +677,12 @@ final class UsageHistoryViewModel: ObservableObject {
 
     func scheduleHoverSelection(nearestTo timestamp: Date, xPosition: CGFloat) {
         hoverSelectionWorkItem?.cancel()
+        let cacheVersion = hoverCacheVersion
         let workItem = DispatchWorkItem { [weak self] in
-            self?.updateHoverSelection(nearestTo: timestamp, xPosition: xPosition)
+            guard let self, self.hoverCacheVersion == cacheVersion else {
+                return
+            }
+            self.updateHoverSelection(nearestTo: timestamp, xPosition: xPosition)
         }
         hoverSelectionWorkItem = workItem
         DispatchQueue.main.async(execute: workItem)
@@ -685,7 +704,7 @@ final class UsageHistoryViewModel: ObservableObject {
 
         followsCurrentPeriod = false
         selectedPeriodStart = periodOffset(from: selectedPeriodStart, value: -1)
-        clearHoverSelection()
+        clearHoverSelectionAndCancelPendingWork()
     }
 
     func goToNextPeriod() {
@@ -696,7 +715,7 @@ final class UsageHistoryViewModel: ObservableObject {
         let nextPeriodStart = min(periodOffset(from: selectedPeriodStart, value: 1), currentPeriodStart())
         selectedPeriodStart = nextPeriodStart
         followsCurrentPeriod = nextPeriodStart == currentPeriodStart()
-        clearHoverSelection()
+        clearHoverSelectionAndCancelPendingWork()
     }
 
     func jumpToCurrentPeriod() {
@@ -706,7 +725,7 @@ final class UsageHistoryViewModel: ObservableObject {
 
         followsCurrentPeriod = true
         selectedPeriodStart = currentPeriodStart()
-        clearHoverSelection()
+        clearHoverSelectionAndCancelPendingWork()
     }
 
     func chartXAxisLabel(for date: Date) -> String {
@@ -912,6 +931,109 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
+    private func rebuildChartCaches() {
+        let rebuiltChartPoints = uncachedChartPoints()
+        let rebuiltVisibleChartPoints = rebuiltChartPoints.filter { selectedSeriesIDs.contains($0.bucketID) }
+        let rebuiltTokenDetailPoints = selectedChartKind == .tokens
+            ? rebuiltVisibleChartPoints.filter { $0.bucketKind == .aggregate }
+            : []
+        let rebuiltVisibleContributorPoints = chartSemantics == .comparableContributors
+            ? rebuiltVisibleChartPoints.filter { $0.bucketKind == .model }
+            : []
+        let rebuiltVisibleAggregateReferencePoints = rebuiltVisibleChartPoints.filter { $0.bucketKind == .aggregate }
+
+        let rebuiltVisibleBarPoints: [UsageHistoryChartPoint]
+        if selectedChartKind == .tokens {
+            rebuiltVisibleBarPoints = Self.combinedTokenBarPoints(from: rebuiltTokenDetailPoints)
+        } else {
+            switch chartSemantics {
+            case .independentSignals:
+                rebuiltVisibleBarPoints = rebuiltVisibleChartPoints
+            case .comparableContributors:
+                rebuiltVisibleBarPoints = rebuiltVisibleContributorPoints
+            }
+        }
+
+        cachedChartPoints = rebuiltChartPoints
+        cachedVisibleChartPoints = rebuiltVisibleChartPoints
+        cachedVisibleBarPoints = rebuiltVisibleBarPoints
+        cachedVisibleContributorPoints = rebuiltVisibleContributorPoints
+        cachedVisibleAggregateReferencePoints = rebuiltVisibleAggregateReferencePoints
+        cachedTokenDetailPoints = rebuiltTokenDetailPoints
+        hoverIndex = makeHoverIndex(
+            candidatePoints: selectedChartKind == .tokens ? rebuiltVisibleBarPoints : rebuiltVisibleChartPoints,
+            detailPoints: selectedChartKind == .tokens ? rebuiltTokenDetailPoints : nil
+        )
+        hoverCacheVersion += 1
+    }
+
+    private func uncachedChartPoints() -> [UsageHistoryChartPoint] {
+        switch selectedChartKind {
+        case .capacity, .usage:
+            return Self.bucketedChartPoints(
+                from: points,
+                range: selectedRange,
+                window: selectedWindow,
+                period: selectedPeriod,
+                now: now(),
+                calendar: calendar
+            )
+        case .tokens:
+            return Self.bucketedTokenComponentChartPoints(
+                from: tokenComponentPoints,
+                range: selectedRange,
+                period: selectedPeriod,
+                now: now(),
+                calendar: calendar
+            )
+        }
+    }
+
+    private func makeHoverIndex(
+        candidatePoints: [UsageHistoryChartPoint],
+        detailPoints: [UsageHistoryChartPoint]? = nil
+    ) -> UsageHistoryHoverIndex {
+        guard !candidatePoints.isEmpty else {
+            return .empty
+        }
+
+        let detailPointsByBucket = Dictionary(grouping: detailPoints ?? candidatePoints, by: \.bucketStart)
+        let buckets = Set(candidatePoints.map(\.bucketStart))
+            .compactMap { bucketStart -> UsageHistoryHoverBucket? in
+                let points = detailPointsByBucket[bucketStart]?.sortedByDisplayOrder() ?? []
+                guard let bucketEnd = points.first?.bucketEnd else {
+                    return nil
+                }
+
+                return UsageHistoryHoverBucket(
+                    bucketStart: bucketStart,
+                    bucketEnd: bucketEnd,
+                    xDate: chartXPosition(forBucketStart: bucketStart),
+                    points: points
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.xDate != rhs.xDate {
+                    return lhs.xDate < rhs.xDate
+                }
+
+                return lhs.bucketStart < rhs.bucketStart
+            }
+
+        return UsageHistoryHoverIndex(buckets: buckets)
+    }
+
+    private func clearHoverSelectionAndCancelPendingWork() {
+        hoverSelectionWorkItem?.cancel()
+        hoverSelectionWorkItem = nil
+        clearHoverSelection()
+    }
+
+    private func refreshChartCachesForPendingReload() {
+        rebuildChartCaches()
+        clearHoverSelectionAndCancelPendingWork()
+    }
+
     private func reconcileSelectedSeries() {
         let currentIDs = Set(series.map(\.id))
 
@@ -946,7 +1068,7 @@ final class UsageHistoryViewModel: ObservableObject {
         }
 
         selectedPeriodStart = currentPeriodStart
-        clearHoverSelection()
+        clearHoverSelectionAndCancelPendingWork()
         return true
     }
 
