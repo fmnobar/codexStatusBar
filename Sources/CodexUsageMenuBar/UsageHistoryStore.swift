@@ -510,26 +510,31 @@ final class UsageHistoryStore {
         let valueExpression = tokenValueExpression(for: category)
         let statement = try prepare(
             """
+            WITH period_samples AS (
+                SELECT received_at,
+                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS normalized_model,
+                    \(valueExpression) AS token_count
+                FROM token_usage_samples
+                WHERE received_at >= ? AND received_at < ?
+            )
             SELECT received_at, series_id, series_name, series_kind, token_count
             FROM (
                 SELECT received_at,
                     'tokens_all' AS series_id,
                     'All tokens' AS series_name,
                     'aggregate' AS series_kind,
-                    \(valueExpression) AS token_count
-                FROM token_usage_samples
-                WHERE received_at >= ? AND received_at < ?
+                    token_count
+                FROM period_samples
 
                 UNION ALL
 
                 SELECT received_at,
-                    'model:' || model AS series_id,
-                    model AS series_name,
+                    'model:' || normalized_model AS series_id,
+                    normalized_model AS series_name,
                     'model' AS series_kind,
-                    \(valueExpression) AS token_count
-                FROM token_usage_samples
-                WHERE received_at >= ? AND received_at < ?
-                    AND model IS NOT NULL AND model != ''
+                    token_count
+                FROM period_samples
+                WHERE normalized_model IS NOT NULL
             )
             WHERE token_count > 0
             ORDER BY received_at ASC, series_kind ASC, series_name ASC
@@ -539,8 +544,6 @@ final class UsageHistoryStore {
 
         sqlite3_bind_int64(statement, 1, startTimestamp)
         sqlite3_bind_int64(statement, 2, endTimestamp)
-        sqlite3_bind_int64(statement, 3, startTimestamp)
-        sqlite3_bind_int64(statement, 4, endTimestamp)
 
         var points: [TokenHistoryPoint] = []
         while true {
@@ -574,7 +577,8 @@ final class UsageHistoryStore {
         let statement = try prepare(
             """
             WITH period_samples AS (
-                SELECT received_at, model,
+                SELECT received_at,
+                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS model,
                     observed_input_tokens,
                     observed_cached_input_tokens,
                     observed_output_tokens,
@@ -695,6 +699,12 @@ final class UsageHistoryStore {
         let valueExpression = tokenValueExpression(for: category)
         let statement = try prepare(
             """
+            WITH samples AS (
+                SELECT received_at,
+                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS normalized_model,
+                    \(valueExpression) AS token_count
+                FROM token_usage_samples
+            )
             SELECT series_id, series_name, series_kind, seen_at
             FROM (
                 SELECT
@@ -702,19 +712,19 @@ final class UsageHistoryStore {
                     'All tokens' AS series_name,
                     'aggregate' AS series_kind,
                     received_at AS seen_at,
-                    \(valueExpression) AS token_count
-                FROM token_usage_samples
+                    token_count
+                FROM samples
 
                 UNION ALL
 
                 SELECT
-                    'model:' || model AS series_id,
-                    model AS series_name,
+                    'model:' || normalized_model AS series_id,
+                    normalized_model AS series_name,
                     'model' AS series_kind,
                     received_at AS seen_at,
-                    \(valueExpression) AS token_count
-                FROM token_usage_samples
-                WHERE model IS NOT NULL AND model != ''
+                    token_count
+                FROM samples
+                WHERE normalized_model IS NOT NULL
             )
             WHERE token_count > 0
             ORDER BY seen_at DESC, series_kind ASC, series_name ASC
@@ -728,6 +738,15 @@ final class UsageHistoryStore {
     func availableTokenComponentSeries() throws -> [UsageHistorySeries] {
         let statement = try prepare(
             """
+            WITH samples AS (
+                SELECT received_at,
+                    NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') AS normalized_model,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM token_usage_samples
+            )
             SELECT series_id, series_name, series_kind, seen_at
             FROM (
                 SELECT
@@ -739,21 +758,21 @@ final class UsageHistoryStore {
                     observed_cached_input_tokens,
                     observed_output_tokens,
                     observed_reasoning_output_tokens
-                FROM token_usage_samples
+                FROM samples
 
                 UNION ALL
 
                 SELECT
-                    'model:' || model AS series_id,
-                    model AS series_name,
+                    'model:' || normalized_model AS series_id,
+                    normalized_model AS series_name,
                     'model' AS series_kind,
                     received_at AS seen_at,
                     observed_input_tokens,
                     observed_cached_input_tokens,
                     observed_output_tokens,
                     observed_reasoning_output_tokens
-                FROM token_usage_samples
-                WHERE model IS NOT NULL AND model != ''
+                FROM samples
+                WHERE normalized_model IS NOT NULL
             )
             WHERE IFNULL(observed_input_tokens, 0) > 0
                 OR IFNULL(observed_cached_input_tokens, 0) > 0
@@ -1600,7 +1619,7 @@ final class UsageHistoryStore {
 
         bindText(notification.threadID, to: 1, in: statement)
         bindText(notification.turnID, to: 2, in: statement)
-        bindOptionalText(notification.model, to: 3, in: statement)
+        bindOptionalText(normalizedModelName(notification.model), to: 3, in: statement)
         sqlite3_bind_int64(statement, 4, timestamp)
         bindOptionalInt(notification.tokenUsage.modelContextWindow, to: 5, in: statement)
         sqlite3_bind_int64(statement, 6, last.inputTokens)
@@ -2008,6 +2027,11 @@ final class UsageHistoryStore {
         } else {
             sqlite3_bind_null(statement, index)
         }
+    }
+
+    private func normalizedModelName(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
     private func columnText(_ statement: OpaquePointer, index: Int32) -> String {

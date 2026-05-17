@@ -358,6 +358,70 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(availableSeries.map(\.name), ["All tokens", "gpt-5.5"])
     }
 
+    func testTokenModelSeriesTrimWhitespaceAndDeduplicate() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5\n",
+                lastInput: 80,
+                lastCached: 20,
+                lastOutput: 10,
+                lastReasoning: 2,
+                lastTotal: 112,
+                totalInput: 80,
+                totalCached: 20,
+                totalOutput: 10,
+                totalReasoning: 2,
+                totalTotal: 112
+            ),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-b",
+                turnID: "turn-a",
+                model: " gpt-5.5 ",
+                lastInput: 120,
+                lastCached: 40,
+                lastOutput: 20,
+                lastReasoning: 4,
+                lastTotal: 184,
+                totalInput: 120,
+                totalCached: 40,
+                totalOutput: 20,
+                totalReasoning: 4,
+                totalTotal: 184
+            ),
+            at: date("2026-04-14T20:05:00Z")
+        )
+
+        let points = try store.tokenPoints(
+            category: .total,
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+        let componentPoints = try store.tokenComponentPoints(
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+        let availableSeries = try store.availableTokenSeries(category: .total)
+        let availableComponentSeries = try store.availableTokenComponentSeries()
+
+        XCTAssertFalse(points.contains { $0.seriesName.contains("\n") })
+        XCTAssertFalse(componentPoints.contains { $0.seriesName.contains("\n") })
+        XCTAssertEqual(Set(points.map(\.seriesID)), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(Set(componentPoints.map(\.seriesID)), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(availableSeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(availableSeries.map(\.name), ["All tokens", "gpt-5.5"])
+        XCTAssertEqual(availableComponentSeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(availableComponentSeries.map(\.name), ["All tokens", "gpt-5.5"])
+    }
+
     func testTokenComponentPointsIncludeAggregateAndModelSeries() throws {
         let store = try makeStore()
 

@@ -332,12 +332,12 @@ struct MenuBarContentView: View {
 
 private enum CompactHistoryControlMetrics {
     static let controlHeight: CGFloat = 24
-    static let groupSpacing: CGFloat = 6
+    static let groupSpacing: CGFloat = 8
     static let rangeWidth: CGFloat = 140
     static let limitWidth: CGFloat = 58
     static let tokenCategoryWidth: CGFloat = 82
-    static let chartKindWidth: CGFloat = 134
-    static let periodWidth: CGFloat = 104
+    static let chartKindWidth: CGFloat = 158
+    static let periodWidth: CGFloat = 118
     static let font = Font.system(size: 12)
 }
 
@@ -504,7 +504,7 @@ private struct CompactUsageHistoryPanel: View {
 
             compactPeriodNavigation
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 10)
     }
 
@@ -637,8 +637,6 @@ private struct CompactUsageHistoryPanel: View {
 
                 if let hoverSelection = viewModel.hoverSelection {
                     compactHoverReadout(for: hoverSelection)
-                } else {
-                    compactTokenEncodingHint
                 }
             } else {
                 if let hoverSelection = viewModel.hoverSelection {
@@ -650,7 +648,7 @@ private struct CompactUsageHistoryPanel: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: viewModel.selectedChartKind == .tokens ? 62 : 21, alignment: .topLeading)
+        .frame(height: viewModel.selectedChartKind == .tokens ? 48 : 21, alignment: .topLeading)
         .padding(.horizontal, 10)
     }
 
@@ -665,33 +663,11 @@ private struct CompactUsageHistoryPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var compactTokenEncodingHint: some View {
-        Text("Bars show selected models. Colors show token parts.")
-            .font(.system(size: 9.5, weight: .medium))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var compactTokenLegendRows: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text("Bars")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, alignment: .leading)
+            compactSeriesLegend
 
-                compactSeriesLegend
-            }
-
-            HStack(spacing: 6) {
-                Text("Colors")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, alignment: .leading)
-
-                compactTokenComponentLegend
-            }
+            compactTokenComponentLegend
         }
     }
 
