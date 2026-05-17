@@ -279,6 +279,45 @@ final class UsageHistoryStore {
         notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
 
+    func importTokenUsageSamples(_ samples: [ImportedCodexTokenUsageSample]) throws -> TokenUsageImportResult {
+        var insertedCount = 0
+        var duplicateCount = 0
+
+        try transaction {
+            for sample in samples {
+                let notification = sample.notification
+                let cumulativeTotal = notification.tokenUsage.total.totalTokens
+
+                if try tokenSampleExists(
+                    threadID: notification.threadID,
+                    turnID: notification.turnID,
+                    cumulativeTotalTokens: cumulativeTotal
+                ) {
+                    duplicateCount += 1
+                    continue
+                }
+
+                let observedTokens = try observedTokenDelta(
+                    threadID: notification.threadID,
+                    cumulative: notification.tokenUsage.total,
+                    last: notification.tokenUsage.last
+                )
+                try insertTokenUsageSample(
+                    notification: notification,
+                    timestamp: Self.roundedToSecond(sample.receivedAt).timeIntervalSince1970Int,
+                    observedTokens: observedTokens
+                )
+                insertedCount += 1
+            }
+        }
+
+        if insertedCount > 0 {
+            notificationCenter.post(name: Self.didChangeNotification, object: self)
+        }
+
+        return TokenUsageImportResult(insertedCount: insertedCount, duplicateCount: duplicateCount)
+    }
+
     func tokenUsageSamples() throws -> [StoredTokenUsageSample] {
         let statement = try prepare(
             """
@@ -1120,6 +1159,33 @@ final class UsageHistoryStore {
 
         bindText(threadID, to: 1, in: statement)
         sqlite3_bind_int64(statement, 2, cumulativeTotalTokens)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0) != 0
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func tokenSampleExists(threadID: String, turnID: String, cumulativeTotalTokens: Int64) throws -> Bool {
+        let statement = try prepare(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM token_usage_samples
+                WHERE thread_id = ? AND turn_id = ? AND total_total_tokens = ?
+                LIMIT 1
+            )
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(threadID, to: 1, in: statement)
+        bindText(turnID, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, cumulativeTotalTokens)
 
         switch sqlite3_step(statement) {
         case SQLITE_ROW:

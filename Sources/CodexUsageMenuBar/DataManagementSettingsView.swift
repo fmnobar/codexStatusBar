@@ -20,23 +20,28 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var databaseSizeText = "--"
     @Published private(set) var statusMessage: String?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var isImportingTokenHistory = false
+    @Published private(set) var tokenImportSummaryText: String?
 
     private let store: UsageHistoryStore
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let byteFormatter: ByteCountFormatter
+    private let tokenBackfillImporter: CodexSessionTokenBackfillImporting
     private var databaseInfo: UsageHistoryDatabaseInfo?
 
     init(
         store: UsageHistoryStore,
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
-        byteFormatter: ByteCountFormatter = ByteCountFormatter()
+        byteFormatter: ByteCountFormatter = ByteCountFormatter(),
+        tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter()
     ) {
         self.store = store
         self.defaults = defaults
         self.fileManager = fileManager
         self.byteFormatter = byteFormatter
+        self.tokenBackfillImporter = tokenBackfillImporter
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
         refreshDatabaseInfo()
     }
@@ -99,10 +104,34 @@ final class DataManagementSettingsViewModel: ObservableObject {
             try store.clearHistory()
             statusMessage = "History cleared."
             errorMessage = nil
+            tokenImportSummaryText = nil
             refreshDatabaseInfo()
         } catch {
             statusMessage = nil
             errorMessage = "History could not be cleared."
+        }
+    }
+
+    func importTokenHistoryFromCodexSessions() {
+        guard !isImportingTokenHistory else {
+            return
+        }
+
+        isImportingTokenHistory = true
+        statusMessage = nil
+        errorMessage = nil
+
+        defer {
+            isImportingTokenHistory = false
+        }
+
+        do {
+            let summary = try tokenBackfillImporter.importTokenHistory(into: store)
+            tokenImportSummaryText = summary.statusMessage
+            refreshDatabaseInfo()
+        } catch {
+            tokenImportSummaryText = nil
+            errorMessage = "Token history could not be imported."
         }
     }
 }
@@ -121,6 +150,7 @@ struct DataManagementSettingsView: View {
             Form {
                 databaseSection
                 retentionSection
+                tokenHistorySection
                 feedbackSection
             }
             .formStyle(.grouped)
@@ -217,6 +247,25 @@ struct DataManagementSettingsView: View {
             Text("Hourly and daily rollups are kept indefinitely.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var tokenHistorySection: some View {
+        Section("Token History") {
+            Button(viewModel.isImportingTokenHistory ? "Importing..." : "Import From Codex Sessions...") {
+                viewModel.importTokenHistoryFromCodexSessions()
+            }
+            .disabled(viewModel.isImportingTokenHistory)
+
+            Text("Imports local token-count metadata without message content.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let tokenImportSummaryText = viewModel.tokenImportSummaryText {
+                Text(tokenImportSummaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

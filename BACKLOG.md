@@ -83,12 +83,18 @@
   - Added total, input, cached input, output, and reasoning token categories with local SQLite queries and CSV export.
   - Kept token volume separate from rate-limit capacity and usage charts.
 
+- Backfill token history from local Codex sessions
+  - Added an opt-in Data settings import for local Codex session token metadata.
+  - Imported only token-count metadata from `~/.codex/sessions` and `~/.codex/archived_sessions`.
+  - Kept the importer idempotent so repeated imports do not inflate token history.
+
 ## Next Candidates
 
-- Backfill token history from local Codex sessions
-  - Parse metadata-only token records from `~/.codex/sessions` and `~/.codex/archived_sessions`.
-  - Avoid reading or displaying message content, prompt history, auth tokens, or logs.
-  - Use this as an optional one-time import after live token capture is proven.
+- Align menu-bar context menu and history model controls with intended UX
+  - Restrict right-click menu to only include `Quit` once the primary menu-bar actions are moved into the main menu.
+  - Update history model selector to include all tracked models (including `spark`) with Spark disabled by default.
+  - Prevent the history popover from terminating the app when closed after being opened from right-click interactions.
+  - Ensure right-click actions no longer expose non-functional settings controls.
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.

@@ -30,6 +30,8 @@
 		A50000000000000000000011 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000021 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000002 /* AppUpdateCheckTests.swift */; };
+		A60000000000000000000011 /* CodexSessionTokenBackfillImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */; };
+		A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */; };
 		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
 		A10000000000000000000012 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
 		A10000000000000000000013 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
@@ -70,6 +72,7 @@
 		A40000000000000000000001 /* InstallUpdateSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallUpdateSettingsView.swift; sourceTree = "<group>"; };
 		A50000000000000000000001 /* AppUpdateCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheck.swift; sourceTree = "<group>"; };
 		A50000000000000000000002 /* AppUpdateCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheckTests.swift; sourceTree = "<group>"; };
+		A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionTokenBackfillImporter.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* UsageHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* UsageHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryView.swift; sourceTree = "<group>"; };
@@ -119,6 +122,7 @@
 				A50000000000000000000001 /* AppUpdateCheck.swift */,
 				403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */,
 				72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */,
+				A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */,
 				A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */,
 				F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */,
 				A30000000000000000000001 /* DataManagementSettingsView.swift */,
@@ -253,6 +257,7 @@
 			files = (
 				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
 				A50000000000000000000021 /* AppUpdateCheck.swift in Sources */,
+				A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */,
 				A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */,
 				A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */,
 				A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */,
@@ -278,6 +283,7 @@
 			files = (
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
 				A50000000000000000000011 /* AppUpdateCheck.swift in Sources */,
+				A60000000000000000000011 /* CodexSessionTokenBackfillImporter.swift in Sources */,
 				17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */,
 				A20000000000000000000011 /* CodexUsageDiagnosticsModels.swift in Sources */,
 				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,

@@ -364,6 +364,237 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(inputPoints.map(\.tokenCount), [120])
     }
 
+    func testSessionTokenBackfillImportsMetadataOnlyTokenEvents() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-04-14T13-00-00-abc.jsonl")
+        try writeSessionLines(
+            [
+                """
+                {"timestamp":"2026-04-14T20:00:00.000Z","type":"response_item","payload":{"item":{"type":"message","content":[{"text":"secret prompt text"}]}}}
+                """,
+                """
+                {"timestamp":"2026-04-14T20:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}
+                """,
+                "{not valid json",
+                tokenCountLine(
+                    timestamp: "2026-04-14T20:00:02.123Z",
+                    lastInput: 10,
+                    lastCached: 2,
+                    lastOutput: 3,
+                    lastReasoning: 1,
+                    lastTotal: 16,
+                    totalInput: 10,
+                    totalCached: 2,
+                    totalOutput: 3,
+                    totalReasoning: 1,
+                    totalTotal: 16,
+                    contextWindow: 258_400
+                ),
+                tokenCountLine(
+                    timestamp: "2026-04-14T20:05:00Z",
+                    lastInput: 15,
+                    lastCached: 3,
+                    lastOutput: 4,
+                    lastReasoning: 2,
+                    lastTotal: 24,
+                    totalInput: 25,
+                    totalCached: 5,
+                    totalOutput: 7,
+                    totalReasoning: 3,
+                    totalTotal: 40,
+                    contextWindow: 258_400
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(into: store)
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.tokenEventsImported, 2)
+        XCTAssertEqual(summary.duplicateEventsSkipped, 0)
+        XCTAssertEqual(summary.failedLinesSkipped, 1)
+        XCTAssertEqual(samples.map(\.threadID), [
+            "session:rollout-2026-04-14T13-00-00-abc",
+            "session:rollout-2026-04-14T13-00-00-abc",
+        ])
+        XCTAssertEqual(samples.map(\.turnID), ["line:4", "line:5"])
+        XCTAssertEqual(samples.map(\.model), [nil, nil])
+        XCTAssertEqual(samples.map(\.modelContextWindow), [258_400, 258_400])
+        XCTAssertEqual(samples.map(\.observedInputTokens), [10, 15])
+        XCTAssertEqual(samples.map(\.observedCachedInputTokens), [2, 3])
+        XCTAssertEqual(samples.map(\.observedOutputTokens), [3, 4])
+        XCTAssertEqual(samples.map(\.observedReasoningOutputTokens), [1, 2])
+        XCTAssertEqual(samples.map(\.observedTotalTokens), [16, 24])
+        XCTAssertFalse(samples.contains { sample in
+            sample.threadID.contains("secret") || sample.turnID.contains("secret") || (sample.model?.contains("secret") ?? false)
+        })
+    }
+
+    func testSessionTokenBackfillIsIdempotent() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-04-14T20:00:00Z",
+                    lastInput: 100,
+                    lastCached: 0,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 125,
+                    totalInput: 100,
+                    totalCached: 0,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 125
+                ),
+                tokenCountLine(
+                    timestamp: "2026-04-14T20:10:00Z",
+                    lastInput: 50,
+                    lastCached: 5,
+                    lastOutput: 30,
+                    lastReasoning: 10,
+                    lastTotal: 95,
+                    totalInput: 150,
+                    totalCached: 5,
+                    totalOutput: 50,
+                    totalReasoning: 15,
+                    totalTotal: 220
+                ),
+            ],
+            to: sessionsURL.appendingPathComponent("rollout-2026-04-14T13-00-00-idempotent.jsonl")
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let firstSummary = try importer.importTokenHistory(into: store)
+        let secondSummary = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(firstSummary.tokenEventsImported, 2)
+        XCTAssertEqual(firstSummary.duplicateEventsSkipped, 0)
+        XCTAssertEqual(secondSummary.tokenEventsImported, 0)
+        XCTAssertEqual(secondSummary.duplicateEventsSkipped, 2)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [125, 95])
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 220)
+    }
+
+    @MainActor
+    func testSessionTokenBackfillScansSessionsAndArchivedAndFeedsTokenCharts() throws {
+        let store = try makeStore()
+        let rootURL = try makeTemporaryDirectory()
+        let sessionsURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+        let archivedURL = rootURL.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archivedURL, withIntermediateDirectories: true)
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-01-10T12:00:00Z",
+                    lastInput: 80,
+                    lastCached: 0,
+                    lastOutput: 20,
+                    lastReasoning: 0,
+                    lastTotal: 100,
+                    totalInput: 80,
+                    totalCached: 0,
+                    totalOutput: 20,
+                    totalReasoning: 0,
+                    totalTotal: 100
+                ),
+            ],
+            to: archivedURL.appendingPathComponent("rollout-2026-01-10T04-00-00-archived.jsonl")
+        )
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-04-14T12:10:00Z",
+                    lastInput: 120,
+                    lastCached: 30,
+                    lastOutput: 40,
+                    lastReasoning: 10,
+                    lastTotal: 200,
+                    totalInput: 120,
+                    totalCached: 30,
+                    totalOutput: 40,
+                    totalReasoning: 10,
+                    totalTotal: 200
+                ),
+                tokenCountLine(
+                    timestamp: "2026-04-15T09:00:00Z",
+                    lastInput: 250,
+                    lastCached: 60,
+                    lastOutput: 70,
+                    lastReasoning: 20,
+                    lastTotal: 400,
+                    totalInput: 370,
+                    totalCached: 90,
+                    totalOutput: 110,
+                    totalReasoning: 30,
+                    totalTotal: 600
+                ),
+            ],
+            to: sessionsURL.appendingPathComponent("rollout-2026-04-14T05-00-00-live.jsonl")
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL, archivedURL])
+
+        let summary = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(summary.filesScanned, 2)
+        XCTAssertEqual(summary.tokenEventsImported, 3)
+
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-15T12:00:00Z") },
+            calendar: calendar
+        )
+        viewModel.selectedChartKind = .tokens
+
+        viewModel.selectedRange = .day
+        viewModel.reload()
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [date("2026-04-15T09:00:00Z")])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [400])
+
+        viewModel.selectedRange = .week
+        viewModel.reload()
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-04-14T00:00:00Z"),
+            date("2026-04-15T00:00:00Z"),
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [200, 400])
+
+        viewModel.selectedRange = .month
+        viewModel.reload()
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [200, 400])
+
+        viewModel.selectedRange = .year
+        viewModel.reload()
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
+            date("2026-01-01T00:00:00Z"),
+            date("2026-04-01T00:00:00Z"),
+        ])
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [100, 600])
+    }
+
+    func testSessionTokenBackfillMissingDirectoriesReturnsEmptySummary() throws {
+        let store = try makeStore()
+        let missingURL = try makeTemporaryDirectory().appendingPathComponent("missing", isDirectory: true)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [missingURL])
+
+        let summary = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(summary.filesScanned, 0)
+        XCTAssertEqual(summary.tokenEventsImported, 0)
+        XCTAssertEqual(summary.duplicateEventsSkipped, 0)
+        XCTAssertEqual(summary.failedLinesSkipped, 0)
+        XCTAssertEqual(summary.statusMessage, "No Codex session files found.")
+        XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
+    }
+
     func testClearHistoryDeletesTokenUsageSamples() throws {
         let store = try makeStore()
 
@@ -565,6 +796,54 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(viewModel.errorMessage, "Backup could not be imported.")
         XCTAssertNil(viewModel.statusMessage)
+    }
+
+    @MainActor
+    func testSettingsViewModelImportsTokenHistoryAndReportsFailure() throws {
+        let store = try makeStore()
+        let successImporter = StubTokenBackfillImporter { _ in
+            CodexSessionTokenBackfillSummary(
+                filesScanned: 3,
+                tokenEventsImported: 12,
+                duplicateEventsSkipped: 4,
+                failedLinesSkipped: 1
+            )
+        }
+        let successViewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            tokenBackfillImporter: successImporter
+        )
+        var didCallImporter = false
+        successImporter.onImport = {
+            didCallImporter = true
+        }
+
+        successViewModel.importTokenHistoryFromCodexSessions()
+
+        XCTAssertTrue(didCallImporter)
+        XCTAssertFalse(successViewModel.isImportingTokenHistory)
+        XCTAssertEqual(
+            successViewModel.tokenImportSummaryText,
+            "Imported 12 token events from 3 files. 4 duplicates skipped. 1 unreadable lines skipped."
+        )
+        XCTAssertNil(successViewModel.statusMessage)
+        XCTAssertNil(successViewModel.errorMessage)
+
+        let failingViewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            tokenBackfillImporter: StubTokenBackfillImporter { _ in
+                throw UsageHistoryStoreError.databaseUnavailable
+            }
+        )
+
+        failingViewModel.importTokenHistoryFromCodexSessions()
+
+        XCTAssertFalse(failingViewModel.isImportingTokenHistory)
+        XCTAssertNil(failingViewModel.tokenImportSummaryText)
+        XCTAssertEqual(failingViewModel.errorMessage, "Token history could not be imported.")
+        XCTAssertNil(failingViewModel.statusMessage)
     }
 
     @MainActor
@@ -1726,7 +2005,46 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
+    private func writeSessionLines(_ lines: [String], to url: URL) throws {
+        let content = lines.joined(separator: "\n") + "\n"
+        try content.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func tokenCountLine(
+        timestamp: String,
+        lastInput: Int64,
+        lastCached: Int64,
+        lastOutput: Int64,
+        lastReasoning: Int64,
+        lastTotal: Int64,
+        totalInput: Int64,
+        totalCached: Int64,
+        totalOutput: Int64,
+        totalReasoning: Int64,
+        totalTotal: Int64,
+        contextWindow: Int64? = nil
+    ) -> String {
+        let contextWindowValue = contextWindow.map(String.init) ?? "null"
+        return """
+        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\(lastInput),"cached_input_tokens":\(lastCached),"output_tokens":\(lastOutput),"reasoning_output_tokens":\(lastReasoning),"total_tokens":\(lastTotal)},"total_token_usage":{"input_tokens":\(totalInput),"cached_input_tokens":\(totalCached),"output_tokens":\(totalOutput),"reasoning_output_tokens":\(totalReasoning),"total_tokens":\(totalTotal)},"model_context_window":\(contextWindowValue)}}}
+        """
+    }
+
     private func date(_ string: String) -> Date {
         ISO8601DateFormatter().date(from: string)!
+    }
+}
+
+private final class StubTokenBackfillImporter: CodexSessionTokenBackfillImporting {
+    var onImport: (() -> Void)?
+    private let result: (UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary
+
+    init(result: @escaping (UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary) {
+        self.result = result
+    }
+
+    func importTokenHistory(into store: UsageHistoryStore) throws -> CodexSessionTokenBackfillSummary {
+        onImport?()
+        return try result(store)
     }
 }
