@@ -27,6 +27,9 @@
 		A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000001 /* DataManagementSettingsView.swift */; };
 		A40000000000000000000011 /* InstallUpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000001 /* InstallUpdateSettingsView.swift */; };
 		A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000001 /* InstallUpdateSettingsView.swift */; };
+		A41000000000000000000011 /* AppBuildFreshness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000001 /* AppBuildFreshness.swift */; };
+		A41000000000000000000021 /* AppBuildFreshness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000001 /* AppBuildFreshness.swift */; };
+		A41000000000000000000022 /* AppBuildFreshnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000002 /* AppBuildFreshnessTests.swift */; };
 		A50000000000000000000011 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000021 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000002 /* AppUpdateCheckTests.swift */; };
@@ -74,6 +77,8 @@
 		A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageDiagnosticsTests.swift; sourceTree = "<group>"; };
 		A30000000000000000000001 /* DataManagementSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementSettingsView.swift; sourceTree = "<group>"; };
 		A40000000000000000000001 /* InstallUpdateSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallUpdateSettingsView.swift; sourceTree = "<group>"; };
+		A41000000000000000000001 /* AppBuildFreshness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildFreshness.swift; sourceTree = "<group>"; };
+		A41000000000000000000002 /* AppBuildFreshnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildFreshnessTests.swift; sourceTree = "<group>"; };
 		A50000000000000000000001 /* AppUpdateCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheck.swift; sourceTree = "<group>"; };
 		A50000000000000000000002 /* AppUpdateCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheckTests.swift; sourceTree = "<group>"; };
 		A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionTokenBackfillImporter.swift; sourceTree = "<group>"; };
@@ -103,6 +108,7 @@
 		84791DA2B128BBABD53F7412 /* CodexUsageMenuBarTests */ = {
 			isa = PBXGroup;
 			children = (
+				A41000000000000000000002 /* AppBuildFreshnessTests.swift */,
 				A50000000000000000000002 /* AppUpdateCheckTests.swift */,
 				64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */,
 				A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */,
@@ -125,6 +131,7 @@
 		99585084361C276AABC79F8A /* CodexUsageMenuBar */ = {
 			isa = PBXGroup;
 			children = (
+				A41000000000000000000001 /* AppBuildFreshness.swift */,
 				A50000000000000000000001 /* AppUpdateCheck.swift */,
 				403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */,
 				72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */,
@@ -264,6 +271,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
+				A41000000000000000000021 /* AppBuildFreshness.swift in Sources */,
 				A50000000000000000000021 /* AppUpdateCheck.swift in Sources */,
 				A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */,
 				A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */,
@@ -279,6 +287,7 @@
 				A10000000000000000000023 /* UsageHistoryView.swift in Sources */,
 				A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
+				A41000000000000000000022 /* AppBuildFreshnessTests.swift in Sources */,
 				A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */,
 				A20000000000000000000022 /* CodexUsageDiagnosticsTests.swift in Sources */,
 				2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */,
@@ -291,6 +300,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A41000000000000000000011 /* AppBuildFreshness.swift in Sources */,
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
 				A50000000000000000000011 /* AppUpdateCheck.swift in Sources */,
 				A60000000000000000000011 /* CodexSessionTokenBackfillImporter.swift in Sources */,

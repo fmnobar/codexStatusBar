@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
 
     override init() {
+        AppFreshnessRuntime.captureLaunchFingerprint()
         let resolvedHistoryStore = (try? UsageHistoryStore.applicationSupportStore()) ?? (try! UsageHistoryStore.inMemory())
         let historyRecorder = UsageHistoryRecorder(store: resolvedHistoryStore)
         historyStore = resolvedHistoryStore

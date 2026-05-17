@@ -497,19 +497,28 @@ enum AppUpdateInstallState: Equatable {
 
 struct InstallUpdateSettingsView: View {
     @StateObject private var viewModel: InstallUpdateSettingsViewModel
+    @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
     @State private var isConfirmingInstall = false
 
-    init(viewModel: InstallUpdateSettingsViewModel = .current()) {
+    init(
+        viewModel: InstallUpdateSettingsViewModel = .current(),
+        freshnessViewModel: AppFreshnessStatusViewModel = .current()
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        _freshnessViewModel = StateObject(wrappedValue: freshnessViewModel)
     }
 
     var body: some View {
         Form {
             appSection
+            localBuildSection
             updateSection
             releaseNotesSection
         }
         .formStyle(.grouped)
+        .onAppear {
+            freshnessViewModel.refresh()
+        }
         .task {
             await viewModel.checkForUpdatesIfNeeded()
         }
@@ -522,6 +531,71 @@ struct InstallUpdateSettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Codex Status Bar will quit, replace the current app with the verified update, and reopen.")
+        }
+    }
+
+    private var localBuildSection: some View {
+        Section("Local Build") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: freshnessViewModel.shouldShowWarning ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                        .foregroundStyle(freshnessViewModel.shouldShowWarning ? .orange : .secondary)
+
+                    Text(freshnessViewModel.statusText)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                LabeledContent("Running commit", value: freshnessViewModel.runningCommitText)
+                LabeledContent("Installed commit", value: freshnessViewModel.installedCommitText)
+                LabeledContent("Source HEAD", value: freshnessViewModel.sourceCommitText)
+                LabeledContent("Branch", value: freshnessViewModel.branchText)
+                LabeledContent("Build time", value: freshnessViewModel.buildTimeText)
+                LabeledContent("Build state", value: freshnessViewModel.dirtyStateText)
+                LabeledContent("Executable SHA-256", value: freshnessViewModel.executableHashText)
+
+                LabeledContent("Source root") {
+                    Text(freshnessViewModel.sourceRootText)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                LabeledContent("Installed bundle") {
+                    Text(freshnessViewModel.installedPathText)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                if let installCommandText = freshnessViewModel.installCommandText,
+                   case .sourceNewerThanInstalled = freshnessViewModel.state {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("From Terminal:")
+                            .foregroundStyle(.secondary)
+
+                        Text(installCommandText)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            HStack {
+                Button {
+                    freshnessViewModel.refresh()
+                } label: {
+                    Label("Refresh Local Status", systemImage: "arrow.clockwise")
+                }
+
+                if freshnessViewModel.canRelaunchLatestInstalledApp {
+                    Button {
+                        freshnessViewModel.relaunchLatestInstalledApp()
+                    } label: {
+                        Label("Relaunch Latest App", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
+            }
         }
     }
 

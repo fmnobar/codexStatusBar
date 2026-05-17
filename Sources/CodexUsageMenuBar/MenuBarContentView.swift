@@ -10,10 +10,27 @@ private enum MenuBarPopoverExpandedSection: Equatable {
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     let historyStore: UsageHistoryStore
-    var onOpenTokenDashboard: () -> Void = {}
-    var onContentSizeChange: (NSSize) -> Void = { _ in }
-    var appVersionInfo: AppVersionInfo = .current()
+    var onOpenTokenDashboard: () -> Void
+    var onContentSizeChange: (NSSize) -> Void
+    var appVersionInfo: AppVersionInfo
+    @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
     @State private var expandedSection: MenuBarPopoverExpandedSection?
+
+    init(
+        viewModel: MenuBarStatusViewModel,
+        historyStore: UsageHistoryStore,
+        onOpenTokenDashboard: @escaping () -> Void = {},
+        onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
+        appVersionInfo: AppVersionInfo = .current(),
+        freshnessViewModel: AppFreshnessStatusViewModel = .current()
+    ) {
+        self.viewModel = viewModel
+        self.historyStore = historyStore
+        self.onOpenTokenDashboard = onOpenTokenDashboard
+        self.onContentSizeChange = onContentSizeChange
+        self.appVersionInfo = appVersionInfo
+        _freshnessViewModel = StateObject(wrappedValue: freshnessViewModel)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -39,6 +56,10 @@ struct MenuBarContentView: View {
                 Divider()
                 settingsSection
                 Divider()
+                if freshnessViewModel.shouldShowWarning {
+                    staleBuildWarningRow
+                    Divider()
+                }
                 footer
             }
         }
@@ -46,6 +67,9 @@ struct MenuBarContentView: View {
         .frame(width: popoverWidth, alignment: .topLeading)
         .background(PopoverMaterialBackground())
         .background(contentSizeReader)
+        .onAppear {
+            freshnessViewModel.refresh()
+        }
     }
 
     private var popoverWidth: CGFloat {
@@ -336,6 +360,34 @@ struct MenuBarContentView: View {
             .help(viewModel.isRefreshing ? "Refreshing…" : "Refresh")
             .accessibilityLabel(viewModel.isRefreshing ? "Refreshing" : "Refresh")
         }
+    }
+
+    private var staleBuildWarningRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+
+            Text(freshnessViewModel.popoverWarningText)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+
+            if freshnessViewModel.canRelaunchLatestInstalledApp {
+                Button("Relaunch") {
+                    freshnessViewModel.relaunchLatestInstalledApp()
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(.borderless)
+                .help("Relaunch the installed app bundle")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func refreshRotation(at date: Date) -> Angle {

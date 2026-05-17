@@ -14,12 +14,88 @@ APP_PROCESS_NAME="CodexStatusBar"
 LEGACY_PROCESS_NAME="CodexUsageMenuBar"
 BUILT_EXECUTABLE_PATH="$BUILT_APP_PATH/Contents/MacOS/$APP_PROCESS_NAME"
 INSTALLED_EXECUTABLE_PATH="$INSTALLED_APP_PATH/Contents/MacOS/$APP_PROCESS_NAME"
+BUILT_FINGERPRINT_PATH="$BUILT_APP_PATH/Contents/Resources/BuildFingerprint.json"
+INSTALLED_FINGERPRINT_PATH="$INSTALLED_APP_PATH/Contents/Resources/BuildFingerprint.json"
 BUILD_ARCH="${BUILD_ARCH:-$(uname -m)}"
 OPEN_AFTER_INSTALL="${OPEN_AFTER_INSTALL:-1}"
 VERIFY_OPEN_AFTER_INSTALL="${VERIFY_OPEN_AFTER_INSTALL:-1}"
 CLEAN_AFTER_INSTALL="${CLEAN_AFTER_INSTALL:-1}"
 PROCESS_WAIT_ATTEMPTS="${PROCESS_WAIT_ATTEMPTS:-50}"
 PROCESS_WAIT_INTERVAL="${PROCESS_WAIT_INTERVAL:-0.2}"
+
+json_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  printf '"%s"' "$value"
+}
+
+json_nullable_string() {
+  local value="$1"
+  if [[ -n "$value" ]]; then
+    json_string "$value"
+  else
+    json_string "unknown"
+  fi
+}
+
+git_value() {
+  local git_args=("$@")
+  git -C "$SCRIPT_DIR" "${git_args[@]}" 2>/dev/null || true
+}
+
+git_dirty_flag() {
+  if ! git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'null'
+    return
+  fi
+
+  if [[ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+write_build_fingerprint() {
+  local commit
+  local branch
+  local build_time
+  local dirty
+  local executable_hash
+  local source_root
+
+  commit="$(git_value rev-parse HEAD)"
+  branch="$(git_value rev-parse --abbrev-ref HEAD)"
+  dirty="$(git_dirty_flag)"
+  build_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  executable_hash="$(shasum -a 256 "$BUILT_EXECUTABLE_PATH" | awk '{print $1}')"
+
+  if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    source_root="$SCRIPT_DIR"
+  else
+    source_root=""
+  fi
+
+  mkdir -p "$(dirname "$BUILT_FINGERPRINT_PATH")"
+  {
+    printf '{\n'
+    printf '  "schemaVersion": 1,\n'
+    printf '  "sourceRoot": %s,\n' "$(json_nullable_string "$source_root")"
+    printf '  "gitCommit": %s,\n' "$(json_nullable_string "$commit")"
+    printf '  "gitBranch": %s,\n' "$(json_nullable_string "$branch")"
+    printf '  "isDirty": %s,\n' "$dirty"
+    printf '  "buildTime": %s,\n' "$(json_nullable_string "$build_time")"
+    printf '  "installedBundlePath": %s,\n' "$(json_nullable_string "$INSTALLED_APP_PATH")"
+    printf '  "executableSHA256": %s\n' "$(json_nullable_string "$executable_hash")"
+    printf '}\n'
+  } > "$BUILT_FINGERPRINT_PATH"
+
+  echo
+  echo "Wrote build fingerprint:"
+  echo "  $BUILT_FINGERPRINT_PATH"
+}
 
 resolve_codex_path() {
   local candidate
@@ -200,6 +276,8 @@ if [[ ! -x "$BUILT_EXECUTABLE_PATH" ]]; then
   exit 1
 fi
 
+write_build_fingerprint
+
 mkdir -p "$INSTALL_DIR"
 
 terminate_running_app
@@ -215,6 +293,12 @@ fi
 
 if ! cmp -s "$BUILT_EXECUTABLE_PATH" "$INSTALLED_EXECUTABLE_PATH"; then
   echo "Install failed because the installed executable does not match the just-built executable."
+  exit 1
+fi
+
+if [[ ! -f "$INSTALLED_FINGERPRINT_PATH" ]]; then
+  echo "Install failed because the build fingerprint was not copied to:"
+  echo "  $INSTALLED_FINGERPRINT_PATH"
   exit 1
 fi
 

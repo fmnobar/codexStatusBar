@@ -121,6 +121,11 @@
   - Improved compact number formatting with billions, separators, and unit-free dashboard values.
   - Gave the model breakdown enough room for full category and model labels when the dashboard opens.
 
+- Add installed-app freshness checks and stale-build notification
+  - Added an install-time build fingerprint with source root, branch, commit, dirty state, build time, installed bundle path, and executable hash.
+  - Added local freshness checks for newer source checkouts and newer installed bundles than the running process.
+  - Added a compact stale-build warning in the popover plus Local Build status and relaunch/install guidance in Updates settings.
+
 ## Next Candidates
 
 - Optimize History hover selection
