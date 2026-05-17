@@ -81,6 +81,18 @@ struct TokenCategoryTotals: Equatable {
     let totalTokens: Int64
 }
 
+enum CodexModelIdentifier {
+    static func normalized(_ value: String?) -> String? {
+        let trimSet = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+        let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        return trimmedValue.isEmpty ? nil : trimmedValue
+    }
+
+    static func firstNormalized(_ values: [String?]) -> String? {
+        values.lazy.compactMap(normalized).first
+    }
+}
+
 struct CodexThreadTokenUsage: Equatable {
     let last: CodexTokenUsageBreakdown
     let total: CodexTokenUsageBreakdown
@@ -164,12 +176,20 @@ struct ThreadTokenUsageUpdatedNotificationPayload: Decodable {
     let threadId: String
     let turnId: String
     let tokenUsage: ThreadTokenUsagePayload
+    let model: String?
+    let slug: String?
+    let modelSlug: String?
 
     func toDomainNotification() -> CodexTokenUsageNotification {
         CodexTokenUsageNotification(
             threadID: threadId,
             turnID: turnId,
-            model: nil,
+            model: CodexModelIdentifier.firstNormalized([
+                model,
+                slug,
+                modelSlug,
+                tokenUsage.modelIdentifier,
+            ]),
             tokenUsage: tokenUsage.toDomainUsage()
         )
     }
@@ -179,6 +199,19 @@ struct ThreadTokenUsagePayload: Decodable {
     let last: TokenUsageBreakdownPayload
     let total: TokenUsageBreakdownPayload
     let modelContextWindow: Int64?
+    let model: String?
+    let slug: String?
+    let modelSlug: String?
+    let info: TokenUsageModelInfoPayload?
+
+    var modelIdentifier: String? {
+        CodexModelIdentifier.firstNormalized([
+            model,
+            slug,
+            modelSlug,
+            info?.modelIdentifier,
+        ])
+    }
 
     func toDomainUsage() -> CodexThreadTokenUsage {
         CodexThreadTokenUsage(
@@ -186,6 +219,16 @@ struct ThreadTokenUsagePayload: Decodable {
             total: total.toDomainBreakdown(),
             modelContextWindow: modelContextWindow
         )
+    }
+}
+
+struct TokenUsageModelInfoPayload: Decodable {
+    let model: String?
+    let slug: String?
+    let modelSlug: String?
+
+    var modelIdentifier: String? {
+        CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
     }
 }
 

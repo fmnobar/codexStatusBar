@@ -99,7 +99,18 @@
   - Kept the same menu-bar tone and spacing as the current capacity/token text, with a readable fallback when category data is unavailable.
   - Avoided turning the menu bar into a dashboard by keeping category labels concise.
 
+- Capture token model attribution from all available sources
+  - Added generic model-name normalization without hardcoding current model names.
+  - Added live token notification decoding for optional model identifiers when app-server payloads provide them.
+  - Added session-token backfill attribution from safe `turn_context` and token-count metadata.
+  - Let repeated metadata imports repair previously model-less token rows without inflating totals.
+
 ## Next Candidates
+
+- Make Codex session token backfill incremental and bounded
+  - Avoid scanning the entire local Codex session archive on every import.
+  - Track imported session file metadata and let users import recent sessions first, with clear progress for large archives.
+  - Keep the importer metadata-only while making model-attribution repair practical on multi-GB local histories.
 
 - Add detailed token dashboard
   - Add a separate dashboard surface outside the compact menu popover for deeper token analysis.

@@ -267,6 +267,99 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 250)
     }
 
+    func testTokenUsageReimportFillsMissingModelWithoutInflatingTotals() throws {
+        let store = try makeStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+        let firstImport = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: nil,
+                    lastTotal: 125,
+                    totalTotal: 125
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+        let repairImport = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: " gpt-future-1 ",
+                    lastTotal: 125,
+                    totalTotal: 125
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(firstImport, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(repairImport, TokenUsageImportResult(insertedCount: 0, duplicateCount: 1))
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.model, "gpt-future-1")
+        XCTAssertEqual(samples.first?.observedTotalTokens, 125)
+        XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 125)
+    }
+
+    func testTokenUsageReimportDoesNotClearExistingModel() throws {
+        let store = try makeStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: "codex-stable-model",
+                    lastInput: 125,
+                    lastTotal: 125,
+                    totalInput: 125,
+                    totalTotal: 125
+                ),
+                receivedAt: receivedAt
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-b",
+                    turnID: "turn-a",
+                    model: " \tgpt-5.6\n ",
+                    lastInput: 80,
+                    lastTotal: 80,
+                    totalInput: 80,
+                    totalTotal: 80
+                ),
+                receivedAt: date("2026-04-14T20:05:00Z")
+            ),
+        ])
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: nil,
+                    lastInput: 125,
+                    lastTotal: 125,
+                    totalInput: 125,
+                    totalTotal: 125
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+
+        let samples = try store.tokenUsageSamples()
+        let availableSeries = try store.availableTokenComponentSeries()
+
+        XCTAssertEqual(samples.map(\.model), ["codex-stable-model", "gpt-5.6"])
+        XCTAssertEqual(availableSeries.map(\.id), [
+            "tokens_all",
+            "model:codex-stable-model",
+            "model:gpt-5.6",
+        ])
+    }
+
     func testTokenUsageComputesSameThreadCumulativeDeltas() throws {
         let store = try makeStore()
 
@@ -846,6 +939,91 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertFalse(samples.contains { sample in
             sample.threadID.contains("secret") || sample.turnID.contains("secret") || (sample.model?.contains("secret") ?? false)
         })
+    }
+
+    func testSessionTokenBackfillUsesLatestModelMetadataForTokenEvents() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-models.jsonl")
+        try writeSessionLines(
+            [
+                turnContextLine(timestamp: "2026-05-17T15:00:00Z", model: " gpt-5.4 "),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 125,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 125
+                ),
+                turnContextLine(timestamp: "2026-05-17T15:05:00Z", model: "codex-future-7"),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:05:10Z",
+                    lastInput: 200,
+                    lastCached: 100,
+                    lastOutput: 30,
+                    lastReasoning: 10,
+                    lastTotal: 240,
+                    totalInput: 300,
+                    totalCached: 140,
+                    totalOutput: 50,
+                    totalReasoning: 15,
+                    totalTotal: 365
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(into: store)
+        let samples = try store.tokenUsageSamples()
+        let availableSeries = try store.availableTokenComponentSeries()
+
+        XCTAssertEqual(summary.tokenEventsImported, 2)
+        XCTAssertEqual(samples.map(\.model), ["gpt-5.4", "codex-future-7"])
+        XCTAssertEqual(availableSeries.map(\.id), [
+            "tokens_all",
+            "model:codex-future-7",
+            "model:gpt-5.4",
+        ])
+    }
+
+    func testSessionTokenBackfillUsesTokenCountInfoModelWhenPresent() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-info-model.jsonl")
+        try writeSessionLines(
+            [
+                turnContextLine(timestamp: "2026-05-17T15:00:00Z", model: "gpt-5.4"),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 125,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 125,
+                    model: "o-series-next"
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.model), ["o-series-next"])
     }
 
     func testSessionTokenBackfillIsIdempotent() throws {
@@ -2624,11 +2802,19 @@ final class UsageHistoryStoreTests: XCTestCase {
         totalOutput: Int64,
         totalReasoning: Int64,
         totalTotal: Int64,
-        contextWindow: Int64? = nil
+        contextWindow: Int64? = nil,
+        model: String? = nil
     ) -> String {
         let contextWindowValue = contextWindow.map(String.init) ?? "null"
+        let modelFragment = model.map { #","model":"\#($0)""# } ?? ""
         return """
-        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\(lastInput),"cached_input_tokens":\(lastCached),"output_tokens":\(lastOutput),"reasoning_output_tokens":\(lastReasoning),"total_tokens":\(lastTotal)},"total_token_usage":{"input_tokens":\(totalInput),"cached_input_tokens":\(totalCached),"output_tokens":\(totalOutput),"reasoning_output_tokens":\(totalReasoning),"total_tokens":\(totalTotal)},"model_context_window":\(contextWindowValue)}}}
+        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\(lastInput),"cached_input_tokens":\(lastCached),"output_tokens":\(lastOutput),"reasoning_output_tokens":\(lastReasoning),"total_tokens":\(lastTotal)},"total_token_usage":{"input_tokens":\(totalInput),"cached_input_tokens":\(totalCached),"output_tokens":\(totalOutput),"reasoning_output_tokens":\(totalReasoning),"total_tokens":\(totalTotal)},"model_context_window":\(contextWindowValue)\(modelFragment)}}}
+        """
+    }
+
+    private func turnContextLine(timestamp: String, model: String) -> String {
+        """
+        {"timestamp":"\(timestamp)","type":"turn_context","payload":{"model":"\(model)","sandbox_policy":{"type":"danger-full-access"}}}
         """
     }
 

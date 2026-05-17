@@ -130,7 +130,10 @@ struct CodexLogTokenUsageImporter {
         let receivedAt = timestampText.flatMap(CodexSessionTokenBackfillImporter.parseTimestamp)
             ?? Date(timeIntervalSince1970: TimeInterval(fallbackTimestamp))
         let conversationID = value(for: "conversation.id", in: body) ?? "unknown-conversation"
-        let model = value(for: "slug", in: body) ?? value(for: "model", in: body)
+        let model = CodexModelIdentifier.firstNormalized([
+            value(for: "slug", in: body),
+            value(for: "model", in: body),
+        ])
         let eventID = [
             timestampText ?? "\(fallbackTimestamp)",
             "\(inputTokens)",
@@ -266,6 +269,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
         var samples: [ImportedCodexTokenUsageSample] = []
         var failedLinesSkipped = 0
         let sessionID = Self.sessionIdentifier(for: fileURL)
+        var currentModel: String?
 
         for (lineIndex, rawLine) in content.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
             guard let lineData = rawLine.data(using: .utf8) else {
@@ -275,6 +279,10 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
 
             do {
                 let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
+                if let modelIdentifier = line.payload?.modelIdentifier {
+                    currentModel = modelIdentifier
+                }
+
                 guard let payload = line.payload, payload.type == "token_count", let info = payload.info else {
                     continue
                 }
@@ -292,7 +300,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting {
                 let notification = CodexTokenUsageNotification(
                     threadID: sessionID,
                     turnID: "line:\(lineIndex + 1)",
-                    model: nil,
+                    model: info.modelIdentifier ?? currentModel,
                     tokenUsage: tokenUsage
                 )
                 samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
@@ -333,16 +341,29 @@ private struct CodexSessionTokenBackfillLine: Decodable {
     struct Payload: Decodable {
         let type: String?
         let info: Info?
+        let model: String?
+        let slug: String?
+        let modelSlug: String?
+
+        var modelIdentifier: String? {
+            CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
+        }
 
         enum CodingKeys: String, CodingKey {
             case type
             case info
+            case model
+            case slug
+            case modelSlug
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             type = try container.decodeIfPresent(String.self, forKey: .type)
             info = try? container.decode(Info.self, forKey: .info)
+            model = try container.decodeIfPresent(String.self, forKey: .model)
+            slug = try container.decodeIfPresent(String.self, forKey: .slug)
+            modelSlug = try container.decodeIfPresent(String.self, forKey: .modelSlug)
         }
     }
 
@@ -350,11 +371,21 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         let lastTokenUsage: SessionTokenUsageBreakdown
         let totalTokenUsage: SessionTokenUsageBreakdown
         let modelContextWindow: Int64?
+        let model: String?
+        let slug: String?
+        let modelSlug: String?
+
+        var modelIdentifier: String? {
+            CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
+        }
 
         enum CodingKeys: String, CodingKey {
             case lastTokenUsage = "last_token_usage"
             case totalTokenUsage = "total_token_usage"
             case modelContextWindow = "model_context_window"
+            case model
+            case slug
+            case modelSlug
         }
     }
 }

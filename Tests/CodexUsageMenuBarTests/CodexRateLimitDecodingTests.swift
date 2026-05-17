@@ -215,4 +215,62 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(notification.tokenUsage.total.inputTokens, 10000)
         XCTAssertEqual(notification.tokenUsage.total.totalTokens, 12000)
     }
+
+    func testDecodesThreadTokenUsageNotificationModelIdentifiers() throws {
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraRoot: #","model":" codex-future-1 ""#),
+            "codex-future-1"
+        )
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraRoot: #","slug":"gpt-5.4""#),
+            "gpt-5.4"
+        )
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraTokenUsage: #","modelSlug":"o-series-next""#),
+            "o-series-next"
+        )
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraTokenUsage: #","info":{"slug":"model-from-info"}"#),
+            "model-from-info"
+        )
+        XCTAssertNil(try decodeTokenUsageModel())
+    }
+
+    private func decodeTokenUsageModel(
+        extraRoot: String = "",
+        extraTokenUsage: String = ""
+    ) throws -> String? {
+        let data = Data(
+            """
+            {
+              "threadId": "thread-123",
+              "turnId": "turn-456",
+              "tokenUsage": {
+                "last": {
+                  "inputTokens": 1200,
+                  "cachedInputTokens": 900,
+                  "outputTokens": 300,
+                  "reasoningOutputTokens": 40,
+                  "totalTokens": 1500
+                },
+                "total": {
+                  "inputTokens": 10000,
+                  "cachedInputTokens": 7000,
+                  "outputTokens": 2000,
+                  "reasoningOutputTokens": 400,
+                  "totalTokens": 12000
+                },
+                "modelContextWindow": 258400
+                \(extraTokenUsage)
+              }
+              \(extraRoot)
+            }
+            """.utf8
+        )
+
+        return try JSONDecoder()
+            .decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: data)
+            .toDomainNotification()
+            .model
+    }
 }

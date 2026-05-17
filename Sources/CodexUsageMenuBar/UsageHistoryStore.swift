@@ -322,6 +322,7 @@ final class UsageHistoryStore {
     func importTokenUsageSamples(_ samples: [ImportedCodexTokenUsageSample]) throws -> TokenUsageImportResult {
         var insertedCount = 0
         var duplicateCount = 0
+        var repairedModelCount = 0
 
         try transaction {
             for sample in samples {
@@ -333,6 +334,15 @@ final class UsageHistoryStore {
                     turnID: notification.turnID,
                     cumulativeTotalTokens: cumulativeTotal
                 ) {
+                    if try repairMissingTokenSampleModel(
+                        threadID: notification.threadID,
+                        turnID: notification.turnID,
+                        cumulativeTotalTokens: cumulativeTotal,
+                        model: notification.model
+                    ) {
+                        repairedModelCount += 1
+                    }
+
                     duplicateCount += 1
                     continue
                 }
@@ -351,7 +361,7 @@ final class UsageHistoryStore {
             }
         }
 
-        if insertedCount > 0 {
+        if insertedCount > 0 || repairedModelCount > 0 {
             notificationCenter.post(name: Self.didChangeNotification, object: self)
         }
 
@@ -1593,7 +1603,11 @@ final class UsageHistoryStore {
                 observed_reasoning_output_tokens, observed_total_tokens
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(thread_id, turn_id, total_total_tokens) DO UPDATE SET
-                model = excluded.model,
+                model = CASE
+                    WHEN NULLIF(TRIM(token_usage_samples.model, char(9) || char(10) || char(13) || ' '), '') IS NULL
+                        THEN excluded.model
+                    ELSE token_usage_samples.model
+                END,
                 received_at = excluded.received_at,
                 model_context_window = excluded.model_context_window,
                 last_input_tokens = excluded.last_input_tokens,
@@ -1639,6 +1653,37 @@ final class UsageHistoryStore {
         sqlite3_bind_int64(statement, 20, observedTokens.totalTokens)
 
         try step(statement)
+    }
+
+    private func repairMissingTokenSampleModel(
+        threadID: String,
+        turnID: String,
+        cumulativeTotalTokens: Int64,
+        model: String?
+    ) throws -> Bool {
+        guard let normalizedModel = CodexModelIdentifier.normalized(model) else {
+            return false
+        }
+
+        let statement = try prepare(
+            """
+            UPDATE token_usage_samples
+            SET model = ?
+            WHERE thread_id = ?
+                AND turn_id = ?
+                AND total_total_tokens = ?
+                AND NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') IS NULL
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(normalizedModel, to: 1, in: statement)
+        bindText(threadID, to: 2, in: statement)
+        bindText(turnID, to: 3, in: statement)
+        sqlite3_bind_int64(statement, 4, cumulativeTotalTokens)
+
+        try step(statement)
+        return sqlite3_changes(database) > 0
     }
 
     private func tokenValueExpression(for category: TokenHistoryCategory) -> String {
@@ -2030,8 +2075,7 @@ final class UsageHistoryStore {
     }
 
     private func normalizedModelName(_ value: String?) -> String? {
-        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmedValue.isEmpty ? nil : trimmedValue
+        CodexModelIdentifier.normalized(value)
     }
 
     private func columnText(_ statement: OpaquePointer, index: Int32) -> String {
