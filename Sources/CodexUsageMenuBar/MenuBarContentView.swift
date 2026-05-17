@@ -361,14 +361,25 @@ struct MenuBarContentView: View {
 
 private enum CompactHistoryControlMetrics {
     static let controlHeight: CGFloat = 24
-    static let groupSpacing: CGFloat = 8
+    static let groupSpacing: CGFloat = 10
     static let contextHeight: CGFloat = 88
-    static let rangeWidth: CGFloat = 140
+    static let rangeWidth: CGFloat = 154
     static let limitWidth: CGFloat = 58
     static let tokenCategoryWidth: CGFloat = 82
-    static let chartKindWidth: CGFloat = 158
-    static let periodWidth: CGFloat = 118
+    static let chartKindWidth: CGFloat = 160
+    static let periodWidth: CGFloat = 112
+    static let periodChevronWidth: CGFloat = 12
+    static let periodSpacing: CGFloat = 4
     static let font = Font.system(size: 12)
+    static let periodFont = Font.system(size: 11.2)
+
+    static var controlRowWidth: CGFloat {
+        rangeWidth + limitWidth + chartKindWidth + periodWidth + groupSpacing * 3
+    }
+
+    static var periodTitleWidth: CGFloat {
+        periodWidth - periodChevronWidth * 2 - periodSpacing * 2
+    }
 }
 
 private struct CompactHistorySegment<Value: Hashable>: Identifiable {
@@ -534,8 +545,8 @@ private struct CompactUsageHistoryPanel: View {
 
             compactPeriodNavigation
         }
+        .frame(width: CompactHistoryControlMetrics.controlRowWidth)
         .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, 10)
     }
 
     @ViewBuilder
@@ -556,13 +567,13 @@ private struct CompactUsageHistoryPanel: View {
     }
 
     private var compactPeriodNavigation: some View {
-        HStack(alignment: .center, spacing: 3) {
+        HStack(alignment: .center, spacing: CompactHistoryControlMetrics.periodSpacing) {
             Button {
                 viewModel.goToPreviousPeriod()
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 12, height: CompactHistoryControlMetrics.controlHeight)
+                    .frame(width: CompactHistoryControlMetrics.periodChevronWidth, height: CompactHistoryControlMetrics.controlHeight)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToPreviousPeriod)
@@ -570,18 +581,18 @@ private struct CompactUsageHistoryPanel: View {
             .accessibilityLabel(viewModel.previousPeriodAccessibilityLabel)
 
             Text(viewModel.compactPeriodTitle)
-                .font(CompactHistoryControlMetrics.font)
+                .font(CompactHistoryControlMetrics.periodFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .frame(maxWidth: .infinity)
+                .minimumScaleFactor(0.9)
+                .frame(width: CompactHistoryControlMetrics.periodTitleWidth)
 
             Button {
                 viewModel.goToNextPeriod()
             } label: {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 12, height: CompactHistoryControlMetrics.controlHeight)
+                    .frame(width: CompactHistoryControlMetrics.periodChevronWidth, height: CompactHistoryControlMetrics.controlHeight)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToNextPeriod)
