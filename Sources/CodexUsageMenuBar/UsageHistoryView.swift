@@ -389,7 +389,7 @@ final class UsageHistoryViewModel: ObservableObject {
             return []
         }
 
-        return visibleChartPoints
+        return visibleChartPoints.filter { $0.bucketKind == .aggregate }
     }
 
     private var tokenBarPoints: [UsageHistoryChartPoint] {
@@ -397,15 +397,7 @@ final class UsageHistoryViewModel: ObservableObject {
             return []
         }
 
-        let selectedPoints = visibleChartPoints
-        let barSourcePoints: [UsageHistoryChartPoint]
-        if selectedPoints.contains(where: { $0.bucketKind == .aggregate }) {
-            barSourcePoints = selectedPoints.filter { $0.bucketKind == .aggregate }
-        } else {
-            barSourcePoints = selectedPoints
-        }
-
-        return Self.combinedTokenBarPoints(from: barSourcePoints)
+        return Self.combinedTokenBarPoints(from: tokenDetailPoints)
     }
 
     var sortedSeries: [UsageHistorySeries] {
@@ -536,6 +528,7 @@ final class UsageHistoryViewModel: ObservableObject {
                     periodEnd: queryPeriod.end
                 )
                 loadedSeries = try store.availableTokenComponentSeries()
+                    .filter { $0.kind == .aggregate }
                 loadedHistoryBounds = try store.tokenComponentHistoryBounds()
             }
             let loadedHasAnyHistory = try store.hasAnyHistory()
@@ -607,7 +600,7 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func isPinnedSeries(_ series: UsageHistorySeries) -> Bool {
-        selectedChartKind != .tokens && series.kind == .aggregate
+        series.kind == .aggregate
     }
 
     func isDefaultHiddenSeries(_ series: UsageHistorySeries) -> Bool {
@@ -922,16 +915,20 @@ final class UsageHistoryViewModel: ObservableObject {
     private func reconcileSelectedSeries() {
         let currentIDs = Set(series.map(\.id))
 
+        if selectedChartKind == .tokens {
+            selectedSeriesIDs = Self.aggregateSeriesIDs(from: series)
+            userEditedSeriesSelection = false
+            return
+        }
+
         if !userEditedSeriesSelection {
             selectedSeriesIDs = Self.defaultSelectedSeriesIDs(from: series)
             return
         }
 
         selectedSeriesIDs.formIntersection(currentIDs)
-        if selectedChartKind != .tokens {
-            selectedSeriesIDs.formUnion(series.filter { $0.kind == .aggregate }.map(\.id))
-        }
-        if selectedSeriesIDs.isEmpty && selectedChartKind != .tokens {
+        selectedSeriesIDs.formUnion(Self.aggregateSeriesIDs(from: series))
+        if selectedSeriesIDs.isEmpty {
             selectedSeriesIDs = Self.defaultSelectedSeriesIDs(from: series)
             userEditedSeriesSelection = false
         }
@@ -955,6 +952,10 @@ final class UsageHistoryViewModel: ObservableObject {
 
     private static func defaultSelectedSeriesIDs(from series: [UsageHistorySeries]) -> Set<String> {
         Set(series.filter { !isHiddenByDefault($0) }.map(\.id))
+    }
+
+    private static func aggregateSeriesIDs(from series: [UsageHistorySeries]) -> Set<String> {
+        Set(series.filter { $0.kind == .aggregate }.map(\.id))
     }
 
     private static func compactModelSuffixTitle(_ value: String) -> String {
@@ -1548,12 +1549,13 @@ struct UsageHistoryView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let showsSeriesSelector = viewModel.hasHistory && viewModel.selectedChartKind != .tokens
             let layout = UsageHistoryLayoutMetrics(
                 availableSize: geometry.size,
-                hasHistory: viewModel.hasHistory
+                hasHistory: showsSeriesSelector
             )
 
-            content(layout: layout)
+            content(layout: layout, showsSeriesSelector: showsSeriesSelector)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -1570,7 +1572,10 @@ struct UsageHistoryView: View {
         }
     }
 
-    private func content(layout: UsageHistoryLayoutMetrics) -> some View {
+    private func content(
+        layout: UsageHistoryLayoutMetrics,
+        showsSeriesSelector: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: layout.verticalSpacing) {
             controls
             chartHeader
@@ -1589,7 +1594,7 @@ struct UsageHistoryView: View {
                     .frame(height: layout.chartHeight)
             }
 
-            if viewModel.hasHistory {
+            if showsSeriesSelector {
                 seriesSelector(maxHeight: layout.seriesSelectorHeight)
             }
         }

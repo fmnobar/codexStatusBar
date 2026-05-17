@@ -1012,31 +1012,21 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.selectedChartKind = .tokens
         viewModel.reload()
 
+        XCTAssertEqual(try store.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["tokens_all"])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketName), [
             "All tokens",
             "All tokens",
             "All tokens",
             "All tokens",
-            "gpt-5.5",
-            "gpt-5.5",
-            "gpt-5.5",
-            "gpt-5.5",
         ])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenComponent), [
             .input,
             .cached,
             .output,
             .reasoning,
-            .input,
-            .cached,
-            .output,
-            .reasoning,
         ])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [
-            1_200,
-            900,
-            30,
-            7,
             1_200,
             900,
             30,
@@ -1953,7 +1943,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenChartUsesOneStackedTotalBarWhenAggregateAndModelAreSelected() throws {
+    func testTokenHistoryUsesAggregateOnlySeriesWhenModelsExist() throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
@@ -1983,17 +1973,13 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.selectedChartKind = .tokens
         viewModel.reload()
 
-        XCTAssertTrue(viewModel.selectedSeriesIDs.contains("tokens_all"))
-        XCTAssertTrue(viewModel.selectedSeriesIDs.contains("model:gpt-5.5"))
+        XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["tokens_all"])
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), [
             "tokens_all",
             "tokens_all",
             "tokens_all",
             "tokens_all",
-            "model:gpt-5.5",
-            "model:gpt-5.5",
-            "model:gpt-5.5",
-            "model:gpt-5.5",
         ])
         XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), [
             "tokens_visible_total",
@@ -2006,12 +1992,12 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.setSeries("tokens_all", isSelected: false)
 
-        XCTAssertFalse(viewModel.selectedSeriesIDs.contains("tokens_all"))
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), [
-            "model:gpt-5.5",
-            "model:gpt-5.5",
-            "model:gpt-5.5",
-            "model:gpt-5.5",
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
         ])
         XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), [
             "tokens_visible_total",
@@ -2667,12 +2653,10 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.hoverSelection?.points.map(\.bucketID), [
             "tokens_all",
             "tokens_all",
-            "model:gpt-5.5",
-            "model:gpt-5.5",
         ])
-        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenComponent), [.input, .cached, .input, .cached])
-        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenCount), [120, 80, 120, 80])
-        XCTAssertEqual(viewModel.hoverSelection?.points.map { viewModel.formattedChartValue(for: $0) }, ["120 tok", "80 tok", "120 tok", "80 tok"])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenComponent), [.input, .cached])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map(\.tokenCount), [120, 80])
+        XCTAssertEqual(viewModel.hoverSelection?.points.map { viewModel.formattedChartValue(for: $0) }, ["120 tok", "80 tok"])
     }
 
     @MainActor

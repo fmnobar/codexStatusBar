@@ -707,11 +707,7 @@ private struct CompactUsageHistoryPanel: View {
     }
 
     private var compactTokenLegendRows: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            compactSeriesLegend
-
-            compactTokenComponentLegend
-        }
+        compactTokenComponentLegend
     }
 
     private var compactTokenComponentLegend: some View {
