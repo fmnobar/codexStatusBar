@@ -21,6 +21,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.viewModel = viewModel
         self.historyStore = historyStore
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem.autosaveName = "CodexStatusBarStatusItem"
         super.init()
 
         configurePopover()
@@ -78,14 +79,23 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             return
         }
 
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        let visibleText = StatusItemTitleLayout.visibleText(text)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byTruncatingTail
+
         let attributedTitle = NSAttributedString(
-            string: text,
+            string: visibleText,
             attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular),
+                .font: font,
+                .paragraphStyle: paragraphStyle,
             ]
         )
 
+        button.title = visibleText
         button.attributedTitle = attributedTitle
+        button.cell?.lineBreakMode = .byTruncatingTail
+        statusItem.length = StatusItemTitleLayout.length(for: visibleText, font: font)
     }
 
     private func updateStatusItemToolTip(_ text: String?) {

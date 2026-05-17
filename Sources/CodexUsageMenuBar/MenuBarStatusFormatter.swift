@@ -12,6 +12,23 @@ enum StatusItemContextMenuFactory {
     }
 }
 
+enum StatusItemTitleLayout {
+    static let minimumLength: CGFloat = 34
+    static let maximumLength: CGFloat = 230
+    private static let horizontalPadding: CGFloat = 16
+
+    static func visibleText(_ text: String) -> String {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedText.isEmpty ? "--" : trimmedText
+    }
+
+    static func length(for text: String, font: NSFont) -> CGFloat {
+        let visibleText = visibleText(text)
+        let textWidth = ceil((visibleText as NSString).size(withAttributes: [.font: font]).width)
+        return min(max(textWidth + horizontalPadding, minimumLength), maximumLength)
+    }
+}
+
 enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
     case fiveHour
     case sevenDay

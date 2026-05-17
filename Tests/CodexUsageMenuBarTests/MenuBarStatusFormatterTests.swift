@@ -26,6 +26,26 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(MenuBarDisplayWindowStore.load(from: defaults), .tightest)
     }
 
+    func testStatusItemTitleLayoutKeepsTextVisibleAndBounded() {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+
+        XCTAssertEqual(StatusItemTitleLayout.visibleText(""), "--")
+        XCTAssertEqual(StatusItemTitleLayout.visibleText("   "), "--")
+        XCTAssertEqual(StatusItemTitleLayout.visibleText("7d: 91% · 17M"), "7d: 91% · 17M")
+
+        XCTAssertEqual(
+            StatusItemTitleLayout.length(for: "", font: font),
+            StatusItemTitleLayout.minimumLength
+        )
+        XCTAssertLessThanOrEqual(
+            StatusItemTitleLayout.length(
+                for: "5h: 85% 5/17 10:28AM · 123456789M",
+                font: font
+            ),
+            StatusItemTitleLayout.maximumLength
+        )
+    }
+
     func testMenuBarDisplayOptionsStoreDefaultsToLimitOnly() {
         let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
