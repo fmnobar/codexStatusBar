@@ -235,7 +235,7 @@ final class UsageHistoryViewModel: ObservableObject {
             }
             return hasHighUsage ? 0...100 : 0...50
         case .tokens:
-            let maximumValue = Self.maximumTokenStackValue(in: visibleChartPoints)
+            let maximumValue = Self.maximumTokenStackValue(in: visibleBarPoints)
             return 0...Self.tokenAxisUpperBound(for: maximumValue)
         }
     }
@@ -361,7 +361,7 @@ final class UsageHistoryViewModel: ObservableObject {
 
     var visibleBarPoints: [UsageHistoryChartPoint] {
         if selectedChartKind == .tokens {
-            return visibleChartPoints
+            return tokenBarPoints
         }
 
         switch chartSemantics {
@@ -382,6 +382,30 @@ final class UsageHistoryViewModel: ObservableObject {
 
     var visibleAggregateReferencePoints: [UsageHistoryChartPoint] {
         visibleChartPoints.filter { $0.bucketKind == .aggregate }
+    }
+
+    var tokenDetailPoints: [UsageHistoryChartPoint] {
+        guard selectedChartKind == .tokens else {
+            return []
+        }
+
+        return visibleChartPoints
+    }
+
+    private var tokenBarPoints: [UsageHistoryChartPoint] {
+        guard selectedChartKind == .tokens else {
+            return []
+        }
+
+        let selectedPoints = visibleChartPoints
+        let barSourcePoints: [UsageHistoryChartPoint]
+        if selectedPoints.contains(where: { $0.bucketKind == .aggregate }) {
+            barSourcePoints = selectedPoints.filter { $0.bucketKind == .aggregate }
+        } else {
+            barSourcePoints = selectedPoints
+        }
+
+        return Self.combinedTokenBarPoints(from: barSourcePoints)
     }
 
     var sortedSeries: [UsageHistorySeries] {
@@ -568,7 +592,7 @@ final class UsageHistoryViewModel: ObservableObject {
             return
         }
 
-        if !isSelected, targetSeries.kind == .aggregate {
+        if !isSelected, isPinnedSeries(targetSeries) {
             selectedSeriesIDs.insert(targetSeries.id)
             return
         }
@@ -580,6 +604,10 @@ final class UsageHistoryViewModel: ObservableObject {
             selectedSeriesIDs.remove(targetSeries.id)
         }
         clearHoverSelection()
+    }
+
+    func isPinnedSeries(_ series: UsageHistorySeries) -> Bool {
+        selectedChartKind != .tokens && series.kind == .aggregate
     }
 
     func selectAllSeries() {
@@ -595,7 +623,7 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func updateHoverSelection(nearestTo timestamp: Date, xPosition: CGFloat) {
-        let candidates = visibleChartPoints
+        let candidates = selectedChartKind == .tokens ? visibleBarPoints : visibleChartPoints
         guard !candidates.isEmpty else {
             clearHoverSelection()
             return
@@ -615,7 +643,7 @@ final class UsageHistoryViewModel: ObservableObject {
             return
         }
 
-        let selectedPoints = candidates
+        let selectedPoints = (selectedChartKind == .tokens ? tokenDetailPoints : candidates)
             .filter { $0.bucketStart == nearestBucketStart }
             .sortedByDisplayOrder()
         guard let bucketEnd = selectedPoints.first?.bucketEnd else {
@@ -732,12 +760,34 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
+    func formattedCompactTokenValue(_ tokenCount: Int64) -> String {
+        Self.compactTokenAxisText(Double(tokenCount))
+    }
+
     func chartPointLabel(for point: UsageHistoryChartPoint) -> String {
         guard selectedChartKind == .tokens else {
             return point.bucketName
         }
 
         return "\(point.bucketName) \(tokenComponentTitle(for: point))"
+    }
+
+    func compactSeriesTitle(for seriesName: String) -> String {
+        if seriesName.localizedCaseInsensitiveCompare("All tokens") == .orderedSame {
+            return "Total"
+        }
+
+        let lowercased = seriesName.lowercased()
+        if lowercased.contains("spark") {
+            return "Spark"
+        }
+
+        if let range = seriesName.range(of: #"(?i)gpt-([0-9]+(?:\.[0-9]+)*)"#, options: .regularExpression) {
+            let matched = String(seriesName[range])
+            return matched.replacingOccurrences(of: #"(?i)^gpt-"#, with: "", options: .regularExpression)
+        }
+
+        return seriesName
     }
 
     func tokenComponentTitle(for point: UsageHistoryChartPoint) -> String {
@@ -852,8 +902,10 @@ final class UsageHistoryViewModel: ObservableObject {
         }
 
         selectedSeriesIDs.formIntersection(currentIDs)
-        selectedSeriesIDs.formUnion(series.filter { $0.kind == .aggregate }.map(\.id))
-        if selectedSeriesIDs.isEmpty {
+        if selectedChartKind != .tokens {
+            selectedSeriesIDs.formUnion(series.filter { $0.kind == .aggregate }.map(\.id))
+        }
+        if selectedSeriesIDs.isEmpty && selectedChartKind != .tokens {
             selectedSeriesIDs = Self.defaultSelectedSeriesIDs(from: series)
             userEditedSeriesSelection = false
         }
@@ -1052,6 +1104,45 @@ final class UsageHistoryViewModel: ObservableObject {
         }
 
         return index
+    }
+
+    private static func combinedTokenBarPoints(from points: [UsageHistoryChartPoint]) -> [UsageHistoryChartPoint] {
+        let groupedPoints = Dictionary(grouping: points) { point in
+            "\(Int(point.bucketStart.timeIntervalSince1970))-\(point.tokenComponent?.rawValue ?? "tokens")"
+        }
+
+        return groupedPoints.compactMap { _, bucketPoints in
+            guard
+                let firstPoint = bucketPoints.first,
+                let latestPoint = bucketPoints.max(by: { lhs, rhs in
+                    lhs.sampleTimestamp < rhs.sampleTimestamp
+                })
+            else {
+                return nil
+            }
+
+            let tokenCount = bucketPoints.reduce(Int64(0)) { total, point in
+                total + max(point.tokenCount ?? 0, 0)
+            }
+
+            return UsageHistoryChartPoint(
+                bucketStart: firstPoint.bucketStart,
+                bucketEnd: firstPoint.bucketEnd,
+                sampleTimestamp: latestPoint.sampleTimestamp,
+                bucketID: "tokens_visible_total",
+                bucketName: "Visible tokens",
+                bucketKind: .aggregate,
+                tokenComponent: firstPoint.tokenComponent,
+                tokenCount: tokenCount
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.bucketStart != rhs.bucketStart {
+                return lhs.bucketStart < rhs.bucketStart
+            }
+
+            return tokenComponentSortIndex(lhs.tokenComponent) < tokenComponentSortIndex(rhs.tokenComponent)
+        }
     }
 
     private static func maximumTokenStackValue(in points: [UsageHistoryChartPoint]) -> Double {
@@ -1725,7 +1816,7 @@ struct UsageHistoryView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .toggleStyle(NeutralCheckboxToggleStyle())
-                        .disabled(series.kind == .aggregate)
+                        .disabled(viewModel.isPinnedSeries(series))
                     }
                 }
             }

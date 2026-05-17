@@ -333,6 +333,7 @@ struct MenuBarContentView: View {
 private enum CompactHistoryControlMetrics {
     static let controlHeight: CGFloat = 24
     static let groupSpacing: CGFloat = 8
+    static let contextHeight: CGFloat = 88
     static let rangeWidth: CGFloat = 140
     static let limitWidth: CGFloat = 58
     static let tokenCategoryWidth: CGFloat = 82
@@ -518,6 +519,10 @@ private struct CompactUsageHistoryPanel: View {
                 selection: $viewModel.selectedWindow,
                 width: CompactHistoryControlMetrics.limitWidth
             )
+        } else {
+            Color.clear
+                .frame(width: CompactHistoryControlMetrics.limitWidth, height: CompactHistoryControlMetrics.controlHeight)
+                .accessibilityHidden(true)
         }
     }
 
@@ -579,17 +584,15 @@ private struct CompactUsageHistoryPanel: View {
                         .foregroundStyle(.secondary.opacity(0.42))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
-                    ForEach(hoverSelection.points) { point in
-                        PointMark(
-                            x: .value("Time", viewModel.chartXPosition(for: point)),
-                            y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point))
-                        )
-                        .foregroundStyle(
-                            viewModel.selectedChartKind == .tokens
-                                ? tokenComponentColor(for: point)
-                                : seriesColor(for: point.bucketID)
-                        )
-                        .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
+                    if viewModel.selectedChartKind != .tokens {
+                        ForEach(hoverSelection.points) { point in
+                            PointMark(
+                                x: .value("Time", viewModel.chartXPosition(for: point)),
+                                y: .value(viewModel.chartYAxisTitle, viewModel.chartValue(for: point))
+                            )
+                            .foregroundStyle(seriesColor(for: point.bucketID))
+                            .symbolSize(point.bucketKind == .aggregate ? 48 : 36)
+                        }
                     }
                 }
             }
@@ -633,10 +636,10 @@ private struct CompactUsageHistoryPanel: View {
     private var compactChartContext: some View {
         VStack(alignment: .leading, spacing: 5) {
             if viewModel.selectedChartKind == .tokens {
-                compactTokenLegendRows
-
                 if let hoverSelection = viewModel.hoverSelection {
-                    compactHoverReadout(for: hoverSelection)
+                    compactTokenHoverTable(for: hoverSelection)
+                } else {
+                    compactTokenLegendRows
                 }
             } else {
                 if let hoverSelection = viewModel.hoverSelection {
@@ -648,7 +651,7 @@ private struct CompactUsageHistoryPanel: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: viewModel.selectedChartKind == .tokens ? 48 : 21, alignment: .topLeading)
+        .frame(height: CompactHistoryControlMetrics.contextHeight, alignment: .topLeading)
         .padding(.horizontal, 10)
     }
 
@@ -713,11 +716,66 @@ private struct CompactUsageHistoryPanel: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
+    private func compactTokenHoverTable(for selection: UsageHistoryHoverSelection) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(viewModel.formattedBucketInterval(selection))
+                .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                Grid(alignment: .trailing, horizontalSpacing: 8, verticalSpacing: 2) {
+                    GridRow {
+                        Text("")
+                            .frame(width: 58, alignment: .leading)
+
+                        ForEach(tokenHoverColumns(for: selection)) { series in
+                            Text(viewModel.compactSeriesTitle(for: series.name))
+                                .font(.system(size: 8.8, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .frame(minWidth: 36, alignment: .trailing)
+                        }
+                    }
+
+                    ForEach(TokenHistoryComponent.allCases) { component in
+                        GridRow {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(tokenComponentColor(for: component))
+                                    .frame(width: 6, height: 6)
+
+                                Text(component.displayTitle)
+                                    .lineLimit(1)
+                            }
+                            .font(.system(size: 8.8, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 58, alignment: .leading)
+
+                            ForEach(tokenHoverColumns(for: selection)) { series in
+                                Text(tokenHoverValue(selection: selection, series: series, component: component))
+                                    .font(.system(size: 8.8))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .frame(minWidth: 36, alignment: .trailing)
+                            }
+                        }
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
     private func compactSeriesButton(_ series: UsageHistorySeries) -> some View {
         let isSelected = viewModel.selectedSeriesIDs.contains(series.id)
 
         return Button {
-            if series.kind != .aggregate {
+            if !viewModel.isPinnedSeries(series) {
                 viewModel.setSeries(series.id, isSelected: !isSelected)
             }
         } label: {
@@ -753,7 +811,7 @@ private struct CompactUsageHistoryPanel: View {
         .buttonStyle(.plain)
         .accessibilityLabel(series.name)
         .accessibilityValue(isSelected ? "Shown" : "Hidden")
-        .help(series.kind == .aggregate ? "\(series.name) is always shown" : "Toggle \(series.name)")
+        .help(viewModel.isPinnedSeries(series) ? "\(series.name) is always shown" : "Toggle \(series.name)")
     }
 
     private func hoverValueSummary(for selection: UsageHistoryHoverSelection) -> String {
@@ -790,6 +848,29 @@ private struct CompactUsageHistoryPanel: View {
         case nil:
             return .secondary
         }
+    }
+
+    private func tokenHoverColumns(for selection: UsageHistoryHoverSelection) -> [UsageHistorySeries] {
+        let ids = Set(selection.points.map(\.bucketID))
+        return viewModel.sortedSeries.filter { ids.contains($0.id) }
+    }
+
+    private func tokenHoverValue(
+        selection: UsageHistoryHoverSelection,
+        series: UsageHistorySeries,
+        component: TokenHistoryComponent
+    ) -> String {
+        let tokenCount = selection.points
+            .filter { $0.bucketID == series.id && $0.tokenComponent == component }
+            .reduce(Int64(0)) { total, point in
+                total + max(point.tokenCount ?? 0, 0)
+            }
+
+        guard tokenCount > 0 else {
+            return "-"
+        }
+
+        return viewModel.formattedCompactTokenValue(tokenCount)
     }
 
     private func handleChartHover(

@@ -1345,7 +1345,86 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenComponent), [.input, .cached, .output, .reasoning])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120, 50, 25, 5])
         XCTAssertEqual(viewModel.visibleChartPoints.map { viewModel.chartValue(for: $0) }, [120, 50, 25, 5])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), [
+            "tokens_visible_total",
+            "tokens_visible_total",
+            "tokens_visible_total",
+            "tokens_visible_total",
+        ])
         XCTAssertEqual(viewModel.chartYDomain, 0...200)
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "All tokens"), "Total")
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "gpt-5.5"), "5.5")
+        XCTAssertEqual(viewModel.compactSeriesTitle(for: "GPT-5.3-Codex-Spark"), "Spark")
+    }
+
+    @MainActor
+    func testTokenChartUsesOneStackedTotalBarWhenAggregateAndModelAreSelected() throws {
+        let store = try makeStore()
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 120,
+                lastCached: 50,
+                lastOutput: 25,
+                lastReasoning: 5,
+                lastTotal: 200,
+                totalInput: 120,
+                totalCached: 50,
+                totalOutput: 25,
+                totalReasoning: 5,
+                totalTotal: 200
+            ),
+            at: date("2026-04-14T20:10:00Z")
+        )
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        viewModel.selectedChartKind = .tokens
+        viewModel.reload()
+
+        XCTAssertTrue(viewModel.selectedSeriesIDs.contains("tokens_all"))
+        XCTAssertTrue(viewModel.selectedSeriesIDs.contains("model:gpt-5.5"))
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), [
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+        ])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), [
+            "tokens_visible_total",
+            "tokens_visible_total",
+            "tokens_visible_total",
+            "tokens_visible_total",
+        ])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.tokenCount), [120, 50, 25, 5])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.tokenComponent), [.input, .cached, .output, .reasoning])
+
+        viewModel.setSeries("tokens_all", isSelected: false)
+
+        XCTAssertFalse(viewModel.selectedSeriesIDs.contains("tokens_all"))
+        XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), [
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+            "model:gpt-5.5",
+        ])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.bucketID), [
+            "tokens_visible_total",
+            "tokens_visible_total",
+            "tokens_visible_total",
+            "tokens_visible_total",
+        ])
+        XCTAssertEqual(viewModel.visibleBarPoints.map(\.tokenCount), [120, 50, 25, 5])
     }
 
     @MainActor
