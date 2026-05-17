@@ -485,6 +485,40 @@ final class UsageHistoryStore {
         return Self.series(from: points)
     }
 
+    func availableTokenSeries(category: TokenHistoryCategory) throws -> [UsageHistorySeries] {
+        let valueExpression = tokenValueExpression(for: category)
+        let statement = try prepare(
+            """
+            SELECT series_id, series_name, series_kind, seen_at
+            FROM (
+                SELECT
+                    'tokens_all' AS series_id,
+                    'All tokens' AS series_name,
+                    'aggregate' AS series_kind,
+                    received_at AS seen_at,
+                    \(valueExpression) AS token_count
+                FROM token_usage_samples
+
+                UNION ALL
+
+                SELECT
+                    'model:' || model AS series_id,
+                    model AS series_name,
+                    'model' AS series_kind,
+                    received_at AS seen_at,
+                    \(valueExpression) AS token_count
+                FROM token_usage_samples
+                WHERE model IS NOT NULL AND model != ''
+            )
+            WHERE token_count > 0
+            ORDER BY seen_at DESC, series_kind ASC, series_name ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        return try readAvailableSeries(from: statement)
+    }
+
     func tokenHistoryBounds(category: TokenHistoryCategory) throws -> UsageHistoryBounds? {
         let valueExpression = tokenValueExpression(for: category)
         let statement = try prepare(
@@ -554,6 +588,32 @@ final class UsageHistoryStore {
     ) throws -> [UsageHistorySeries] {
         let points = try points(range: range, window: window, periodStart: periodStart, periodEnd: periodEnd)
         return Self.series(from: points)
+    }
+
+    func availableSeries(window: UsageLimitWindow) throws -> [UsageHistorySeries] {
+        let statement = try prepare(
+            """
+            SELECT bucket_id, bucket_name, bucket_kind, seen_at
+            FROM (
+                SELECT bucket_id, bucket_name, bucket_kind, timestamp AS seen_at
+                FROM usage_samples
+                WHERE window = ?
+
+                UNION ALL
+
+                SELECT bucket_id, bucket_name, bucket_kind, sample_timestamp AS seen_at
+                FROM usage_rollups
+                WHERE window = ?
+            )
+            ORDER BY seen_at DESC, bucket_kind ASC, bucket_name ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(window.rawValue, to: 1, in: statement)
+        bindText(window.rawValue, to: 2, in: statement)
+
+        return try readAvailableSeries(from: statement)
     }
 
     func historyBounds(
@@ -1514,6 +1574,39 @@ final class UsageHistoryStore {
 
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
+    }
+
+    private func readAvailableSeries(from statement: OpaquePointer) throws -> [UsageHistorySeries] {
+        var seen = Set<String>()
+        var series: [UsageHistorySeries] = []
+
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let id = columnText(statement, index: 0)
+                guard seen.insert(id).inserted else {
+                    continue
+                }
+
+                series.append(
+                    UsageHistorySeries(
+                        id: id,
+                        name: columnText(statement, index: 1),
+                        kind: CodexUsageBucketKind(rawValue: columnText(statement, index: 2)) ?? .model
+                    )
+                )
+            case SQLITE_DONE:
+                return series.sorted { lhs, rhs in
+                    if lhs.kind != rhs.kind {
+                        return lhs.kind == .aggregate
+                    }
+
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
     }
 
     private func compactRawSamples(olderThan date: Date) throws {

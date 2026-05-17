@@ -88,13 +88,13 @@
   - Imported only token-count metadata from `~/.codex/sessions` and `~/.codex/archived_sessions`.
   - Kept the importer idempotent so repeated imports do not inflate token history.
 
-## Next Candidates
-
 - Align menu-bar context menu and history model controls with intended UX
-  - Restrict right-click menu to only include `Quit` once the primary menu-bar actions are moved into the main menu.
-  - Update history model selector to include all tracked models (including `spark`) with Spark disabled by default.
-  - Prevent the history popover from terminating the app when closed after being opened from right-click interactions.
-  - Ensure right-click actions no longer expose non-functional settings controls.
+  - Restricted the right-click status menu to `Quit` only.
+  - Kept primary controls in the left-click popover.
+  - Made History model selectors use all locally tracked series for the selected limit or token category.
+  - Kept Spark visible but unchecked by default.
+
+## Next Candidates
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.

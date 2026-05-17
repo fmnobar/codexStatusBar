@@ -26,6 +26,27 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.timestamp), [date("2026-04-14T20:00:00Z"), date("2026-04-14T20:00:00Z")])
     }
 
+    func testAvailableSeriesIncludesTrackedModelsOutsideSelectedPeriod() throws {
+        let store = try makeStore()
+
+        try store.record(
+            snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7, extraModelSevenDay: 4),
+            at: date("2026-04-13T20:00:10Z")
+        )
+
+        let emptyCurrentDayPoints = try store.points(
+            range: .day,
+            window: .sevenDay,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+        let availableSeries = try store.availableSeries(window: .sevenDay)
+
+        XCTAssertEqual(emptyCurrentDayPoints, [])
+        XCTAssertEqual(availableSeries.map(\.id), ["codex", "codex_gpt54", "codex_gpt55"])
+        XCTAssertEqual(availableSeries.map(\.kind), [.aggregate, .model, .model])
+    }
+
     func testUpsertsDuplicateMinuteSamples() throws {
         let store = try makeStore()
         let first = date("2026-04-14T20:00:10Z")
@@ -308,6 +329,33 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.seriesKind), [.aggregate, .model])
         XCTAssertEqual(points.map(\.tokenCount), [120, 120])
         XCTAssertEqual(series.map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
+    func testAvailableTokenSeriesIncludesTrackedModelsOutsideSelectedPeriod() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastTotal: 120,
+                totalTotal: 120
+            ),
+            at: date("2026-04-13T20:00:00Z")
+        )
+
+        let emptyCurrentDayPoints = try store.tokenPoints(
+            category: .total,
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+        let availableSeries = try store.availableTokenSeries(category: .total)
+
+        XCTAssertEqual(emptyCurrentDayPoints, [])
+        XCTAssertEqual(availableSeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
+        XCTAssertEqual(availableSeries.map(\.name), ["All tokens", "gpt-5.5"])
     }
 
     func testTokenTotalForDayUsesLocalCalendarDay() throws {
@@ -1615,6 +1663,35 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.selectAllSeries()
 
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex", "codex_gpt53_spark"])
+    }
+
+    @MainActor
+    func testSparkModelRemainsAvailableButHiddenWhenSelectedPeriodHasNoBars() throws {
+        let store = try makeStore()
+        try store.record(
+            snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
+            at: date("2026-04-13T20:00:00Z")
+        )
+        let viewModel = UsageHistoryViewModel(
+            store: store,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        viewModel.selectedRange = .day
+        viewModel.reload()
+
+        XCTAssertEqual(viewModel.visibleChartPoints, [])
+        XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["codex", "codex_gpt53_spark"])
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
+
+        viewModel.selectAllSeries()
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex", "codex_gpt53_spark"])
+
+        viewModel.clearModelSeries()
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
     }
 
     @MainActor

@@ -1,6 +1,20 @@
+import AppKit
 import XCTest
 
 final class MenuBarStatusFormatterTests: XCTestCase {
+    @MainActor
+    func testStatusItemContextMenuContainsOnlyQuit() {
+        let menu = StatusItemContextMenuFactory.makeMenu(
+            target: nil,
+            quitAction: NSSelectorFromString("quit")
+        )
+
+        XCTAssertEqual(menu.items.map(\.title), ["Quit"])
+        XCTAssertEqual(menu.items.first?.keyEquivalent, "")
+        XCTAssertEqual(menu.items.first?.action.map { NSStringFromSelector($0) }, "quit")
+        XCTAssertEqual(menu.items.first?.isEnabled, true)
+    }
+
     func testMenuBarDisplayWindowStoreDefaultsToTightest() {
         let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

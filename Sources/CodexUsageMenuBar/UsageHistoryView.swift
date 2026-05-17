@@ -482,12 +482,7 @@ final class UsageHistoryViewModel: ObservableObject {
                     periodEnd: queryPeriod.end
                 )
                 loadedTokenPoints = []
-                loadedSeries = try store.series(
-                    range: selectedRange,
-                    window: selectedWindow,
-                    periodStart: queryPeriod.start,
-                    periodEnd: queryPeriod.end
-                )
+                loadedSeries = try store.availableSeries(window: selectedWindow)
                 loadedHistoryBounds = try store.historyBounds(
                     window: selectedWindow,
                     granularity: selectedRange.storageGranularity
@@ -500,12 +495,7 @@ final class UsageHistoryViewModel: ObservableObject {
                     periodStart: queryPeriod.start,
                     periodEnd: queryPeriod.end
                 )
-                loadedSeries = try store.tokenSeries(
-                    category: selectedTokenCategory,
-                    range: selectedRange,
-                    periodStart: queryPeriod.start,
-                    periodEnd: queryPeriod.end
-                )
+                loadedSeries = try store.availableTokenSeries(category: selectedTokenCategory)
                 loadedHistoryBounds = try store.tokenHistoryBounds(category: selectedTokenCategory)
             }
             let loadedHasAnyHistory = try store.hasAnyHistory()
@@ -860,10 +850,13 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     private static func isHiddenByDefault(_ series: UsageHistorySeries) -> Bool {
-        series.kind == .model && series.name.compare(
-            "GPT-5.3-Codex-Spark",
-            options: [.caseInsensitive, .diacriticInsensitive]
-        ) == .orderedSame
+        guard series.kind == .model else {
+            return false
+        }
+
+        let normalizedID = series.id.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let normalizedName = series.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        return normalizedID.contains("spark") || normalizedName.contains("spark")
     }
 
     private static func bucketedChartPoints(

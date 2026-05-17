@@ -1,4 +1,16 @@
+import AppKit
 import Foundation
+
+@MainActor
+enum StatusItemContextMenuFactory {
+    static func makeMenu(target: AnyObject?, quitAction: Selector) -> NSMenu {
+        let menu = NSMenu()
+        let quitItem = NSMenuItem(title: "Quit", action: quitAction, keyEquivalent: "")
+        quitItem.target = target
+        menu.addItem(quitItem)
+        return menu
+    }
+}
 
 enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
     case fiveHour
