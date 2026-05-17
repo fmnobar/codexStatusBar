@@ -10,6 +10,7 @@ private enum MenuBarPopoverExpandedSection: Equatable {
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     let historyStore: UsageHistoryStore
+    var onOpenTokenDashboard: () -> Void = {}
     var onContentSizeChange: (NSSize) -> Void = { _ in }
     var appVersionInfo: AppVersionInfo = .current()
     @State private var expandedSection: MenuBarPopoverExpandedSection?
@@ -33,6 +34,8 @@ struct MenuBarContentView: View {
                 limitSelectionRow
                 Divider()
                 historySection
+                Divider()
+                tokenDashboardRow
                 Divider()
                 settingsSection
                 Divider()
@@ -132,6 +135,32 @@ struct MenuBarContentView: View {
                 inlineSettings
             }
         }
+    }
+
+    private var tokenDashboardRow: some View {
+        Button {
+            onOpenTokenDashboard()
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 14))
+                    .frame(width: 14)
+
+                Text("Token Dashboard")
+                    .font(.system(size: 13))
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open detailed token dashboard")
     }
 
     private func expandableHeader(

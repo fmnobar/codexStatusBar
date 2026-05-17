@@ -111,12 +111,12 @@
   - Streamed JSONL parsing line by line while preserving metadata-only token/model attribution.
   - Reported discovered, scanned, skipped, imported, duplicate, repaired, failed-line, and elapsed-time import counts.
 
-## Next Candidates
-
 - Add detailed token dashboard
   - Add a separate dashboard surface outside the compact menu popover for deeper token analysis.
   - Show totals and trends for all captured token categories, including input, cached input, output, reasoning output, and total tokens.
   - Reuse existing token history storage, calendar-period navigation, model series, and export behavior where practical.
+
+## Next Candidates
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.

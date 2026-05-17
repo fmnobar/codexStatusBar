@@ -8,6 +8,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let historyStore: UsageHistoryStore
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    private lazy var tokenDashboardWindowController = TokenDashboardWindowController(store: historyStore)
     private lazy var contextMenu = StatusItemContextMenuFactory.makeMenu(
         target: self,
         quitAction: #selector(quit)
@@ -38,6 +39,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             rootView: MenuBarContentView(
                 viewModel: viewModel,
                 historyStore: historyStore,
+                onOpenTokenDashboard: { [weak self] in
+                    self?.openTokenDashboard()
+                },
                 onContentSizeChange: { [weak self] size in
                     self?.updatePopoverContentSize(size)
                 }
@@ -165,6 +169,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.menu = contextMenu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    private func openTokenDashboard() {
+        popover.performClose(nil)
+        tokenDashboardWindowController.showWindow()
     }
 
     @objc

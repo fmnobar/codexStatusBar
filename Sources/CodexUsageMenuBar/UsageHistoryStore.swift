@@ -930,6 +930,195 @@ final class UsageHistoryStore: @unchecked Sendable {
         return try readHistoryBounds(from: statement)
     }
 
+    func tokenDashboardPoints(
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [TokenDashboardComponentPoint] {
+        let startTimestamp = periodStart.timeIntervalSince1970Int
+        let endTimestamp = periodEnd.timeIntervalSince1970Int
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
+        let statement = try prepare(
+            """
+            SELECT received_at,
+                \(normalizedModelExpression) AS normalized_model,
+                observed_input_tokens,
+                observed_cached_input_tokens,
+                observed_output_tokens,
+                observed_reasoning_output_tokens
+            FROM token_usage_samples
+            WHERE received_at >= ? AND received_at < ?
+                AND (
+                    IFNULL(observed_input_tokens, 0) > 0
+                    OR IFNULL(observed_cached_input_tokens, 0) > 0
+                    OR IFNULL(observed_output_tokens, 0) > 0
+                    OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+                )
+            ORDER BY received_at ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, startTimestamp)
+        sqlite3_bind_int64(statement, 2, endTimestamp)
+
+        var accumulators = [TokenDashboardAccumulatorKey: TokenDashboardAccumulator]()
+
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let receivedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
+                let normalizedModel = optionalColumnText(statement, index: 1)
+                let bucketStart = UsageHistoryRange.bucketStart(
+                    for: receivedAt,
+                    component: range.chartBucketComponent,
+                    calendar: calendar
+                )
+                let bucketEnd = calendar.date(byAdding: range.chartBucketComponent, value: 1, to: bucketStart)
+                    ?? bucketStart
+
+                let components: [(TokenHistoryComponent, Int64)] = [
+                    (.input, sqlite3_column_int64(statement, 2)),
+                    (.cached, sqlite3_column_int64(statement, 3)),
+                    (.output, sqlite3_column_int64(statement, 4)),
+                    (.reasoning, sqlite3_column_int64(statement, 5)),
+                ]
+
+                for (component, tokenCount) in components where tokenCount > 0 {
+                    addTokenDashboardAccumulator(
+                        bucketStart: bucketStart,
+                        bucketEnd: bucketEnd,
+                        seriesID: TokenDashboardSeries.aggregateID,
+                        seriesName: "All captured",
+                        seriesKind: .aggregate,
+                        component: component,
+                        tokenCount: tokenCount,
+                        to: &accumulators
+                    )
+
+                    if let normalizedModel, !normalizedModel.isEmpty {
+                        addTokenDashboardAccumulator(
+                            bucketStart: bucketStart,
+                            bucketEnd: bucketEnd,
+                            seriesID: "model:\(normalizedModel)",
+                            seriesName: normalizedModel,
+                            seriesKind: .model,
+                            component: component,
+                            tokenCount: tokenCount,
+                            to: &accumulators
+                        )
+                    } else {
+                        addTokenDashboardAccumulator(
+                            bucketStart: bucketStart,
+                            bucketEnd: bucketEnd,
+                            seriesID: TokenDashboardSeries.unattributedID,
+                            seriesName: "Unattributed",
+                            seriesKind: .unattributed,
+                            component: component,
+                            tokenCount: tokenCount,
+                            to: &accumulators
+                        )
+                    }
+                }
+            case SQLITE_DONE:
+                return accumulators.values
+                    .map { accumulator in
+                        TokenDashboardComponentPoint(
+                            bucketStart: accumulator.bucketStart,
+                            bucketEnd: accumulator.bucketEnd,
+                            seriesID: accumulator.seriesID,
+                            seriesName: accumulator.seriesName,
+                            seriesKind: accumulator.seriesKind,
+                            component: accumulator.component,
+                            tokenCount: accumulator.tokenCount
+                        )
+                    }
+                    .sortedByStoreDashboardDisplayOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func tokenDashboardSeries() throws -> [TokenDashboardSeries] {
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
+        let statement = try prepare(
+            """
+            WITH samples AS (
+                SELECT received_at,
+                    \(normalizedModelExpression) AS normalized_model,
+                    observed_input_tokens,
+                    observed_cached_input_tokens,
+                    observed_output_tokens,
+                    observed_reasoning_output_tokens
+                FROM token_usage_samples
+                WHERE IFNULL(observed_input_tokens, 0) > 0
+                    OR IFNULL(observed_cached_input_tokens, 0) > 0
+                    OR IFNULL(observed_output_tokens, 0) > 0
+                    OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+            )
+            SELECT series_id, series_name, series_kind, seen_at
+            FROM (
+                SELECT
+                    '\(TokenDashboardSeries.aggregateID)' AS series_id,
+                    'All captured' AS series_name,
+                    'aggregate' AS series_kind,
+                    received_at AS seen_at
+                FROM samples
+
+                UNION ALL
+
+                SELECT
+                    'model:' || normalized_model AS series_id,
+                    normalized_model AS series_name,
+                    'model' AS series_kind,
+                    received_at AS seen_at
+                FROM samples
+                WHERE normalized_model IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    '\(TokenDashboardSeries.unattributedID)' AS series_id,
+                    'Unattributed' AS series_name,
+                    'unattributed' AS series_kind,
+                    received_at AS seen_at
+                FROM samples
+                WHERE normalized_model IS NULL
+            )
+            ORDER BY seen_at DESC, series_kind ASC, series_name ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var seriesByID = [String: TokenDashboardSeries]()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let id = columnText(statement, index: 0)
+                guard seriesByID[id] == nil,
+                      let kind = TokenDashboardSeriesKind(rawValue: columnText(statement, index: 2))
+                else {
+                    continue
+                }
+
+                seriesByID[id] = TokenDashboardSeries(
+                    id: id,
+                    name: columnText(statement, index: 1),
+                    kind: kind
+                )
+            case SQLITE_DONE:
+                return seriesByID.values.sortedByDashboardSeriesOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func tokenDashboardBounds() throws -> UsageHistoryBounds? {
+        try tokenComponentHistoryBounds()
+    }
+
 
     func points(
         range: UsageHistoryRange,
@@ -2411,6 +2600,110 @@ final class UsageHistoryStore: @unchecked Sendable {
         }
 
         return value
+    }
+}
+
+private struct TokenDashboardAccumulatorKey: Hashable {
+    let bucketStart: Date
+    let seriesID: String
+    let component: TokenHistoryComponent
+}
+
+private struct TokenDashboardAccumulator {
+    let bucketStart: Date
+    let bucketEnd: Date
+    let seriesID: String
+    let seriesName: String
+    let seriesKind: TokenDashboardSeriesKind
+    let component: TokenHistoryComponent
+    var tokenCount: Int64
+}
+
+private func addTokenDashboardAccumulator(
+    bucketStart: Date,
+    bucketEnd: Date,
+    seriesID: String,
+    seriesName: String,
+    seriesKind: TokenDashboardSeriesKind,
+    component: TokenHistoryComponent,
+    tokenCount: Int64,
+    to accumulators: inout [TokenDashboardAccumulatorKey: TokenDashboardAccumulator]
+) {
+    let key = TokenDashboardAccumulatorKey(
+        bucketStart: bucketStart,
+        seriesID: seriesID,
+        component: component
+    )
+    var accumulator = accumulators[key] ?? TokenDashboardAccumulator(
+        bucketStart: bucketStart,
+        bucketEnd: bucketEnd,
+        seriesID: seriesID,
+        seriesName: seriesName,
+        seriesKind: seriesKind,
+        component: component,
+        tokenCount: 0
+    )
+    accumulator.tokenCount += tokenCount
+    accumulators[key] = accumulator
+}
+
+private extension Array where Element == TokenDashboardComponentPoint {
+    func sortedByStoreDashboardDisplayOrder() -> [TokenDashboardComponentPoint] {
+        sorted { lhs, rhs in
+            if lhs.bucketStart != rhs.bucketStart {
+                return lhs.bucketStart < rhs.bucketStart
+            }
+
+            if lhs.seriesKind != rhs.seriesKind {
+                return lhs.seriesKind.storeSortIndex < rhs.seriesKind.storeSortIndex
+            }
+
+            if lhs.seriesName != rhs.seriesName {
+                return lhs.seriesName.localizedStandardCompare(rhs.seriesName) == .orderedAscending
+            }
+
+            return lhs.component.storeSortIndex < rhs.component.storeSortIndex
+        }
+    }
+}
+
+private extension Collection where Element == TokenDashboardSeries {
+    func sortedByDashboardSeriesOrder() -> [TokenDashboardSeries] {
+        sorted { lhs, rhs in
+            if lhs.kind != rhs.kind {
+                return lhs.kind.storeSortIndex < rhs.kind.storeSortIndex
+            }
+
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+    }
+}
+
+private extension TokenDashboardSeriesKind {
+    var storeSortIndex: Int {
+        switch self {
+        case .aggregate:
+            return 0
+        case .model:
+            return 1
+        case .unattributed:
+            return 2
+        }
+    }
+}
+
+private extension TokenHistoryComponent {
+    var storeSortIndex: Int {
+        switch self {
+        case .input:
+            return 0
+        case .cached:
+            return 1
+        case .output:
+            return 2
+        case .reasoning:
+            return 3
+        }
     }
 }
 

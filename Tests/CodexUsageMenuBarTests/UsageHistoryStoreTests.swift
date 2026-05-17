@@ -589,6 +589,201 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(bounds?.latest, date("2026-04-14T20:00:00Z"))
     }
 
+    func testTokenDashboardPointsAggregateComponentsModelsAndUnattributedRows() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 100,
+                lastCached: 40,
+                lastOutput: 20,
+                lastReasoning: 5,
+                lastTotal: 165,
+                totalInput: 100,
+                totalCached: 40,
+                totalOutput: 20,
+                totalReasoning: 5,
+                totalTotal: 165
+            ),
+            at: date("2026-05-02T10:15:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-b",
+                turnID: "turn-a",
+                lastInput: 50,
+                lastCached: 10,
+                lastOutput: 30,
+                lastReasoning: 2,
+                lastTotal: 92,
+                totalInput: 50,
+                totalCached: 10,
+                totalOutput: 30,
+                totalReasoning: 2,
+                totalTotal: 92
+            ),
+            at: date("2026-05-02T11:15:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-c",
+                turnID: "turn-a",
+                model: "future-model",
+                lastInput: 200,
+                lastCached: 80,
+                lastOutput: 25,
+                lastReasoning: 7,
+                lastTotal: 312,
+                totalInput: 200,
+                totalCached: 80,
+                totalOutput: 25,
+                totalReasoning: 7,
+                totalTotal: 312
+            ),
+            at: date("2026-05-03T09:15:00Z")
+        )
+
+        let points = try store.tokenDashboardPoints(
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+        let series = try store.tokenDashboardSeries()
+
+        XCTAssertEqual(series.map(\.id), [
+            "tokens_all",
+            "model:future-model",
+            "model:gpt-5.5",
+            "tokens_unattributed",
+        ])
+        XCTAssertEqual(series.map(\.name), ["All captured", "future-model", "gpt-5.5", "Unattributed"])
+        XCTAssertEqual(
+            dashboardTokenCount(points, seriesID: "tokens_all", component: .input, bucketStart: date("2026-05-02T00:00:00Z")),
+            150
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(points, seriesID: "model:gpt-5.5", component: .cached, bucketStart: date("2026-05-02T00:00:00Z")),
+            40
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(points, seriesID: "tokens_unattributed", component: .output, bucketStart: date("2026-05-02T00:00:00Z")),
+            30
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(points, seriesID: "model:future-model", component: .reasoning, bucketStart: date("2026-05-03T00:00:00Z")),
+            7
+        )
+    }
+
+    @MainActor
+    func testTokenDashboardViewModelDefaultsFiltersAndExportsVisibleRows() throws {
+        let store = try makeStore()
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 100,
+                lastCached: 40,
+                lastOutput: 20,
+                lastReasoning: 5,
+                lastTotal: 165,
+                totalInput: 100,
+                totalCached: 40,
+                totalOutput: 20,
+                totalReasoning: 5,
+                totalTotal: 165
+            ),
+            at: date("2026-05-02T10:15:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-b",
+                turnID: "turn-a",
+                model: "gpt-5.4",
+                lastInput: 30,
+                lastCached: 10,
+                lastOutput: 8,
+                lastReasoning: 2,
+                lastTotal: 50,
+                totalInput: 30,
+                totalCached: 10,
+                totalOutput: 8,
+                totalReasoning: 2,
+                totalTotal: 50
+            ),
+            at: date("2026-05-03T10:15:00Z")
+        )
+
+        let viewModel = TokenDashboardViewModel(
+            store: store,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+
+        XCTAssertEqual(viewModel.selectedRange, .month)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 215)
+        XCTAssertEqual(viewModel.exportFilename, "codex-token-dashboard-month-2026-05.csv")
+        XCTAssertTrue(viewModel.csvText.contains("month,2026-05-01T00:00:00Z,2026-06-01T00:00:00Z,2026-05-02T00:00:00Z,2026-05-03T00:00:00Z,tokens_all,All captured,aggregate,input,100"))
+
+        viewModel.selectSeries("model:gpt-5.5")
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["model:gpt-5.5"])
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
+        XCTAssertFalse(viewModel.csvText.contains("model:gpt-5.4"))
+        XCTAssertTrue(viewModel.csvText.contains("model:gpt-5.5,gpt-5.5,model,input,100"))
+    }
+
+    @MainActor
+    func testTokenDashboardNavigationBoundsAndEmptyStates() throws {
+        let emptyViewModel = TokenDashboardViewModel(
+            store: try makeStore(),
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+
+        XCTAssertEqual(emptyViewModel.emptyState.title, "No token data yet")
+        XCTAssertFalse(emptyViewModel.canGoToPreviousPeriod)
+
+        let store = try makeStore()
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 100,
+                lastTotal: 100,
+                totalInput: 100,
+                totalTotal: 100
+            ),
+            at: date("2026-04-14T10:00:00Z")
+        )
+        let viewModel = TokenDashboardViewModel(
+            store: store,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+
+        XCTAssertTrue(viewModel.canGoToPreviousPeriod)
+        XCTAssertFalse(viewModel.canGoToNextPeriod)
+
+        viewModel.goToPreviousPeriod()
+
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-01T00:00:00Z"))
+        XCTAssertTrue(viewModel.hasVisiblePoints)
+        XCTAssertTrue(viewModel.canGoToNextPeriod)
+
+        viewModel.goToNextPeriod()
+
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+        XCTAssertEqual(viewModel.emptyState.title, "No tokens for this selection")
+    }
+
     func testTokenTotalForDayUsesLocalCalendarDay() throws {
         let store = try makeStore()
 
@@ -2694,6 +2889,19 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(frame, visibleFrame)
     }
 
+    func testTokenDashboardWindowFrameClampsLikeHistoryWindow() {
+        let visibleFrame = CGRect(x: 100, y: 50, width: 900, height: 620)
+        let restoredFrame = CGRect(x: 20, y: -40, width: 1040, height: 700)
+
+        let frame = TokenDashboardWindowFrame.clampedFrame(
+            restoredFrame,
+            minimumSize: CGSize(width: 780, height: 560),
+            visibleFrame: visibleFrame
+        )
+
+        XCTAssertEqual(frame, visibleFrame)
+    }
+
     private func makeStore() throws -> UsageHistoryStore {
         try UsageHistoryStore.inMemory(notificationCenter: NotificationCenter(), calendar: calendar)
     }
@@ -2997,6 +3205,19 @@ final class UsageHistoryStoreTests: XCTestCase {
 
     private func setModificationDate(_ date: Date, for url: URL) throws {
         try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+
+    private func dashboardTokenCount(
+        _ points: [TokenDashboardComponentPoint],
+        seriesID: String,
+        component: TokenHistoryComponent,
+        bucketStart: Date
+    ) -> Int64? {
+        points.first {
+            $0.seriesID == seriesID
+                && $0.component == component
+                && $0.bucketStart == bucketStart
+        }?.tokenCount
     }
 
     @MainActor
