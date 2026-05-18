@@ -509,8 +509,8 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             while let line = try lineReader.nextRelevantLineData() {
                 do {
                     let decodedLine = try decoder.decode(CodexSessionTokenBackfillLine.self, from: line.data)
-                    if let modelIdentifier = decodedLine.payload?.modelIdentifier {
-                        currentModel = modelIdentifier
+                    if decodedLine.payload?.hasModelMetadata == true {
+                        currentModel = decodedLine.payload?.modelIdentifier
                     }
 
                     guard let payload = decodedLine.payload, payload.type == "token_count", let info = payload.info else {
@@ -530,7 +530,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                     let notification = CodexTokenUsageNotification(
                         threadID: sessionID,
                         turnID: "line:\(line.lineNumber)",
-                        model: info.modelIdentifier ?? currentModel,
+                        model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
                         tokenUsage: tokenUsage
                     )
                     samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
@@ -570,8 +570,8 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
 
                 do {
                     let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
-                    if let modelIdentifier = line.payload?.modelIdentifier {
-                        currentModel = modelIdentifier
+                    if line.payload?.hasModelMetadata == true {
+                        currentModel = line.payload?.modelIdentifier
                     }
 
                     guard let payload = line.payload, payload.type == "token_count", let info = payload.info else {
@@ -591,7 +591,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                     let notification = CodexTokenUsageNotification(
                         threadID: sessionID,
                         turnID: "line:\(lineIndex)",
-                        model: info.modelIdentifier ?? currentModel,
+                        model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
                         tokenUsage: tokenUsage
                     )
                     samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
@@ -789,6 +789,10 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
         }
 
+        var hasModelMetadata: Bool {
+            model != nil || slug != nil || modelSlug != nil
+        }
+
         enum CodingKeys: String, CodingKey {
             case type
             case info
@@ -817,6 +821,10 @@ private struct CodexSessionTokenBackfillLine: Decodable {
 
         var modelIdentifier: String? {
             CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
+        }
+
+        var hasModelMetadata: Bool {
+            model != nil || slug != nil || modelSlug != nil
         }
 
         enum CodingKeys: String, CodingKey {

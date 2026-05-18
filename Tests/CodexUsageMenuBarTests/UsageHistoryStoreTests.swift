@@ -504,6 +504,55 @@ final class UsageHistoryStoreTests: XCTestCase {
         ])
     }
 
+    func testTokenUsageReimportRepairsMalformedExistingModelWithoutInflatingTotals() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: nil,
+                    lastInput: 125,
+                    lastTotal: 125,
+                    totalInput: 125,
+                    totalTotal: 125
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            UPDATE token_usage_samples
+            SET model = 'gpt-5.5
+            Tests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:'
+            WHERE thread_id = 'thread-a';
+            """
+        )
+
+        let repairImport = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 125,
+                    lastTotal: 125,
+                    totalInput: 125,
+                    totalTotal: 125
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+
+        XCTAssertEqual(repairImport, TokenUsageImportResult(insertedCount: 0, duplicateCount: 1, repairedModelCount: 1))
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.model), ["gpt-5.5"])
+        XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 125)
+        XCTAssertEqual(try store.availableTokenSeries(category: .total).map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
     func testTokenUsageComputesSameThreadCumulativeDeltas() async throws {
         let store = try makeStore()
 
@@ -1401,6 +1450,36 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_observed_components_received_at"))
     }
 
+    func testTokenModelCleanupMigrationRepairsStoredRowsAndCatalogs() async throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+        var seedStore: UsageHistoryStore? = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        seedStore = nil
+        try insertMalformedTokenModelRows(into: databaseURL)
+        try executeSQLite(
+            at: databaseURL,
+            sql: "DELETE FROM usage_history_metadata WHERE key = 'token_model_cleanup_version';"
+        )
+
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let samples = try store.tokenUsageSamples()
+        let dashboardSeries = try store.tokenDashboardSeries()
+
+        XCTAssertEqual(samples.map(\.model), ["gpt-5.5", "gpt-5.5", nil])
+        XCTAssertEqual(samples.map(\.observedTotalTokens), [100, 20, 5])
+        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 125)
+        XCTAssertEqual(dashboardSeries.map(\.id), ["tokens_all", "model:gpt-5.5", "tokens_unattributed"])
+        XCTAssertEqual(dashboardSeries.map(\.name), ["All captured", "gpt-5.5", "Unattributed"])
+    }
+
     func testMigratesLegacyTokenTableWithoutObservedCategoryColumns() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyTokenHistoryDatabase(at: databaseURL)
@@ -1556,6 +1635,55 @@ final class UsageHistoryStoreTests: XCTestCase {
             "model:codex-future-7",
             "model:gpt-5.4",
         ])
+    }
+
+    func testSessionTokenBackfillCleansOrDropsMalformedModelMetadata() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-malformed-models.jsonl")
+        try writeSessionLines(
+            [
+                turnContextLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    model: #"gpt-5.5\nTests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:"#
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 125,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 125
+                ),
+                turnContextLine(timestamp: "2026-05-17T15:05:00Z", model: "/Users/example/.codex/sessions/session.jsonl"),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:05:10Z",
+                    lastInput: 20,
+                    lastCached: 5,
+                    lastOutput: 5,
+                    lastReasoning: 1,
+                    lastTotal: 31,
+                    totalInput: 120,
+                    totalCached: 45,
+                    totalOutput: 25,
+                    totalReasoning: 6,
+                    totalTotal: 156
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.model), ["gpt-5.5", nil])
+        XCTAssertEqual(try store.tokenDashboardSeries().map(\.id), ["tokens_all", "model:gpt-5.5", "tokens_unattributed"])
     }
 
     func testSessionTokenBackfillUsesTokenCountInfoModelWhenPresent() async throws {
@@ -2060,6 +2188,28 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try destinationStore.tokenUsageSamples().map(\.observedTotalTokens), [120])
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
+    func testBackupImportCleansMalformedTokenModelLabelsAndRebuildsCatalogs() async throws {
+        let sourceDirectoryURL = try makeTemporaryDirectory()
+        let sourceURL = sourceDirectoryURL.appendingPathComponent("source.sqlite3")
+        var sourceStore: UsageHistoryStore? = try UsageHistoryStore(
+            databaseURL: sourceURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        sourceStore = nil
+        try insertMalformedTokenModelRows(into: sourceURL)
+        let (destinationStore, _) = try makeTemporaryStore()
+
+        try destinationStore.importBackup(from: sourceURL)
+
+        XCTAssertEqual(try destinationStore.tokenUsageSamples().map(\.model), ["gpt-5.5", "gpt-5.5", nil])
+        XCTAssertEqual(try destinationStore.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 125)
+        XCTAssertEqual(
+            try destinationStore.tokenDashboardSeries().map(\.id),
+            ["tokens_all", "model:gpt-5.5", "tokens_unattributed"]
+        )
     }
 
     func testImportBackupReplacesHistoryAndNotifies() async throws {
@@ -3519,6 +3669,51 @@ final class UsageHistoryStoreTests: XCTestCase {
                 return rows
             }
         }
+    }
+
+    private func insertMalformedTokenModelRows(into databaseURL: URL) throws {
+        let baseTimestamp = Int64(date("2026-04-14T20:00:00Z").timeIntervalSince1970)
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO token_usage_samples (
+                thread_id, turn_id, model, received_at, model_context_window,
+                last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                last_reasoning_output_tokens, last_total_tokens,
+                total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                total_reasoning_output_tokens, total_total_tokens,
+                observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                observed_reasoning_output_tokens, observed_total_tokens
+            ) VALUES
+                (
+                    'thread-clean', 'turn-a', 'gpt-5.5', \(baseTimestamp), NULL,
+                    100, 0, 0, 0, 100,
+                    100, 0, 0, 0, 100,
+                    100, 0, 0, 0, 100
+                ),
+                (
+                    'thread-malformed', 'turn-a', 'gpt-5.5
+            Tests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:', \(baseTimestamp + 10), NULL,
+                    20, 0, 0, 0, 20,
+                    20, 0, 0, 0, 20,
+                    20, 0, 0, 0, 20
+                ),
+                (
+                    'thread-path', 'turn-a', '/Users/example/.codex/sessions/session.jsonl', \(baseTimestamp + 20), NULL,
+                    5, 0, 0, 0, 5,
+                    5, 0, 0, 0, 5,
+                    5, 0, 0, 0, 5
+                );
+
+            INSERT OR REPLACE INTO token_series_catalog (
+                series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            ) VALUES
+                ('model:gpt-5.5
+            Tests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:', 'gpt-5.5
+            Tests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:', 'model', \(baseTimestamp + 10), 1, 1, 0, 0, 0);
+            """
+        )
     }
 
     private func createLegacyHistoryDatabase(at databaseURL: URL) throws {

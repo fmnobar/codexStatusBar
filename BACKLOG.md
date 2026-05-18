@@ -144,11 +144,12 @@
   - Added derived series catalogs for rate-limit and token model availability.
   - Moved available-series discovery to catalog reads while keeping chart data semantics unchanged.
 
-## Next Candidates
-
 - Clean malformed token model labels
-  - Add a one-time normalization pass for stored token model values with newlines or unrelated text.
-  - Harden log/session import parsing so malformed model strings cannot become visible series.
+  - Added a one-time cleanup pass for stored token model values with newlines, unsafe characters, or unrelated path/log text.
+  - Hardened live token notifications, session imports, duplicate repairs, backup imports, and catalog writes through the shared model normalizer.
+  - Rebuilt token series catalogs after cleanup so malformed duplicate model labels collapse without changing token totals.
+
+## Next Candidates
 
 - Split History store, History view, and store tests by responsibility
   - Split migrations, write paths, read queries, import/export, and dashboard queries into focused files.

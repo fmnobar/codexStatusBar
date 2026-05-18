@@ -156,6 +156,8 @@ final class UsageHistoryStore: @unchecked Sendable {
     private static let currentConsumptionAlgorithmVersion = "5"
     private static let seriesCatalogMetadataKey = "series_catalog_version"
     private static let currentSeriesCatalogVersion = "1"
+    private static let tokenModelCleanupMetadataKey = "token_model_cleanup_version"
+    private static let currentTokenModelCleanupVersion = "1"
     private static let resetCohortTolerance: Int64 = 60 * 60
     private static let observedTokenComponentsPredicate = """
         observed_input_tokens > 0
@@ -320,7 +322,7 @@ final class UsageHistoryStore: @unchecked Sendable {
                     turnID: notification.turnID,
                     cumulativeTotalTokens: cumulativeTotal
                 ) {
-                    if try repairMissingTokenSampleModel(
+                    if try repairTokenSampleModelIfNeeded(
                         threadID: notification.threadID,
                         turnID: notification.turnID,
                         cumulativeTotalTokens: cumulativeTotal,
@@ -1440,6 +1442,7 @@ final class UsageHistoryStore: @unchecked Sendable {
             }
         }
 
+        _ = try cleanupTokenModelLabels()
         try recomputeStoredUsageConsumption()
         try rebuildSeriesCatalogs()
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -1594,8 +1597,66 @@ final class UsageHistoryStore: @unchecked Sendable {
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_series_catalog_window_seen ON usage_series_catalog(window, seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_series_catalog_kind_seen ON token_series_catalog(series_kind, seen_at DESC)")
 
+        try cleanupTokenModelLabelsIfNeeded()
         try recomputeStoredUsageConsumptionIfNeeded()
         try rebuildSeriesCatalogsIfNeeded()
+    }
+
+    private func cleanupTokenModelLabelsIfNeeded() throws {
+        guard try metadataValue(for: Self.tokenModelCleanupMetadataKey) != Self.currentTokenModelCleanupVersion else {
+            return
+        }
+
+        if try cleanupTokenModelLabels() {
+            try rebuildTokenSeriesCatalog()
+        }
+        try setMetadataValue(Self.currentTokenModelCleanupVersion, for: Self.tokenModelCleanupMetadataKey)
+    }
+
+    @discardableResult
+    private func cleanupTokenModelLabels() throws -> Bool {
+        var rawModels: [String] = []
+        do {
+            let statement = try prepare(
+                """
+                SELECT DISTINCT model
+                FROM token_usage_samples
+                WHERE model IS NOT NULL
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+
+            rawModelLoop:
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_ROW:
+                    rawModels.append(columnText(statement, index: 0))
+                case SQLITE_DONE:
+                    break rawModelLoop
+                default:
+                    throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+                }
+            }
+        }
+
+        guard !rawModels.isEmpty else {
+            return false
+        }
+
+        var didChange = false
+        try transaction {
+            for rawModel in rawModels {
+                let normalizedModel = normalizedModelName(rawModel)
+                guard normalizedModel != rawModel else {
+                    continue
+                }
+
+                try updateStoredTokenModel(from: rawModel, to: normalizedModel)
+                didChange = true
+            }
+        }
+
+        return didChange
     }
 
     private func rebuildSeriesCatalogsIfNeeded() throws {
@@ -2693,6 +2754,13 @@ final class UsageHistoryStore: @unchecked Sendable {
             turnID: notification.turnID,
             cumulativeTotalTokens: notification.tokenUsage.total.totalTokens
         )
+        let existingNormalizedModel = CodexModelIdentifier.normalized(existingModelState.model)
+        let shouldRepairExistingModel = existingModelState.exists
+            && normalizedModel != nil
+            && (
+                existingNormalizedModel == nil
+                    || (existingNormalizedModel == normalizedModel && existingModelState.model != normalizedModel)
+            )
         let statement = try prepare(
             """
             INSERT INTO token_usage_samples (
@@ -2755,15 +2823,23 @@ final class UsageHistoryStore: @unchecked Sendable {
         sqlite3_bind_int64(statement, 20, observedTokens.totalTokens)
 
         try step(statement)
+        let didRepairExistingModel: Bool
+        if shouldRepairExistingModel {
+            didRepairExistingModel = try repairTokenSampleModelIfNeeded(
+                threadID: notification.threadID,
+                turnID: notification.turnID,
+                cumulativeTotalTokens: notification.tokenUsage.total.totalTokens,
+                model: normalizedModel
+            )
+        } else {
+            didRepairExistingModel = false
+        }
         try upsertTokenSeriesCatalog(
             model: normalizedModel,
             seenAt: timestamp,
             observedTokens: observedTokens
         )
-        if existingModelState.exists,
-           CodexModelIdentifier.normalized(existingModelState.model) == nil,
-           normalizedModel != nil
-        {
+        if didRepairExistingModel || shouldRepairExistingModel {
             try rebuildTokenSeriesCatalog()
         }
     }
@@ -2797,13 +2873,26 @@ final class UsageHistoryStore: @unchecked Sendable {
         }
     }
 
-    private func repairMissingTokenSampleModel(
+    private func repairTokenSampleModelIfNeeded(
         threadID: String,
         turnID: String,
         cumulativeTotalTokens: Int64,
         model: String?
     ) throws -> Bool {
         guard let normalizedModel = CodexModelIdentifier.normalized(model) else {
+            return false
+        }
+
+        let existingModelState = try tokenSampleModelState(
+            threadID: threadID,
+            turnID: turnID,
+            cumulativeTotalTokens: cumulativeTotalTokens
+        )
+        let existingNormalizedModel = CodexModelIdentifier.normalized(existingModelState.model)
+        guard existingNormalizedModel == nil || existingNormalizedModel == normalizedModel else {
+            return false
+        }
+        guard existingModelState.model != normalizedModel else {
             return false
         }
 
@@ -2814,7 +2903,6 @@ final class UsageHistoryStore: @unchecked Sendable {
             WHERE thread_id = ?
                 AND turn_id = ?
                 AND total_total_tokens = ?
-                AND NULLIF(TRIM(model, char(9) || char(10) || char(13) || ' '), '') IS NULL
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -2828,11 +2916,39 @@ final class UsageHistoryStore: @unchecked Sendable {
         return sqlite3_changes(database) > 0
     }
 
+    private func updateStoredTokenModel(from rawModel: String, to normalizedModel: String?) throws {
+        let statement: OpaquePointer
+        if let normalizedModel {
+            statement = try prepare(
+                """
+                UPDATE token_usage_samples
+                SET model = ?
+                WHERE model = ?
+                """
+            )
+            bindText(normalizedModel, to: 1, in: statement)
+            bindText(rawModel, to: 2, in: statement)
+        } else {
+            statement = try prepare(
+                """
+                UPDATE token_usage_samples
+                SET model = NULL
+                WHERE model = ?
+                """
+            )
+            bindText(rawModel, to: 1, in: statement)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        try step(statement)
+    }
+
     private func upsertTokenSeriesCatalog(
         model: String?,
         seenAt: Int64,
         observedTokens: CodexTokenUsageBreakdown
     ) throws {
+        let normalizedModel = CodexModelIdentifier.normalized(model)
         guard observedTokens.totalTokens > 0
                 || observedTokens.inputTokens > 0
                 || observedTokens.cachedInputTokens > 0
@@ -2854,10 +2970,10 @@ final class UsageHistoryStore: @unchecked Sendable {
             hasReasoning: observedTokens.reasoningOutputTokens > 0
         )
 
-        if let model {
+        if let normalizedModel {
             try upsertTokenSeriesCatalogRow(
-                seriesID: "model:\(model)",
-                seriesName: model,
+                seriesID: "model:\(normalizedModel)",
+                seriesName: normalizedModel,
                 seriesKind: "model",
                 seenAt: seenAt,
                 hasTotal: observedTokens.totalTokens > 0,
@@ -3379,11 +3495,17 @@ final class UsageHistoryStore: @unchecked Sendable {
         let cleanedModelExpression = """
         TRIM(REPLACE(REPLACE(REPLACE(\(column), char(9), ' '), char(10), ' '), char(13), ' '))
         """
-        return """
-        NULLIF(CASE
+        let firstTokenExpression = """
+        CASE
             WHEN INSTR(\(cleanedModelExpression), ' ') > 0
                 THEN SUBSTR(\(cleanedModelExpression), 1, INSTR(\(cleanedModelExpression), ' ') - 1)
             ELSE \(cleanedModelExpression)
+        END
+        """
+        return """
+        NULLIF(CASE
+            WHEN (\(firstTokenExpression)) GLOB '*[^A-Za-z0-9._-]*' THEN NULL
+            ELSE (\(firstTokenExpression))
         END, '')
         """
     }

@@ -236,6 +236,27 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertNil(try decodeTokenUsageModel())
     }
 
+    func testNormalizesThreadTokenUsageNotificationModelIdentifiers() throws {
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraRoot: #","model":"gpt-5.5\nTests/CodexUsageMenuBarTests/UsageHistoryStoreTests.swift:611:""#),
+            "gpt-5.5"
+        )
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraRoot: #","model":"o-series-next""#),
+            "o-series-next"
+        )
+        XCTAssertEqual(
+            try decodeTokenUsageModel(extraRoot: #","model":"gpt-5.4-mini""#),
+            "gpt-5.4-mini"
+        )
+        XCTAssertNil(
+            try decodeTokenUsageModel(extraRoot: #","model":"/Users/example/.codex/sessions/session.jsonl""#)
+        )
+        XCTAssertNil(
+            try decodeTokenUsageModel(extraRoot: #","model":"event.name=codex.sse_event""#)
+        )
+    }
+
     private func decodeTokenUsageModel(
         extraRoot: String = "",
         extraTokenUsage: String = ""

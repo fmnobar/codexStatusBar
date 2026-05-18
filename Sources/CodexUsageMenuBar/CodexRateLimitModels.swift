@@ -86,7 +86,16 @@ enum CodexModelIdentifier {
         }
 
         let firstTokenScalars = trimmedValue.unicodeScalars.split { trimSet.contains($0) }.first
-        return firstTokenScalars.map { String(String.UnicodeScalarView($0)) }
+        guard let firstTokenScalars else {
+            return nil
+        }
+
+        let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        guard firstTokenScalars.allSatisfy({ allowedCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return String(String.UnicodeScalarView(firstTokenScalars))
     }
 
     static func firstNormalized(_ values: [String?]) -> String? {

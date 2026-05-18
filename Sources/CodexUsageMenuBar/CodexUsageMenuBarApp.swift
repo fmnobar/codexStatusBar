@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = StatusItemController(viewModel: viewModel, historyDatabase: historyDatabase)
 
         Task {
+            _ = try? await historyDatabase.databaseInfo()
+        }
+
+        Task {
             await viewModel.start()
         }
     }
