@@ -4,9 +4,8 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Split History store, History view, and store tests by responsibility | Reduce file/test size and isolate migrations, query paths, import/export, dashboard queries, and History UI responsibilities. |
-| 2 | Add performance regression coverage for History and token charts | Add realistic fixtures, measured reload/hover checks, and query-plan expectations for hot SQLite paths. |
-| 3 | Add lightweight update notifications | Check for updates during normal sessions and surface a visible prompt while keeping download/install user-initiated. |
+| 1 | Add performance regression coverage for History and token charts | Add realistic fixtures, measured reload/hover checks, and query-plan expectations for hot SQLite paths. |
+| 2 | Add lightweight update notifications | Check for updates during normal sessions and surface a visible prompt while keeping download/install user-initiated. |
 
 ## Done
 
@@ -157,11 +156,12 @@
   - Hardened live token notifications, session imports, duplicate repairs, backup imports, and catalog writes through the shared model normalizer.
   - Rebuilt token series catalogs after cleanup so malformed duplicate model labels collapse without changing token totals.
 
-## Next Candidates
-
 - Split History store, History view, and store tests by responsibility
-  - Split migrations, write paths, read queries, import/export, and dashboard queries into focused files.
-  - Split large History UI and store test files so future feature work has smaller blast radius.
+  - Split the oversized SQLite History store into focused setup, recording, migration, query, import metadata, data-management, and SQLite-support files.
+  - Split the History UI into focused view, view-model, hover/indexing, and control-support files while preserving the same visible behavior.
+  - Split the monolithic History test file into store usage, token storage, migrations, import/export/settings, view-model, window, and shared-support test files.
+
+## Next Candidates
 
 - Add performance regression coverage for History and token charts
   - Add measured tests or fixtures for History reload, token dashboard reload, and hover selection with realistic sample counts.

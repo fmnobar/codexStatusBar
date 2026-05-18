@@ -50,6 +50,32 @@
 		A10000000000000000000023 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
 		A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* UsageHistoryWindowController.swift */; };
 		A10000000000000000000025 /* UsageHistoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* UsageHistoryStoreTests.swift */; };
+		B11000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* UsageHistoryStore+Recording.swift */; };
+		B11000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */; };
+		B11000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* UsageHistoryStore+TokenQueries.swift */; };
+		B11000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* UsageHistoryStore+UsageQueries.swift */; };
+		B11000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* UsageHistoryStore+DataManagement.swift */; };
+		B11000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* UsageHistoryStore+Migrations.swift */; };
+		B11000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */; };
+		B11000000000000000000008 /* UsageHistoryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* UsageHistoryControls.swift */; };
+		B11000000000000000000009 /* UsageHistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* UsageHistoryViewModel.swift */; };
+		B12000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* UsageHistoryStore+Recording.swift */; };
+		B12000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */; };
+		B12000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* UsageHistoryStore+TokenQueries.swift */; };
+		B12000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* UsageHistoryStore+UsageQueries.swift */; };
+		B12000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* UsageHistoryStore+DataManagement.swift */; };
+		B12000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* UsageHistoryStore+Migrations.swift */; };
+		B12000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */; };
+		B12000000000000000000008 /* UsageHistoryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* UsageHistoryControls.swift */; };
+		B12000000000000000000009 /* UsageHistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* UsageHistoryViewModel.swift */; };
+		B21000000000000000000001 /* UsageHistoryStoreUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* UsageHistoryStoreUsageTests.swift */; };
+		B21000000000000000000002 /* UsageHistoryStoreTokenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* UsageHistoryStoreTokenTests.swift */; };
+		B21000000000000000000003 /* UsageHistoryStoreMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* UsageHistoryStoreMigrationTests.swift */; };
+		B21000000000000000000004 /* CodexSessionTokenBackfillTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* CodexSessionTokenBackfillTests.swift */; };
+		B21000000000000000000005 /* UsageHistoryStoreDataManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* UsageHistoryStoreDataManagementTests.swift */; };
+		B21000000000000000000006 /* UsageHistoryViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* UsageHistoryViewModelTests.swift */; };
+		B21000000000000000000007 /* UsageHistoryWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* UsageHistoryWindowTests.swift */; };
+		B21000000000000000000008 /* UsageHistoryTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* UsageHistoryTestSupport.swift */; };
 		AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */; };
 		D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
 		ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */; };
@@ -92,6 +118,23 @@
 		A10000000000000000000003 /* UsageHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryView.swift; sourceTree = "<group>"; };
 		A10000000000000000000004 /* UsageHistoryWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryWindowController.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* UsageHistoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStoreTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000001 /* UsageHistoryStore+Recording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+Recording.swift"; sourceTree = "<group>"; };
+		B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+SessionImportMetadata.swift"; sourceTree = "<group>"; };
+		B10000000000000000000003 /* UsageHistoryStore+TokenQueries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+TokenQueries.swift"; sourceTree = "<group>"; };
+		B10000000000000000000004 /* UsageHistoryStore+UsageQueries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+UsageQueries.swift"; sourceTree = "<group>"; };
+		B10000000000000000000005 /* UsageHistoryStore+DataManagement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+DataManagement.swift"; sourceTree = "<group>"; };
+		B10000000000000000000006 /* UsageHistoryStore+Migrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+Migrations.swift"; sourceTree = "<group>"; };
+		B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+SQLiteSupport.swift"; sourceTree = "<group>"; };
+		B10000000000000000000008 /* UsageHistoryControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryControls.swift"; sourceTree = "<group>"; };
+		B10000000000000000000009 /* UsageHistoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryViewModel.swift"; sourceTree = "<group>"; };
+		B20000000000000000000001 /* UsageHistoryStoreUsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStoreUsageTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* UsageHistoryStoreTokenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStoreTokenTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* UsageHistoryStoreMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStoreMigrationTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* CodexSessionTokenBackfillTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionTokenBackfillTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* UsageHistoryStoreDataManagementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStoreDataManagementTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* UsageHistoryViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryViewModelTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000007 /* UsageHistoryWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryWindowTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000008 /* UsageHistoryTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryTestSupport.swift; sourceTree = "<group>"; };
 		B5363F89C9BF34793883A496 /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusFormatter.swift; sourceTree = "<group>"; };
 		D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusFormatterTests.swift; sourceTree = "<group>"; };
@@ -118,6 +161,14 @@
 				D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */,
 				7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */,
 				A10000000000000000000005 /* UsageHistoryStoreTests.swift */,
+				B20000000000000000000001 /* UsageHistoryStoreUsageTests.swift */,
+				B20000000000000000000002 /* UsageHistoryStoreTokenTests.swift */,
+				B20000000000000000000003 /* UsageHistoryStoreMigrationTests.swift */,
+				B20000000000000000000004 /* CodexSessionTokenBackfillTests.swift */,
+				B20000000000000000000005 /* UsageHistoryStoreDataManagementTests.swift */,
+				B20000000000000000000006 /* UsageHistoryViewModelTests.swift */,
+				B20000000000000000000007 /* UsageHistoryWindowTests.swift */,
+				B20000000000000000000008 /* UsageHistoryTestSupport.swift */,
 			);
 			path = CodexUsageMenuBarTests;
 			sourceTree = "<group>";
@@ -153,7 +204,16 @@
 				A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */,
 				A10000000000000000000001 /* UsageHistoryModels.swift */,
 				A10000000000000000000002 /* UsageHistoryStore.swift */,
+				B10000000000000000000001 /* UsageHistoryStore+Recording.swift */,
+				B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */,
+				B10000000000000000000003 /* UsageHistoryStore+TokenQueries.swift */,
+				B10000000000000000000004 /* UsageHistoryStore+UsageQueries.swift */,
+				B10000000000000000000005 /* UsageHistoryStore+DataManagement.swift */,
+				B10000000000000000000006 /* UsageHistoryStore+Migrations.swift */,
+				B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */,
+				B10000000000000000000008 /* UsageHistoryControls.swift */,
 				A10000000000000000000003 /* UsageHistoryView.swift */,
+				B10000000000000000000009 /* UsageHistoryViewModel.swift */,
 				A10000000000000000000004 /* UsageHistoryWindowController.swift */,
 			);
 			path = CodexUsageMenuBar;
@@ -289,7 +349,16 @@
 				A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */,
 				A10000000000000000000021 /* UsageHistoryModels.swift in Sources */,
 				A10000000000000000000022 /* UsageHistoryStore.swift in Sources */,
+				B12000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */,
+				B12000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */,
+				B12000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */,
+				B12000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */,
+				B12000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */,
+				B12000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */,
+				B12000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */,
+				B12000000000000000000008 /* UsageHistoryControls.swift in Sources */,
 				A10000000000000000000023 /* UsageHistoryView.swift in Sources */,
+				B12000000000000000000009 /* UsageHistoryViewModel.swift in Sources */,
 				A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
 				A41000000000000000000022 /* AppBuildFreshnessTests.swift in Sources */,
@@ -298,6 +367,14 @@
 				2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */,
 				4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */,
 				A10000000000000000000025 /* UsageHistoryStoreTests.swift in Sources */,
+				B21000000000000000000001 /* UsageHistoryStoreUsageTests.swift in Sources */,
+				B21000000000000000000002 /* UsageHistoryStoreTokenTests.swift in Sources */,
+				B21000000000000000000003 /* UsageHistoryStoreMigrationTests.swift in Sources */,
+				B21000000000000000000004 /* CodexSessionTokenBackfillTests.swift in Sources */,
+				B21000000000000000000005 /* UsageHistoryStoreDataManagementTests.swift in Sources */,
+				B21000000000000000000006 /* UsageHistoryViewModelTests.swift in Sources */,
+				B21000000000000000000007 /* UsageHistoryWindowTests.swift in Sources */,
+				B21000000000000000000008 /* UsageHistoryTestSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -324,7 +401,16 @@
 				A80000000000000000000011 /* UsageHistoryDatabaseWorker.swift in Sources */,
 				A10000000000000000000011 /* UsageHistoryModels.swift in Sources */,
 				A10000000000000000000012 /* UsageHistoryStore.swift in Sources */,
+				B11000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */,
+				B11000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */,
+				B11000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */,
+				B11000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */,
+				B11000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */,
+				B11000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */,
+				B11000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */,
+				B11000000000000000000008 /* UsageHistoryControls.swift in Sources */,
 				A10000000000000000000013 /* UsageHistoryView.swift in Sources */,
+				B11000000000000000000009 /* UsageHistoryViewModel.swift in Sources */,
 				A10000000000000000000014 /* UsageHistoryWindowController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
