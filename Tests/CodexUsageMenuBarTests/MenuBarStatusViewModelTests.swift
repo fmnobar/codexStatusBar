@@ -147,6 +147,51 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
+    func testMenuBarTokenOptionLoadsTodayTokensOnStartupWhenAlreadyEnabled() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let tokenRecorder = MockTokenUsageRecorder(
+            todayTotals: TokenCategoryTotals(
+                inputTokens: 3_125_000,
+                cachedInputTokens: 1_400_000,
+                outputTokens: 240_400,
+                reasoningOutputTokens: 18_400,
+                totalTokens: 4_783_800
+            )
+        )
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            tokenUsageRecorder: tokenRecorder,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: false,
+                showsResetTime: false,
+                showsTokens: true
+            ),
+            persistSelection: { _ in },
+            persistMenuBarDisplayOptions: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
+        XCTAssertEqual(
+            viewModel.menuBarToolTipText,
+            "Today's captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+        )
+
+        viewModel.stop()
+    }
+
     func testMenuBarTokenOptionShowsPlaceholderWithoutTokenData() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),

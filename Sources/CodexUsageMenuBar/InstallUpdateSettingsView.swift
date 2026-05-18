@@ -585,7 +585,15 @@ struct InstallUpdateSettingsView: View {
                 Button {
                     freshnessViewModel.refresh()
                 } label: {
-                    Label("Refresh Local Status", systemImage: "arrow.clockwise")
+                    Label("Refresh Installed Status", systemImage: "arrow.clockwise")
+                }
+
+                if freshnessViewModel.canCheckSourceCheckout {
+                    Button {
+                        freshnessViewModel.checkSourceCheckout()
+                    } label: {
+                        Label("Check Source Checkout", systemImage: "folder.badge.gearshape")
+                    }
                 }
 
                 if freshnessViewModel.canRelaunchLatestInstalledApp {

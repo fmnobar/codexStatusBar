@@ -1,5 +1,13 @@
 # Backlog
 
+## Remaining Work
+
+| Priority | Item | Scope |
+| --- | --- | --- |
+| 1 | Split History store, History view, and store tests by responsibility | Reduce file/test size and isolate migrations, query paths, import/export, dashboard queries, and History UI responsibilities. |
+| 2 | Add performance regression coverage for History and token charts | Add realistic fixtures, measured reload/hover checks, and query-plan expectations for hot SQLite paths. |
+| 3 | Add lightweight update notifications | Check for updates during normal sessions and surface a visible prompt while keeping download/install user-initiated. |
+
 ## Done
 
 - Usage history by time and model

@@ -67,13 +67,35 @@ final class AppBuildFreshnessTests: XCTestCase {
             sourceHeadReader: { _ in "abc123456789" }
         )
 
-        guard case .current(let running, let installed, let sourceCommit) = checker.check() else {
+        guard case .current(let running, let installed, let sourceCommit) = checker.check(includeSourceCheckout: true) else {
             return XCTFail("Expected current freshness state.")
         }
 
         XCTAssertEqual(running?.gitCommit, "abc123456789")
         XCTAssertEqual(installed?.gitCommit, "abc123456789")
         XCTAssertEqual(sourceCommit, "abc123456789")
+    }
+
+    func testFreshnessDoesNotReadSourceCheckoutByDefault() throws {
+        let sourceRoot = try makeSourceCheckout(commit: "newer123456789")
+        let installedFingerprint = fingerprint(sourceRoot: sourceRoot.path, gitCommit: "older123456789")
+        let bundleURL = try makeBundleFixture(fingerprint: installedFingerprint)
+        var didReadSourceHead = false
+        let checker = AppFreshnessChecker(
+            runningFingerprint: installedFingerprint,
+            bundleURL: bundleURL,
+            sourceHeadReader: { _ in
+                didReadSourceHead = true
+                return "newer123456789"
+            }
+        )
+
+        guard case .current(_, _, let sourceCommit) = checker.check() else {
+            return XCTFail("Expected installed-only current state.")
+        }
+
+        XCTAssertFalse(didReadSourceHead)
+        XCTAssertNil(sourceCommit)
     }
 
     func testFreshnessDetectsSourceNewerThanInstalled() throws {
@@ -86,7 +108,7 @@ final class AppBuildFreshnessTests: XCTestCase {
             sourceHeadReader: { _ in "newer123456789" }
         )
 
-        guard case .sourceNewerThanInstalled(_, let installed, let sourceCommit, let sourceRootURL) = checker.check() else {
+        guard case .sourceNewerThanInstalled(_, let installed, let sourceCommit, let sourceRootURL) = checker.check(includeSourceCheckout: true) else {
             return XCTFail("Expected source-newer freshness state.")
         }
 
@@ -106,7 +128,7 @@ final class AppBuildFreshnessTests: XCTestCase {
             sourceHeadReader: { _ in "newer123456789" }
         )
 
-        guard case .installedBundleNewerThanRunning(let running, let installed, let sourceCommit) = checker.check() else {
+        guard case .installedBundleNewerThanRunning(let running, let installed, let sourceCommit) = checker.check(includeSourceCheckout: true) else {
             return XCTFail("Expected installed-newer freshness state.")
         }
 
@@ -140,7 +162,7 @@ final class AppBuildFreshnessTests: XCTestCase {
             sourceHeadReader: { _ in nil }
         )
 
-        guard case .unknown(let reason) = checker.check() else {
+        guard case .unknown(let reason) = checker.check(includeSourceCheckout: true) else {
             return XCTFail("Expected unknown freshness state.")
         }
 
@@ -175,6 +197,44 @@ final class AppBuildFreshnessTests: XCTestCase {
         viewModel.relaunchLatestInstalledApp()
 
         XCTAssertEqual(relaunchedURL?.path, bundleURL.path)
+    }
+
+    func testFreshnessViewModelReadsSourceOnlyAfterExplicitCheck() throws {
+        let installedState = AppFreshnessState.current(
+            running: nil,
+            installed: fingerprint(sourceRoot: "/tmp/codex", gitCommit: "oldcommit"),
+            sourceCommit: nil
+        )
+        let sourceState = AppFreshnessState.sourceNewerThanInstalled(
+            running: nil,
+            installed: fingerprint(sourceRoot: "/tmp/codex", gitCommit: "oldcommit"),
+            sourceCommit: "newcommit",
+            sourceRoot: URL(fileURLWithPath: "/tmp/codex", isDirectory: true)
+        )
+        var sourceCheckCount = 0
+        let viewModel = AppFreshnessStatusViewModel(
+            initialState: installedState,
+            stateProvider: { installedState },
+            sourceStateProvider: {
+                sourceCheckCount += 1
+                return sourceState
+            },
+            relaunchAction: { _ in }
+        )
+
+        XCTAssertEqual(viewModel.sourceCommitText, "Not checked")
+        XCTAssertEqual(sourceCheckCount, 0)
+
+        viewModel.refresh()
+
+        XCTAssertEqual(sourceCheckCount, 0)
+        XCTAssertEqual(viewModel.sourceCommitText, "Not checked")
+
+        viewModel.checkSourceCheckout()
+
+        XCTAssertEqual(sourceCheckCount, 1)
+        XCTAssertEqual(viewModel.sourceCommitText, "newcomm")
+        XCTAssertTrue(viewModel.shouldShowWarning)
     }
 
     private func fingerprint(

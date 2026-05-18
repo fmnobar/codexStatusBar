@@ -249,6 +249,10 @@ final class MenuBarStatusViewModel: ObservableObject {
 
             applyPresentation()
         }
+
+        if menuBarDisplayOptions.showsTokens {
+            await loadTodayTokenTotals()
+        }
     }
 
     private func apply(usageSnapshot: CodexUsageSnapshot) {
@@ -431,18 +435,22 @@ final class MenuBarStatusViewModel: ObservableObject {
     }
 
     private func refreshTodayTokenTotals() {
-        let currentNow = now()
         Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
 
-            todayTokenTotals = await tokenUsageRecorder.todayTokenCategoryTotals(
-                at: currentNow,
-                calendar: .autoupdatingCurrent
-            )
-            applyPresentation()
+            await loadTodayTokenTotals()
         }
+    }
+
+    private func loadTodayTokenTotals() async {
+        let currentNow = now()
+        todayTokenTotals = await tokenUsageRecorder.todayTokenCategoryTotals(
+            at: currentNow,
+            calendar: .autoupdatingCurrent
+        )
+        applyPresentation()
     }
 
     private func refreshLaunchAtLoginState() {

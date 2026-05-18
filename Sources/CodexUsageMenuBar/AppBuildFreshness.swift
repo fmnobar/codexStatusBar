@@ -260,7 +260,7 @@ struct AppFreshnessChecker {
         )
     }
 
-    func check() -> AppFreshnessState {
+    func check(includeSourceCheckout: Bool = false) -> AppFreshnessState {
         guard let bundleURL else {
             return .unknown("Installed app location is unavailable.")
         }
@@ -272,7 +272,9 @@ struct AppFreshnessChecker {
             return .unknown("Build fingerprint is unavailable.")
         }
 
-        let sourceCommit = installedFingerprint.sourceRootURL.flatMap(sourceHeadReader)
+        let sourceCommit = includeSourceCheckout
+            ? installedFingerprint.sourceRootURL.flatMap(sourceHeadReader)
+            : nil
 
         if
             let runningFingerprint,
@@ -287,11 +289,12 @@ struct AppFreshnessChecker {
             )
         }
 
-        if installedFingerprint.sourceRootURL != nil, sourceCommit == nil {
+        if includeSourceCheckout, installedFingerprint.sourceRootURL != nil, sourceCommit == nil {
             return .unknown("Source checkout is unavailable.")
         }
 
         if
+            includeSourceCheckout,
             let sourceCommit,
             let installedCommit = AppBuildFingerprint.knownValue(installedFingerprint.gitCommit),
             sourceCommit != installedCommit
@@ -385,17 +388,23 @@ enum AppFreshnessRuntime {
 @MainActor
 final class AppFreshnessStatusViewModel: ObservableObject {
     @Published private(set) var state: AppFreshnessState
+    @Published private(set) var didCheckSourceCheckout: Bool
 
     private let stateProvider: () -> AppFreshnessState
+    private let sourceStateProvider: () -> AppFreshnessState
     private let relaunchAction: (URL) -> Void
 
     init(
         initialState: AppFreshnessState,
         stateProvider: @escaping () -> AppFreshnessState,
+        sourceStateProvider: (() -> AppFreshnessState)? = nil,
+        didCheckSourceCheckout: Bool = false,
         relaunchAction: @escaping (URL) -> Void
     ) {
         state = initialState
+        self.didCheckSourceCheckout = didCheckSourceCheckout
         self.stateProvider = stateProvider
+        self.sourceStateProvider = sourceStateProvider ?? stateProvider
         self.relaunchAction = relaunchAction
     }
 
@@ -404,6 +413,7 @@ final class AppFreshnessStatusViewModel: ObservableObject {
         return AppFreshnessStatusViewModel(
             initialState: checker.check(),
             stateProvider: { checker.check() },
+            sourceStateProvider: { checker.check(includeSourceCheckout: true) },
             relaunchAction: { appURL in
                 AppFreshnessRelauncher.relaunch(appURL: appURL)
             }
@@ -437,6 +447,10 @@ final class AppFreshnessStatusViewModel: ObservableObject {
 
     var sourceCommitText: String {
         guard let sourceCommit = state.sourceCommit else {
+            if state.sourceRootURL != nil {
+                return didCheckSourceCheckout ? "Unknown" : "Not checked"
+            }
+
             return "Unknown"
         }
 
@@ -479,8 +493,18 @@ final class AppFreshnessStatusViewModel: ObservableObject {
         state.canRelaunchLatestInstalledApp
     }
 
+    var canCheckSourceCheckout: Bool {
+        state.sourceRootURL != nil
+    }
+
     func refresh() {
         state = stateProvider()
+        didCheckSourceCheckout = false
+    }
+
+    func checkSourceCheckout() {
+        state = sourceStateProvider()
+        didCheckSourceCheckout = true
     }
 
     func relaunchLatestInstalledApp() {
