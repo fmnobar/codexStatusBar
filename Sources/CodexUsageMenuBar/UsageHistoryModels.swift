@@ -360,6 +360,39 @@ struct TokenHistoryComponentPoint: Equatable, Identifiable {
     }
 }
 
+struct TokenHistoryComponentBucketPoint: Equatable, Identifiable {
+    let id: String
+    let bucketStart: Date
+    let bucketEnd: Date
+    let latestSampleTimestamp: Date
+    let seriesID: String
+    let seriesName: String
+    let seriesKind: CodexUsageBucketKind
+    let component: TokenHistoryComponent
+    let tokenCount: Int64
+
+    init(
+        bucketStart: Date,
+        bucketEnd: Date,
+        latestSampleTimestamp: Date,
+        seriesID: String,
+        seriesName: String,
+        seriesKind: CodexUsageBucketKind,
+        component: TokenHistoryComponent,
+        tokenCount: Int64
+    ) {
+        self.bucketStart = bucketStart
+        self.bucketEnd = bucketEnd
+        self.latestSampleTimestamp = latestSampleTimestamp
+        self.seriesID = seriesID
+        self.seriesName = seriesName
+        self.seriesKind = seriesKind
+        self.component = component
+        self.tokenCount = tokenCount
+        id = "\(seriesID)-\(component.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
+    }
+}
+
 struct UsageHistoryChartPoint: Equatable, Identifiable {
     let id: String
     let bucketStart: Date

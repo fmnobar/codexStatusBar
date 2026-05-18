@@ -704,6 +704,154 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(bounds?.latest, date("2026-04-14T20:00:00Z"))
     }
 
+    func testTokenComponentBucketPointsAggregateSamplesInSQLite() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 100,
+                lastCached: 40,
+                lastOutput: 20,
+                lastReasoning: 5,
+                lastTotal: 165,
+                totalInput: 100,
+                totalCached: 40,
+                totalOutput: 20,
+                totalReasoning: 5,
+                totalTotal: 165
+            ),
+            at: date("2026-04-14T20:10:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-b",
+                turnID: "turn-a",
+                model: "gpt-5.4",
+                lastInput: 50,
+                lastCached: 10,
+                lastOutput: 30,
+                lastReasoning: 2,
+                lastTotal: 92,
+                totalInput: 50,
+                totalCached: 10,
+                totalOutput: 30,
+                totalReasoning: 2,
+                totalTotal: 92
+            ),
+            at: date("2026-04-14T20:25:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-c",
+                turnID: "turn-a",
+                lastInput: 25,
+                lastTotal: 25,
+                totalInput: 25,
+                totalTotal: 25
+            ),
+            at: date("2026-04-14T21:05:00Z")
+        )
+
+        let points = try store.tokenComponentBucketPoints(
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z"),
+            now: date("2026-04-14T22:00:00Z"),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(Set(points.map(\.seriesID)), ["tokens_all"])
+        XCTAssertEqual(points.map(\.bucketStart), [
+            date("2026-04-14T20:00:00Z"),
+            date("2026-04-14T20:00:00Z"),
+            date("2026-04-14T20:00:00Z"),
+            date("2026-04-14T20:00:00Z"),
+            date("2026-04-14T21:00:00Z"),
+        ])
+        XCTAssertEqual(points.map(\.component), [.input, .cached, .output, .reasoning, .input])
+        XCTAssertEqual(points.map(\.tokenCount), [150, 50, 50, 7, 25])
+        XCTAssertEqual(
+            points.filter { $0.bucketStart == date("2026-04-14T20:00:00Z") }.map(\.latestSampleTimestamp),
+            Array(repeating: date("2026-04-14T20:25:00Z"), count: 4)
+        )
+    }
+
+    func testTokenComponentBucketPointsUseCalendarBucketsForAllRanges() throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastInput: 100, lastTotal: 100, totalInput: 100, totalTotal: 100),
+            at: date("2026-01-10T12:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-b", turnID: "turn-a", lastInput: 200, lastTotal: 200, totalInput: 200, totalTotal: 200),
+            at: date("2026-04-14T12:10:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-c", turnID: "turn-a", lastInput: 300, lastTotal: 300, totalInput: 300, totalTotal: 300),
+            at: date("2026-04-15T09:00:00Z")
+        )
+
+        let dayPoints = try store.tokenComponentBucketPoints(
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z"),
+            now: date("2026-04-14T21:00:00Z"),
+            calendar: calendar
+        )
+        let weekPoints = try store.tokenComponentBucketPoints(
+            range: .week,
+            periodStart: date("2026-04-12T00:00:00Z"),
+            periodEnd: date("2026-04-19T00:00:00Z"),
+            now: date("2026-04-17T21:00:00Z"),
+            calendar: calendar
+        )
+        let monthPoints = try store.tokenComponentBucketPoints(
+            range: .month,
+            periodStart: date("2026-04-01T00:00:00Z"),
+            periodEnd: date("2026-05-01T00:00:00Z"),
+            now: date("2026-04-30T21:00:00Z"),
+            calendar: calendar
+        )
+        let yearPoints = try store.tokenComponentBucketPoints(
+            range: .year,
+            periodStart: date("2026-01-01T00:00:00Z"),
+            periodEnd: date("2027-01-01T00:00:00Z"),
+            now: date("2026-12-31T21:00:00Z"),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(dayPoints.map(\.bucketStart), [date("2026-04-14T12:00:00Z")])
+        XCTAssertEqual(dayPoints.map(\.tokenCount), [200])
+        XCTAssertEqual(weekPoints.map(\.bucketStart), [date("2026-04-14T00:00:00Z"), date("2026-04-15T00:00:00Z")])
+        XCTAssertEqual(weekPoints.map(\.tokenCount), [200, 300])
+        XCTAssertEqual(monthPoints.map(\.bucketStart), [date("2026-04-14T00:00:00Z"), date("2026-04-15T00:00:00Z")])
+        XCTAssertEqual(monthPoints.map(\.tokenCount), [200, 300])
+        XCTAssertEqual(yearPoints.map(\.bucketStart), [date("2026-01-01T00:00:00Z"), date("2026-04-01T00:00:00Z")])
+        XCTAssertEqual(yearPoints.map(\.tokenCount), [100, 500])
+    }
+
+    func testTokenComponentBucketPointsReturnEmptyRowsForEmptyPeriods() throws {
+        let store = try makeStore()
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastInput: 100, lastTotal: 100, totalInput: 100, totalTotal: 100),
+            at: date("2026-04-14T20:00:00Z")
+        )
+
+        let points = try store.tokenComponentBucketPoints(
+            range: .day,
+            periodStart: date("2026-04-15T00:00:00Z"),
+            periodEnd: date("2026-04-16T00:00:00Z"),
+            now: date("2026-04-16T00:00:00Z"),
+            calendar: calendar
+        )
+
+        XCTAssertTrue(points.isEmpty)
+    }
+
     func testTokenDashboardPointsAggregateComponentsModelsAndUnattributedRows() throws {
         let store = try makeStore()
 
@@ -1190,9 +1338,17 @@ final class UsageHistoryStoreTests: XCTestCase {
             periodStart: date("2026-04-14T00:00:00Z"),
             periodEnd: date("2026-04-15T00:00:00Z")
         )
+        let componentBucketPoints = try store.tokenComponentBucketPoints(
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z"),
+            now: date("2026-04-14T21:00:00Z"),
+            calendar: calendar
+        )
 
         XCTAssertEqual(samples.first?.observedInputTokens, nil)
         XCTAssertEqual(inputPoints.map(\.tokenCount), [120])
+        XCTAssertTrue(componentBucketPoints.isEmpty)
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 200)
         XCTAssertNil(try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
     }
@@ -2098,6 +2254,13 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["tokens_all"])
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+        XCTAssertTrue(viewModel.tokenComponentPoints.isEmpty)
+        XCTAssertEqual(viewModel.tokenComponentBucketPoints.map(\.seriesID), [
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+            "tokens_all",
+        ])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketID), [
             "tokens_all",
             "tokens_all",

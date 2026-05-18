@@ -795,6 +795,128 @@ final class UsageHistoryStore: @unchecked Sendable {
         }
     }
 
+    func tokenComponentBucketPoints(
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        now: Date,
+        calendar: Calendar
+    ) throws -> [TokenHistoryComponentBucketPoint] {
+        let bucketIntervals = Self.tokenHistoryBucketIntervals(
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            now: now,
+            calendar: calendar
+        )
+        guard !bucketIntervals.isEmpty else {
+            return []
+        }
+
+        let bucketValuesSQL = bucketIntervals
+            .map { _ in "(?, ?, ?)" }
+            .joined(separator: ",\n")
+        let componentTokenExpression = """
+        CASE c.component
+            WHEN 'input' THEN IFNULL(s.observed_input_tokens, 0)
+            WHEN 'cached' THEN IFNULL(s.observed_cached_input_tokens, 0)
+            WHEN 'output' THEN IFNULL(s.observed_output_tokens, 0)
+            WHEN 'reasoning' THEN IFNULL(s.observed_reasoning_output_tokens, 0)
+            ELSE 0
+        END
+        """
+        let statement = try prepare(
+            """
+            WITH buckets(bucket_start, bucket_end, display_end) AS (
+                VALUES \(bucketValuesSQL)
+            ),
+            components(component, sort_order) AS (
+                VALUES
+                    ('input', 0),
+                    ('cached', 1),
+                    ('output', 2),
+                    ('reasoning', 3)
+            ),
+            component_totals AS (
+                SELECT
+                    b.bucket_start,
+                    b.display_end,
+                    MAX(s.received_at) AS latest_sample_timestamp,
+                    c.component,
+                    c.sort_order,
+                    SUM(\(componentTokenExpression)) AS token_count
+                FROM buckets b
+                JOIN token_usage_samples s
+                    ON s.received_at >= b.bucket_start
+                    AND s.received_at < b.bucket_end
+                CROSS JOIN components c
+                WHERE s.received_at >= ?
+                    AND s.received_at < ?
+                    AND (
+                        IFNULL(s.observed_input_tokens, 0) > 0
+                        OR IFNULL(s.observed_cached_input_tokens, 0) > 0
+                        OR IFNULL(s.observed_output_tokens, 0) > 0
+                        OR IFNULL(s.observed_reasoning_output_tokens, 0) > 0
+                    )
+                GROUP BY b.bucket_start, b.display_end, c.component, c.sort_order
+            )
+            SELECT
+                bucket_start,
+                display_end,
+                latest_sample_timestamp,
+                'tokens_all' AS series_id,
+                'All tokens' AS series_name,
+                'aggregate' AS series_kind,
+                component,
+                token_count
+            FROM component_totals
+            WHERE token_count > 0
+            ORDER BY bucket_start ASC, sort_order ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var bindIndex: Int32 = 1
+        for interval in bucketIntervals {
+            sqlite3_bind_int64(statement, bindIndex, interval.start.timeIntervalSince1970Int)
+            bindIndex += 1
+            sqlite3_bind_int64(statement, bindIndex, interval.queryEnd.timeIntervalSince1970Int)
+            bindIndex += 1
+            sqlite3_bind_int64(statement, bindIndex, interval.displayEnd.timeIntervalSince1970Int)
+            bindIndex += 1
+        }
+        sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
+
+        var points: [TokenHistoryComponentBucketPoint] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let component = TokenHistoryComponent(rawValue: columnText(statement, index: 6)) else {
+                    continue
+                }
+
+                points.append(
+                    TokenHistoryComponentBucketPoint(
+                        bucketStart: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0))),
+                        bucketEnd: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 1))),
+                        latestSampleTimestamp: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 2))),
+                        seriesID: columnText(statement, index: 3),
+                        seriesName: columnText(statement, index: 4),
+                        seriesKind: CodexUsageBucketKind(rawValue: columnText(statement, index: 5)) ?? .aggregate,
+                        component: component,
+                        tokenCount: sqlite3_column_int64(statement, 7)
+                    )
+                )
+            case SQLITE_DONE:
+                return points
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func tokenSeries(
         category: TokenHistoryCategory,
         range: UsageHistoryRange,
@@ -2749,6 +2871,43 @@ final class UsageHistoryStore: @unchecked Sendable {
                 throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
             }
         }
+    }
+
+    private static func tokenHistoryBucketIntervals(
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        now: Date,
+        calendar: Calendar
+    ) -> [(start: Date, queryEnd: Date, displayEnd: Date)] {
+        guard periodEnd > periodStart else {
+            return []
+        }
+
+        let component = range.chartBucketComponent
+        var intervals: [(start: Date, queryEnd: Date, displayEnd: Date)] = []
+        var bucketStart = UsageHistoryRange.bucketStart(
+            for: periodStart,
+            component: component,
+            calendar: calendar
+        )
+
+        while bucketStart < periodEnd {
+            guard let nextBucketStart = calendar.date(byAdding: component, value: 1, to: bucketStart),
+                  nextBucketStart > bucketStart
+            else {
+                break
+            }
+
+            let queryEnd = min(nextBucketStart, periodEnd)
+            let displayEnd = max(min(queryEnd, now), bucketStart)
+            if queryEnd > bucketStart {
+                intervals.append((start: bucketStart, queryEnd: queryEnd, displayEnd: displayEnd))
+            }
+            bucketStart = nextBucketStart
+        }
+
+        return intervals
     }
 
     private func compactRawSamples(olderThan date: Date) throws {

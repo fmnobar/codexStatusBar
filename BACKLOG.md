@@ -130,11 +130,11 @@
   - Cache visible bucketed chart data during reload instead of rebuilding computed arrays during high-frequency pointer movement.
   - Pre-index hover data by bucket start so nearest-bucket lookup and detail rendering do not block the main thread.
 
-## Next Candidates
-
 - Pre-aggregate token History data in SQLite
   - Return period-bucketed token component totals directly from store queries for compact History.
   - Keep the model-level breakdown in the Token Dashboard while reducing the inline History row count.
+
+## Next Candidates
 
 - Move history database work off the main actor
   - Put `UsageHistoryStore` calls behind a database actor or serial worker queue.

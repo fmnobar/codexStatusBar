@@ -182,6 +182,7 @@ final class UsageHistoryViewModel: ObservableObject {
     @Published private(set) var points: [UsageHistoryPoint] = []
     @Published private(set) var tokenPoints: [TokenHistoryPoint] = []
     @Published private(set) var tokenComponentPoints: [TokenHistoryComponentPoint] = []
+    @Published private(set) var tokenComponentBucketPoints: [TokenHistoryComponentBucketPoint] = []
     @Published private(set) var series: [UsageHistorySeries] = []
     @Published private(set) var selectedSeriesIDs = Set<String>()
     @Published private(set) var errorMessage: String?
@@ -526,7 +527,7 @@ final class UsageHistoryViewModel: ObservableObject {
         case .capacity, .usage:
             return !points.isEmpty
         case .tokens:
-            return !tokenComponentPoints.isEmpty
+            return !tokenComponentBucketPoints.isEmpty
         }
     }
 
@@ -538,6 +539,7 @@ final class UsageHistoryViewModel: ObservableObject {
             let loadedPoints: [UsageHistoryPoint]
             let loadedTokenPoints: [TokenHistoryPoint]
             let loadedTokenComponentPoints: [TokenHistoryComponentPoint]
+            let loadedTokenComponentBucketPoints: [TokenHistoryComponentBucketPoint]
             let loadedSeries: [UsageHistorySeries]
             let loadedHistoryBounds: UsageHistoryBounds?
 
@@ -551,6 +553,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 )
                 loadedTokenPoints = []
                 loadedTokenComponentPoints = []
+                loadedTokenComponentBucketPoints = []
                 loadedSeries = try store.availableSeries(window: selectedWindow)
                 loadedHistoryBounds = try store.historyBounds(
                     window: selectedWindow,
@@ -560,10 +563,13 @@ final class UsageHistoryViewModel: ObservableObject {
                 loadedPoints = []
                 recentTokenHistoryImporter(store, now(), calendar)
                 loadedTokenPoints = []
-                loadedTokenComponentPoints = try store.tokenComponentPoints(
+                loadedTokenComponentPoints = []
+                loadedTokenComponentBucketPoints = try store.tokenComponentBucketPoints(
                     range: selectedRange,
                     periodStart: queryPeriod.start,
-                    periodEnd: queryPeriod.end
+                    periodEnd: queryPeriod.end,
+                    now: now(),
+                    calendar: calendar
                 )
                 loadedSeries = try store.availableTokenComponentSeries()
                     .filter { $0.kind == .aggregate }
@@ -574,6 +580,7 @@ final class UsageHistoryViewModel: ObservableObject {
             points = loadedPoints
             tokenPoints = loadedTokenPoints
             tokenComponentPoints = loadedTokenComponentPoints
+            tokenComponentBucketPoints = loadedTokenComponentBucketPoints
             series = loadedSeries
             hasAnyRecordedHistory = loadedHasAnyHistory
             historyBounds = loadedHistoryBounds
@@ -585,6 +592,7 @@ final class UsageHistoryViewModel: ObservableObject {
             points = []
             tokenPoints = []
             tokenComponentPoints = []
+            tokenComponentBucketPoints = []
             series = []
             selectedSeriesIDs = []
             hasAnyRecordedHistory = false
@@ -979,13 +987,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 calendar: calendar
             )
         case .tokens:
-            return Self.bucketedTokenComponentChartPoints(
-                from: tokenComponentPoints,
-                range: selectedRange,
-                period: selectedPeriod,
-                now: now(),
-                calendar: calendar
-            )
+            return Self.tokenComponentChartPoints(from: tokenComponentBucketPoints)
         }
     }
 
@@ -1175,64 +1177,19 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
-    private static func bucketedTokenComponentChartPoints(
-        from points: [TokenHistoryComponentPoint],
-        range: UsageHistoryRange,
-        period: UsageHistoryPeriod,
-        now: Date,
-        calendar: Calendar
+    private static func tokenComponentChartPoints(
+        from points: [TokenHistoryComponentBucketPoint]
     ) -> [UsageHistoryChartPoint] {
-        let bucketComponent = range.chartBucketComponent
-        var buckets = [String: [TokenHistoryComponentPoint]]()
-
-        for point in points {
-            let bucketStart = UsageHistoryRange.bucketStart(
-                for: point.timestamp,
-                component: bucketComponent,
-                calendar: calendar
-            )
-            guard bucketStart >= period.start, bucketStart < period.end else {
-                continue
-            }
-
-            let key = "\(point.seriesID)-\(point.component.rawValue)-\(Int(bucketStart.timeIntervalSince1970))"
-            buckets[key, default: []].append(point)
-        }
-
-        return buckets.compactMap { _, bucketPoints in
-            guard
-                let latestPoint = bucketPoints.max(by: { lhs, rhs in
-                    if lhs.timestamp == rhs.timestamp {
-                        return lhs.seriesName < rhs.seriesName
-                    }
-
-                    return lhs.timestamp < rhs.timestamp
-                }),
-                let firstPoint = bucketPoints.first
-            else {
-                return nil
-            }
-
-            let bucketStart = UsageHistoryRange.bucketStart(
-                for: latestPoint.timestamp,
-                component: bucketComponent,
-                calendar: calendar
-            )
-            let uncappedBucketEnd = calendar.date(byAdding: bucketComponent, value: 1, to: bucketStart) ?? bucketStart
-            let bucketEnd = min(uncappedBucketEnd, period.end, now)
-            let tokenCount = bucketPoints.reduce(Int64(0)) { total, point in
-                total + max(point.tokenCount, 0)
-            }
-
-            return UsageHistoryChartPoint(
-                bucketStart: bucketStart,
-                bucketEnd: bucketEnd,
-                sampleTimestamp: latestPoint.timestamp,
-                bucketID: firstPoint.seriesID,
-                bucketName: latestPoint.seriesName,
-                bucketKind: latestPoint.seriesKind,
-                tokenComponent: latestPoint.component,
-                tokenCount: tokenCount
+        points.map { point in
+            UsageHistoryChartPoint(
+                bucketStart: point.bucketStart,
+                bucketEnd: point.bucketEnd,
+                sampleTimestamp: point.latestSampleTimestamp,
+                bucketID: point.seriesID,
+                bucketName: point.seriesName,
+                bucketKind: point.seriesKind,
+                tokenComponent: point.component,
+                tokenCount: point.tokenCount
             )
         }
         .sorted { lhs, rhs in
