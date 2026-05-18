@@ -154,7 +154,15 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let defaultRawRetention: TimeInterval = 14 * 24 * 60 * 60
     private static let consumptionAlgorithmMetadataKey = "usage_consumption_algorithm_version"
     private static let currentConsumptionAlgorithmVersion = "5"
+    private static let seriesCatalogMetadataKey = "series_catalog_version"
+    private static let currentSeriesCatalogVersion = "1"
     private static let resetCohortTolerance: Int64 = 60 * 60
+    private static let observedTokenComponentsPredicate = """
+        observed_input_tokens > 0
+        OR observed_cached_input_tokens > 0
+        OR observed_output_tokens > 0
+        OR observed_reasoning_output_tokens > 0
+    """
 
     private let database: OpaquePointer
     private let databaseURL: URL?
@@ -336,6 +344,10 @@ final class UsageHistoryStore: @unchecked Sendable {
                     observedTokens: observedTokens
                 )
                 insertedCount += 1
+            }
+
+            if repairedModelCount > 0 {
+                try rebuildTokenSeriesCatalog()
             }
         }
 
@@ -828,10 +840,10 @@ final class UsageHistoryStore: @unchecked Sendable {
                 WHERE s.received_at >= ?
                     AND s.received_at < ?
                     AND (
-                        IFNULL(s.observed_input_tokens, 0) > 0
-                        OR IFNULL(s.observed_cached_input_tokens, 0) > 0
-                        OR IFNULL(s.observed_output_tokens, 0) > 0
-                        OR IFNULL(s.observed_reasoning_output_tokens, 0) > 0
+                        s.observed_input_tokens > 0
+                        OR s.observed_cached_input_tokens > 0
+                        OR s.observed_output_tokens > 0
+                        OR s.observed_reasoning_output_tokens > 0
                     )
                 GROUP BY b.bucket_start, b.display_end, c.component, c.sort_order
             )
@@ -908,38 +920,13 @@ final class UsageHistoryStore: @unchecked Sendable {
     }
 
     func availableTokenSeries(category: TokenHistoryCategory) throws -> [UsageHistorySeries] {
-        let valueExpression = tokenValueExpression(for: category)
-        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
+        let flagColumn = tokenSeriesCatalogFlagColumn(for: category)
         let statement = try prepare(
             """
-            WITH samples AS (
-                SELECT received_at,
-                    \(normalizedModelExpression) AS normalized_model,
-                    \(valueExpression) AS token_count
-                FROM token_usage_samples
-            )
             SELECT series_id, series_name, series_kind, seen_at
-            FROM (
-                SELECT
-                    'tokens_all' AS series_id,
-                    'All tokens' AS series_name,
-                    'aggregate' AS series_kind,
-                    received_at AS seen_at,
-                    token_count
-                FROM samples
-
-                UNION ALL
-
-                SELECT
-                    'model:' || normalized_model AS series_id,
-                    normalized_model AS series_name,
-                    'model' AS series_kind,
-                    received_at AS seen_at,
-                    token_count
-                FROM samples
-                WHERE normalized_model IS NOT NULL
-            )
-            WHERE token_count > 0
+            FROM token_series_catalog
+            WHERE \(flagColumn) = 1
+                AND series_kind IN ('aggregate', 'model')
             ORDER BY seen_at DESC, series_kind ASC, series_name ASC
             """
         )
@@ -949,49 +936,17 @@ final class UsageHistoryStore: @unchecked Sendable {
     }
 
     func availableTokenComponentSeries() throws -> [UsageHistorySeries] {
-        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
         let statement = try prepare(
             """
-            WITH samples AS (
-                SELECT received_at,
-                    \(normalizedModelExpression) AS normalized_model,
-                    observed_input_tokens,
-                    observed_cached_input_tokens,
-                    observed_output_tokens,
-                    observed_reasoning_output_tokens
-                FROM token_usage_samples
-            )
             SELECT series_id, series_name, series_kind, seen_at
-            FROM (
-                SELECT
-                    'tokens_all' AS series_id,
-                    'All tokens' AS series_name,
-                    'aggregate' AS series_kind,
-                    received_at AS seen_at,
-                    observed_input_tokens,
-                    observed_cached_input_tokens,
-                    observed_output_tokens,
-                    observed_reasoning_output_tokens
-                FROM samples
-
-                UNION ALL
-
-                SELECT
-                    'model:' || normalized_model AS series_id,
-                    normalized_model AS series_name,
-                    'model' AS series_kind,
-                    received_at AS seen_at,
-                    observed_input_tokens,
-                    observed_cached_input_tokens,
-                    observed_output_tokens,
-                    observed_reasoning_output_tokens
-                FROM samples
-                WHERE normalized_model IS NOT NULL
-            )
-            WHERE IFNULL(observed_input_tokens, 0) > 0
-                OR IFNULL(observed_cached_input_tokens, 0) > 0
-                OR IFNULL(observed_output_tokens, 0) > 0
-                OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+            FROM token_series_catalog
+            WHERE series_kind IN ('aggregate', 'model')
+                AND (
+                    has_input = 1
+                    OR has_cached = 1
+                    OR has_output = 1
+                    OR has_reasoning = 1
+                )
             ORDER BY seen_at DESC, series_kind ASC, series_name ASC
             """
         )
@@ -1019,10 +974,7 @@ final class UsageHistoryStore: @unchecked Sendable {
             """
             SELECT MIN(received_at), MAX(received_at)
             FROM token_usage_samples
-            WHERE IFNULL(observed_input_tokens, 0) > 0
-                OR IFNULL(observed_cached_input_tokens, 0) > 0
-                OR IFNULL(observed_output_tokens, 0) > 0
-                OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+            WHERE \(Self.observedTokenComponentsPredicate)
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -1049,10 +1001,7 @@ final class UsageHistoryStore: @unchecked Sendable {
             FROM token_usage_samples
             WHERE received_at >= ? AND received_at < ?
                 AND (
-                    IFNULL(observed_input_tokens, 0) > 0
-                    OR IFNULL(observed_cached_input_tokens, 0) > 0
-                    OR IFNULL(observed_output_tokens, 0) > 0
-                    OR IFNULL(observed_reasoning_output_tokens, 0) > 0
+                    \(Self.observedTokenComponentsPredicate)
                 )
             ORDER BY received_at ASC
             """
@@ -1141,51 +1090,14 @@ final class UsageHistoryStore: @unchecked Sendable {
     }
 
     func tokenDashboardSeries() throws -> [TokenDashboardSeries] {
-        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
         let statement = try prepare(
             """
-            WITH samples AS (
-                SELECT received_at,
-                    \(normalizedModelExpression) AS normalized_model,
-                    observed_input_tokens,
-                    observed_cached_input_tokens,
-                    observed_output_tokens,
-                    observed_reasoning_output_tokens
-                FROM token_usage_samples
-                WHERE IFNULL(observed_input_tokens, 0) > 0
-                    OR IFNULL(observed_cached_input_tokens, 0) > 0
-                    OR IFNULL(observed_output_tokens, 0) > 0
-                    OR IFNULL(observed_reasoning_output_tokens, 0) > 0
-            )
             SELECT series_id, series_name, series_kind, seen_at
-            FROM (
-                SELECT
-                    '\(TokenDashboardSeries.aggregateID)' AS series_id,
-                    'All captured' AS series_name,
-                    'aggregate' AS series_kind,
-                    received_at AS seen_at
-                FROM samples
-
-                UNION ALL
-
-                SELECT
-                    'model:' || normalized_model AS series_id,
-                    normalized_model AS series_name,
-                    'model' AS series_kind,
-                    received_at AS seen_at
-                FROM samples
-                WHERE normalized_model IS NOT NULL
-
-                UNION ALL
-
-                SELECT
-                    '\(TokenDashboardSeries.unattributedID)' AS series_id,
-                    'Unattributed' AS series_name,
-                    'unattributed' AS series_kind,
-                    received_at AS seen_at
-                FROM samples
-                WHERE normalized_model IS NULL
-            )
+            FROM token_series_catalog
+            WHERE has_input = 1
+                OR has_cached = 1
+                OR has_output = 1
+                OR has_reasoning = 1
             ORDER BY seen_at DESC, series_kind ASC, series_name ASC
             """
         )
@@ -1202,9 +1114,10 @@ final class UsageHistoryStore: @unchecked Sendable {
                     continue
                 }
 
+                let storedName = columnText(statement, index: 1)
                 seriesByID[id] = TokenDashboardSeries(
                     id: id,
-                    name: columnText(statement, index: 1),
+                    name: id == TokenDashboardSeries.aggregateID ? "All captured" : storedName,
                     kind: kind
                 )
             case SQLITE_DONE:
@@ -1281,24 +1194,14 @@ final class UsageHistoryStore: @unchecked Sendable {
         let statement = try prepare(
             """
             SELECT bucket_id, bucket_name, bucket_kind, seen_at
-            FROM (
-                SELECT bucket_id, bucket_name, bucket_kind, timestamp AS seen_at
-                FROM usage_samples
-                WHERE window = ?
-
-                UNION ALL
-
-                SELECT bucket_id, bucket_name, bucket_kind, sample_timestamp AS seen_at
-                FROM usage_rollups
-                WHERE window = ?
-            )
+            FROM usage_series_catalog
+            WHERE window = ?
             ORDER BY seen_at DESC, bucket_kind ASC, bucket_name ASC
             """
         )
         defer { sqlite3_finalize(statement) }
 
         bindText(window.rawValue, to: 1, in: statement)
-        bindText(window.rawValue, to: 2, in: statement)
 
         return try readAvailableSeries(from: statement)
     }
@@ -1345,6 +1248,8 @@ final class UsageHistoryStore: @unchecked Sendable {
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
             try execute("DELETE FROM codex_session_token_imports")
+            try execute("DELETE FROM usage_series_catalog")
+            try execute("DELETE FROM token_series_catalog")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -1473,6 +1378,8 @@ final class UsageHistoryStore: @unchecked Sendable {
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
             try execute("DELETE FROM codex_session_token_imports")
+            try execute("DELETE FROM usage_series_catalog")
+            try execute("DELETE FROM token_series_catalog")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -1534,6 +1441,7 @@ final class UsageHistoryStore: @unchecked Sendable {
         }
 
         try recomputeStoredUsageConsumption()
+        try rebuildSeriesCatalogs()
         notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
 
@@ -1628,6 +1536,33 @@ final class UsageHistoryStore: @unchecked Sendable {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage_series_catalog (
+                window TEXT NOT NULL,
+                bucket_id TEXT NOT NULL,
+                bucket_name TEXT NOT NULL,
+                bucket_kind TEXT NOT NULL,
+                seen_at INTEGER NOT NULL,
+                PRIMARY KEY (window, bucket_id)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_series_catalog (
+                series_id TEXT PRIMARY KEY,
+                series_name TEXT NOT NULL,
+                series_kind TEXT NOT NULL,
+                seen_at INTEGER NOT NULL,
+                has_total INTEGER NOT NULL DEFAULT 0,
+                has_input INTEGER NOT NULL DEFAULT 0,
+                has_cached INTEGER NOT NULL DEFAULT 0,
+                has_output INTEGER NOT NULL DEFAULT 0,
+                has_reasoning INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -1635,13 +1570,213 @@ final class UsageHistoryStore: @unchecked Sendable {
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_cached_input_tokens", definition: "INTEGER")
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_output_tokens", definition: "INTEGER")
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_reasoning_output_tokens", definition: "INTEGER")
+        try addColumnIfNeeded(table: "token_series_catalog", column: "has_total", definition: "INTEGER NOT NULL DEFAULT 0")
+        try addColumnIfNeeded(table: "token_series_catalog", column: "has_input", definition: "INTEGER NOT NULL DEFAULT 0")
+        try addColumnIfNeeded(table: "token_series_catalog", column: "has_cached", definition: "INTEGER NOT NULL DEFAULT 0")
+        try addColumnIfNeeded(table: "token_series_catalog", column: "has_output", definition: "INTEGER NOT NULL DEFAULT 0")
+        try addColumnIfNeeded(table: "token_series_catalog", column: "has_reasoning", definition: "INTEGER NOT NULL DEFAULT 0")
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_bucket_timestamp ON usage_samples(window, bucket_id, timestamp DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_bucket_sample_timestamp ON usage_rollups(window, bucket_id, sample_timestamp DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_received_at ON token_usage_samples(received_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_model_received_at ON token_usage_samples(model, received_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_thread_total ON token_usage_samples(thread_id, total_total_tokens)")
+        try execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_token_usage_samples_observed_components_received_at
+            ON token_usage_samples(received_at)
+            WHERE \(Self.observedTokenComponentsPredicate)
+            """
+        )
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_token_imports_status ON codex_session_token_imports(status, imported_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_usage_series_catalog_window_seen ON usage_series_catalog(window, seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_series_catalog_kind_seen ON token_series_catalog(series_kind, seen_at DESC)")
 
         try recomputeStoredUsageConsumptionIfNeeded()
+        try rebuildSeriesCatalogsIfNeeded()
+    }
+
+    private func rebuildSeriesCatalogsIfNeeded() throws {
+        guard try metadataValue(for: Self.seriesCatalogMetadataKey) != Self.currentSeriesCatalogVersion else {
+            return
+        }
+
+        try rebuildSeriesCatalogs()
+    }
+
+    private func rebuildSeriesCatalogs() throws {
+        try rebuildUsageSeriesCatalog()
+        try rebuildTokenSeriesCatalog()
+        try setMetadataValue(Self.currentSeriesCatalogVersion, for: Self.seriesCatalogMetadataKey)
+    }
+
+    private func rebuildUsageSeriesCatalog() throws {
+        try execute("DELETE FROM usage_series_catalog")
+        try execute(
+            """
+            INSERT INTO usage_series_catalog (
+                window, bucket_id, bucket_name, bucket_kind, seen_at
+            )
+            SELECT latest.window,
+                latest.bucket_id,
+                COALESCE(
+                    (
+                        SELECT source.bucket_name
+                        FROM (
+                            SELECT bucket_id, bucket_name, bucket_kind, window, timestamp AS seen_at
+                            FROM usage_samples
+                            UNION ALL
+                            SELECT bucket_id, bucket_name, bucket_kind, window, sample_timestamp AS seen_at
+                            FROM usage_rollups
+                        ) source
+                        WHERE source.window = latest.window
+                            AND source.bucket_id = latest.bucket_id
+                            AND source.seen_at = latest.seen_at
+                        ORDER BY source.bucket_kind ASC, source.bucket_name ASC
+                        LIMIT 1
+                    ),
+                    latest.bucket_id
+                ) AS bucket_name,
+                COALESCE(
+                    (
+                        SELECT source.bucket_kind
+                        FROM (
+                            SELECT bucket_id, bucket_name, bucket_kind, window, timestamp AS seen_at
+                            FROM usage_samples
+                            UNION ALL
+                            SELECT bucket_id, bucket_name, bucket_kind, window, sample_timestamp AS seen_at
+                            FROM usage_rollups
+                        ) source
+                        WHERE source.window = latest.window
+                            AND source.bucket_id = latest.bucket_id
+                            AND source.seen_at = latest.seen_at
+                        ORDER BY source.bucket_kind ASC, source.bucket_name ASC
+                        LIMIT 1
+                    ),
+                    'model'
+                ) AS bucket_kind,
+                latest.seen_at
+            FROM (
+                SELECT window, bucket_id, MAX(seen_at) AS seen_at
+                FROM (
+                    SELECT window, bucket_id, timestamp AS seen_at
+                    FROM usage_samples
+                    UNION ALL
+                    SELECT window, bucket_id, sample_timestamp AS seen_at
+                    FROM usage_rollups
+                )
+                GROUP BY window, bucket_id
+            ) latest
+            """
+        )
+    }
+
+    private func rebuildTokenSeriesCatalog() throws {
+        try execute("DELETE FROM token_series_catalog")
+        try execute(
+            """
+            INSERT INTO token_series_catalog (
+                series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            )
+            SELECT series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            FROM (
+                SELECT 'tokens_all' AS series_id,
+                    'All tokens' AS series_name,
+                    'aggregate' AS series_kind,
+                    MAX(received_at) AS seen_at,
+                    MAX(CASE WHEN observed_total_tokens > 0 THEN 1 ELSE 0 END) AS has_total,
+                    MAX(CASE WHEN observed_input_tokens > 0 THEN 1 ELSE 0 END) AS has_input,
+                    MAX(CASE WHEN observed_cached_input_tokens > 0 THEN 1 ELSE 0 END) AS has_cached,
+                    MAX(CASE WHEN observed_output_tokens > 0 THEN 1 ELSE 0 END) AS has_output,
+                    MAX(CASE WHEN observed_reasoning_output_tokens > 0 THEN 1 ELSE 0 END) AS has_reasoning
+                FROM token_usage_samples
+            )
+            WHERE has_total = 1
+                OR has_input = 1
+                OR has_cached = 1
+                OR has_output = 1
+                OR has_reasoning = 1
+            """
+        )
+
+        let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
+        try execute(
+            """
+            INSERT INTO token_series_catalog (
+                series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            )
+            SELECT series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            FROM (
+                SELECT 'model:' || normalized_model AS series_id,
+                    normalized_model AS series_name,
+                    'model' AS series_kind,
+                    MAX(received_at) AS seen_at,
+                    MAX(CASE WHEN observed_total_tokens > 0 THEN 1 ELSE 0 END) AS has_total,
+                    MAX(CASE WHEN observed_input_tokens > 0 THEN 1 ELSE 0 END) AS has_input,
+                    MAX(CASE WHEN observed_cached_input_tokens > 0 THEN 1 ELSE 0 END) AS has_cached,
+                    MAX(CASE WHEN observed_output_tokens > 0 THEN 1 ELSE 0 END) AS has_output,
+                    MAX(CASE WHEN observed_reasoning_output_tokens > 0 THEN 1 ELSE 0 END) AS has_reasoning
+                FROM (
+                    SELECT received_at,
+                        \(normalizedModelExpression) AS normalized_model,
+                        observed_total_tokens,
+                        observed_input_tokens,
+                        observed_cached_input_tokens,
+                        observed_output_tokens,
+                        observed_reasoning_output_tokens
+                    FROM token_usage_samples
+                )
+                WHERE normalized_model IS NOT NULL
+                GROUP BY normalized_model
+            )
+            WHERE has_total = 1
+                OR has_input = 1
+                OR has_cached = 1
+                OR has_output = 1
+                OR has_reasoning = 1
+            """
+        )
+        try execute(
+            """
+            INSERT INTO token_series_catalog (
+                series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            )
+            SELECT series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            FROM (
+                SELECT '\(TokenDashboardSeries.unattributedID)' AS series_id,
+                    'Unattributed' AS series_name,
+                    'unattributed' AS series_kind,
+                    MAX(received_at) AS seen_at,
+                    0 AS has_total,
+                    MAX(CASE WHEN observed_input_tokens > 0 THEN 1 ELSE 0 END) AS has_input,
+                    MAX(CASE WHEN observed_cached_input_tokens > 0 THEN 1 ELSE 0 END) AS has_cached,
+                    MAX(CASE WHEN observed_output_tokens > 0 THEN 1 ELSE 0 END) AS has_output,
+                    MAX(CASE WHEN observed_reasoning_output_tokens > 0 THEN 1 ELSE 0 END) AS has_reasoning
+                FROM (
+                    SELECT received_at,
+                        \(normalizedModelExpression) AS normalized_model,
+                        observed_input_tokens,
+                        observed_cached_input_tokens,
+                        observed_output_tokens,
+                        observed_reasoning_output_tokens
+                    FROM token_usage_samples
+                )
+                WHERE normalized_model IS NULL
+            )
+            WHERE has_input = 1
+                OR has_cached = 1
+                OR has_output = 1
+                OR has_reasoning = 1
+            """
+        )
     }
 
     private func addColumnIfNeeded(table: String, column: String, definition: String) throws {
@@ -2308,6 +2443,13 @@ final class UsageHistoryStore: @unchecked Sendable {
         bindOptionalInt(resetAt, to: 8, in: statement)
 
         try step(statement)
+        try upsertUsageSeriesCatalog(
+            bucketID: bucket.id,
+            bucketName: bucket.name,
+            bucketKind: bucket.kind.rawValue,
+            window: window.rawValue,
+            seenAt: timestamp
+        )
     }
 
     private func insertRollup(
@@ -2367,6 +2509,50 @@ final class UsageHistoryStore: @unchecked Sendable {
         sqlite3_bind_int(statement, 9, Int32(usedPercent))
         sqlite3_bind_double(statement, 10, consumedPercentAdjustment)
         bindOptionalInt(resetAt, to: 11, in: statement)
+
+        try step(statement)
+        try upsertUsageSeriesCatalog(
+            bucketID: bucket.id,
+            bucketName: bucket.name,
+            bucketKind: bucket.kind.rawValue,
+            window: window.rawValue,
+            seenAt: timestamp
+        )
+    }
+
+    private func upsertUsageSeriesCatalog(
+        bucketID: String,
+        bucketName: String,
+        bucketKind: String,
+        window: String,
+        seenAt: Int64
+    ) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO usage_series_catalog (
+                window, bucket_id, bucket_name, bucket_kind, seen_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(window, bucket_id) DO UPDATE SET
+                bucket_name = CASE
+                    WHEN excluded.seen_at >= usage_series_catalog.seen_at
+                    THEN excluded.bucket_name
+                    ELSE usage_series_catalog.bucket_name
+                END,
+                bucket_kind = CASE
+                    WHEN excluded.seen_at >= usage_series_catalog.seen_at
+                    THEN excluded.bucket_kind
+                    ELSE usage_series_catalog.bucket_kind
+                END,
+                seen_at = MAX(usage_series_catalog.seen_at, excluded.seen_at)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(window, to: 1, in: statement)
+        bindText(bucketID, to: 2, in: statement)
+        bindText(bucketName, to: 3, in: statement)
+        bindText(bucketKind, to: 4, in: statement)
+        sqlite3_bind_int64(statement, 5, seenAt)
 
         try step(statement)
     }
@@ -2501,6 +2687,12 @@ final class UsageHistoryStore: @unchecked Sendable {
         timestamp: Int64,
         observedTokens: CodexTokenUsageBreakdown
     ) throws {
+        let normalizedModel = normalizedModelName(notification.model)
+        let existingModelState = try tokenSampleModelState(
+            threadID: notification.threadID,
+            turnID: notification.turnID,
+            cumulativeTotalTokens: notification.tokenUsage.total.totalTokens
+        )
         let statement = try prepare(
             """
             INSERT INTO token_usage_samples (
@@ -2543,7 +2735,7 @@ final class UsageHistoryStore: @unchecked Sendable {
 
         bindText(notification.threadID, to: 1, in: statement)
         bindText(notification.turnID, to: 2, in: statement)
-        bindOptionalText(normalizedModelName(notification.model), to: 3, in: statement)
+        bindOptionalText(normalizedModel, to: 3, in: statement)
         sqlite3_bind_int64(statement, 4, timestamp)
         bindOptionalInt(notification.tokenUsage.modelContextWindow, to: 5, in: statement)
         sqlite3_bind_int64(statement, 6, last.inputTokens)
@@ -2563,6 +2755,46 @@ final class UsageHistoryStore: @unchecked Sendable {
         sqlite3_bind_int64(statement, 20, observedTokens.totalTokens)
 
         try step(statement)
+        try upsertTokenSeriesCatalog(
+            model: normalizedModel,
+            seenAt: timestamp,
+            observedTokens: observedTokens
+        )
+        if existingModelState.exists,
+           CodexModelIdentifier.normalized(existingModelState.model) == nil,
+           normalizedModel != nil
+        {
+            try rebuildTokenSeriesCatalog()
+        }
+    }
+
+    private func tokenSampleModelState(
+        threadID: String,
+        turnID: String,
+        cumulativeTotalTokens: Int64
+    ) throws -> (exists: Bool, model: String?) {
+        let statement = try prepare(
+            """
+            SELECT model
+            FROM token_usage_samples
+            WHERE thread_id = ? AND turn_id = ? AND total_total_tokens = ?
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(threadID, to: 1, in: statement)
+        bindText(turnID, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, cumulativeTotalTokens)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return (true, optionalColumnText(statement, index: 0))
+        case SQLITE_DONE:
+            return (false, nil)
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
     }
 
     private func repairMissingTokenSampleModel(
@@ -2596,6 +2828,109 @@ final class UsageHistoryStore: @unchecked Sendable {
         return sqlite3_changes(database) > 0
     }
 
+    private func upsertTokenSeriesCatalog(
+        model: String?,
+        seenAt: Int64,
+        observedTokens: CodexTokenUsageBreakdown
+    ) throws {
+        guard observedTokens.totalTokens > 0
+                || observedTokens.inputTokens > 0
+                || observedTokens.cachedInputTokens > 0
+                || observedTokens.outputTokens > 0
+                || observedTokens.reasoningOutputTokens > 0
+        else {
+            return
+        }
+
+        try upsertTokenSeriesCatalogRow(
+            seriesID: "tokens_all",
+            seriesName: "All tokens",
+            seriesKind: "aggregate",
+            seenAt: seenAt,
+            hasTotal: observedTokens.totalTokens > 0,
+            hasInput: observedTokens.inputTokens > 0,
+            hasCached: observedTokens.cachedInputTokens > 0,
+            hasOutput: observedTokens.outputTokens > 0,
+            hasReasoning: observedTokens.reasoningOutputTokens > 0
+        )
+
+        if let model {
+            try upsertTokenSeriesCatalogRow(
+                seriesID: "model:\(model)",
+                seriesName: model,
+                seriesKind: "model",
+                seenAt: seenAt,
+                hasTotal: observedTokens.totalTokens > 0,
+                hasInput: observedTokens.inputTokens > 0,
+                hasCached: observedTokens.cachedInputTokens > 0,
+                hasOutput: observedTokens.outputTokens > 0,
+                hasReasoning: observedTokens.reasoningOutputTokens > 0
+            )
+        } else if observedTokens.inputTokens > 0
+                    || observedTokens.cachedInputTokens > 0
+                    || observedTokens.outputTokens > 0
+                    || observedTokens.reasoningOutputTokens > 0 {
+            try upsertTokenSeriesCatalogRow(
+                seriesID: TokenDashboardSeries.unattributedID,
+                seriesName: "Unattributed",
+                seriesKind: "unattributed",
+                seenAt: seenAt,
+                hasTotal: false,
+                hasInput: observedTokens.inputTokens > 0,
+                hasCached: observedTokens.cachedInputTokens > 0,
+                hasOutput: observedTokens.outputTokens > 0,
+                hasReasoning: observedTokens.reasoningOutputTokens > 0
+            )
+        }
+    }
+
+    private func upsertTokenSeriesCatalogRow(
+        seriesID: String,
+        seriesName: String,
+        seriesKind: String,
+        seenAt: Int64,
+        hasTotal: Bool,
+        hasInput: Bool,
+        hasCached: Bool,
+        hasOutput: Bool,
+        hasReasoning: Bool
+    ) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO token_series_catalog (
+                series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(series_id) DO UPDATE SET
+                series_name = CASE
+                    WHEN excluded.seen_at >= token_series_catalog.seen_at
+                    THEN excluded.series_name
+                    ELSE token_series_catalog.series_name
+                END,
+                series_kind = excluded.series_kind,
+                seen_at = MAX(token_series_catalog.seen_at, excluded.seen_at),
+                has_total = MAX(token_series_catalog.has_total, excluded.has_total),
+                has_input = MAX(token_series_catalog.has_input, excluded.has_input),
+                has_cached = MAX(token_series_catalog.has_cached, excluded.has_cached),
+                has_output = MAX(token_series_catalog.has_output, excluded.has_output),
+                has_reasoning = MAX(token_series_catalog.has_reasoning, excluded.has_reasoning)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(seriesID, to: 1, in: statement)
+        bindText(seriesName, to: 2, in: statement)
+        bindText(seriesKind, to: 3, in: statement)
+        sqlite3_bind_int64(statement, 4, seenAt)
+        sqlite3_bind_int(statement, 5, hasTotal ? 1 : 0)
+        sqlite3_bind_int(statement, 6, hasInput ? 1 : 0)
+        sqlite3_bind_int(statement, 7, hasCached ? 1 : 0)
+        sqlite3_bind_int(statement, 8, hasOutput ? 1 : 0)
+        sqlite3_bind_int(statement, 9, hasReasoning ? 1 : 0)
+
+        try step(statement)
+    }
+
     private func tokenValueExpression(for category: TokenHistoryCategory) -> String {
         switch category {
         case .total:
@@ -2608,6 +2943,21 @@ final class UsageHistoryStore: @unchecked Sendable {
             return "IFNULL(observed_output_tokens, last_output_tokens)"
         case .reasoning:
             return "IFNULL(observed_reasoning_output_tokens, last_reasoning_output_tokens)"
+        }
+    }
+
+    private func tokenSeriesCatalogFlagColumn(for category: TokenHistoryCategory) -> String {
+        switch category {
+        case .total:
+            return "has_total"
+        case .input:
+            return "has_input"
+        case .cached:
+            return "has_cached"
+        case .output:
+            return "has_output"
+        case .reasoning:
+            return "has_reasoning"
         }
     }
 

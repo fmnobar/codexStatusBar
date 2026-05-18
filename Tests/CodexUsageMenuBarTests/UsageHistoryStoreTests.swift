@@ -75,6 +75,33 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(availableSeries.map(\.kind), [.aggregate, .model, .model])
     }
 
+    func testAvailableSeriesReadsFromCatalog() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO usage_series_catalog (
+                window, bucket_id, bucket_name, bucket_kind, seen_at
+            ) VALUES
+                ('sevenDay', 'codex', 'All models', 'aggregate', \(Int64(date("2026-04-14T20:00:00Z").timeIntervalSince1970))),
+                ('sevenDay', 'codex_gpt55', 'GPT-5.5', 'model', \(Int64(date("2026-04-14T20:01:00Z").timeIntervalSince1970))),
+                ('fiveHour', 'codex', 'All models', 'aggregate', \(Int64(date("2026-04-14T20:02:00Z").timeIntervalSince1970)));
+            """
+        )
+
+        let availableSeries = try store.availableSeries(window: .sevenDay)
+        let rawPoints = try store.points(
+            range: .day,
+            window: .sevenDay,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+
+        XCTAssertEqual(rawPoints, [])
+        XCTAssertEqual(availableSeries.map(\.id), ["codex", "codex_gpt55"])
+        XCTAssertEqual(availableSeries.map(\.name), ["All models", "GPT-5.5"])
+    }
+
     func testUpsertsDuplicateMinuteSamples() async throws {
         let store = try makeStore()
         let first = date("2026-04-14T20:00:10Z")
@@ -120,6 +147,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(points.map(\.usedPercent), [42])
         XCTAssertEqual(points.map(\.peakUsedPercent), [42])
+        XCTAssertEqual(try store.availableSeries(window: .sevenDay).map(\.id), ["codex"])
     }
 
     func testRollupsTrackLatestAndPeakUsedPercent() async throws {
@@ -416,6 +444,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(samples.count, 1)
         XCTAssertEqual(samples.first?.model, "gpt-future-1")
         XCTAssertEqual(samples.first?.observedTotalTokens, 125)
+        XCTAssertEqual(try store.availableTokenSeries(category: .total).map(\.id), ["tokens_all", "model:gpt-future-1"])
         XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 125)
     }
 
@@ -941,6 +970,31 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
+    func testTokenSeriesDiscoveryReadsFromCatalog() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO token_series_catalog (
+                series_id, series_name, series_kind, seen_at,
+                has_total, has_input, has_cached, has_output, has_reasoning
+            ) VALUES
+                ('tokens_all', 'All tokens', 'aggregate', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), 1, 1, 1, 0, 0),
+                ('model:gpt-5.5', 'gpt-5.5', 'model', \(Int64(date("2026-05-03T09:01:00Z").timeIntervalSince1970)), 1, 1, 0, 0, 0),
+                ('tokens_unattributed', 'Unattributed', 'unattributed', \(Int64(date("2026-05-03T09:02:00Z").timeIntervalSince1970)), 0, 1, 0, 0, 0);
+            """
+        )
+
+        let dashboardSeries = try store.tokenDashboardSeries()
+        let historySeries = try store.availableTokenComponentSeries()
+        let rawSamples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(rawSamples, [])
+        XCTAssertEqual(dashboardSeries.map(\.id), ["tokens_all", "model:gpt-5.5", "tokens_unattributed"])
+        XCTAssertEqual(dashboardSeries.map(\.name), ["All captured", "gpt-5.5", "Unattributed"])
+        XCTAssertEqual(historySeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
     @MainActor
     func testTokenDashboardViewModelDefaultsFiltersAndExportsVisibleRows() async throws {
         let store = try makeStore()
@@ -1327,6 +1381,26 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenUsageSamples().count, 1)
     }
 
+    func testMigrationCreatesSeriesCatalogsAndTargetedIndexes() async throws {
+        let (_, databaseURL) = try makeTemporaryStore()
+
+        let tables = try sqliteStrings(
+            at: databaseURL,
+            sql: "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        )
+        let indexes = try sqliteStrings(
+            at: databaseURL,
+            sql: "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name"
+        )
+
+        XCTAssertTrue(tables.contains("usage_series_catalog"))
+        XCTAssertTrue(tables.contains("token_series_catalog"))
+        XCTAssertTrue(indexes.contains("idx_usage_samples_window_bucket_timestamp"))
+        XCTAssertTrue(indexes.contains("idx_usage_rollups_window_bucket_sample_timestamp"))
+        XCTAssertTrue(indexes.contains("idx_token_usage_samples_model_received_at"))
+        XCTAssertTrue(indexes.contains("idx_token_usage_samples_observed_components_received_at"))
+    }
+
     func testMigratesLegacyTokenTableWithoutObservedCategoryColumns() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyTokenHistoryDatabase(at: databaseURL)
@@ -1354,6 +1428,8 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(samples.first?.observedInputTokens, nil)
         XCTAssertEqual(inputPoints.map(\.tokenCount), [120])
         XCTAssertTrue(componentBucketPoints.isEmpty)
+        XCTAssertEqual(try store.availableTokenSeries(category: .total).map(\.id), ["tokens_all"])
+        XCTAssertEqual(try store.availableTokenComponentSeries(), [])
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 200)
         XCTAssertNil(try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
     }
@@ -1884,10 +1960,16 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertFalse(try store.hasAnyHistory())
 
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
+        try store.record(
+            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastInput: 120, lastTotal: 120, totalInput: 120, totalTotal: 120),
+            at: date("2026-04-14T20:10:00Z")
+        )
         XCTAssertTrue(try store.hasAnyHistory())
 
         try store.clearHistory()
         XCTAssertFalse(try store.hasAnyHistory())
+        XCTAssertEqual(try store.availableSeries(window: .sevenDay), [])
+        XCTAssertEqual(try store.availableTokenComponentSeries(), [])
     }
 
     func testDatabaseInfoReportsURLAndByteSize() async throws {
@@ -1951,7 +2033,15 @@ final class UsageHistoryStoreTests: XCTestCase {
         let (sourceStore, _) = try makeTemporaryStore()
         try sourceStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
         try sourceStore.record(
-            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 120, totalTotal: 120),
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 120,
+                lastTotal: 120,
+                totalInput: 120,
+                totalTotal: 120
+            ),
             at: date("2026-04-14T20:10:00Z")
         )
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
@@ -1968,6 +2058,8 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(points.map(\.usedPercent), [20])
         XCTAssertEqual(try destinationStore.tokenUsageSamples().map(\.observedTotalTokens), [120])
+        XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
+        XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
 
     func testImportBackupReplacesHistoryAndNotifies() async throws {
@@ -3378,6 +3470,55 @@ final class UsageHistoryStoreTests: XCTestCase {
             try? FileManager.default.removeItem(at: directoryURL)
         }
         return directoryURL
+    }
+
+    private func executeSQLite(at databaseURL: URL, sql: String) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected database to open")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        if result != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail(message)
+        }
+    }
+
+    private func sqliteStrings(at databaseURL: URL, sql: String) throws -> [String] {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected database to open")
+            return []
+        }
+        defer { sqlite3_close(database) }
+
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(database, sql, -1, &statement, nil), SQLITE_OK)
+        guard let statement else {
+            XCTFail("Expected statement to prepare")
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [String] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                rows.append(String(cString: sqlite3_column_text(statement, 0)))
+            case SQLITE_DONE:
+                return rows
+            default:
+                XCTFail("Unexpected SQLite result \(sqlite3_errmsg(database).map { String(cString: $0) } ?? "unknown error")")
+                return rows
+            }
+        }
     }
 
     private func createLegacyHistoryDatabase(at databaseURL: URL) throws {

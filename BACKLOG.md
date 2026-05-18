@@ -139,11 +139,12 @@
   - Moved app-facing History, Token Dashboard, Data settings, recording, and token-total calls through the worker.
   - Added stale-result handling for async History and Token Dashboard reloads.
 
-## Next Candidates
-
 - Add targeted SQLite indexes and bounded series queries
-  - Add indexes or summary tables for token component availability and period-scoped dashboard/history queries.
-  - Avoid full-table scans for model/series lists once token history grows.
+  - Added targeted indexes for rate-limit and token history hot paths.
+  - Added derived series catalogs for rate-limit and token model availability.
+  - Moved available-series discovery to catalog reads while keeping chart data semantics unchanged.
+
+## Next Candidates
 
 - Clean malformed token model labels
   - Add a one-time normalization pass for stored token model values with newlines or unrelated text.
