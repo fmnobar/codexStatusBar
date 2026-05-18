@@ -4,8 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Add performance regression coverage for History and token charts | Add realistic fixtures, measured reload/hover checks, and query-plan expectations for hot SQLite paths. |
-| 2 | Add lightweight update notifications | Check for updates during normal sessions and surface a visible prompt while keeping download/install user-initiated. |
+| 1 | Add lightweight update notifications | Check for updates during normal sessions and surface a visible prompt while keeping download/install user-initiated. |
 
 ## Done
 
@@ -161,11 +160,12 @@
   - Split the History UI into focused view, view-model, hover/indexing, and control-support files while preserving the same visible behavior.
   - Split the monolithic History test file into store usage, token storage, migrations, import/export/settings, view-model, window, and shared-support test files.
 
-## Next Candidates
-
 - Add performance regression coverage for History and token charts
-  - Add measured tests or fixtures for History reload, token dashboard reload, and hover selection with realistic sample counts.
-  - Add query-plan expectations for the SQLite hot paths.
+  - Added a realistic file-backed SQLite fixture for usage and token history hot paths.
+  - Added query-plan regression checks for bounded History, token History, Token Dashboard, and catalog series queries.
+  - Added conservative reload and hover timing guards for History snapshots, Token Dashboard snapshots, and hover lookup.
+
+## Next Candidates
 
 - Add lightweight update notifications
   - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.
