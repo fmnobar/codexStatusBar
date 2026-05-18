@@ -7,22 +7,22 @@ struct CodexUsageMenuBarApp: App {
 
     var body: some Scene {
         Settings {
-            DataManagementSettingsView(store: appDelegate.historyStore)
+            DataManagementSettingsView(database: appDelegate.historyDatabase)
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let historyStore: UsageHistoryStore
+    let historyDatabase: UsageHistoryDatabaseWorker
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
 
     override init() {
         AppFreshnessRuntime.captureLaunchFingerprint()
-        let resolvedHistoryStore = (try? UsageHistoryStore.applicationSupportStore()) ?? (try! UsageHistoryStore.inMemory())
-        let historyRecorder = UsageHistoryRecorder(store: resolvedHistoryStore)
-        historyStore = resolvedHistoryStore
+        let resolvedHistoryDatabase = UsageHistoryDatabaseWorker.applicationSupportStoreWithInMemoryFallback()
+        let historyRecorder = UsageHistoryRecorder(database: resolvedHistoryDatabase)
+        historyDatabase = resolvedHistoryDatabase
         viewModel = MenuBarStatusViewModel(
             client: CodexAppServerClient(),
             historyRecorder: historyRecorder,
@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItemController = StatusItemController(viewModel: viewModel, historyStore: historyStore)
+        statusItemController = StatusItemController(viewModel: viewModel, historyDatabase: historyDatabase)
 
         Task {
             await viewModel.start()

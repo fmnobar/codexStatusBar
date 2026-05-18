@@ -39,6 +39,8 @@
 		A70000000000000000000012 /* TokenDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* TokenDashboardWindowController.swift */; };
 		A70000000000000000000021 /* TokenDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* TokenDashboardView.swift */; };
 		A70000000000000000000022 /* TokenDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* TokenDashboardWindowController.swift */; };
+		A80000000000000000000011 /* UsageHistoryDatabaseWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */; };
+		A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */; };
 		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
 		A10000000000000000000012 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
 		A10000000000000000000013 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
@@ -84,6 +86,7 @@
 		A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionTokenBackfillImporter.swift; sourceTree = "<group>"; };
 		A70000000000000000000001 /* TokenDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenDashboardView.swift; sourceTree = "<group>"; };
 		A70000000000000000000002 /* TokenDashboardWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenDashboardWindowController.swift; sourceTree = "<group>"; };
+		A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryDatabaseWorker.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* UsageHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* UsageHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryView.swift; sourceTree = "<group>"; };
@@ -147,6 +150,7 @@
 				B5363F89C9BF34793883A496 /* StatusItemController.swift */,
 				A70000000000000000000001 /* TokenDashboardView.swift */,
 				A70000000000000000000002 /* TokenDashboardWindowController.swift */,
+				A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */,
 				A10000000000000000000001 /* UsageHistoryModels.swift */,
 				A10000000000000000000002 /* UsageHistoryStore.swift */,
 				A10000000000000000000003 /* UsageHistoryView.swift */,
@@ -282,6 +286,7 @@
 				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
 				A70000000000000000000021 /* TokenDashboardView.swift in Sources */,
 				A70000000000000000000022 /* TokenDashboardWindowController.swift in Sources */,
+				A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */,
 				A10000000000000000000021 /* UsageHistoryModels.swift in Sources */,
 				A10000000000000000000022 /* UsageHistoryStore.swift in Sources */,
 				A10000000000000000000023 /* UsageHistoryView.swift in Sources */,
@@ -316,6 +321,7 @@
 				746901348E7A668975CEDA56 /* StatusItemController.swift in Sources */,
 				A70000000000000000000011 /* TokenDashboardView.swift in Sources */,
 				A70000000000000000000012 /* TokenDashboardWindowController.swift in Sources */,
+				A80000000000000000000011 /* UsageHistoryDatabaseWorker.swift in Sources */,
 				A10000000000000000000011 /* UsageHistoryModels.swift in Sources */,
 				A10000000000000000000012 /* UsageHistoryStore.swift in Sources */,
 				A10000000000000000000013 /* UsageHistoryView.swift in Sources */,

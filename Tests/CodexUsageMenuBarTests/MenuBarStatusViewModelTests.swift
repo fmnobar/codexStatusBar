@@ -133,6 +133,9 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39%")
 
         viewModel.setMenuBarShowsTokens(true)
+        await waitUntil {
+            viewModel.menuBarPercentText == "7d: 39% · 4.8M"
+        }
 
         XCTAssertTrue(persistedOptions.options.showsTokens)
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
@@ -397,10 +400,14 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         await viewModel.start()
         currentTime.date = currentTime.date.addingTimeInterval(60)
         await viewModel.manualRefresh()
+        await waitUntil {
+            await historyRecorder.recordCount == 2
+        }
+        let records = await historyRecorder.recordsSnapshot()
 
-        XCTAssertEqual(historyRecorder.records.count, 2)
-        XCTAssertEqual(historyRecorder.records[0].snapshot.displaySnapshot.secondary?.usedPercent, 20)
-        XCTAssertEqual(historyRecorder.records[1].date, currentTime.date)
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[0].snapshot.displaySnapshot.secondary?.usedPercent, 20)
+        XCTAssertEqual(records[1].date, currentTime.date)
 
         viewModel.stop()
     }
@@ -447,9 +454,12 @@ final class MenuBarStatusViewModelTests: XCTestCase {
                 totalTotal: 1_200
             )
         )
-        await Task.yield()
+        await waitUntil {
+            await tokenRecorder.recordCount == 1 && viewModel.menuBarPercentText == "7d: 80% · 1.2k"
+        }
+        let records = await tokenRecorder.recordsSnapshot()
 
-        XCTAssertEqual(tokenRecorder.records.count, 1)
+        XCTAssertEqual(records.count, 1)
         XCTAssertEqual(client.refreshCallCount, 0)
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · 1.2k")
 
@@ -578,6 +588,13 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             )
         )
     }
+
+    private func waitUntil(timeout: TimeInterval = 2, condition: @escaping () async -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
 }
 
 private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
@@ -684,40 +701,57 @@ private final class LaunchAtLoginBox {
     }
 }
 
-private final class MockUsageHistoryRecorder: UsageHistoryRecording {
-    private(set) var records: [(snapshot: CodexUsageSnapshot, date: Date)] = []
+private actor MockUsageHistoryRecorder: UsageHistoryRecording {
+    private var records: [(snapshot: CodexUsageSnapshot, date: Date)] = []
 
-    func record(snapshot: CodexUsageSnapshot, at date: Date) {
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {
         records.append((snapshot, date))
+    }
+
+    var recordCount: Int {
+        records.count
+    }
+
+    func recordsSnapshot() -> [(snapshot: CodexUsageSnapshot, date: Date)] {
+        records
     }
 }
 
-private final class MockTokenUsageRecorder: TokenUsageRecording {
-    private(set) var records: [(tokenUsage: CodexTokenUsageNotification, date: Date)] = []
-    var todayTotals: TokenCategoryTotals?
+private actor MockTokenUsageRecorder: TokenUsageRecording {
+    private var records: [(tokenUsage: CodexTokenUsageNotification, date: Date)] = []
+    private var todayTotals: TokenCategoryTotals?
 
     init(todayTotals: TokenCategoryTotals?) {
         self.todayTotals = todayTotals
     }
 
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
-        records.append((tokenUsage, date))
-        todayTotals = TokenCategoryTotals(
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        let totals = TokenCategoryTotals(
             inputTokens: tokenUsage.tokenUsage.last.inputTokens,
             cachedInputTokens: tokenUsage.tokenUsage.last.cachedInputTokens,
             outputTokens: tokenUsage.tokenUsage.last.outputTokens,
             reasoningOutputTokens: tokenUsage.tokenUsage.last.reasoningOutputTokens,
             totalTokens: tokenUsage.tokenUsage.last.totalTokens
         )
-        return todayTotals
+        records.append((tokenUsage, date))
+        todayTotals = totals
+        return totals
     }
 
-    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
         todayTotals
     }
 
-    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
         todayTotals?.totalTokens
+    }
+
+    var recordCount: Int {
+        records.count
+    }
+
+    func recordsSnapshot() -> [(tokenUsage: CodexTokenUsageNotification, date: Date)] {
+        records
     }
 }
 

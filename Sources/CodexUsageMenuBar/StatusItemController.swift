@@ -5,10 +5,10 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
-    private let historyStore: UsageHistoryStore
+    private let historyDatabase: UsageHistoryDatabaseWorking
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
-    private lazy var tokenDashboardWindowController = TokenDashboardWindowController(store: historyStore)
+    private lazy var tokenDashboardWindowController = TokenDashboardWindowController(database: historyDatabase)
     private lazy var contextMenu = StatusItemContextMenuFactory.makeMenu(
         target: self,
         quitAction: #selector(quit)
@@ -18,9 +18,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
 
-    init(viewModel: MenuBarStatusViewModel, historyStore: UsageHistoryStore) {
+    init(viewModel: MenuBarStatusViewModel, historyDatabase: UsageHistoryDatabaseWorking) {
         self.viewModel = viewModel
-        self.historyStore = historyStore
+        self.historyDatabase = historyDatabase
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.autosaveName = "CodexStatusBarStatusItem"
         super.init()
@@ -38,7 +38,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(
             rootView: MenuBarContentView(
                 viewModel: viewModel,
-                historyStore: historyStore,
+                historyDatabase: historyDatabase,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
                 },

@@ -3,11 +3,11 @@ import SwiftUI
 
 @MainActor
 final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
-    private let store: UsageHistoryStore
+    private let database: UsageHistoryDatabaseWorking
     private var window: NSWindow?
 
-    init(store: UsageHistoryStore) {
-        self.store = store
+    init(database: UsageHistoryDatabaseWorking) {
+        self.database = database
     }
 
     func showWindow() {
@@ -28,7 +28,7 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
         window.minSize = NSSize(width: 700, height: 520)
         window.delegate = self
         window.setFrameAutosaveName("CodexUsageHistoryWindow")
-        window.contentViewController = NSHostingController(rootView: UsageHistoryView(store: store))
+        window.contentViewController = NSHostingController(rootView: UsageHistoryView(database: database))
         window.center()
         enforceMinimumFrame(for: window)
         window.makeKeyAndOrderFront(nil)

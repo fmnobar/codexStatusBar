@@ -23,27 +23,37 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var isImportingTokenHistory = false
     @Published private(set) var tokenImportSummaryText: String?
 
-    private let store: UsageHistoryStore
+    private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
-    private let fileManager: FileManager
     private let byteFormatter: ByteCountFormatter
     private let tokenBackfillImporter: CodexSessionTokenBackfillImporting
     private var databaseInfo: UsageHistoryDatabaseInfo?
 
     init(
-        store: UsageHistoryStore,
+        database: UsageHistoryDatabaseWorking,
         defaults: UserDefaults = .standard,
-        fileManager: FileManager = .default,
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter()
     ) {
-        self.store = store
+        self.database = database
         self.defaults = defaults
-        self.fileManager = fileManager
         self.byteFormatter = byteFormatter
         self.tokenBackfillImporter = tokenBackfillImporter
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
-        refreshDatabaseInfo()
+    }
+
+    convenience init(
+        store: UsageHistoryStore,
+        defaults: UserDefaults = .standard,
+        byteFormatter: ByteCountFormatter = ByteCountFormatter(),
+        tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter()
+    ) {
+        self.init(
+            database: UsageHistoryDatabaseWorker(store: store),
+            defaults: defaults,
+            byteFormatter: byteFormatter,
+            tokenBackfillImporter: tokenBackfillImporter
+        )
     }
 
     var databaseURL: URL? {
@@ -54,9 +64,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
         databaseURL != nil
     }
 
-    func refreshDatabaseInfo() {
+    func refreshDatabaseInfo() async {
         do {
-            let info = try store.databaseInfo(fileManager: fileManager)
+            let info = try await database.databaseInfo()
             databaseInfo = info
             databasePathText = info.databaseURL.path
             databaseSizeText = byteFormatter.string(fromByteCount: info.totalByteSize)
@@ -75,37 +85,37 @@ final class DataManagementSettingsViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([databaseURL])
     }
 
-    func exportBackup(to destinationURL: URL) {
+    func exportBackup(to destinationURL: URL) async {
         do {
-            try store.exportBackup(to: destinationURL, fileManager: fileManager)
+            try await database.exportBackup(to: destinationURL)
             statusMessage = "Backup exported."
             errorMessage = nil
-            refreshDatabaseInfo()
+            await refreshDatabaseInfo()
         } catch {
             statusMessage = nil
             errorMessage = "Backup could not be exported."
         }
     }
 
-    func importBackup(from sourceURL: URL) {
+    func importBackup(from sourceURL: URL) async {
         do {
-            try store.importBackup(from: sourceURL)
+            try await database.importBackup(from: sourceURL)
             statusMessage = "Backup imported."
             errorMessage = nil
-            refreshDatabaseInfo()
+            await refreshDatabaseInfo()
         } catch {
             statusMessage = nil
             errorMessage = "Backup could not be imported."
         }
     }
 
-    func clearHistory() {
+    func clearHistory() async {
         do {
-            try store.clearHistory()
+            try await database.clearHistory()
             statusMessage = "History cleared."
             errorMessage = nil
             tokenImportSummaryText = nil
-            refreshDatabaseInfo()
+            await refreshDatabaseInfo()
         } catch {
             statusMessage = nil
             errorMessage = "History could not be cleared."
@@ -134,16 +144,16 @@ final class DataManagementSettingsViewModel: ObservableObject {
         errorMessage = nil
         tokenImportSummaryText = nil
 
-        let store = store
+        let database = database
         let tokenBackfillImporter = tokenBackfillImporter
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result {
-                try tokenBackfillImporter.importTokenHistory(into: store, request: request)
+        Task { [weak self] in
+            let result: Result<CodexSessionTokenBackfillSummary, Error>
+            do {
+                result = .success(try await database.importTokenHistory(importer: tokenBackfillImporter, request: request))
+            } catch {
+                result = .failure(error)
             }
-
-            Task { @MainActor [weak self] in
-                self?.finishTokenHistoryImport(result)
-            }
+            self?.finishTokenHistoryImport(result)
         }
     }
 
@@ -153,7 +163,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
         switch result {
         case .success(let summary):
             tokenImportSummaryText = summary.statusMessage
-            refreshDatabaseInfo()
+            Task {
+                await refreshDatabaseInfo()
+            }
         case .failure:
             tokenImportSummaryText = nil
             errorMessage = "Token history could not be imported."
@@ -166,8 +178,8 @@ struct DataManagementSettingsView: View {
     @State private var isConfirmingClear = false
     @State private var pendingImportURL: URL?
 
-    init(store: UsageHistoryStore) {
-        _viewModel = StateObject(wrappedValue: DataManagementSettingsViewModel(store: store))
+    init(database: UsageHistoryDatabaseWorking) {
+        _viewModel = StateObject(wrappedValue: DataManagementSettingsViewModel(database: database))
     }
 
     var body: some View {
@@ -190,9 +202,14 @@ struct DataManagementSettingsView: View {
         }
         .frame(width: 580, height: 540)
         .scenePadding()
+        .task {
+            await viewModel.refreshDatabaseInfo()
+        }
         .alert("Clear History?", isPresented: $isConfirmingClear) {
             Button("Clear History", role: .destructive) {
-                viewModel.clearHistory()
+                Task {
+                    await viewModel.clearHistory()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -211,7 +228,9 @@ struct DataManagementSettingsView: View {
         ) {
             Button("Import", role: .destructive) {
                 if let pendingImportURL {
-                    viewModel.importBackup(from: pendingImportURL)
+                    Task {
+                        await viewModel.importBackup(from: pendingImportURL)
+                    }
                 }
                 pendingImportURL = nil
             }
@@ -289,7 +308,7 @@ struct DataManagementSettingsView: View {
                 .disabled(viewModel.isImportingTokenHistory)
             }
 
-                        Text("Recent import scans active sessions from the last 30 days. All history includes archives and can take a long time.")
+            Text("Recent import scans active sessions from the last 30 days. All history includes archives and can take a long time.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -322,7 +341,9 @@ struct DataManagementSettingsView: View {
             return
         }
 
-        viewModel.exportBackup(to: url)
+        Task {
+            await viewModel.exportBackup(to: url)
+        }
     }
 
     private func chooseBackupToImport() {

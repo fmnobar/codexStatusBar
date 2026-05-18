@@ -259,21 +259,29 @@ final class MenuBarStatusViewModel: ObservableObject {
         hasSnapshot = true
         isLoading = false
         errorMessage = nil
-        historyRecorder.record(snapshot: usageSnapshot, at: updateDate)
+        Task { [historyRecorder] in
+            await historyRecorder.record(snapshot: usageSnapshot, at: updateDate)
+        }
         applyPresentation()
         scheduleResetRefresh(for: usageSnapshot.displaySnapshot)
     }
 
     private func apply(tokenUsageNotification notification: CodexTokenUsageNotification) {
         let updateDate = now()
-        todayTokenTotals = tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
-        applyPresentation()
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            todayTokenTotals = await tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
+            applyPresentation()
+        }
     }
 
     private func applyPresentation() {
         let currentNow = now()
         let tokenTotals = if menuBarDisplayOptions.showsTokens {
-            todayTokenTotals ?? tokenUsageRecorder.todayTokenCategoryTotals(at: currentNow, calendar: .autoupdatingCurrent)
+            todayTokenTotals
         } else {
             TokenCategoryTotals?.none
         }
@@ -403,6 +411,9 @@ final class MenuBarStatusViewModel: ObservableObject {
 
         if needsPresentationUpdate {
             applyPresentation()
+            if menuBarDisplayOptions.showsTokens {
+                refreshTodayTokenTotals()
+            }
         }
     }
 
@@ -414,6 +425,24 @@ final class MenuBarStatusViewModel: ObservableObject {
         menuBarDisplayOptions = options
         persistMenuBarDisplayOptions(options)
         applyPresentation()
+        if options.showsTokens {
+            refreshTodayTokenTotals()
+        }
+    }
+
+    private func refreshTodayTokenTotals() {
+        let currentNow = now()
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            todayTokenTotals = await tokenUsageRecorder.todayTokenCategoryTotals(
+                at: currentNow,
+                calendar: .autoupdatingCurrent
+            )
+            applyPresentation()
+        }
     }
 
     private func refreshLaunchAtLoginState() {

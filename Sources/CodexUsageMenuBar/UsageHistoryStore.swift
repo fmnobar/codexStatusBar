@@ -1,83 +1,58 @@
 import Foundation
 import SQLite3
 
-protocol UsageHistoryRecording {
-    func record(snapshot: CodexUsageSnapshot, at date: Date)
+protocol UsageHistoryRecording: Sendable {
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async
 }
 
-protocol TokenUsageRecording {
+protocol TokenUsageRecording: Sendable {
     @discardableResult
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals?
-    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals?
-    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64?
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals?
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
 }
 
 struct NoOpUsageHistoryRecorder: UsageHistoryRecording {
-    func record(snapshot: CodexUsageSnapshot, at date: Date) {}
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
 }
 
 struct NoOpTokenUsageRecorder: TokenUsageRecording {
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
         nil
     }
 
-    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
         nil
     }
 
-    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
         nil
     }
 }
 
-final class UsageHistoryRecorder: UsageHistoryRecording {
-    private let store: UsageHistoryStore
-    private var lastRecentTokenImportAt: Date?
+final class UsageHistoryRecorder: UsageHistoryRecording, @unchecked Sendable {
+    private let database: UsageHistoryDatabaseWorking
 
-    init(store: UsageHistoryStore) {
-        self.store = store
+    init(database: UsageHistoryDatabaseWorking) {
+        self.database = database
     }
 
-    func record(snapshot: CodexUsageSnapshot, at date: Date) {
-        do {
-            try store.record(snapshot: snapshot, at: date)
-        } catch {
-            // History should never interrupt the live menu bar status.
-        }
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {
+        await database.record(snapshot: snapshot, at: date)
     }
 }
 
 extension UsageHistoryRecorder: TokenUsageRecording {
-    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
-        do {
-            try store.record(tokenUsage: tokenUsage, at: date)
-            return try store.tokenCategoryTotalsForDay(containing: date, calendar: .autoupdatingCurrent)
-        } catch {
-            // Token telemetry should never interrupt the live menu bar status.
-            return nil
-        }
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        await database.record(tokenUsage: tokenUsage, at: date)
     }
 
-    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
-        importRecentTokenHistoryIfNeeded(at: date, calendar: calendar)
-        return try? store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        await database.todayTokenCategoryTotals(at: date, calendar: calendar)
     }
 
-    func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
-        importRecentTokenHistoryIfNeeded(at: date, calendar: calendar)
-        return try? store.tokenTotalForDay(containing: date, calendar: calendar)
-    }
-
-    private func importRecentTokenHistoryIfNeeded(at date: Date, calendar: Calendar) {
-        if let lastRecentTokenImportAt,
-           date.timeIntervalSince(lastRecentTokenImportAt) < 60,
-           calendar.isDate(lastRecentTokenImportAt, inSameDayAs: date)
-        {
-            return
-        }
-
-        _ = store.importRecentTokenHistoryIfAvailable(containing: date, calendar: calendar)
-        lastRecentTokenImportAt = date
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        await database.todayTotalTokens(at: date, calendar: calendar)
     }
 }
 

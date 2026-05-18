@@ -12,7 +12,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         calendar.locale = Locale(identifier: "en_US_POSIX")
     }
 
-    func testRecordsAggregateAndModelSamples() throws {
+    func testRecordsAggregateAndModelSamples() async throws {
         let store = try makeStore()
         let now = date("2026-04-14T20:00:10Z")
 
@@ -26,7 +26,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.timestamp), [date("2026-04-14T20:00:00Z"), date("2026-04-14T20:00:00Z")])
     }
 
-    func testRecordsDisplaySnapshotForAggregateWhenBucketAggregateDiffers() throws {
+    func testRecordsDisplaySnapshotForAggregateWhenBucketAggregateDiffers() async throws {
         let store = try makeStore()
         let now = date("2026-04-14T20:00:10Z")
         let displaySnapshot = rateLimitSnapshot(
@@ -54,7 +54,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.usedPercent), [20, 7])
     }
 
-    func testAvailableSeriesIncludesTrackedModelsOutsideSelectedPeriod() throws {
+    func testAvailableSeriesIncludesTrackedModelsOutsideSelectedPeriod() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -75,7 +75,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(availableSeries.map(\.kind), [.aggregate, .model, .model])
     }
 
-    func testUpsertsDuplicateMinuteSamples() throws {
+    func testUpsertsDuplicateMinuteSamples() async throws {
         let store = try makeStore()
         let first = date("2026-04-14T20:00:10Z")
         let second = date("2026-04-14T20:00:50Z")
@@ -90,7 +90,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.first?.timestamp, date("2026-04-14T20:00:00Z"))
     }
 
-    func testWeekMonthAndYearQueriesUseRollups() throws {
+    func testWeekMonthAndYearQueriesUseRollups() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T20:05:00Z"))
@@ -106,7 +106,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(yearPoints.map(\.usedPercent), [30, 45])
     }
 
-    func testMigratesExistingRollupsWithoutPeakColumn() throws {
+    func testMigratesExistingRollupsWithoutPeakColumn() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyHistoryDatabase(at: databaseURL)
 
@@ -122,7 +122,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.peakUsedPercent), [42])
     }
 
-    func testRollupsTrackLatestAndPeakUsedPercent() throws {
+    func testRollupsTrackLatestAndPeakUsedPercent() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30)), at: date("2026-04-14T20:05:00Z"))
@@ -134,7 +134,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.peakUsedPercent), [30])
     }
 
-    func testDuplicateMinuteRollupsPreservePeakWhileUpdatingLatest() throws {
+    func testDuplicateMinuteRollupsPreservePeakWhileUpdatingLatest() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30)), at: date("2026-04-14T20:00:10Z"))
@@ -146,7 +146,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.peakUsedPercent), [30])
     }
 
-    func testDuplicateMinuteConsumptionAdjustsRollupsWithoutDoubleCounting() throws {
+    func testDuplicateMinuteConsumptionAdjustsRollupsWithoutDoubleCounting() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T19:50:00Z"))
@@ -159,7 +159,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.consumedPercent), [0, 15])
     }
 
-    func testUsageConsumptionIgnoresTransientZeroFromDifferentResetCohort() throws {
+    func testUsageConsumptionIgnoresTransientZeroFromDifferentResetCohort() async throws {
         let store = try makeStore()
         let stableReset = date("2026-05-20T13:25:36Z")
         let transientReset = date("2026-05-23T19:05:55Z")
@@ -214,7 +214,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.consumedPercent), [6])
     }
 
-    func testMigrationRecomputesInflatedUsageConsumption() throws {
+    func testMigrationRecomputesInflatedUsageConsumption() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createInflatedConsumptionHistoryDatabase(at: databaseURL)
 
@@ -230,7 +230,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.consumedPercent), [6])
     }
 
-    func testMigrationRecreatesMissingRollupsFromRawSamples() throws {
+    func testMigrationRecreatesMissingRollupsFromRawSamples() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createInflatedConsumptionHistoryDatabase(at: databaseURL, includeLegacyRollup: false)
 
@@ -246,7 +246,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.consumedPercent), [6])
     }
 
-    func testRawSamplesCompactButRollupsRemain() throws {
+    func testRawSamplesCompactButRollupsRemain() async throws {
         let store = try makeStore()
         let oldDate = date("2026-01-10T12:00:00Z")
         let currentDate = date("2026-04-14T20:00:00Z")
@@ -262,7 +262,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(yearPoints.contains { $0.usedPercent == 40 })
     }
 
-    func testClearHistoryDeletesSamplesAndRollups() throws {
+    func testClearHistoryDeletesSamplesAndRollups() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
@@ -272,7 +272,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try store.points(range: .year, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar).isEmpty)
     }
 
-    func testRecordsAllTokenUsageFields() throws {
+    func testRecordsAllTokenUsageFields() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -319,7 +319,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(samples.first?.observedTotalTokens, 160)
     }
 
-    func testTokenUsageComputesObservedCategoryDeltas() throws {
+    func testTokenUsageComputesObservedCategoryDeltas() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -366,7 +366,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(samples.map(\.observedTotalTokens), [155, 205])
     }
 
-    func testTokenUsageDeduplicatesRepeatedThreadTurnAndCumulativeTotal() throws {
+    func testTokenUsageDeduplicatesRepeatedThreadTurnAndCumulativeTotal() async throws {
         let store = try makeStore()
         let notification = tokenNotification(
             threadID: "thread-a",
@@ -382,7 +382,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 250)
     }
 
-    func testTokenUsageReimportFillsMissingModelWithoutInflatingTotals() throws {
+    func testTokenUsageReimportFillsMissingModelWithoutInflatingTotals() async throws {
         let store = try makeStore()
         let receivedAt = date("2026-04-14T20:00:00Z")
         let firstImport = try store.importTokenUsageSamples([
@@ -419,7 +419,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 125)
     }
 
-    func testTokenUsageReimportDoesNotClearExistingModel() throws {
+    func testTokenUsageReimportDoesNotClearExistingModel() async throws {
         let store = try makeStore()
         let receivedAt = date("2026-04-14T20:00:00Z")
 
@@ -475,7 +475,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         ])
     }
 
-    func testTokenUsageComputesSameThreadCumulativeDeltas() throws {
+    func testTokenUsageComputesSameThreadCumulativeDeltas() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -493,7 +493,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 750)
     }
 
-    func testTokenUsageFirstObservedSampleUsesLastTotalInsteadOfCumulativeTotal() throws {
+    func testTokenUsageFirstObservedSampleUsesLastTotalInsteadOfCumulativeTotal() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -505,7 +505,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 600)
     }
 
-    func testTokenHistoryPointsIncludeAggregateAndModelSeries() throws {
+    func testTokenHistoryPointsIncludeAggregateAndModelSeries() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -539,7 +539,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(series.map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
 
-    func testAvailableTokenSeriesIncludesTrackedModelsOutsideSelectedPeriod() throws {
+    func testAvailableTokenSeriesIncludesTrackedModelsOutsideSelectedPeriod() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -566,7 +566,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(availableSeries.map(\.name), ["All tokens", "gpt-5.5"])
     }
 
-    func testTokenModelSeriesTrimWhitespaceAndDeduplicate() throws {
+    func testTokenModelSeriesTrimWhitespaceAndDeduplicate() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -648,7 +648,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(availableComponentSeries.map(\.name), ["All tokens", "gpt-5.5"])
     }
 
-    func testTokenComponentPointsIncludeAggregateAndModelSeries() throws {
+    func testTokenComponentPointsIncludeAggregateAndModelSeries() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -704,7 +704,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(bounds?.latest, date("2026-04-14T20:00:00Z"))
     }
 
-    func testTokenComponentBucketPointsAggregateSamplesInSQLite() throws {
+    func testTokenComponentBucketPointsAggregateSamplesInSQLite() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -779,7 +779,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testTokenComponentBucketPointsUseCalendarBucketsForAllRanges() throws {
+    func testTokenComponentBucketPointsUseCalendarBucketsForAllRanges() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -834,7 +834,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(yearPoints.map(\.tokenCount), [100, 500])
     }
 
-    func testTokenComponentBucketPointsReturnEmptyRowsForEmptyPeriods() throws {
+    func testTokenComponentBucketPointsReturnEmptyRowsForEmptyPeriods() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastInput: 100, lastTotal: 100, totalInput: 100, totalTotal: 100),
@@ -852,7 +852,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(points.isEmpty)
     }
 
-    func testTokenDashboardPointsAggregateComponentsModelsAndUnattributedRows() throws {
+    func testTokenDashboardPointsAggregateComponentsModelsAndUnattributedRows() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -942,7 +942,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenDashboardViewModelDefaultsFiltersAndExportsVisibleRows() throws {
+    func testTokenDashboardViewModelDefaultsFiltersAndExportsVisibleRows() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
@@ -986,6 +986,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-05-17T12:00:00Z") },
             calendar: calendar
         )
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedRange, .month)
         XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
@@ -1012,12 +1013,13 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenDashboardNavigationBoundsAndEmptyStates() throws {
+    func testTokenDashboardNavigationBoundsAndEmptyStates() async throws {
         let emptyViewModel = TokenDashboardViewModel(
             store: try makeStore(),
             now: { self.date("2026-05-17T12:00:00Z") },
             calendar: calendar
         )
+        await emptyViewModel.reload()
 
         XCTAssertEqual(emptyViewModel.emptyState.title, "No token data yet")
         XCTAssertFalse(emptyViewModel.canGoToPreviousPeriod)
@@ -1040,23 +1042,26 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-05-17T12:00:00Z") },
             calendar: calendar
         )
+        await viewModel.reload()
 
         XCTAssertTrue(viewModel.canGoToPreviousPeriod)
         XCTAssertFalse(viewModel.canGoToNextPeriod)
 
         viewModel.goToPreviousPeriod()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-01T00:00:00Z"))
         XCTAssertTrue(viewModel.hasVisiblePoints)
         XCTAssertTrue(viewModel.canGoToNextPeriod)
 
         viewModel.goToNextPeriod()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
         XCTAssertEqual(viewModel.emptyState.title, "No tokens for this selection")
     }
 
-    func testTokenTotalForDayUsesLocalCalendarDay() throws {
+    func testTokenTotalForDayUsesLocalCalendarDay() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -1072,7 +1077,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertNil(try store.tokenTotalForDay(containing: date("2026-04-15T21:00:00Z"), calendar: calendar))
     }
 
-    func testTokenCategoryTotalsForDaySumsObservedCategories() throws {
+    func testTokenCategoryTotalsForDaySumsObservedCategories() async throws {
         let store = try makeStore()
 
         try store.record(
@@ -1127,7 +1132,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testTokenCategoryTotalsForDayReturnsNilWithoutSamples() throws {
+    func testTokenCategoryTotalsForDayReturnsNilWithoutSamples() async throws {
         let store = try makeStore()
 
         XCTAssertNil(
@@ -1138,7 +1143,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testTokenCategoryTotalsForDayDeduplicatesRepeatedNotifications() throws {
+    func testTokenCategoryTotalsForDayDeduplicatesRepeatedNotifications() async throws {
         let store = try makeStore()
         let notification = tokenNotification(
             threadID: "thread-a",
@@ -1170,7 +1175,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testCodexLogTokenImporterImportsTodayResponseCompletedCategories() throws {
+    func testCodexLogTokenImporterImportsTodayResponseCompletedCategories() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
         let timestamp = date("2026-05-17T12:48:13Z")
@@ -1212,7 +1217,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertFalse(samples.contains { $0.threadID.contains("private") || $0.turnID.contains("private") })
     }
 
-    func testRecentTokenHistoryImportUsesCodexDesktopLogs() throws {
+    func testRecentTokenHistoryImportUsesCodexDesktopLogs() async throws {
         let store = try makeStore()
         let tempDirectory = try makeTemporaryDirectory()
         let databaseURL = tempDirectory.appendingPathComponent("logs_2.sqlite")
@@ -1250,7 +1255,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenHistoryReloadCanImportRecentCodexDesktopLogs() throws {
+    func testTokenHistoryReloadCanImportRecentCodexDesktopLogs() async throws {
         let store = try makeStore()
         let tempDirectory = try makeTemporaryDirectory()
         let databaseURL = tempDirectory.appendingPathComponent("logs_2.sqlite")
@@ -1281,7 +1286,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(try store.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
         XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["tokens_all"])
@@ -1305,7 +1310,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         ])
     }
 
-    func testMigratesExistingDatabaseForTokenUsageSamples() throws {
+    func testMigratesExistingDatabaseForTokenUsageSamples() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyHistoryDatabase(at: databaseURL)
         let store = try UsageHistoryStore(
@@ -1322,7 +1327,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenUsageSamples().count, 1)
     }
 
-    func testMigratesLegacyTokenTableWithoutObservedCategoryColumns() throws {
+    func testMigratesLegacyTokenTableWithoutObservedCategoryColumns() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyTokenHistoryDatabase(at: databaseURL)
         let store = try UsageHistoryStore(
@@ -1353,7 +1358,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertNil(try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
     }
 
-    func testSessionTokenBackfillImportsMetadataOnlyTokenEvents() throws {
+    func testSessionTokenBackfillImportsMetadataOnlyTokenEvents() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
@@ -1424,7 +1429,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         })
     }
 
-    func testSessionTokenBackfillUsesLatestModelMetadataForTokenEvents() throws {
+    func testSessionTokenBackfillUsesLatestModelMetadataForTokenEvents() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
@@ -1477,7 +1482,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         ])
     }
 
-    func testSessionTokenBackfillUsesTokenCountInfoModelWhenPresent() throws {
+    func testSessionTokenBackfillUsesTokenCountInfoModelWhenPresent() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
@@ -1509,7 +1514,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenUsageSamples().map(\.model), ["o-series-next"])
     }
 
-    func testSessionTokenBackfillIsIdempotent() throws {
+    func testSessionTokenBackfillIsIdempotent() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
@@ -1562,7 +1567,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 220)
     }
 
-    func testSessionTokenBackfillRecentRequestUsesBounds() throws {
+    func testSessionTokenBackfillRecentRequestUsesBounds() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         let archivedURL = sessionsURL.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
@@ -1642,7 +1647,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.tokenUsageSamples().map(\.receivedAt), [date("2026-05-10T18:00:00Z")])
     }
 
-    func testSessionTokenBackfillReimportsChangedFilesAndRepairsModel() throws {
+    func testSessionTokenBackfillReimportsChangedFilesAndRepairsModel() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
@@ -1697,7 +1702,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSessionTokenBackfillScansSessionsAndArchivedAndFeedsTokenCharts() throws {
+    func testSessionTokenBackfillScansSessionsAndArchivedAndFeedsTokenCharts() async throws {
         let store = try makeStore()
         let rootURL = try makeTemporaryDirectory()
         let sessionsURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
@@ -1768,7 +1773,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.selectedChartKind = .tokens
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-15T09:00:00Z"),
             date("2026-04-15T09:00:00Z"),
@@ -1779,7 +1784,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [250, 60, 70, 20])
 
         viewModel.selectedRange = .week
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-14T00:00:00Z"),
             date("2026-04-14T00:00:00Z"),
@@ -1793,11 +1798,11 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120, 30, 40, 10, 250, 60, 70, 20])
 
         viewModel.selectedRange = .month
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [120, 30, 40, 10, 250, 60, 70, 20])
 
         viewModel.selectedRange = .year
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-01-01T00:00:00Z"),
             date("2026-01-01T00:00:00Z"),
@@ -1809,7 +1814,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [80, 20, 370, 90, 110, 30])
     }
 
-    func testSessionTokenBackfillMissingDirectoriesReturnsEmptySummary() throws {
+    func testSessionTokenBackfillMissingDirectoriesReturnsEmptySummary() async throws {
         let store = try makeStore()
         let missingURL = try makeTemporaryDirectory().appendingPathComponent("missing", isDirectory: true)
         let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [missingURL])
@@ -1824,7 +1829,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
     }
 
-    func testSessionTokenImportMetadataMigratesFromExistingDatabase() throws {
+    func testSessionTokenImportMetadataMigratesFromExistingDatabase() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyTokenHistoryDatabase(at: databaseURL)
         let store = try UsageHistoryStore(
@@ -1842,7 +1847,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testClearHistoryDeletesTokenUsageSamples() throws {
+    func testClearHistoryDeletesTokenUsageSamples() async throws {
         let store = try makeStore()
         let metadata = CodexSessionTokenImportFileMetadata(path: "/tmp/session.jsonl", fileSize: 123, modifiedAt: 456)
 
@@ -1861,7 +1866,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertFalse(try store.hasAnyHistory())
     }
 
-    func testExportsCSVRows() throws {
+    func testExportsCSVRows() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
@@ -1873,7 +1878,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(csv.contains("2026-04-14T20:00:00Z,codex_gpt55,GPT-5.5,model,sevenDay,7.000"))
     }
 
-    func testHasAnyHistoryReflectsSamplesAndClear() throws {
+    func testHasAnyHistoryReflectsSamplesAndClear() async throws {
         let store = try makeStore()
 
         XCTAssertFalse(try store.hasAnyHistory())
@@ -1885,7 +1890,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertFalse(try store.hasAnyHistory())
     }
 
-    func testDatabaseInfoReportsURLAndByteSize() throws {
+    func testDatabaseInfoReportsURLAndByteSize() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
 
@@ -1895,7 +1900,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThan(info.totalByteSize, 0)
     }
 
-    func testRawRetentionDefaultsAndPersists() throws {
+    func testRawRetentionDefaultsAndPersists() async throws {
         let defaults = makeIsolatedDefaults()
 
         XCTAssertEqual(UsageHistoryRawRetentionStore.load(from: defaults), .fourteenDays)
@@ -1905,7 +1910,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(UsageHistoryRawRetentionStore.load(from: defaults), .ninetyDays)
     }
 
-    func testRecordUsesUpdatedRawRetentionProvider() throws {
+    func testRecordUsesUpdatedRawRetentionProvider() async throws {
         var retention = UsageHistoryRawRetention.thirtyDays.timeInterval
         let store = try UsageHistoryStore.inMemory(
             notificationCenter: NotificationCenter(),
@@ -1927,7 +1932,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertTrue(yearPoints.contains { $0.usedPercent == 40 })
     }
 
-    func testHistoryBoundsUseRequestedRollupGranularity() throws {
+    func testHistoryBoundsUseRequestedRollupGranularity() async throws {
         let store = try makeStore()
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-01T12:30:00Z"))
@@ -1942,7 +1947,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(dailyBounds?.latest, date("2026-04-14T20:00:00Z"))
     }
 
-    func testBackupExportProducesImportableDatabase() throws {
+    func testBackupExportProducesImportableDatabase() async throws {
         let (sourceStore, _) = try makeTemporaryStore()
         try sourceStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
         try sourceStore.record(
@@ -1965,7 +1970,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try destinationStore.tokenUsageSamples().map(\.observedTotalTokens), [120])
     }
 
-    func testImportBackupReplacesHistoryAndNotifies() throws {
+    func testImportBackupReplacesHistoryAndNotifies() async throws {
         let (sourceStore, _) = try makeTemporaryStore()
         try sourceStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
@@ -1984,13 +1989,13 @@ final class UsageHistoryStoreTests: XCTestCase {
         defer { notificationCenter.removeObserver(observer) }
 
         try destinationStore.importBackup(from: backupURL)
-        wait(for: [expectation], timeout: 1)
+        await fulfillment(of: [expectation], timeout: 1)
         let points = try destinationStore.points(range: .day, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
 
         XCTAssertEqual(points.map(\.usedPercent), [20])
     }
 
-    func testInvalidBackupImportThrowsUserFacingFailure() throws {
+    func testInvalidBackupImportThrowsUserFacingFailure() async throws {
         let (store, _) = try makeTemporaryStore()
         let invalidURL = try makeTemporaryDirectory().appendingPathComponent("invalid.sqlite3")
         try Data("not a sqlite backup".utf8).write(to: invalidURL)
@@ -2001,12 +2006,13 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsViewModelFormatsDatabaseInfoAndPersistsRetention() throws {
+    func testSettingsViewModelFormatsDatabaseInfoAndPersistsRetention() async throws {
         let defaults = makeIsolatedDefaults()
         let (store, databaseURL) = try makeTemporaryStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
 
         let viewModel = DataManagementSettingsViewModel(store: store, defaults: defaults)
+        await viewModel.refreshDatabaseInfo()
 
         XCTAssertEqual(viewModel.databasePathText, databaseURL.path)
         XCTAssertNotEqual(viewModel.databaseSizeText, "--")
@@ -2019,38 +2025,38 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsViewModelExportImportClearAndFailureMessages() throws {
+    func testSettingsViewModelExportImportClearAndFailureMessages() async throws {
         let (store, _) = try makeTemporaryStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
         let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
 
-        viewModel.exportBackup(to: backupURL)
+        await viewModel.exportBackup(to: backupURL)
 
         XCTAssertEqual(viewModel.statusMessage, "Backup exported.")
         XCTAssertNil(viewModel.errorMessage)
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
 
-        viewModel.clearHistory()
+        await viewModel.clearHistory()
 
         XCTAssertEqual(viewModel.statusMessage, "History cleared.")
         XCTAssertFalse(try store.hasAnyHistory())
 
-        viewModel.importBackup(from: backupURL)
+        await viewModel.importBackup(from: backupURL)
 
         XCTAssertEqual(viewModel.statusMessage, "Backup imported.")
         XCTAssertTrue(try store.hasAnyHistory())
 
         let invalidURL = try makeTemporaryDirectory().appendingPathComponent("invalid.sqlite3")
         try Data("not a sqlite backup".utf8).write(to: invalidURL)
-        viewModel.importBackup(from: invalidURL)
+        await viewModel.importBackup(from: invalidURL)
 
         XCTAssertEqual(viewModel.errorMessage, "Backup could not be imported.")
         XCTAssertNil(viewModel.statusMessage)
     }
 
     @MainActor
-    func testSettingsViewModelImportsTokenHistoryAndReportsFailure() throws {
+    func testSettingsViewModelImportsTokenHistoryAndReportsFailure() async throws {
         let store = try makeStore()
         let releaseSuccessfulImport = DispatchSemaphore(value: 0)
         let successfulImportStarted = expectation(description: "Successful import started")
@@ -2077,12 +2083,12 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         successViewModel.importRecentTokenHistoryFromCodexSessions(now: date("2026-05-17T12:00:00Z"))
-        wait(for: [successfulImportStarted], timeout: 1)
+        await fulfillment(of: [successfulImportStarted], timeout: 1)
 
         XCTAssertTrue(successViewModel.isImportingTokenHistory)
         XCTAssertEqual(successImporter.receivedRequests.map(\.mode), [.recent])
         releaseSuccessfulImport.signal()
-        waitForImportToFinish(successViewModel)
+        await waitForImportToFinish(successViewModel)
 
         XCTAssertFalse(successViewModel.isImportingTokenHistory)
         XCTAssertEqual(
@@ -2102,7 +2108,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         allHistoryViewModel.importAllTokenHistoryFromCodexSessions()
-        waitForImportToFinish(allHistoryViewModel)
+        await waitForImportToFinish(allHistoryViewModel)
 
         XCTAssertEqual(allHistoryImporter.receivedRequests.map(\.mode), [.allHistory])
 
@@ -2115,7 +2121,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         failingViewModel.importTokenHistoryFromCodexSessions()
-        waitForImportToFinish(failingViewModel)
+        await waitForImportToFinish(failingViewModel)
 
         XCTAssertFalse(failingViewModel.isImportingTokenHistory)
         XCTAssertNil(failingViewModel.tokenImportSummaryText)
@@ -2124,7 +2130,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryPresentationDefaultsToIndependentSignals() throws {
+    func testHistoryPresentationDefaultsToIndependentSignals() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -2133,7 +2139,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
 
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.chartSemantics, .independentSignals)
         XCTAssertEqual(viewModel.selectedRange, .month)
@@ -2156,7 +2162,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenChartPresentationUsesStackedComponentsInsteadOfLimitWindow() throws {
+    func testTokenChartPresentationUsesStackedComponentsInsteadOfLimitWindow() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
@@ -2184,7 +2190,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
         viewModel.selectedWindow = .fiveHour
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedChartKind, .tokens)
         XCTAssertEqual(viewModel.chartSubtitle, "Tokens by hour")
@@ -2207,7 +2213,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenCompactSeriesTitlesKeepModelVariantsDistinct() throws {
+    func testTokenCompactSeriesTitlesKeepModelVariantsDistinct() async throws {
         let store = try makeStore()
         let viewModel = UsageHistoryViewModel(
             store: store,
@@ -2222,7 +2228,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenHistoryUsesAggregateOnlySeriesWhenModelsExist() throws {
+    func testTokenHistoryUsesAggregateOnlySeriesWhenModelsExist() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
@@ -2250,7 +2256,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["tokens_all"])
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
@@ -2295,7 +2301,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryPeriodDefaultsUseCalendarBoundaries() throws {
+    func testHistoryPeriodDefaultsUseCalendarBoundaries() async throws {
         var mondayCalendar = calendar!
         mondayCalendar.firstWeekday = 2
         let viewModel = UsageHistoryViewModel(
@@ -2326,7 +2332,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryCompactPeriodTitlesUseInlineFormats() throws {
+    func testHistoryCompactPeriodTitlesUseInlineFormats() async throws {
         let viewModel = UsageHistoryViewModel(
             store: try makeStore(),
             now: { self.date("2026-05-06T12:00:00Z") },
@@ -2347,7 +2353,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryCompactWeekPeriodTitleIncludesBothMonthsWhenNeeded() throws {
+    func testHistoryCompactWeekPeriodTitleIncludesBothMonthsWhenNeeded() async throws {
         var mondayCalendar = calendar!
         mondayCalendar.firstWeekday = 2
         let viewModel = UsageHistoryViewModel(
@@ -2362,7 +2368,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryPeriodNavigationRespectsBoundsAndCurrentPeriod() throws {
+    func testHistoryPeriodNavigationRespectsBoundsAndCurrentPeriod() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-12T09:00:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-14T20:00:00Z"))
@@ -2373,7 +2379,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-14T00:00:00Z"))
         XCTAssertFalse(viewModel.canGoToNextPeriod)
@@ -2396,7 +2402,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryFollowsCurrentPeriodAcrossDayBoundary() throws {
+    func testHistoryFollowsCurrentPeriodAcrossDayBoundary() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-28T09:00:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-29T08:00:00Z"))
@@ -2408,12 +2414,12 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-28T00:00:00Z"))
 
         currentDate = date("2026-04-29T08:00:00Z")
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-29T00:00:00Z"))
         XCTAssertFalse(viewModel.canGoToNextPeriod)
@@ -2422,7 +2428,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-28T00:00:00Z"))
 
         currentDate = date("2026-04-30T08:00:00Z")
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedPeriodStart, date("2026-04-28T00:00:00Z"))
 
@@ -2431,7 +2437,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryPeriodJumpToCurrentAndNavigationHints() throws {
+    func testHistoryPeriodJumpToCurrentAndNavigationHints() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2025-12-31T09:00:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-28T10:00:00Z"))
@@ -2443,7 +2449,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         for range in UsageHistoryRange.allCases {
             viewModel.selectedRange = range
-            viewModel.reload()
+            await viewModel.reload()
 
             let periodName = range.displayTitle.lowercased()
             XCTAssertTrue(viewModel.isCurrentPeriod)
@@ -2476,7 +2482,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryPeriodPreviousHintExplainsNoEarlierHistory() throws {
+    func testHistoryPeriodPreviousHintExplainsNoEarlierHistory() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-28T10:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -2486,7 +2492,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertFalse(viewModel.canGoToPreviousPeriod)
         XCTAssertEqual(viewModel.previousPeriodHelpText, "No earlier history for this limit")
@@ -2494,7 +2500,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryExportFilenameUsesSelectedPeriodWindowAndMetric() throws {
+    func testHistoryExportFilenameUsesSelectedPeriodWindowAndMetric() async throws {
         var sundayCalendar = calendar!
         sundayCalendar.firstWeekday = 1
         let viewModel = UsageHistoryViewModel(
@@ -2535,7 +2541,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryXAxisLabelsUseSelectedRangeFormats() throws {
+    func testHistoryXAxisLabelsUseSelectedRangeFormats() async throws {
         let viewModel = UsageHistoryViewModel(
             store: try makeStore(),
             now: { self.date("2026-04-14T17:00:00Z") },
@@ -2560,7 +2566,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryXAxisLabelValuesAreCenteredInBucketsForAllRanges() throws {
+    func testHistoryXAxisLabelValuesAreCenteredInBucketsForAllRanges() async throws {
         var sundayCalendar = calendar!
         sundayCalendar.firstWeekday = 1
         let viewModel = UsageHistoryViewModel(
@@ -2627,7 +2633,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHistoryChartDomainAddsHalfBucketPaddingForEdgeLabels() throws {
+    func testHistoryChartDomainAddsHalfBucketPaddingForEdgeLabels() async throws {
         var sundayCalendar = calendar!
         sundayCalendar.firstWeekday = 1
         let viewModel = UsageHistoryViewModel(
@@ -2654,7 +2660,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testComparableHistoryPresentationUsesContributorsAndAggregateReference() throws {
+    func testComparableHistoryPresentationUsesContributorsAndAggregateReference() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -2666,7 +2672,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedMetric = .usage
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.chartSubtitle, "Usage consumed by hour")
         XCTAssertEqual(viewModel.visibleContributorPoints.map(\.bucketID), ["codex_gpt55"])
@@ -2675,7 +2681,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testDayChartGroupsHourlyRollupsIntoHourlyBuckets() throws {
+    func testDayChartGroupsHourlyRollupsIntoHourlyBuckets() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 5)), at: date("2026-04-14T17:05:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 9)), at: date("2026-04-14T17:55:00Z"))
@@ -2687,7 +2693,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-14T17:00:00Z"),
@@ -2699,7 +2705,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testWeekChartGroupsHourlyRollupsIntoDailyBucketsAndShowsResetCapacity() throws {
+    func testWeekChartGroupsHourlyRollupsIntoDailyBucketsAndShowsResetCapacity() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 90)), at: date("2026-04-12T17:05:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 70)), at: date("2026-04-13T18:10:00Z"))
@@ -2711,7 +2717,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .week
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-12T00:00:00Z"),
@@ -2723,7 +2729,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testMonthAndYearChartBucketGranularity() throws {
+    func testMonthAndYearChartBucketGranularity() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 15)), at: date("2026-01-10T12:00:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 50)), at: date("2026-04-14T12:00:00Z"))
@@ -2735,7 +2741,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .month
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-14T00:00:00Z"),
@@ -2743,7 +2749,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         ])
 
         viewModel.selectedRange = .year
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-01-01T00:00:00Z"),
@@ -2754,7 +2760,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenChartsBucketBySelectedPeriod() throws {
+    func testTokenChartsBucketBySelectedPeriod() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastInput: 100, lastTotal: 100, totalInput: 100, totalTotal: 100),
@@ -2781,13 +2787,13 @@ final class UsageHistoryStoreTests: XCTestCase {
         viewModel.selectedChartKind = .tokens
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [date("2026-04-14T12:00:00Z")])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.tokenCount), [500])
 
         currentDate = date("2026-04-17T20:00:00Z")
         viewModel.selectedRange = .week
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-14T00:00:00Z"),
             date("2026-04-15T00:00:00Z"),
@@ -2796,14 +2802,14 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         currentDate = date("2026-04-30T20:00:00Z")
         viewModel.selectedRange = .month
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-04-14T00:00:00Z"),
             date("2026-04-15T00:00:00Z"),
         ])
 
         viewModel.selectedRange = .year
-        viewModel.reload()
+        await viewModel.reload()
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.bucketStart), [
             date("2026-01-01T00:00:00Z"),
             date("2026-04-01T00:00:00Z"),
@@ -2812,7 +2818,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testUsageMetricUsesObservedConsumptionWithinBucket() throws {
+    func testUsageMetricUsesObservedConsumptionWithinBucket() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 30)), at: date("2026-04-14T19:55:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: date("2026-04-14T20:05:00Z"))
@@ -2825,7 +2831,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedMetric = .usage
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.latestUsedPercent), [30, 42])
         XCTAssertEqual(viewModel.visibleChartPoints.map(\.peakUsedPercent), [30, 42])
@@ -2833,7 +2839,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testChartCSVUsesVisibleBucketedDatasetAndSelectedMetric() throws {
+    func testChartCSVUsesVisibleBucketedDatasetAndSelectedMetric() async throws {
         let store = try makeStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: date("2026-04-14T19:30:00Z"))
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
@@ -2845,7 +2851,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedMetric = .usage
-        viewModel.reload()
+        await viewModel.reload()
         let csv = viewModel.chartCSV()
 
         XCTAssertTrue(csv.contains("range,limit,metric,bucket_start,bucket_end,bucket_id,bucket_name,bucket_kind,percent_value"))
@@ -2853,7 +2859,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenChartCSVUsesVisibleBucketedDatasetAndCategory() throws {
+    func testTokenChartCSVUsesVisibleBucketedDatasetAndCategory() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
@@ -2876,7 +2882,7 @@ final class UsageHistoryStoreTests: XCTestCase {
 
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.exportFilename, "codex-usage-tokens-day-2026-04-14.csv")
 
@@ -2888,7 +2894,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHoverSelectionChoosesNearestTimestampAndGroupsVisiblePoints() throws {
+    func testHoverSelectionChoosesNearestTimestampAndGroupsVisiblePoints() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 25, modelSevenDay: 9), at: date("2026-04-14T20:10:00Z"))
@@ -2898,7 +2904,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:07:00Z"), xPosition: 180)
 
@@ -2907,7 +2913,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.hoverSelection?.xPosition, 180)
     }
 
-    func testHoverIndexChoosesNearestBucketWithoutScanningVisiblePoints() throws {
+    func testHoverIndexChoosesNearestBucketWithoutScanningVisiblePoints() async throws {
         let firstPoint = UsageHistoryChartPoint(
             bucketStart: date("2026-04-14T00:00:00Z"),
             bucketEnd: date("2026-04-14T01:00:00Z"),
@@ -2959,7 +2965,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTokenHoverSelectionGroupsVisibleSeriesInBucket() throws {
+    func testTokenHoverSelectionGroupsVisibleSeriesInBucket() async throws {
         let store = try makeStore()
         try store.record(
             tokenUsage: tokenNotification(
@@ -2982,7 +2988,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
         viewModel.selectedRange = .day
         viewModel.selectedChartKind = .tokens
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:15:00Z"), xPosition: 120)
 
@@ -2997,7 +3003,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHoverSelectionUsesRebuiltCacheAfterSeriesSelectionChanges() throws {
+    func testHoverSelectionUsesRebuiltCacheAfterSeriesSelectionChanges() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -3006,7 +3012,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.setSeries("codex_gpt55", isSelected: false)
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
@@ -3024,7 +3030,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.scheduleHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
         viewModel.setSeries("codex_gpt55", isSelected: false)
@@ -3034,13 +3040,13 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHoverSelectionClearsWhenNoVisibleBucketsExist() throws {
+    func testHoverSelectionClearsWhenNoVisibleBucketsExist() async throws {
         let viewModel = UsageHistoryViewModel(
             store: try makeStore(),
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
 
@@ -3048,7 +3054,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHoverSelectionClearsWhenVisibleSeriesChanges() throws {
+    func testHoverSelectionClearsWhenVisibleSeriesChanges() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -3057,7 +3063,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
         viewModel.updateHoverSelection(nearestTo: date("2026-04-14T20:00:00Z"), xPosition: 80)
 
         viewModel.setSeries("codex_gpt55", isSelected: false)
@@ -3067,7 +3073,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSeriesSelectorKeepsAggregateSelectedAndFiltersModels() throws {
+    func testSeriesSelectorKeepsAggregateSelectedAndFiltersModels() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7, extraModelSevenDay: 4), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -3075,7 +3081,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["codex", "codex_gpt54", "codex_gpt55"])
         XCTAssertTrue(viewModel.selectedSeriesIDs.contains("codex"))
@@ -3088,7 +3094,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSparkModelIsHiddenByDefault() throws {
+    func testSparkModelIsHiddenByDefault() async throws {
         let store = try makeStore()
         try store.record(
             snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
@@ -3100,7 +3106,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
 
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["codex", "codex_gpt53_spark"])
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
@@ -3112,7 +3118,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSparkModelRemainsAvailableButHiddenWhenSelectedPeriodHasNoBars() throws {
+    func testSparkModelRemainsAvailableButHiddenWhenSelectedPeriodHasNoBars() async throws {
         let store = try makeStore()
         try store.record(
             snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
@@ -3125,7 +3131,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
 
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.visibleChartPoints, [])
         XCTAssertEqual(viewModel.sortedSeries.map(\.id), ["codex", "codex_gpt53_spark"])
@@ -3140,7 +3146,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
     }
 
-    func testAvailableRateLimitSeriesDoesNotExposeTokenOnlyModels() throws {
+    func testAvailableRateLimitSeriesDoesNotExposeTokenOnlyModels() async throws {
         let store = try makeStore()
         try store.record(
             snapshot: sparkUsageSnapshot(aggregateSevenDay: 20, sparkSevenDay: 2),
@@ -3196,7 +3202,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testSeriesSelectorSelectAllAndClearModels() throws {
+    func testSeriesSelectorSelectAllAndClearModels() async throws {
         let store = try makeStore()
         try store.record(snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7, extraModelSevenDay: 4), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -3204,7 +3210,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.clearModelSeries()
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["codex"])
@@ -3217,14 +3223,14 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testEmptyStateDistinguishesNoHistoryAndNoDataForSelection() throws {
+    func testEmptyStateDistinguishesNoHistoryAndNoDataForSelection() async throws {
         let emptyStore = try makeStore()
         let emptyViewModel = UsageHistoryViewModel(
             store: emptyStore,
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
-        emptyViewModel.reload()
+        await emptyViewModel.reload()
 
         XCTAssertEqual(emptyViewModel.emptyStatePresentation.kind, .noHistory)
 
@@ -3236,14 +3242,14 @@ final class UsageHistoryStoreTests: XCTestCase {
             calendar: calendar
         )
         viewModel.selectedRange = .day
-        viewModel.reload()
+        await viewModel.reload()
 
         XCTAssertTrue(viewModel.hasAnyRecordedHistory)
         XCTAssertEqual(viewModel.emptyStatePresentation.kind, .noDataForSelection)
     }
 
     @MainActor
-    func testUsageAxisDefaultsToFiftyAndExpandsForHighConsumption() throws {
+    func testUsageAxisDefaultsToFiftyAndExpandsForHighConsumption() async throws {
         let lowUsageStore = try makeStore()
         try lowUsageStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 10)), at: date("2026-04-14T19:55:00Z"))
         try lowUsageStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 25)), at: date("2026-04-14T20:05:00Z"))
@@ -3254,7 +3260,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
         lowUsageViewModel.selectedRange = .day
         lowUsageViewModel.selectedMetric = .usage
-        lowUsageViewModel.reload()
+        await lowUsageViewModel.reload()
 
         XCTAssertEqual(lowUsageViewModel.chartYDomain, 0...50)
 
@@ -3268,13 +3274,13 @@ final class UsageHistoryStoreTests: XCTestCase {
         )
         highUsageViewModel.selectedRange = .day
         highUsageViewModel.selectedMetric = .usage
-        highUsageViewModel.reload()
+        await highUsageViewModel.reload()
 
         XCTAssertEqual(highUsageViewModel.chartYDomain, 0...100)
     }
 
     @MainActor
-    func testTokenAxisFormatsRawThousandsAndMillions() throws {
+    func testTokenAxisFormatsRawThousandsAndMillions() async throws {
         let viewModel = UsageHistoryViewModel(
             store: try makeStore(),
             now: { self.date("2026-04-14T21:00:00Z") },
@@ -3290,7 +3296,7 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHiddenSeriesStateWhenVisiblePointsAreEmpty() throws {
+    func testHiddenSeriesStateWhenVisiblePointsAreEmpty() async throws {
         let store = try makeStore()
         try store.record(snapshot: modelOnlyUsageSnapshot(modelSevenDay: 7), at: date("2026-04-14T20:00:00Z"))
         let viewModel = UsageHistoryViewModel(
@@ -3298,7 +3304,7 @@ final class UsageHistoryStoreTests: XCTestCase {
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
-        viewModel.reload()
+        await viewModel.reload()
 
         viewModel.clearModelSeries()
 
@@ -3307,7 +3313,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(viewModel.emptyStatePresentation.kind, .hiddenSeries)
     }
 
-    func testHistoryWindowFrameClampsOffscreenSavedFrame() {
+    func testHistoryWindowFrameClampsOffscreenSavedFrame() async {
         let visibleFrame = CGRect(x: 0, y: 0, width: 1000, height: 700)
         let restoredFrame = CGRect(x: -320, y: -80, width: 880, height: 640)
 
@@ -3320,7 +3326,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(frame, CGRect(x: 0, y: 0, width: 880, height: 640))
     }
 
-    func testHistoryWindowFrameFitsVisibleScreenBeforeMinimumSize() {
+    func testHistoryWindowFrameFitsVisibleScreenBeforeMinimumSize() async {
         let visibleFrame = CGRect(x: 100, y: 50, width: 640, height: 480)
         let restoredFrame = CGRect(x: 80, y: 20, width: 500, height: 300)
 
@@ -3333,7 +3339,7 @@ final class UsageHistoryStoreTests: XCTestCase {
         XCTAssertEqual(frame, visibleFrame)
     }
 
-    func testTokenDashboardWindowFrameClampsLikeHistoryWindow() {
+    func testTokenDashboardWindowFrameClampsLikeHistoryWindow() async {
         let visibleFrame = CGRect(x: 100, y: 50, width: 900, height: 620)
         let restoredFrame = CGRect(x: 20, y: -40, width: 1040, height: 700)
 
@@ -3767,10 +3773,10 @@ final class UsageHistoryStoreTests: XCTestCase {
     }
 
     @MainActor
-    private func waitForImportToFinish(_ viewModel: DataManagementSettingsViewModel, timeout: TimeInterval = 2) {
+    private func waitForImportToFinish(_ viewModel: DataManagementSettingsViewModel, timeout: TimeInterval = 2) async {
         let deadline = Date().addingTimeInterval(timeout)
         while viewModel.isImportingTokenHistory && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 

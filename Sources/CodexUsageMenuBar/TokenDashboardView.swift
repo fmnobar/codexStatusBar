@@ -86,7 +86,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
             selectedPeriodStart = currentPeriod.start
             selectedSeriesIDs = []
-            reload()
+            scheduleReload()
         }
     }
 
@@ -97,20 +97,34 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var historyBounds: UsageHistoryBounds?
     @Published private(set) var errorMessage: String?
 
-    private let store: UsageHistoryStore
+    private let database: UsageHistoryDatabaseWorking
     private let now: () -> Date
     private let calendar: Calendar
+    private var reloadTask: Task<Void, Never>?
+    private var reloadGeneration = 0
 
     init(
+        database: UsageHistoryDatabaseWorking,
+        now: @escaping () -> Date = Date.init,
+        calendar: Calendar = .autoupdatingCurrent
+    ) {
+        self.database = database
+        self.now = now
+        self.calendar = calendar
+        selectedPeriodStart = UsageHistoryRange.month.period(containing: now(), calendar: calendar).start
+        scheduleReload()
+    }
+
+    convenience init(
         store: UsageHistoryStore,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent
     ) {
-        self.store = store
-        self.now = now
-        self.calendar = calendar
-        selectedPeriodStart = UsageHistoryRange.month.period(containing: now(), calendar: calendar).start
-        reload()
+        self.init(database: UsageHistoryDatabaseWorker(store: store), now: now, calendar: calendar)
+    }
+
+    deinit {
+        reloadTask?.cancel()
     }
 
     var selectedPeriod: UsageHistoryPeriod {
@@ -314,29 +328,63 @@ final class TokenDashboardViewModel: ObservableObject {
         return max(next.timeIntervalSince(reference) / 2, 1)
     }
 
-    func reload() {
-        do {
-            let queryPeriod = periodForQuery()
-            let loadedPoints = try store.tokenDashboardPoints(
-                range: selectedRange,
-                periodStart: queryPeriod.start,
-                periodEnd: queryPeriod.end
-            )
-            let loadedSeries = try store.tokenDashboardSeries()
-            let loadedBounds = try store.tokenDashboardBounds()
+    @discardableResult
+    func reload() async -> Bool {
+        reloadTask?.cancel()
+        reloadTask = nil
+        return await performReload()
+    }
 
-            points = loadedPoints
-            series = loadedSeries
-            historyBounds = loadedBounds
+    @discardableResult
+    private func performReload() async -> Bool {
+        guard !Task.isCancelled else {
+            return false
+        }
+
+        let generation = nextReloadGeneration()
+        let queryPeriod = periodForQuery()
+        let request = TokenDashboardLoadRequest(
+            range: selectedRange,
+            periodStart: queryPeriod.start,
+            periodEnd: queryPeriod.end
+        )
+
+        do {
+            let result = try await database.tokenDashboardSnapshot(for: request)
+            guard generation == reloadGeneration, !Task.isCancelled else {
+                return false
+            }
+
+            points = result.points
+            series = result.series
+            historyBounds = result.historyBounds
             reconcileSelection()
             errorMessage = nil
+            return true
         } catch {
+            guard generation == reloadGeneration, !Task.isCancelled else {
+                return false
+            }
+
             points = []
             series = []
             historyBounds = nil
             selectedSeriesIDs = []
             errorMessage = "Token dashboard could not be loaded."
+            return false
         }
+    }
+
+    func scheduleReload() {
+        reloadTask?.cancel()
+        reloadTask = Task { [weak self] in
+            await self?.performReload()
+        }
+    }
+
+    private func nextReloadGeneration() -> Int {
+        reloadGeneration += 1
+        return reloadGeneration
     }
 
     func goToPreviousPeriod() {
@@ -347,7 +395,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = previous
-        reload()
+        scheduleReload()
     }
 
     func goToNextPeriod() {
@@ -358,7 +406,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = min(next, currentPeriod.start)
-        reload()
+        scheduleReload()
     }
 
     func jumpToCurrentPeriod() {
@@ -367,7 +415,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = currentPeriod.start
-        reload()
+        scheduleReload()
     }
 
     func selectSeries(_ id: String) {
@@ -717,8 +765,8 @@ struct TokenDashboardView: View {
     private let outputColumnWidth: CGFloat = 76
     private let reasoningColumnWidth: CGFloat = 88
 
-    init(store: UsageHistoryStore) {
-        _viewModel = StateObject(wrappedValue: TokenDashboardViewModel(store: store))
+    init(database: UsageHistoryDatabaseWorking) {
+        _viewModel = StateObject(wrappedValue: TokenDashboardViewModel(database: database))
     }
 
     var body: some View {
@@ -746,7 +794,7 @@ struct TokenDashboardView: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
-            viewModel.reload()
+            viewModel.scheduleReload()
         }
     }
 

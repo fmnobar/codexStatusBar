@@ -3,11 +3,11 @@ import SwiftUI
 
 @MainActor
 final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
-    private let store: UsageHistoryStore
+    private let database: UsageHistoryDatabaseWorking
     private var window: NSWindow?
 
-    init(store: UsageHistoryStore) {
-        self.store = store
+    init(database: UsageHistoryDatabaseWorking) {
+        self.database = database
     }
 
     func showWindow() {
@@ -28,7 +28,7 @@ final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
         window.minSize = NSSize(width: 1120, height: 560)
         window.delegate = self
         window.setFrameAutosaveName("CodexTokenDashboardWindow")
-        window.contentViewController = NSHostingController(rootView: TokenDashboardView(store: store))
+        window.contentViewController = NSHostingController(rootView: TokenDashboardView(database: database))
         window.center()
         enforceMinimumFrame(for: window)
         window.makeKeyAndOrderFront(nil)

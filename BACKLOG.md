@@ -134,11 +134,12 @@
   - Return period-bucketed token component totals directly from store queries for compact History.
   - Keep the model-level breakdown in the Token Dashboard while reducing the inline History row count.
 
-## Next Candidates
-
 - Move history database work off the main actor
-  - Put `UsageHistoryStore` calls behind a database actor or serial worker queue.
-  - Publish immutable view snapshots back to SwiftUI after SQLite reads, writes, and imports complete.
+  - Added an async serial database worker around the synchronous SQLite store.
+  - Moved app-facing History, Token Dashboard, Data settings, recording, and token-total calls through the worker.
+  - Added stale-result handling for async History and Token Dashboard reloads.
+
+## Next Candidates
 
 - Add targeted SQLite indexes and bounded series queries
   - Add indexes or summary tables for token component availability and period-scoped dashboard/history queries.

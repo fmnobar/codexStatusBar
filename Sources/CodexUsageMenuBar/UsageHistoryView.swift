@@ -127,7 +127,7 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 
 @MainActor
 final class UsageHistoryViewModel: ObservableObject {
-    typealias RecentTokenHistoryImporter = (UsageHistoryStore, Date, Calendar) -> Void
+    typealias RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.RecentTokenHistoryImporter
 
     static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar in
         store.importRecentTokenHistoryIfAvailable(containing: date, calendar: calendar)
@@ -196,15 +196,15 @@ final class UsageHistoryViewModel: ObservableObject {
     }
     let chartSemantics: UsageHistoryChartSemantics
 
-    private let store: UsageHistoryStore
+    private let database: UsageHistoryDatabaseWorking
     private let now: () -> Date
     private let calendar: Calendar
-    private let recentTokenHistoryImporter: RecentTokenHistoryImporter
     private var historyBounds: UsageHistoryBounds?
     private var userEditedSeriesSelection = false
     private var followsCurrentPeriod = true
     private var historyObserver: NSObjectProtocol?
-    private var reloadWorkItem: DispatchWorkItem?
+    private var reloadTask: Task<Void, Never>?
+    private var reloadGeneration = 0
     private var hoverSelectionWorkItem: DispatchWorkItem?
     private var cachedChartPoints: [UsageHistoryChartPoint] = []
     private var cachedVisibleChartPoints: [UsageHistoryChartPoint] = []
@@ -216,31 +216,47 @@ final class UsageHistoryViewModel: ObservableObject {
     private var hoverCacheVersion = 0
 
     init(
+        database: UsageHistoryDatabaseWorking,
+        chartSemantics: UsageHistoryChartSemantics = .independentSignals,
+        now: @escaping () -> Date = Date.init,
+        calendar: Calendar = .autoupdatingCurrent
+    ) {
+        self.database = database
+        self.chartSemantics = chartSemantics
+        self.now = now
+        self.calendar = calendar
+        selectedPeriodStart = selectedRange.period(containing: now(), calendar: calendar).start
+        historyObserver = NotificationCenter.default.addObserver(
+            forName: UsageHistoryStore.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.scheduleReload()
+            }
+        }
+    }
+
+    convenience init(
         store: UsageHistoryStore,
         chartSemantics: UsageHistoryChartSemantics = .independentSignals,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
         recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = { _, _, _ in }
     ) {
-        self.store = store
-        self.chartSemantics = chartSemantics
-        self.now = now
-        self.calendar = calendar
-        self.recentTokenHistoryImporter = recentTokenHistoryImporter
-        selectedPeriodStart = selectedRange.period(containing: now(), calendar: calendar).start
-        historyObserver = NotificationCenter.default.addObserver(
-            forName: UsageHistoryStore.didChangeNotification,
-            object: store,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.reload()
-            }
-        }
+        self.init(
+            database: UsageHistoryDatabaseWorker(
+                store: store,
+                recentTokenHistoryImporter: recentTokenHistoryImporter
+            ),
+            chartSemantics: chartSemantics,
+            now: now,
+            calendar: calendar
+        )
     }
 
     deinit {
-        reloadWorkItem?.cancel()
+        reloadTask?.cancel()
         hoverSelectionWorkItem?.cancel()
         if let historyObserver {
             NotificationCenter.default.removeObserver(historyObserver)
@@ -531,64 +547,55 @@ final class UsageHistoryViewModel: ObservableObject {
         }
     }
 
-    func reload() {
+    @discardableResult
+    func reload() async -> Bool {
+        reloadTask?.cancel()
+        reloadTask = nil
+        return await performReload()
+    }
+
+    @discardableResult
+    private func performReload() async -> Bool {
+        guard !Task.isCancelled else {
+            return false
+        }
+
         syncCurrentPeriodIfNeeded()
+        let generation = nextReloadGeneration()
+        let queryPeriod = periodForQuery()
+        let request = UsageHistoryLoadRequest(
+            chartKind: selectedChartKind,
+            range: selectedRange,
+            window: selectedWindow,
+            periodStart: queryPeriod.start,
+            periodEnd: queryPeriod.end,
+            now: now(),
+            calendar: calendar
+        )
 
         do {
-            let queryPeriod = periodForQuery()
-            let loadedPoints: [UsageHistoryPoint]
-            let loadedTokenPoints: [TokenHistoryPoint]
-            let loadedTokenComponentPoints: [TokenHistoryComponentPoint]
-            let loadedTokenComponentBucketPoints: [TokenHistoryComponentBucketPoint]
-            let loadedSeries: [UsageHistorySeries]
-            let loadedHistoryBounds: UsageHistoryBounds?
-
-            switch selectedChartKind {
-            case .capacity, .usage:
-                loadedPoints = try store.points(
-                    range: selectedRange,
-                    window: selectedWindow,
-                    periodStart: queryPeriod.start,
-                    periodEnd: queryPeriod.end
-                )
-                loadedTokenPoints = []
-                loadedTokenComponentPoints = []
-                loadedTokenComponentBucketPoints = []
-                loadedSeries = try store.availableSeries(window: selectedWindow)
-                loadedHistoryBounds = try store.historyBounds(
-                    window: selectedWindow,
-                    granularity: selectedRange.storageGranularity
-                )
-            case .tokens:
-                loadedPoints = []
-                recentTokenHistoryImporter(store, now(), calendar)
-                loadedTokenPoints = []
-                loadedTokenComponentPoints = []
-                loadedTokenComponentBucketPoints = try store.tokenComponentBucketPoints(
-                    range: selectedRange,
-                    periodStart: queryPeriod.start,
-                    periodEnd: queryPeriod.end,
-                    now: now(),
-                    calendar: calendar
-                )
-                loadedSeries = try store.availableTokenComponentSeries()
-                    .filter { $0.kind == .aggregate }
-                loadedHistoryBounds = try store.tokenComponentHistoryBounds()
+            let result = try await database.usageHistorySnapshot(for: request)
+            guard generation == reloadGeneration, !Task.isCancelled else {
+                return false
             }
-            let loadedHasAnyHistory = try store.hasAnyHistory()
 
-            points = loadedPoints
-            tokenPoints = loadedTokenPoints
-            tokenComponentPoints = loadedTokenComponentPoints
-            tokenComponentBucketPoints = loadedTokenComponentBucketPoints
-            series = loadedSeries
-            hasAnyRecordedHistory = loadedHasAnyHistory
-            historyBounds = loadedHistoryBounds
+            points = result.points
+            tokenPoints = result.tokenPoints
+            tokenComponentPoints = result.tokenComponentPoints
+            tokenComponentBucketPoints = result.tokenComponentBucketPoints
+            series = result.series
+            hasAnyRecordedHistory = result.hasAnyHistory
+            historyBounds = result.historyBounds
             reconcileSelectedSeries()
             rebuildChartCaches()
             clearHoverSelectionAndCancelPendingWork()
             errorMessage = nil
+            return true
         } catch {
+            guard generation == reloadGeneration, !Task.isCancelled else {
+                return false
+            }
+
             points = []
             tokenPoints = []
             tokenComponentPoints = []
@@ -600,16 +607,20 @@ final class UsageHistoryViewModel: ObservableObject {
             rebuildChartCaches()
             clearHoverSelectionAndCancelPendingWork()
             errorMessage = "History could not be loaded."
+            return false
         }
     }
 
     func scheduleReload() {
-        reloadWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.reload()
+        reloadTask?.cancel()
+        reloadTask = Task { [weak self] in
+            await self?.performReload()
         }
-        reloadWorkItem = workItem
-        DispatchQueue.main.async(execute: workItem)
+    }
+
+    private func nextReloadGeneration() -> Int {
+        reloadGeneration += 1
+        return reloadGeneration
     }
 
     func activateCurrentPeriod() {
@@ -850,11 +861,17 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func clearHistory() {
+        Task {
+            await clearHistoryAsync()
+        }
+    }
+
+    func clearHistoryAsync() async {
         do {
-            try store.clearHistory()
+            try await database.clearHistory()
             userEditedSeriesSelection = false
             seriesSearchText = ""
-            reload()
+            await reload()
         } catch {
             errorMessage = "History could not be cleared."
         }
@@ -1616,13 +1633,12 @@ struct UsageHistoryView: View {
     @State private var isConfirmingClear = false
 
     init(
-        store: UsageHistoryStore,
+        database: UsageHistoryDatabaseWorking,
         chartSemantics: UsageHistoryChartSemantics = .independentSignals
     ) {
         _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
-            store: store,
-            chartSemantics: chartSemantics,
-            recentTokenHistoryImporter: UsageHistoryViewModel.liveRecentTokenHistoryImporter
+            database: database,
+            chartSemantics: chartSemantics
         ))
     }
 

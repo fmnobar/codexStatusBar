@@ -9,7 +9,7 @@ private enum MenuBarPopoverExpandedSection: Equatable {
 
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
-    let historyStore: UsageHistoryStore
+    let historyDatabase: UsageHistoryDatabaseWorking
     var onOpenTokenDashboard: () -> Void
     var onContentSizeChange: (NSSize) -> Void
     var appVersionInfo: AppVersionInfo
@@ -18,14 +18,14 @@ struct MenuBarContentView: View {
 
     init(
         viewModel: MenuBarStatusViewModel,
-        historyStore: UsageHistoryStore,
+        historyDatabase: UsageHistoryDatabaseWorking,
         onOpenTokenDashboard: @escaping () -> Void = {},
         onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
         appVersionInfo: AppVersionInfo = .current(),
         freshnessViewModel: AppFreshnessStatusViewModel = .current()
     ) {
         self.viewModel = viewModel
-        self.historyStore = historyStore
+        self.historyDatabase = historyDatabase
         self.onOpenTokenDashboard = onOpenTokenDashboard
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
@@ -146,7 +146,7 @@ struct MenuBarContentView: View {
             expandableHeader(title: "History", systemImage: "chart.xyaxis.line", section: .history)
 
             if expandedSection == .history {
-                CompactUsageHistoryPanel(store: historyStore)
+                CompactUsageHistoryPanel(database: historyDatabase)
             }
         }
     }
@@ -547,10 +547,9 @@ private struct CompactUsageHistoryPanel: View {
         .teal,
     ]
 
-    init(store: UsageHistoryStore) {
+    init(database: UsageHistoryDatabaseWorking) {
         _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
-            store: store,
-            recentTokenHistoryImporter: UsageHistoryViewModel.liveRecentTokenHistoryImporter
+            database: database
         ))
     }
 
