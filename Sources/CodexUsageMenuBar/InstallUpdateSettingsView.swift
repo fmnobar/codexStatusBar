@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 
@@ -91,30 +92,28 @@ enum AppReleaseNotes {
 final class InstallUpdateSettingsViewModel: ObservableObject {
     static let defaultProjectURL = URL(string: "https://github.com/fmnobar/codexStatusBar")!
     static let updateCommandText = "git pull\n./install.sh"
-    static let defaultCheckCacheDuration: TimeInterval = 300
+    static let defaultCheckCacheDuration: TimeInterval = AppUpdateMonitor.defaultCheckCacheDuration
 
     let versionInfo: AppVersionInfo
     let releaseNotes: [AppReleaseNote]
     let projectURL: URL
-    @Published private(set) var updateState: AppUpdateCheckState = .idle
     @Published private(set) var installState: AppUpdateInstallState = .idle
 
-    private let updateClient: AppUpdateCheckClientProtocol
+    private let updateMonitor: AppUpdateMonitor
     private let downloadClient: AppUpdateDownloadClientProtocol
     private let packageVerifier: AppUpdatePackageVerifierProtocol
     private let installer: AppUpdateInstallerProtocol
     private let stagingDirectoryProvider: @MainActor (AppUpdateRelease) throws -> URL
     private let processIdentifier: () -> Int32
     private let terminateApplication: () -> Void
-    private let now: () -> Date
-    private let checkCacheDuration: TimeInterval
     private let publishedDateFormatter: DateFormatter
-    private var lastCheckedAt: Date?
+    private var updateMonitorCancellable: AnyCancellable?
 
     init(
         versionInfo: AppVersionInfo = .current(),
         releaseNotes: [AppReleaseNote] = AppReleaseNotes.current,
         projectURL: URL = InstallUpdateSettingsViewModel.defaultProjectURL,
+        updateMonitor: AppUpdateMonitor? = nil,
         updateClient: AppUpdateCheckClientProtocol = GitHubLatestReleaseClient(),
         downloadClient: AppUpdateDownloadClientProtocol = AppUpdateDownloadClient(),
         packageVerifier: AppUpdatePackageVerifierProtocol = AppUpdatePackageVerifier(),
@@ -131,16 +130,27 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         self.versionInfo = versionInfo
         self.releaseNotes = releaseNotes
         self.projectURL = projectURL
-        self.updateClient = updateClient
+        self.updateMonitor = updateMonitor ?? AppUpdateMonitor(
+            versionInfo: versionInfo,
+            updateClient: updateClient,
+            now: now,
+            checkCacheDuration: checkCacheDuration
+        )
         self.downloadClient = downloadClient
         self.packageVerifier = packageVerifier
         self.installer = installer
         self.stagingDirectoryProvider = stagingDirectoryProvider
         self.processIdentifier = processIdentifier
         self.terminateApplication = terminateApplication
-        self.now = now
-        self.checkCacheDuration = checkCacheDuration
         self.publishedDateFormatter = publishedDateFormatter
+        updateMonitorCancellable = self.updateMonitor.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+    }
+
+    var updateState: AppUpdateCheckState {
+        updateMonitor.updateState
     }
 
     var appNameText: String {
@@ -203,7 +213,7 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
     }
 
     var lastCheckedText: String {
-        guard let lastCheckedAt else {
+        guard let lastCheckedAt = updateMonitor.lastCheckedAt else {
             return "--"
         }
 
@@ -295,35 +305,15 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
     }
 
     func checkForUpdatesIfNeeded() async {
-        guard shouldCheckForUpdates else {
-            return
-        }
-
-        await checkForUpdates(force: false)
+        await updateMonitor.checkIfNeeded()
     }
 
     func checkForUpdates(force: Bool) async {
-        guard updateState != .checking, !isWorkingOnUpdateInstall else {
+        guard !isWorkingOnUpdateInstall else {
             return
         }
-        if !force, !shouldCheckForUpdates {
-            return
-        }
-
-        updateState = .checking
         installState = .idle
-
-        do {
-            let release = try await updateClient.latestRelease()
-            lastCheckedAt = now()
-            updateState = state(for: release)
-        } catch AppUpdateCheckClientError.noPublishedRelease {
-            lastCheckedAt = now()
-            updateState = .noPublishedRelease
-        } catch {
-            lastCheckedAt = now()
-            updateState = .failed
-        }
+        await updateMonitor.check(force: force)
     }
 
     func downloadUpdate() async {
@@ -401,25 +391,6 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
 
     static func current(bundle: Bundle = .main) -> InstallUpdateSettingsViewModel {
         InstallUpdateSettingsViewModel(versionInfo: .current(bundle: bundle))
-    }
-
-    private var shouldCheckForUpdates: Bool {
-        guard let lastCheckedAt else {
-            return true
-        }
-
-        return now().timeIntervalSince(lastCheckedAt) >= checkCacheDuration
-    }
-
-    private func state(for release: AppUpdateRelease) -> AppUpdateCheckState {
-        switch AppVersionComparison.compare(installedVersion: versionInfo.version, latestTag: release.tagName) {
-        case .updateAvailable:
-            return .updateAvailable(release)
-        case .upToDate:
-            return .upToDate(release)
-        case .inconclusive:
-            return .inconclusive(release)
-        }
     }
 
     private var isUpdateAvailable: Bool {

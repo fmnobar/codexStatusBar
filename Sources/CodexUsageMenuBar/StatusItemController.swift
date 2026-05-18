@@ -6,6 +6,7 @@ import SwiftUI
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
     private let historyDatabase: UsageHistoryDatabaseWorking
+    private let updateMonitor: AppUpdateMonitor
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private lazy var tokenDashboardWindowController = TokenDashboardWindowController(database: historyDatabase)
@@ -18,9 +19,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
 
-    init(viewModel: MenuBarStatusViewModel, historyDatabase: UsageHistoryDatabaseWorking) {
+    init(
+        viewModel: MenuBarStatusViewModel,
+        historyDatabase: UsageHistoryDatabaseWorking,
+        updateMonitor: AppUpdateMonitor
+    ) {
         self.viewModel = viewModel
         self.historyDatabase = historyDatabase
+        self.updateMonitor = updateMonitor
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.autosaveName = "CodexStatusBarStatusItem"
         super.init()
@@ -39,8 +45,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             rootView: MenuBarContentView(
                 viewModel: viewModel,
                 historyDatabase: historyDatabase,
+                updateMonitor: updateMonitor,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
+                },
+                onOpenUpdatesSettings: { [weak self] in
+                    self?.openUpdatesSettings()
                 },
                 onContentSizeChange: { [weak self] size in
                     self?.updatePopoverContentSize(size)
@@ -130,6 +140,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         Task {
             await viewModel.popoverDidAppear()
         }
+
+        Task {
+            await updateMonitor.checkIfNeeded()
+        }
     }
 
     private func updatePopoverContentSize(_ size: NSSize) {
@@ -174,6 +188,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func openTokenDashboard() {
         popover.performClose(nil)
         tokenDashboardWindowController.showWindow()
+    }
+
+    private func openUpdatesSettings() {
+        popover.performClose(nil)
+        SettingsTabSelectionStore.select(.updates)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc

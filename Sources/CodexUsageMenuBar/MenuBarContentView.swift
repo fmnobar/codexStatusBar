@@ -9,8 +9,10 @@ private enum MenuBarPopoverExpandedSection: Equatable {
 
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
+    @ObservedObject var updateMonitor: AppUpdateMonitor
     let historyDatabase: UsageHistoryDatabaseWorking
     var onOpenTokenDashboard: () -> Void
+    var onOpenUpdatesSettings: () -> Void
     var onContentSizeChange: (NSSize) -> Void
     var appVersionInfo: AppVersionInfo
     @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
@@ -19,14 +21,18 @@ struct MenuBarContentView: View {
     init(
         viewModel: MenuBarStatusViewModel,
         historyDatabase: UsageHistoryDatabaseWorking,
+        updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
         onOpenTokenDashboard: @escaping () -> Void = {},
+        onOpenUpdatesSettings: @escaping () -> Void = {},
         onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
         appVersionInfo: AppVersionInfo = .current(),
         freshnessViewModel: AppFreshnessStatusViewModel = .current()
     ) {
         self.viewModel = viewModel
+        self.updateMonitor = updateMonitor
         self.historyDatabase = historyDatabase
         self.onOpenTokenDashboard = onOpenTokenDashboard
+        self.onOpenUpdatesSettings = onOpenUpdatesSettings
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
         _freshnessViewModel = StateObject(wrappedValue: freshnessViewModel)
@@ -60,6 +66,10 @@ struct MenuBarContentView: View {
                     staleBuildWarningRow
                     Divider()
                 }
+                if updateMonitor.promptPresentation != nil {
+                    updatePromptRow
+                    Divider()
+                }
                 footer
             }
         }
@@ -69,6 +79,9 @@ struct MenuBarContentView: View {
         .background(contentSizeReader)
         .onAppear {
             freshnessViewModel.refresh()
+            Task {
+                await updateMonitor.checkIfNeeded()
+            }
         }
     }
 
@@ -388,6 +401,38 @@ struct MenuBarContentView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var updatePromptRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.blue)
+
+            Text(updateMonitor.promptPresentation?.titleText ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Button("Updates") {
+                onOpenUpdatesSettings()
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .buttonStyle(.borderless)
+            .help("Open Updates settings")
+
+            Button("Later") {
+                updateMonitor.snoozeCurrentPrompt()
+            }
+            .font(.system(size: 11))
+            .buttonStyle(.borderless)
+            .help("Hide this update prompt for 24 hours")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func refreshRotation(at date: Date) -> Angle {

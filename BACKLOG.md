@@ -4,7 +4,6 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Add lightweight update notifications | Check for updates during normal sessions and surface a visible prompt while keeping download/install user-initiated. |
 
 ## Done
 
@@ -165,8 +164,12 @@
   - Added query-plan regression checks for bounded History, token History, Token Dashboard, and catalog series queries.
   - Added conservative reload and hover timing guards for History snapshots, Token Dashboard snapshots, and hover lookup.
 
+- Add lightweight update notifications
+  - Added shared app-session GitHub Release update checks outside the Settings window.
+  - Added a non-blocking popover prompt for available updates with Updates and Later actions.
+  - Reused the existing Updates settings download/install flow while keeping right-click menu behavior unchanged.
+
 ## Next Candidates
 
-- Add lightweight update notifications
-  - Optionally check for updates during normal sessions and surface a visible popover/settings prompt.
-  - Keep downloads and installs user-initiated.
+- Backlog/product review
+  - Review the app after the latest update, token, history, and performance work to decide the next product priority.

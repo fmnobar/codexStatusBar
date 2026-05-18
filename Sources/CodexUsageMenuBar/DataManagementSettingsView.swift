@@ -2,6 +2,23 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum SettingsTabSelection: String {
+    case data
+    case updates
+}
+
+enum SettingsTabSelectionStore {
+    static let key = "Settings.selectedTab"
+
+    static func select(_ tab: SettingsTabSelection, defaults: UserDefaults = .standard) {
+        defaults.set(tab.rawValue, forKey: key)
+    }
+
+    static func selectedTab(from rawValue: String) -> SettingsTabSelection {
+        SettingsTabSelection(rawValue: rawValue) ?? .data
+    }
+}
+
 @MainActor
 final class DataManagementSettingsViewModel: ObservableObject {
     @Published var selectedRetention: UsageHistoryRawRetention {
@@ -175,15 +192,21 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
 struct DataManagementSettingsView: View {
     @StateObject private var viewModel: DataManagementSettingsViewModel
+    @ObservedObject private var updateMonitor: AppUpdateMonitor
+    @AppStorage(SettingsTabSelectionStore.key) private var selectedTabRaw = SettingsTabSelection.data.rawValue
     @State private var isConfirmingClear = false
     @State private var pendingImportURL: URL?
 
-    init(database: UsageHistoryDatabaseWorking) {
+    init(
+        database: UsageHistoryDatabaseWorking,
+        updateMonitor: AppUpdateMonitor = AppUpdateMonitor()
+    ) {
         _viewModel = StateObject(wrappedValue: DataManagementSettingsViewModel(database: database))
+        self.updateMonitor = updateMonitor
     }
 
     var body: some View {
-        TabView {
+        TabView(selection: selectedTabBinding) {
             Form {
                 databaseSection
                 retentionSection
@@ -194,11 +217,15 @@ struct DataManagementSettingsView: View {
             .tabItem {
                 Label("Data", systemImage: "externaldrive")
             }
+            .tag(SettingsTabSelection.data)
 
-            InstallUpdateSettingsView()
+            InstallUpdateSettingsView(
+                viewModel: InstallUpdateSettingsViewModel(updateMonitor: updateMonitor)
+            )
                 .tabItem {
                     Label("Updates", systemImage: "arrow.triangle.2.circlepath")
                 }
+                .tag(SettingsTabSelection.updates)
         }
         .frame(width: 580, height: 540)
         .scenePadding()
@@ -240,6 +267,17 @@ struct DataManagementSettingsView: View {
         } message: {
             Text("This replaces current local history with the selected backup.")
         }
+    }
+
+    private var selectedTabBinding: Binding<SettingsTabSelection> {
+        Binding(
+            get: {
+                SettingsTabSelectionStore.selectedTab(from: selectedTabRaw)
+            },
+            set: { selection in
+                selectedTabRaw = selection.rawValue
+            }
+        )
     }
 
     private var databaseSection: some View {

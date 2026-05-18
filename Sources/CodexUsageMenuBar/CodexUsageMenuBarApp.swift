@@ -7,7 +7,10 @@ struct CodexUsageMenuBarApp: App {
 
     var body: some Scene {
         Settings {
-            DataManagementSettingsView(database: appDelegate.historyDatabase)
+            DataManagementSettingsView(
+                database: appDelegate.historyDatabase,
+                updateMonitor: appDelegate.updateMonitor
+            )
         }
     }
 }
@@ -15,6 +18,7 @@ struct CodexUsageMenuBarApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let historyDatabase: UsageHistoryDatabaseWorker
+    let updateMonitor: AppUpdateMonitor
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
 
@@ -23,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let resolvedHistoryDatabase = UsageHistoryDatabaseWorker.applicationSupportStoreWithInMemoryFallback()
         let historyRecorder = UsageHistoryRecorder(database: resolvedHistoryDatabase)
         historyDatabase = resolvedHistoryDatabase
+        updateMonitor = AppUpdateMonitor()
         viewModel = MenuBarStatusViewModel(
             client: CodexAppServerClient(),
             historyRecorder: historyRecorder,
@@ -32,7 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItemController = StatusItemController(viewModel: viewModel, historyDatabase: historyDatabase)
+        statusItemController = StatusItemController(
+            viewModel: viewModel,
+            historyDatabase: historyDatabase,
+            updateMonitor: updateMonitor
+        )
 
         Task {
             _ = try? await historyDatabase.databaseInfo()
@@ -40,6 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             await viewModel.start()
+        }
+
+        Task {
+            await updateMonitor.checkIfNeeded()
         }
     }
 }

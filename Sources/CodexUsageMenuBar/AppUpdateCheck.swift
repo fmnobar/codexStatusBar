@@ -1,3 +1,4 @@
+import Combine
 import CryptoKit
 import Foundation
 
@@ -281,6 +282,161 @@ enum AppUpdateCheckState: Equatable {
             return release
         case .idle, .checking, .noPublishedRelease, .failed:
             return nil
+        }
+    }
+}
+
+struct AppUpdatePromptPresentation: Equatable {
+    let release: AppUpdateRelease
+
+    var titleText: String {
+        "Update \(release.displayVersionText) available"
+    }
+}
+
+struct AppUpdateNotificationPreferences {
+    static let snoozedReleaseTagKey = "AppUpdateNotification.snoozedReleaseTag"
+    static let snoozedUntilKey = "AppUpdateNotification.snoozedUntil"
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func snooze(releaseTag: String, until date: Date) {
+        defaults.set(releaseTag, forKey: Self.snoozedReleaseTagKey)
+        defaults.set(date, forKey: Self.snoozedUntilKey)
+    }
+
+    func isSnoozed(releaseTag: String, at date: Date) -> Bool {
+        guard
+            defaults.string(forKey: Self.snoozedReleaseTagKey) == releaseTag,
+            let snoozedUntil = defaults.object(forKey: Self.snoozedUntilKey) as? Date
+        else {
+            return false
+        }
+
+        return snoozedUntil > date
+    }
+
+    func clearExpiredSnooze(at date: Date) {
+        guard
+            let snoozedUntil = defaults.object(forKey: Self.snoozedUntilKey) as? Date,
+            snoozedUntil <= date
+        else {
+            return
+        }
+
+        defaults.removeObject(forKey: Self.snoozedReleaseTagKey)
+        defaults.removeObject(forKey: Self.snoozedUntilKey)
+    }
+}
+
+@MainActor
+final class AppUpdateMonitor: ObservableObject {
+    static let defaultCheckCacheDuration: TimeInterval = 12 * 60 * 60
+    static let defaultSnoozeDuration: TimeInterval = 24 * 60 * 60
+
+    @Published private(set) var updateState: AppUpdateCheckState = .idle
+    @Published private(set) var lastCheckedAt: Date?
+
+    private let versionInfo: AppVersionInfo
+    private let updateClient: AppUpdateCheckClientProtocol
+    private let preferences: AppUpdateNotificationPreferences
+    private let now: () -> Date
+    private let checkCacheDuration: TimeInterval
+    private let snoozeDuration: TimeInterval
+
+    init(
+        versionInfo: AppVersionInfo = .current(),
+        updateClient: AppUpdateCheckClientProtocol = GitHubLatestReleaseClient(),
+        preferences: AppUpdateNotificationPreferences = AppUpdateNotificationPreferences(),
+        now: @escaping () -> Date = Date.init,
+        checkCacheDuration: TimeInterval = AppUpdateMonitor.defaultCheckCacheDuration,
+        snoozeDuration: TimeInterval = AppUpdateMonitor.defaultSnoozeDuration
+    ) {
+        self.versionInfo = versionInfo
+        self.updateClient = updateClient
+        self.preferences = preferences
+        self.now = now
+        self.checkCacheDuration = checkCacheDuration
+        self.snoozeDuration = snoozeDuration
+    }
+
+    var promptPresentation: AppUpdatePromptPresentation? {
+        preferences.clearExpiredSnooze(at: now())
+
+        guard case .updateAvailable(let release) = updateState else {
+            return nil
+        }
+
+        guard !preferences.isSnoozed(releaseTag: release.tagName, at: now()) else {
+            return nil
+        }
+
+        return AppUpdatePromptPresentation(release: release)
+    }
+
+    func checkIfNeeded() async {
+        guard shouldCheckForUpdates else {
+            return
+        }
+
+        await check(force: false)
+    }
+
+    func check(force: Bool) async {
+        guard updateState != .checking else {
+            return
+        }
+        if !force, !shouldCheckForUpdates {
+            return
+        }
+
+        updateState = .checking
+
+        do {
+            let release = try await updateClient.latestRelease()
+            lastCheckedAt = now()
+            updateState = state(for: release)
+        } catch AppUpdateCheckClientError.noPublishedRelease {
+            lastCheckedAt = now()
+            updateState = .noPublishedRelease
+        } catch {
+            lastCheckedAt = now()
+            updateState = .failed
+        }
+    }
+
+    func snoozeCurrentPrompt() {
+        guard case .updateAvailable(let release) = updateState else {
+            return
+        }
+
+        preferences.snooze(
+            releaseTag: release.tagName,
+            until: now().addingTimeInterval(snoozeDuration)
+        )
+        objectWillChange.send()
+    }
+
+    private var shouldCheckForUpdates: Bool {
+        guard let lastCheckedAt else {
+            return true
+        }
+
+        return now().timeIntervalSince(lastCheckedAt) >= checkCacheDuration
+    }
+
+    private func state(for release: AppUpdateRelease) -> AppUpdateCheckState {
+        switch AppVersionComparison.compare(installedVersion: versionInfo.version, latestTag: release.tagName) {
+        case .updateAvailable:
+            return .updateAvailable(release)
+        case .upToDate:
+            return .upToDate(release)
+        case .inconclusive:
+            return .inconclusive(release)
         }
     }
 }

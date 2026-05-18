@@ -225,6 +225,140 @@ final class AppUpdateCheckTests: XCTestCase {
         XCTAssertEqual(viewModel.updateStatusText, "Latest release found, but the version could not be compared.")
     }
 
+    func testUpdateMonitorChecksOnceUntilCacheExpires() async {
+        let currentTime = MutableDate(date("2026-05-18T12:00:00Z"))
+        let firstRelease = release(tagName: "v1.0.1")
+        let secondRelease = release(tagName: "v1.0.2")
+        let client = MockAppUpdateCheckClient(responses: [
+            .success(firstRelease),
+            .success(secondRelease),
+        ])
+        let monitor = AppUpdateMonitor(
+            versionInfo: appVersionInfo(version: "1.0.0"),
+            updateClient: client,
+            preferences: makeNotificationPreferences(),
+            now: { currentTime.date },
+            checkCacheDuration: 12 * 60 * 60
+        )
+
+        await monitor.checkIfNeeded()
+        await monitor.checkIfNeeded()
+
+        XCTAssertEqual(client.callCount, 1)
+        XCTAssertEqual(monitor.updateState, .updateAvailable(firstRelease))
+        XCTAssertEqual(monitor.promptPresentation?.titleText, "Update v1.0.1 available")
+
+        currentTime.date = currentTime.date.addingTimeInterval(12 * 60 * 60 + 1)
+        await monitor.checkIfNeeded()
+
+        XCTAssertEqual(client.callCount, 2)
+        XCTAssertEqual(monitor.updateState, .updateAvailable(secondRelease))
+    }
+
+    func testUpdateMonitorForceCheckBypassesCache() async {
+        let firstRelease = release(tagName: "v1.0.1")
+        let secondRelease = release(tagName: "v1.0.2")
+        let client = MockAppUpdateCheckClient(responses: [
+            .success(firstRelease),
+            .success(secondRelease),
+        ])
+        let monitor = AppUpdateMonitor(
+            versionInfo: appVersionInfo(version: "1.0.0"),
+            updateClient: client,
+            preferences: makeNotificationPreferences(),
+            checkCacheDuration: 12 * 60 * 60
+        )
+
+        await monitor.checkIfNeeded()
+        await monitor.check(force: true)
+
+        XCTAssertEqual(client.callCount, 2)
+        XCTAssertEqual(monitor.updateState, .updateAvailable(secondRelease))
+    }
+
+    func testUpdateMonitorPromptOnlyShowsForAvailableUpdates() async {
+        let hiddenStates: [Result<AppUpdateRelease, Error>] = [
+            .success(release(tagName: "v1.0.0")),
+            .success(release(tagName: "release-1")),
+            .failure(AppUpdateCheckClientError.noPublishedRelease),
+            .failure(MockUpdateError.sample),
+        ]
+
+        for response in hiddenStates {
+            let monitor = AppUpdateMonitor(
+                versionInfo: appVersionInfo(version: "1.0.0"),
+                updateClient: MockAppUpdateCheckClient(responses: [response]),
+                preferences: makeNotificationPreferences()
+            )
+
+            await monitor.checkIfNeeded()
+
+            XCTAssertNil(monitor.promptPresentation)
+        }
+    }
+
+    func testUpdateMonitorSnoozesCurrentReleaseForTwentyFourHours() async {
+        let currentTime = MutableDate(date("2026-05-18T12:00:00Z"))
+        let release = release(tagName: "v1.0.1")
+        let monitor = AppUpdateMonitor(
+            versionInfo: appVersionInfo(version: "1.0.0"),
+            updateClient: MockAppUpdateCheckClient(responses: [.success(release)]),
+            preferences: makeNotificationPreferences(),
+            now: { currentTime.date },
+            snoozeDuration: 24 * 60 * 60
+        )
+
+        await monitor.checkIfNeeded()
+        XCTAssertNotNil(monitor.promptPresentation)
+
+        monitor.snoozeCurrentPrompt()
+        XCTAssertNil(monitor.promptPresentation)
+
+        currentTime.date = currentTime.date.addingTimeInterval(24 * 60 * 60 + 1)
+        XCTAssertNotNil(monitor.promptPresentation)
+    }
+
+    func testSettingsTabSelectionStoreTargetsUpdatesTab() {
+        let suiteName = "CodexUsageMenuBarTests.SettingsTab.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        SettingsTabSelectionStore.select(.updates, defaults: defaults)
+
+        XCTAssertEqual(
+            SettingsTabSelectionStore.selectedTab(from: defaults.string(forKey: SettingsTabSelectionStore.key) ?? ""),
+            .updates
+        )
+    }
+
+    func testUpdatesViewModelUsesSharedUpdateMonitorState() async {
+        let firstRelease = release(tagName: "v1.0.1")
+        let secondRelease = release(tagName: "v1.0.2")
+        let client = MockAppUpdateCheckClient(responses: [
+            .success(firstRelease),
+            .success(secondRelease),
+        ])
+        let monitor = AppUpdateMonitor(
+            versionInfo: appVersionInfo(version: "1.0.0"),
+            updateClient: client,
+            preferences: makeNotificationPreferences()
+        )
+        let viewModel = makeViewModel(
+            updateClient: MockAppUpdateCheckClient(),
+            updateMonitor: monitor
+        )
+
+        await monitor.checkIfNeeded()
+
+        XCTAssertEqual(viewModel.updateState, .updateAvailable(firstRelease))
+        XCTAssertEqual(viewModel.latestReleaseText, "v1.0.1")
+
+        await viewModel.checkForUpdates(force: true)
+
+        XCTAssertEqual(client.callCount, 2)
+        XCTAssertEqual(viewModel.updateState, .updateAvailable(secondRelease))
+    }
+
     func testPackageVerifierAcceptsValidPackageWithChecksum() async throws {
         let zipURL = try makeUpdateZip(version: "1.2.3")
         let digest = try sha256Digest(for: zipURL)
@@ -520,6 +654,7 @@ final class AppUpdateCheckTests: XCTestCase {
 
     private func makeViewModel(
         updateClient: AppUpdateCheckClientProtocol,
+        updateMonitor: AppUpdateMonitor? = nil,
         downloadClient: AppUpdateDownloadClientProtocol = MockAppUpdateDownloadClient(),
         packageVerifier: AppUpdatePackageVerifierProtocol = MockPackageVerifier(),
         installer: AppUpdateInstallerProtocol = MockInstaller(canInstall: true),
@@ -542,6 +677,7 @@ final class AppUpdateCheckTests: XCTestCase {
             releaseNotes: [
                 AppReleaseNote(id: "test", title: "Test Note", detail: "Test detail."),
             ],
+            updateMonitor: updateMonitor,
             updateClient: updateClient,
             downloadClient: downloadClient,
             packageVerifier: packageVerifier,
@@ -554,6 +690,32 @@ final class AppUpdateCheckTests: XCTestCase {
             now: now,
             checkCacheDuration: checkCacheDuration
         )
+    }
+
+    private func appVersionInfo(version: String) -> AppVersionInfo {
+        AppVersionInfo(
+            infoDictionary: [
+                "CFBundleDisplayName": "Codex Status Bar",
+                "CFBundleShortVersionString": version,
+                "CFBundleVersion": "1",
+            ],
+            bundleIdentifier: "com.farzad.codexstatusbar",
+            bundleURL: URL(fileURLWithPath: "/Applications/CodexStatusBar.app")
+        )
+    }
+
+    private func makeNotificationPreferences(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> AppUpdateNotificationPreferences {
+        let suiteName = "CodexUsageMenuBarTests.AppUpdate.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Could not create isolated UserDefaults", file: file, line: line)
+            return AppUpdateNotificationPreferences(defaults: .standard)
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+        return AppUpdateNotificationPreferences(defaults: defaults)
     }
 
     private func release(
