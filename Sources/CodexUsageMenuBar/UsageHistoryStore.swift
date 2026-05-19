@@ -5,6 +5,10 @@ protocol UsageHistoryRecording: Sendable {
     func record(snapshot: CodexUsageSnapshot, at date: Date) async
 }
 
+protocol CachedUsageSnapshotLoading: Sendable {
+    func latestUsageSnapshot() async -> CachedCodexUsageSnapshot?
+}
+
 protocol TokenUsageRecording: Sendable {
     @discardableResult
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
@@ -14,6 +18,12 @@ protocol TokenUsageRecording: Sendable {
 
 struct NoOpUsageHistoryRecorder: UsageHistoryRecording {
     func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
+}
+
+struct NoOpCachedUsageSnapshotLoader: CachedUsageSnapshotLoading {
+    func latestUsageSnapshot() async -> CachedCodexUsageSnapshot? {
+        nil
+    }
 }
 
 struct NoOpTokenUsageRecorder: TokenUsageRecording {
@@ -39,6 +49,12 @@ final class UsageHistoryRecorder: UsageHistoryRecording, @unchecked Sendable {
 
     func record(snapshot: CodexUsageSnapshot, at date: Date) async {
         await database.record(snapshot: snapshot, at: date)
+    }
+}
+
+extension UsageHistoryRecorder: CachedUsageSnapshotLoading {
+    func latestUsageSnapshot() async -> CachedCodexUsageSnapshot? {
+        await database.latestUsageSnapshot()
     }
 }
 

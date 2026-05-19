@@ -108,6 +108,40 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(points.first?.timestamp, date("2026-04-14T20:00:00Z"))
     }
 
+    func testLatestUsageSnapshotReadsCachedAggregateWindows() async throws {
+        let store = try makeStore()
+        let first = date("2026-04-14T20:00:10Z")
+        let second = date("2026-04-14T20:01:10Z")
+        let resetAt = date("2026-04-20T13:25:00Z")
+
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(
+                    sevenDayUsedPercent: 20,
+                    sevenDayResetAt: resetAt
+                )
+            ),
+            at: first
+        )
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(
+                displaySnapshot: rateLimitSnapshot(
+                    sevenDayUsedPercent: 29,
+                    sevenDayResetAt: resetAt,
+                    fiveHourUsedPercent: 8
+                )
+            ),
+            at: second
+        )
+
+        let cached = try XCTUnwrap(store.latestUsageSnapshot())
+
+        XCTAssertEqual(cached.recordedAt, date("2026-04-14T20:01:00Z"))
+        XCTAssertEqual(cached.snapshot.displaySnapshot.primary?.usedPercent, 8)
+        XCTAssertEqual(cached.snapshot.displaySnapshot.secondary?.usedPercent, 29)
+        XCTAssertEqual(cached.snapshot.displaySnapshot.secondary?.resetsAt, resetAt)
+    }
+
     func testWeekMonthAndYearQueriesUseRollups() async throws {
         let store = try makeStore()
 

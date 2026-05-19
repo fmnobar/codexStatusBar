@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel = MenuBarStatusViewModel(
             client: CodexAppServerClient(),
             historyRecorder: historyRecorder,
+            cachedUsageSnapshotLoader: historyRecorder,
             tokenUsageRecorder: historyRecorder
         )
         super.init()

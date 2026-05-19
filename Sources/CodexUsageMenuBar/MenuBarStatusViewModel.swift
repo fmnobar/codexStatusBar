@@ -55,6 +55,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let now: () -> Date
     private let refreshInterval: TimeInterval
     private let historyRecorder: UsageHistoryRecording
+    private let cachedUsageSnapshotLoader: CachedUsageSnapshotLoading
     private let tokenUsageRecorder: TokenUsageRecording
     private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
@@ -80,6 +81,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         now: @escaping () -> Date = Date.init,
         refreshInterval: TimeInterval = 60,
         historyRecorder: UsageHistoryRecording = NoOpUsageHistoryRecorder(),
+        cachedUsageSnapshotLoader: CachedUsageSnapshotLoading = NoOpCachedUsageSnapshotLoader(),
         tokenUsageRecorder: TokenUsageRecording = NoOpTokenUsageRecorder(),
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
         menuBarDisplayOptions: MenuBarDisplayOptions = MenuBarDisplayOptionsStore.load(),
@@ -94,6 +96,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         self.now = now
         self.refreshInterval = refreshInterval
         self.historyRecorder = historyRecorder
+        self.cachedUsageSnapshotLoader = cachedUsageSnapshotLoader
         self.tokenUsageRecorder = tokenUsageRecorder
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
         self.menuBarDisplayOptions = menuBarDisplayOptions
@@ -238,16 +241,20 @@ final class MenuBarStatusViewModel: ObservableObject {
 
             apply(usageSnapshot: latestSnapshot)
         } catch {
-            isLoading = false
-            isUsingCachedSnapshotAfterFailure = hasSnapshot
-
-            if !hasSnapshot {
-                errorMessage = "Unable to load Codex usage."
+            if !hasSnapshot, let cachedSnapshot = await cachedUsageSnapshotLoader.latestUsageSnapshot() {
+                apply(cachedUsageSnapshot: cachedSnapshot)
             } else {
-                errorMessage = nil
-            }
+                isLoading = false
+                isUsingCachedSnapshotAfterFailure = hasSnapshot
 
-            applyPresentation()
+                if !hasSnapshot {
+                    errorMessage = "Unable to load Codex usage."
+                } else {
+                    errorMessage = nil
+                }
+
+                applyPresentation()
+            }
         }
 
         if menuBarDisplayOptions.showsTokens {
@@ -268,6 +275,16 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
         applyPresentation()
         scheduleResetRefresh(for: usageSnapshot.displaySnapshot)
+    }
+
+    private func apply(cachedUsageSnapshot: CachedCodexUsageSnapshot) {
+        snapshot = cachedUsageSnapshot.snapshot.displaySnapshot
+        lastUpdatedAt = cachedUsageSnapshot.recordedAt
+        isUsingCachedSnapshotAfterFailure = true
+        hasSnapshot = true
+        isLoading = false
+        errorMessage = nil
+        applyPresentation()
     }
 
     private func apply(tokenUsageNotification notification: CodexTokenUsageNotification) {
