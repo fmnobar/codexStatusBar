@@ -4,7 +4,11 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| - | None | Backlog is clear; do a product/backlog review before adding the next item. |
+| 1 | Backfill recent token context dimensions from Codex sessions | Re-import recent active session JSONL with the current context parser, repair existing token rows with session id, project path/name, reasoning effort, source, and safe dimensions, and verify today's dashboard shows real project/effort/runtime breakdowns where session metadata exists. |
+| 2 | Stop showing low-signal importer provenance as token breakdowns | Treat `codex-log` and unattributed-only `source_kind` splits as internal ingestion provenance, not user-facing analytics; hide dashboard dimensions unless they have meaningful explicit values for the selected period. |
+| 3 | Fix Codex log context extraction and backfill safe metadata | Improve the `logs_2.sqlite` token importer so it extracts safe span metadata like `cwd`, model, originator, app version, and explicit reasoning effort without swallowing adjacent trace text or request payloads, then repair today's log-derived token rows. |
+| 4 | Add token attribution coverage diagnostics | Add a small diagnostics/readout showing how much of a selected token period is attributed by model, project, effort, and safe dimensions so missing metadata is visible instead of silently producing mostly `Unattributed`. |
+| 5 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project/effort/source directly or must be joined with recent session/turn context. |
 
 ## Done
 
@@ -197,5 +201,26 @@
 
 ## Next Candidates
 
-- Backlog/product review
-  - Review the app’s current usage, token, update, and diagnostics surfaces before adding the next concrete implementation item.
+- Backfill recent token context dimensions from Codex sessions
+  - Evidence from the live database: `token_usage_samples` has 63k+ rows and four model values, but currently has zero stored projects and zero stored efforts.
+  - Evidence from recent session JSONL: `session_meta` and `turn_context` contain safe metadata such as `cwd`, source, originator, CLI version, model provider, model, reasoning effort, approval policy, sandbox type, permission profile, realtime flag, and truncation policy.
+  - Implementation should repair already-imported rows using deterministic session/turn ids and existing dedupe keys, without changing observed token deltas or totals.
+  - After repair, the Token Dashboard should show meaningful Effort and Project breakdowns for today's data when those sessions expose metadata.
+
+- Stop showing low-signal importer provenance as token breakdowns
+  - `Source kind` currently shows `codex-log` versus `Unattributed`, which is ingestion provenance rather than a useful user-facing slice.
+  - Hide or demote dimensions that only distinguish importer source from missing metadata.
+  - Keep genuinely useful explicit source values, such as `vscode`, `cli`, or future app-provided sources, when they are actually present.
+
+- Fix Codex log context extraction and backfill safe metadata
+  - Current log rows contain safe span text such as `model=gpt-5.5`, `cwd=/Users/.../codex_codex`, and `codex.turn.reasoning_effort=xhigh`, but the importer is not reliably converting that into project/effort catalogs.
+  - Tighten span parsing so it captures only the exact safe value and rejects adjacent trace or request text.
+  - Backfill repaired metadata into existing log-derived token samples without re-counting tokens.
+
+- Add token attribution coverage diagnostics
+  - Show attribution coverage for the selected dashboard period, for example model/project/effort/source coverage percentages.
+  - This should make missing metadata clear and prevent misleading dropdowns that mostly show `Unattributed`.
+
+- Audit live token notification context payloads
+  - Add a sanitized diagnostics path for live token notifications to confirm whether app-server token events now include project, effort, source, or runtime policy metadata.
+  - If live payloads do not include these fields, plan a join with the latest safe `turn_context` metadata rather than guessing.
