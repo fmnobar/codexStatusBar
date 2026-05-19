@@ -855,6 +855,124 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testTokenDashboardPointsGroupByEffortAndProject() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-high",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-high",
+                    projectPath: "/Users/example/Projects/codex_codex",
+                    effort: "high",
+                    source: "cli"
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-medium",
+                    turnID: "turn-a",
+                    model: "gpt-5.4",
+                    lastInput: 60,
+                    lastCached: 10,
+                    lastOutput: 8,
+                    lastReasoning: 2,
+                    lastTotal: 80,
+                    totalInput: 60,
+                    totalCached: 10,
+                    totalOutput: 8,
+                    totalReasoning: 2,
+                    totalTotal: 80
+                ),
+                receivedAt: date("2026-05-02T11:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-medium",
+                    projectPath: "/Users/example/Other/codex_codex",
+                    effort: "medium",
+                    source: "cli"
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-unattributed",
+                    turnID: "turn-a",
+                    lastInput: 30,
+                    lastCached: 5,
+                    lastOutput: 7,
+                    lastReasoning: 1,
+                    lastTotal: 43,
+                    totalInput: 30,
+                    totalCached: 5,
+                    totalOutput: 7,
+                    totalReasoning: 1,
+                    totalTotal: 43
+                ),
+                receivedAt: date("2026-05-02T12:15:00Z")
+            ),
+        ])
+
+        let effortPoints = try store.tokenDashboardPoints(
+            breakdownDimension: .effort,
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+        let effortSeries = try store.tokenDashboardSeries(breakdownDimension: .effort)
+        let projectPoints = try store.tokenDashboardPoints(
+            breakdownDimension: .project,
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+        let projectSeries = try store.tokenDashboardSeries(breakdownDimension: .project)
+
+        XCTAssertEqual(effortSeries.map(\.id), ["tokens_all", "effort:high", "effort:medium", "tokens_unattributed"])
+        XCTAssertEqual(
+            dashboardTokenCount(effortPoints, seriesID: "effort:high", component: .input, bucketStart: date("2026-05-02T00:00:00Z")),
+            100
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(effortPoints, seriesID: "effort:medium", component: .cached, bucketStart: date("2026-05-02T00:00:00Z")),
+            10
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(effortPoints, seriesID: "tokens_unattributed", component: .output, bucketStart: date("2026-05-02T00:00:00Z")),
+            7
+        )
+
+        XCTAssertEqual(projectSeries.map(\.id), [
+            "tokens_all",
+            "project:/Users/example/Other/codex_codex",
+            "project:/Users/example/Projects/codex_codex",
+            "tokens_unattributed",
+        ])
+        XCTAssertEqual(projectSeries.first { $0.id == "project:/Users/example/Other/codex_codex" }?.name, "codex_codex (Other)")
+        XCTAssertEqual(projectSeries.first { $0.id == "project:/Users/example/Projects/codex_codex" }?.name, "codex_codex (Projects)")
+        XCTAssertEqual(projectSeries.first { $0.id == "project:/Users/example/Projects/codex_codex" }?.projectPath, "/Users/example/Projects/codex_codex")
+        XCTAssertEqual(
+            dashboardTokenCount(projectPoints, seriesID: "project:/Users/example/Projects/codex_codex", component: .reasoning, bucketStart: date("2026-05-02T00:00:00Z")),
+            5
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(projectPoints, seriesID: "tokens_unattributed", component: .input, bucketStart: date("2026-05-02T00:00:00Z")),
+            30
+        )
+    }
+
     func testTokenSeriesDiscoveryReadsFromCatalog() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         try executeSQLite(
@@ -867,16 +985,24 @@ extension UsageHistoryStoreTests {
                 ('tokens_all', 'All tokens', 'aggregate', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), 1, 1, 1, 0, 0),
                 ('model:gpt-5.5', 'gpt-5.5', 'model', \(Int64(date("2026-05-03T09:01:00Z").timeIntervalSince1970)), 1, 1, 0, 0, 0),
                 ('tokens_unattributed', 'Unattributed', 'unattributed', \(Int64(date("2026-05-03T09:02:00Z").timeIntervalSince1970)), 0, 1, 0, 0, 0);
+            INSERT INTO token_effort_catalog (effort, first_seen_at, last_seen_at)
+            VALUES ('high', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
+            INSERT INTO token_project_catalog (project_path, project_name, first_seen_at, last_seen_at)
+            VALUES ('/Users/example/Projects/codex_codex', 'codex_codex', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
             """
         )
 
         let dashboardSeries = try store.tokenDashboardSeries()
+        let effortSeries = try store.tokenDashboardSeries(breakdownDimension: .effort)
+        let projectSeries = try store.tokenDashboardSeries(breakdownDimension: .project)
         let historySeries = try store.availableTokenComponentSeries()
         let rawSamples = try store.tokenUsageSamples()
 
         XCTAssertEqual(rawSamples, [])
         XCTAssertEqual(dashboardSeries.map(\.id), ["tokens_all", "model:gpt-5.5", "tokens_unattributed"])
         XCTAssertEqual(dashboardSeries.map(\.name), ["All captured", "gpt-5.5", "Unattributed"])
+        XCTAssertEqual(effortSeries.map(\.id), ["tokens_all", "effort:high", "tokens_unattributed"])
+        XCTAssertEqual(projectSeries.map(\.id), ["tokens_all", "project:/Users/example/Projects/codex_codex", "tokens_unattributed"])
         XCTAssertEqual(historySeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
 
@@ -928,6 +1054,7 @@ extension UsageHistoryStoreTests {
         await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedRange, .month)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
         XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
         XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 215)
@@ -941,14 +1068,105 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(viewModel.formattedTokenValue(6_495_500_000).contains("tok"))
         XCTAssertEqual(viewModel.formattedYAxisValue(10_000), "10,000")
         XCTAssertEqual(viewModel.formattedYAxisValue(1_200_000_000), "1.2B")
-        XCTAssertTrue(viewModel.csvText.contains("month,2026-05-01T00:00:00Z,2026-06-01T00:00:00Z,2026-05-02T00:00:00Z,2026-05-03T00:00:00Z,tokens_all,All captured,aggregate,input,100"))
+        XCTAssertTrue(viewModel.csvText.contains("model,month,2026-05-01T00:00:00Z,2026-06-01T00:00:00Z,2026-05-02T00:00:00Z,2026-05-03T00:00:00Z,tokens_all,All captured,aggregate,all,All captured,,input,100"))
 
         viewModel.selectSeries("model:gpt-5.5")
 
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["model:gpt-5.5"])
         XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
         XCTAssertFalse(viewModel.csvText.contains("model:gpt-5.4"))
-        XCTAssertTrue(viewModel.csvText.contains("model:gpt-5.5,gpt-5.5,model,input,100"))
+        XCTAssertTrue(viewModel.csvText.contains("model:gpt-5.5,gpt-5.5,model,gpt-5.5,gpt-5.5,,input,100"))
+    }
+
+    @MainActor
+    func testTokenDashboardViewModelSwitchesBreakdownDimensionAndFiltersRows() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-high",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-high",
+                    projectPath: "/Users/example/Projects/codex_codex",
+                    effort: "high",
+                    source: "cli"
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-medium",
+                    turnID: "turn-a",
+                    model: "gpt-5.4",
+                    lastInput: 30,
+                    lastCached: 10,
+                    lastOutput: 8,
+                    lastReasoning: 2,
+                    lastTotal: 50,
+                    totalInput: 30,
+                    totalCached: 10,
+                    totalOutput: 8,
+                    totalReasoning: 2,
+                    totalTotal: 50
+                ),
+                receivedAt: date("2026-05-03T10:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-medium",
+                    projectPath: "/Users/example/Other/codex_codex",
+                    effort: "medium",
+                    source: "cli"
+                )
+            ),
+        ])
+
+        let viewModel = TokenDashboardViewModel(
+            store: store,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+        await viewModel.reload()
+
+        viewModel.selectedBreakdownDimension = .effort
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.breakdownColumnTitle, "Effort")
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+        XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), ["tokens_all", "effort:high", "effort:medium"])
+
+        viewModel.selectSeries("effort:high")
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["effort:high"])
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
+        XCTAssertTrue(viewModel.csvText.contains("effort,month"))
+        XCTAssertTrue(viewModel.csvText.contains("effort:high,high,effort,high,high,,input,100"))
+
+        viewModel.selectSeries(TokenDashboardSeries.aggregateID)
+        XCTAssertEqual(viewModel.selectedSeriesIDs, [TokenDashboardSeries.aggregateID])
+
+        viewModel.selectedBreakdownDimension = .project
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.breakdownColumnTitle, "Project")
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+
+        viewModel.selectSeries("project:/Users/example/Projects/codex_codex")
+
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
+        XCTAssertTrue(viewModel.csvText.contains("project,month"))
+        XCTAssertTrue(viewModel.csvText.contains("project:/Users/example/Projects/codex_codex,codex_codex,project,/Users/example/Projects/codex_codex,codex_codex (Projects),/Users/example/Projects/codex_codex,input,100"))
     }
 
     @MainActor

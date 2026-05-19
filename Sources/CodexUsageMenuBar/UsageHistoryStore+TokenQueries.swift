@@ -533,6 +533,7 @@ extension UsageHistoryStore {
     }
 
     func tokenDashboardPoints(
+        breakdownDimension: TokenDashboardBreakdownDimension = .model,
         range: UsageHistoryRange,
         periodStart: Date,
         periodEnd: Date
@@ -544,6 +545,9 @@ extension UsageHistoryStore {
             """
             SELECT received_at,
                 \(normalizedModelExpression) AS normalized_model,
+                project_path,
+                project_name,
+                effort,
                 observed_input_tokens,
                 observed_cached_input_tokens,
                 observed_output_tokens,
@@ -568,6 +572,9 @@ extension UsageHistoryStore {
             case SQLITE_ROW:
                 let receivedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
                 let normalizedModel = optionalColumnText(statement, index: 1)
+                let projectPath = optionalColumnText(statement, index: 2)
+                let projectName = optionalColumnText(statement, index: 3)
+                let effort = optionalColumnText(statement, index: 4)
                 let bucketStart = UsageHistoryRange.bucketStart(
                     for: receivedAt,
                     component: range.chartBucketComponent,
@@ -577,10 +584,10 @@ extension UsageHistoryStore {
                     ?? bucketStart
 
                 let components: [(TokenHistoryComponent, Int64)] = [
-                    (.input, sqlite3_column_int64(statement, 2)),
-                    (.cached, sqlite3_column_int64(statement, 3)),
-                    (.output, sqlite3_column_int64(statement, 4)),
-                    (.reasoning, sqlite3_column_int64(statement, 5)),
+                    (.input, sqlite3_column_int64(statement, 5)),
+                    (.cached, sqlite3_column_int64(statement, 6)),
+                    (.output, sqlite3_column_int64(statement, 7)),
+                    (.reasoning, sqlite3_column_int64(statement, 8)),
                 ]
 
                 for (component, tokenCount) in components where tokenCount > 0 {
@@ -595,29 +602,23 @@ extension UsageHistoryStore {
                         to: &accumulators
                     )
 
-                    if let normalizedModel, !normalizedModel.isEmpty {
-                        addTokenDashboardAccumulator(
-                            bucketStart: bucketStart,
-                            bucketEnd: bucketEnd,
-                            seriesID: "model:\(normalizedModel)",
-                            seriesName: normalizedModel,
-                            seriesKind: .model,
-                            component: component,
-                            tokenCount: tokenCount,
-                            to: &accumulators
-                        )
-                    } else {
-                        addTokenDashboardAccumulator(
-                            bucketStart: bucketStart,
-                            bucketEnd: bucketEnd,
-                            seriesID: TokenDashboardSeries.unattributedID,
-                            seriesName: "Unattributed",
-                            seriesKind: .unattributed,
-                            component: component,
-                            tokenCount: tokenCount,
-                            to: &accumulators
-                        )
-                    }
+                    let dimensionSeries = Self.tokenDashboardSeriesIdentity(
+                        breakdownDimension: breakdownDimension,
+                        model: normalizedModel,
+                        effort: effort,
+                        projectPath: projectPath,
+                        projectName: projectName
+                    )
+                    addTokenDashboardAccumulator(
+                        bucketStart: bucketStart,
+                        bucketEnd: bucketEnd,
+                        seriesID: dimensionSeries.id,
+                        seriesName: dimensionSeries.name,
+                        seriesKind: dimensionSeries.kind,
+                        component: component,
+                        tokenCount: tokenCount,
+                        to: &accumulators
+                    )
                 }
             case SQLITE_DONE:
                 return accumulators.values
@@ -639,7 +640,20 @@ extension UsageHistoryStore {
         }
     }
 
-    func tokenDashboardSeries() throws -> [TokenDashboardSeries] {
+    func tokenDashboardSeries(
+        breakdownDimension: TokenDashboardBreakdownDimension = .model
+    ) throws -> [TokenDashboardSeries] {
+        switch breakdownDimension {
+        case .model:
+            return try tokenDashboardModelSeries()
+        case .effort:
+            return try tokenDashboardEffortSeries()
+        case .project:
+            return try tokenDashboardProjectSeries()
+        }
+    }
+
+    private func tokenDashboardModelSeries() throws -> [TokenDashboardSeries] {
         let statement = try prepare(
             """
             SELECT series_id, series_name, series_kind, seen_at
@@ -668,7 +682,8 @@ extension UsageHistoryStore {
                 seriesByID[id] = TokenDashboardSeries(
                     id: id,
                     name: id == TokenDashboardSeries.aggregateID ? "All captured" : storedName,
-                    kind: kind
+                    kind: kind,
+                    contextID: Self.tokenDashboardContextID(seriesID: id, fallback: storedName)
                 )
             case SQLITE_DONE:
                 return seriesByID.values.sortedByDashboardSeriesOrder()
@@ -678,11 +693,183 @@ extension UsageHistoryStore {
         }
     }
 
+    private func tokenDashboardEffortSeries() throws -> [TokenDashboardSeries] {
+        var series = try tokenDashboardAggregateAndUnattributedSeries()
+        let statement = try prepare(
+            """
+            SELECT effort, last_seen_at
+            FROM token_effort_catalog
+            ORDER BY last_seen_at DESC, effort ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let effort = columnText(statement, index: 0)
+                series.append(
+                    TokenDashboardSeries(
+                        id: "effort:\(effort)",
+                        name: effort,
+                        kind: .effort,
+                        contextID: effort
+                    )
+                )
+            case SQLITE_DONE:
+                return series.sortedByDashboardSeriesOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func tokenDashboardProjectSeries() throws -> [TokenDashboardSeries] {
+        var series = try tokenDashboardAggregateAndUnattributedSeries()
+        let statement = try prepare(
+            """
+            SELECT project_path, project_name, last_seen_at
+            FROM token_project_catalog
+            ORDER BY last_seen_at DESC, project_name ASC, project_path ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var projectRows: [(path: String, name: String)] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                projectRows.append((
+                    path: columnText(statement, index: 0),
+                    name: columnText(statement, index: 1)
+                ))
+            case SQLITE_DONE:
+                let displayNames = Self.disambiguatedProjectDisplayNames(for: projectRows)
+                for row in projectRows {
+                    series.append(
+                        TokenDashboardSeries(
+                            id: "project:\(row.path)",
+                            name: displayNames[row.path] ?? row.name,
+                            kind: .project,
+                            contextID: row.path,
+                            projectPath: row.path
+                        )
+                    )
+                }
+                return series.sortedByDashboardSeriesOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func tokenDashboardAggregateAndUnattributedSeries() throws -> [TokenDashboardSeries] {
+        let hasTokens = try tokenDashboardModelSeries().contains { $0.id == TokenDashboardSeries.aggregateID }
+        guard hasTokens else {
+            return []
+        }
+
+        return [
+            TokenDashboardSeries(
+                id: TokenDashboardSeries.aggregateID,
+                name: "All captured",
+                kind: .aggregate,
+                contextID: "all"
+            ),
+            TokenDashboardSeries(
+                id: TokenDashboardSeries.unattributedID,
+                name: "Unattributed",
+                kind: .unattributed,
+                contextID: "unattributed"
+            ),
+        ]
+    }
+
     func tokenDashboardBounds() throws -> UsageHistoryBounds? {
         try tokenComponentHistoryBounds()
     }
 
+    private static func tokenDashboardSeriesIdentity(
+        breakdownDimension: TokenDashboardBreakdownDimension,
+        model: String?,
+        effort: String?,
+        projectPath: String?,
+        projectName: String?
+    ) -> (id: String, name: String, kind: TokenDashboardSeriesKind) {
+        switch breakdownDimension {
+        case .model:
+            guard let model, !model.isEmpty else {
+                return unattributedTokenDashboardSeriesIdentity()
+            }
 
+            return ("model:\(model)", model, .model)
+        case .effort:
+            guard let effort, !effort.isEmpty else {
+                return unattributedTokenDashboardSeriesIdentity()
+            }
+
+            return ("effort:\(effort)", effort, .effort)
+        case .project:
+            guard let projectPath, !projectPath.isEmpty else {
+                return unattributedTokenDashboardSeriesIdentity()
+            }
+
+            let fallbackName = URL(fileURLWithPath: projectPath).lastPathComponent
+            let name = projectName.flatMap { $0.isEmpty ? nil : $0 } ?? (fallbackName.isEmpty ? projectPath : fallbackName)
+            return ("project:\(projectPath)", name, .project)
+        }
+    }
+
+    private static func unattributedTokenDashboardSeriesIdentity() -> (id: String, name: String, kind: TokenDashboardSeriesKind) {
+        (TokenDashboardSeries.unattributedID, "Unattributed", .unattributed)
+    }
+
+    private static func tokenDashboardContextID(seriesID: String, fallback: String) -> String {
+        if seriesID == TokenDashboardSeries.aggregateID {
+            return "all"
+        }
+
+        if seriesID == TokenDashboardSeries.unattributedID {
+            return "unattributed"
+        }
+
+        return fallback
+    }
+
+    private static func disambiguatedProjectDisplayNames(
+        for rows: [(path: String, name: String)]
+    ) -> [String: String] {
+        let nameCounts = Dictionary(grouping: rows, by: \.name).mapValues(\.count)
+        var displayNames = [String: String]()
+        var candidateCounts = [String: Int]()
+
+        for row in rows {
+            let baseName = row.name.isEmpty ? URL(fileURLWithPath: row.path).lastPathComponent : row.name
+            guard nameCounts[row.name, default: 0] > 1 else {
+                displayNames[row.path] = baseName
+                continue
+            }
+
+            let parent = URL(fileURLWithPath: row.path)
+                .deletingLastPathComponent()
+                .lastPathComponent
+            let candidate = parent.isEmpty ? baseName : "\(baseName) (\(parent))"
+            candidateCounts[candidate, default: 0] += 1
+            displayNames[row.path] = candidate
+        }
+
+        for row in rows {
+            guard let candidate = displayNames[row.path],
+                  candidateCounts[candidate, default: 0] > 1
+            else {
+                continue
+            }
+
+            displayNames[row.path] = "\(candidate) - \(row.path)"
+        }
+
+        return displayNames
+    }
 }
 
 private struct TokenDashboardAccumulatorKey: Hashable {
@@ -766,7 +953,7 @@ private extension TokenDashboardSeriesKind {
         switch self {
         case .aggregate:
             return 0
-        case .model:
+        case .model, .effort, .project:
             return 1
         case .unattributed:
             return 2

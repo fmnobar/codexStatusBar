@@ -6,13 +6,52 @@ import UniformTypeIdentifiers
 enum TokenDashboardSeriesKind: String, Equatable {
     case aggregate
     case model
+    case effort
+    case project
     case unattributed
+}
+
+enum TokenDashboardBreakdownDimension: String, CaseIterable, Identifiable, Equatable {
+    case model
+    case effort
+    case project
+
+    var id: String {
+        rawValue
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .model:
+            return "Model"
+        case .effort:
+            return "Effort"
+        case .project:
+            return "Project"
+        }
+    }
 }
 
 struct TokenDashboardSeries: Identifiable, Equatable, Hashable {
     let id: String
     let name: String
     let kind: TokenDashboardSeriesKind
+    let contextID: String
+    let projectPath: String?
+
+    init(
+        id: String,
+        name: String,
+        kind: TokenDashboardSeriesKind,
+        contextID: String? = nil,
+        projectPath: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.contextID = contextID ?? id
+        self.projectPath = projectPath
+    }
 
     static let aggregateID = "tokens_all"
     static let unattributedID = "tokens_unattributed"
@@ -85,6 +124,17 @@ final class TokenDashboardViewModel: ObservableObject {
             }
 
             selectedPeriodStart = currentPeriod.start
+            selectedSeriesIDs = []
+            scheduleReload()
+        }
+    }
+
+    @Published var selectedBreakdownDimension: TokenDashboardBreakdownDimension = .model {
+        didSet {
+            guard selectedBreakdownDimension != oldValue else {
+                return
+            }
+
             selectedSeriesIDs = []
             scheduleReload()
         }
@@ -259,7 +309,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
         return TokenDashboardEmptyState(
             title: "No tokens for this selection",
-            message: "Choose a different period or model row.",
+            message: "Choose a different period or breakdown row.",
             systemImage: "line.3.horizontal.decrease.circle"
         )
     }
@@ -296,11 +346,17 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     var csvText: String {
-        var rows = ["range,period_start,period_end,bucket_start,bucket_end,series_id,series_name,series_kind,component,token_count"]
+        var rows = ["breakdown_dimension,range,period_start,period_end,bucket_start,bucket_end,series_id,series_name,series_kind,context_id,context_name,project_path,component,token_count"]
         let formatter = ISO8601DateFormatter()
+        let seriesByID = Dictionary(uniqueKeysWithValues: series.map { ($0.id, $0) })
 
         rows += visibleSourcePoints.sortedByDashboardDisplayOrder().map { point in
-            [
+            let pointSeries = seriesByID[point.seriesID]
+            let contextID = pointSeries?.contextID ?? point.seriesID
+            let contextName = pointSeries?.name ?? point.seriesName
+            let projectPath = pointSeries?.projectPath ?? ""
+            return [
+                selectedBreakdownDimension.rawValue,
                 selectedRange.rawValue,
                 formatter.string(from: selectedPeriod.start),
                 formatter.string(from: selectedPeriod.end),
@@ -309,6 +365,9 @@ final class TokenDashboardViewModel: ObservableObject {
                 Self.csvEscaped(point.seriesID),
                 Self.csvEscaped(point.seriesName),
                 point.seriesKind.rawValue,
+                Self.csvEscaped(contextID),
+                Self.csvEscaped(contextName),
+                Self.csvEscaped(projectPath),
                 point.component.rawValue,
                 "\(point.tokenCount)",
             ].joined(separator: ",")
@@ -344,6 +403,7 @@ final class TokenDashboardViewModel: ObservableObject {
         let generation = nextReloadGeneration()
         let queryPeriod = periodForQuery()
         let request = TokenDashboardLoadRequest(
+            breakdownDimension: selectedBreakdownDimension,
             range: selectedRange,
             periodStart: queryPeriod.start,
             periodEnd: queryPeriod.end
@@ -535,6 +595,10 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         return name
+    }
+
+    var breakdownColumnTitle: String {
+        selectedBreakdownDimension.displayTitle
     }
 
     private func reconcileSelection() {
@@ -809,6 +873,15 @@ struct TokenDashboardView: View {
             .pickerStyle(.segmented)
             .frame(width: 240)
 
+            Picker("Breakdown", selection: $viewModel.selectedBreakdownDimension) {
+                ForEach(TokenDashboardBreakdownDimension.allCases) { dimension in
+                    Text(dimension.displayTitle).tag(dimension)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+
             Spacer(minLength: 16)
 
             periodNavigation
@@ -960,7 +1033,7 @@ struct TokenDashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 7) {
                 GridRow {
-                    Text("Model")
+                    Text(viewModel.breakdownColumnTitle)
                         .frame(width: modelColumnWidth, alignment: .leading)
                     Text("Total")
                         .frame(width: primaryNumberColumnWidth, alignment: .trailing)
@@ -995,6 +1068,7 @@ struct TokenDashboardView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .help(row.series.projectPath ?? row.series.name)
 
                         Text(viewModel.formattedTokenValue(row.totalTokens))
                             .fontWeight(.semibold)
@@ -1071,6 +1145,10 @@ private extension TokenDashboardSeriesKind {
         case .aggregate:
             return 0
         case .model:
+            return 1
+        case .effort:
+            return 1
+        case .project:
             return 1
         case .unattributed:
             return 2

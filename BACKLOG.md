@@ -4,9 +4,8 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Add Token Dashboard breakdowns by model, effort, and project | Add dashboard filters/grouping for model, reasoning effort, and project using stored token context dimensions. Keep token category totals visible and avoid inferred mode labels until Codex exposes an explicit signal. |
-| 2 | Add editable project names for token analytics | Build a local project catalog from captured project paths and let users rename projects for dashboard display while keeping original paths available for audit/debugging. |
-| 3 | Track additional safe token slices as Codex exposes them | Capture future explicit token/session dimensions when available, including an explicit fast/normal mode only if Codex records it directly. |
+| 1 | Add editable project names for token analytics | Build a local project catalog from captured project paths and let users rename projects for dashboard display while keeping original paths available for audit/debugging. |
+| 2 | Track additional safe token slices as Codex exposes them | Capture future explicit token/session dimensions when available, including an explicit fast/normal mode only if Codex records it directly. |
 
 ## Done
 
@@ -177,10 +176,12 @@
   - Extended session/log backfill to read safe metadata from `session_meta` and `turn_context` without decoding prompt, message, or tool content.
   - Added re-import repair for missing context/model metadata plus project, effort, and source catalogs for future dashboard breakdowns.
 
-## Next Candidates
-
 - Add Token Dashboard breakdowns by model, effort, and project
-  - Add filters and grouped summaries once the context dimensions are stored and backfilled.
+  - Added a Token Dashboard breakdown selector for Model, Effort, and Project while keeping Model as the default.
+  - Reused stored model, effort, and project catalogs so available breakdown rows stay stable without scanning raw token history.
+  - Kept the stacked category chart style unchanged while filtering summaries, chart rows, table rows, and CSV export to the selected breakdown rows.
+
+## Next Candidates
 
 - Add editable project names for token analytics
   - Let users rename captured project paths locally after project-level token analytics exist.

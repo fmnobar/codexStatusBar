@@ -21,9 +21,22 @@ struct UsageHistoryLoadResult: Equatable {
 }
 
 struct TokenDashboardLoadRequest: Equatable {
+    let breakdownDimension: TokenDashboardBreakdownDimension
     let range: UsageHistoryRange
     let periodStart: Date
     let periodEnd: Date
+
+    init(
+        breakdownDimension: TokenDashboardBreakdownDimension = .model,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) {
+        self.breakdownDimension = breakdownDimension
+        self.range = range
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+    }
 }
 
 struct TokenDashboardLoadResult: Equatable {
@@ -190,11 +203,12 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         let store = try store()
         return TokenDashboardLoadResult(
             points: try store.tokenDashboardPoints(
+                breakdownDimension: request.breakdownDimension,
                 range: request.range,
                 periodStart: request.periodStart,
                 periodEnd: request.periodEnd
             ),
-            series: try store.tokenDashboardSeries(),
+            series: try store.tokenDashboardSeries(breakdownDimension: request.breakdownDimension),
             historyBounds: try store.tokenDashboardBounds()
         )
     }

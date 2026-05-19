@@ -148,6 +148,28 @@ extension UsageHistoryStoreTests {
         )
         XCTAssertPlanMentions(tokenPlan, "token_series_catalog")
         XCTAssertPlanDoesNotMention(tokenPlan, "token_usage_samples")
+
+        let projectPlan = try queryPlan(
+            at: fixture.databaseURL,
+            sql: """
+            SELECT project_path, project_name, last_seen_at
+            FROM token_project_catalog
+            ORDER BY last_seen_at DESC, project_name ASC, project_path ASC
+            """
+        )
+        XCTAssertPlanMentions(projectPlan, "token_project_catalog")
+        XCTAssertPlanDoesNotMention(projectPlan, "token_usage_samples")
+
+        let effortPlan = try queryPlan(
+            at: fixture.databaseURL,
+            sql: """
+            SELECT effort, last_seen_at
+            FROM token_effort_catalog
+            ORDER BY last_seen_at DESC, effort ASC
+            """
+        )
+        XCTAssertPlanMentions(effortPlan, "token_effort_catalog")
+        XCTAssertPlanDoesNotMention(effortPlan, "token_usage_samples")
     }
 
     func testHistoryAndDashboardSnapshotsStayWithinConservativeBudgets() async throws {
@@ -186,6 +208,7 @@ extension UsageHistoryStoreTests {
             calendar: calendar
         )
         let dashboardRequest = TokenDashboardLoadRequest(
+            breakdownDimension: .model,
             range: .month,
             periodStart: month.start,
             periodEnd: month.end
