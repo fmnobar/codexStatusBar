@@ -112,22 +112,22 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     }
 
     private func ensureServerAvailable() async throws {
-        for port in portRange {
-            do {
-                try await connectToServer(on: port)
-                ownsProcess = false
-                return
-            } catch {
+        let executableURL = try resolveCodexExecutableURL()
+        if executableSupportsWebSocketListen(executableURL) {
+            for port in portRange {
+                do {
+                    try await connectToServer(on: port)
+                    ownsProcess = false
+                    return
+                } catch {
+                    resetSocketState()
+                    currentPort = nil
+                }
+
                 resetSocketState()
                 currentPort = nil
             }
 
-            resetSocketState()
-            currentPort = nil
-        }
-
-        let executableURL = try resolveCodexExecutableURL()
-        if executableSupportsWebSocketListen(executableURL) {
             for port in portRange {
                 do {
                     try await startManagedWebSocketServer(on: port, executableURL: executableURL)
