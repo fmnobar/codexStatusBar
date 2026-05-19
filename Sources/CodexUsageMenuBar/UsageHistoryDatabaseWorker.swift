@@ -42,6 +42,7 @@ struct TokenDashboardLoadRequest: Equatable {
 struct TokenDashboardLoadResult: Equatable {
     let points: [TokenDashboardComponentPoint]
     let series: [TokenDashboardSeries]
+    let availableBreakdownDimensions: [TokenDashboardBreakdownDimension]
     let historyBounds: UsageHistoryBounds?
 }
 
@@ -204,6 +205,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         let store = try store()
+        let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions()
         return TokenDashboardLoadResult(
             points: try store.tokenDashboardPoints(
                 breakdownDimension: request.breakdownDimension,
@@ -212,6 +214,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
                 periodEnd: request.periodEnd
             ),
             series: try store.tokenDashboardSeries(breakdownDimension: request.breakdownDimension),
+            availableBreakdownDimensions: availableBreakdownDimensions,
             historyBounds: try store.tokenDashboardBounds()
         )
     }

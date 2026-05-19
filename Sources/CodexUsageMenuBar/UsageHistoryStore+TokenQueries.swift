@@ -777,6 +777,59 @@ extension UsageHistoryStore {
         }
     }
 
+    func tokenDashboardAvailableBreakdownDimensions() throws -> [TokenDashboardBreakdownDimension] {
+        var dimensions: [TokenDashboardBreakdownDimension] = [.model]
+
+        if try hasRows(in: "token_effort_catalog") {
+            dimensions.append(.effort)
+        }
+
+        if try hasRows(in: "token_project_catalog") {
+            dimensions.append(.project)
+        }
+
+        let statement = try prepare(
+            """
+            SELECT DISTINCT dimension_key
+            FROM token_dimension_catalog
+            ORDER BY dimension_key ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var seen = Set(dimensions)
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let dimension = TokenDashboardBreakdownDimension(rawValue: columnText(statement, index: 0)),
+                      dimension.dimensionKey != nil,
+                      seen.insert(dimension).inserted
+                else {
+                    continue
+                }
+                dimensions.append(dimension)
+            case SQLITE_DONE:
+                return dimensions
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func hasRows(in table: String) throws -> Bool {
+        let statement = try prepare("SELECT 1 FROM \(table) LIMIT 1")
+        defer { sqlite3_finalize(statement) }
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return true
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     private func tokenDashboardModelSeries() throws -> [TokenDashboardSeries] {
         let statement = try prepare(
             """

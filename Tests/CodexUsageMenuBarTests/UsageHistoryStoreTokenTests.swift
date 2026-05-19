@@ -1338,6 +1338,7 @@ extension UsageHistoryStoreTests {
         let effortSeries = try store.tokenDashboardSeries(breakdownDimension: .effort)
         let projectSeries = try store.tokenDashboardSeries(breakdownDimension: .project)
         let approvalPolicySeries = try store.tokenDashboardSeries(breakdownDimension: .approvalPolicy)
+        let availableBreakdowns = try store.tokenDashboardAvailableBreakdownDimensions()
         let historySeries = try store.availableTokenComponentSeries()
         let rawSamples = try store.tokenUsageSamples()
 
@@ -1347,7 +1348,47 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(effortSeries.map(\.id), ["tokens_all", "effort:high", "tokens_unattributed"])
         XCTAssertEqual(projectSeries.map(\.id), ["tokens_all", "project:/Users/example/Projects/codex_codex", "tokens_unattributed"])
         XCTAssertEqual(approvalPolicySeries.map(\.id), ["tokens_all", "dimension:approval_policy:never", "tokens_unattributed"])
+        XCTAssertEqual(availableBreakdowns, [.model, .effort, .project, .approvalPolicy])
         XCTAssertEqual(historySeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
+    func testTokenDashboardAvailableBreakdownsHideUncatalogedDimensions() async throws {
+        let store = try makeStore()
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                lastInput: 100,
+                lastTotal: 100,
+                totalInput: 100,
+                totalTotal: 100
+            ),
+            at: date("2026-05-03T09:00:00Z")
+        )
+
+        XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model])
+
+        try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-b",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 50,
+                    lastTotal: 50,
+                    totalInput: 50,
+                    totalTotal: 50
+                ),
+                receivedAt: date("2026-05-03T10:00:00Z"),
+                context: TokenUsageContext(
+                    dimensions: [TokenUsageDimension(.sourceKind, "codex-log")].compactMap { $0 }
+                )
+            ),
+        ])
+
+        XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model, .sourceKind])
+        XCTAssertFalse(try store.tokenDashboardAvailableBreakdownDimensions().contains(.isSubagent))
     }
 
     @MainActor
@@ -1529,6 +1570,8 @@ extension UsageHistoryStoreTests {
         await viewModel.reload()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Approval policy")
+        XCTAssertTrue(viewModel.availableBreakdownDimensions.contains(.approvalPolicy))
+        XCTAssertFalse(viewModel.availableBreakdownDimensions.contains(.agentNickname))
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
         XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), [
             "tokens_all",

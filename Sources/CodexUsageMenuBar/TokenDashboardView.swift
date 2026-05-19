@@ -190,6 +190,7 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var selectedPeriodStart: Date
     @Published private(set) var points: [TokenDashboardComponentPoint] = []
     @Published private(set) var series: [TokenDashboardSeries] = []
+    @Published private(set) var availableBreakdownDimensions: [TokenDashboardBreakdownDimension] = [.model]
     @Published private(set) var selectedSeriesIDs: Set<String> = []
     @Published private(set) var historyBounds: UsageHistoryBounds?
     @Published private(set) var errorMessage: String?
@@ -464,6 +465,12 @@ final class TokenDashboardViewModel: ObservableObject {
                 return false
             }
 
+            availableBreakdownDimensions = result.availableBreakdownDimensions
+            guard result.availableBreakdownDimensions.contains(selectedBreakdownDimension) else {
+                selectedBreakdownDimension = .model
+                return false
+            }
+
             points = result.points
             series = result.series
             historyBounds = result.historyBounds
@@ -477,6 +484,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
             points = []
             series = []
+            availableBreakdownDimensions = [.model]
             historyBounds = nil
             selectedSeriesIDs = []
             errorMessage = "Token dashboard could not be loaded."
@@ -923,7 +931,7 @@ struct TokenDashboardView: View {
             .frame(width: 240)
 
             Picker("Breakdown", selection: $viewModel.selectedBreakdownDimension) {
-                ForEach(TokenDashboardBreakdownDimension.allCases) { dimension in
+                ForEach(viewModel.availableBreakdownDimensions) { dimension in
                     Text(dimension.displayTitle).tag(dimension)
                 }
             }
