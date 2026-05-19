@@ -84,6 +84,54 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(dashboardSeries.map(\.name), ["All captured", "gpt-5.5", "Unattributed"])
     }
 
+    func testTokenContextCleanupMigrationDropsTraceSuffixedProjectPaths() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-context-cleanup",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: receivedAt,
+                context: TokenUsageContext(
+                    projectPath: "/Users/example/Projects/context-cleanup",
+                    effort: "xhigh",
+                    source: "desktop"
+                )
+            ),
+        ])
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            UPDATE token_usage_samples
+            SET project_path = '/Users/example/Projects/context-cleanup}:try_run_sampling_request{turn_id=abc}',
+                project_name = 'context-cleanup}:try_run_sampling_request{turn_id=abc}'
+            WHERE thread_id = 'thread-context-cleanup';
+            DELETE FROM usage_history_metadata WHERE key = 'token_context_cleanup_version';
+            """
+        )
+
+        let reopenedStore = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(try reopenedStore.tokenUsageSamples().first)
+
+        XCTAssertNil(sample.projectPath)
+        XCTAssertNil(sample.projectName)
+        XCTAssertEqual(sample.effort, "xhigh")
+        XCTAssertEqual(sample.source, "desktop")
+        XCTAssertEqual(try reopenedStore.tokenTotalForDay(containing: receivedAt, calendar: calendar), 100)
+    }
+
     func testMigratesLegacyTokenTableWithoutObservedCategoryColumns() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyTokenHistoryDatabase(at: databaseURL)

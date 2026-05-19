@@ -462,7 +462,7 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let tokenModelCleanupMetadataKey = "token_model_cleanup_version"
     static let currentTokenModelCleanupVersion = "1"
     static let tokenContextCleanupMetadataKey = "token_context_cleanup_version"
-    static let currentTokenContextCleanupVersion = "1"
+    static let currentTokenContextCleanupVersion = "2"
     static let tokenDimensionCleanupMetadataKey = "token_dimension_cleanup_version"
     static let currentTokenDimensionCleanupVersion = "1"
     static let currentSessionTokenContextImportVersion = "3"
