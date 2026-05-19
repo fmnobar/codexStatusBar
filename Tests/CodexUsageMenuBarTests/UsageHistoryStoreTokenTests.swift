@@ -1048,7 +1048,11 @@ extension UsageHistoryStoreTests {
                     sessionID: "session-high",
                     projectPath: "/Users/example/Projects/codex_codex",
                     effort: "high",
-                    source: "cli"
+                    source: "cli",
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "never"),
+                        TokenUsageDimension.boolean(.isSubagent, false),
+                    ].compactMap { $0 }
                 )
             ),
             ImportedCodexTokenUsageSample(
@@ -1072,7 +1076,11 @@ extension UsageHistoryStoreTests {
                     sessionID: "session-medium",
                     projectPath: "/Users/example/Other/codex_codex",
                     effort: "medium",
-                    source: "cli"
+                    source: "cli",
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "on-request"),
+                        TokenUsageDimension.boolean(.isSubagent, true),
+                    ].compactMap { $0 }
                 )
             ),
             ImportedCodexTokenUsageSample(
@@ -1142,6 +1150,169 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testTokenDashboardPointsGroupByGenericDimensions() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-never",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "never"),
+                        TokenUsageDimension(.sandboxType, "danger-full-access"),
+                        TokenUsageDimension(.sourceKind, "cli"),
+                        TokenUsageDimension.boolean(.isSubagent, false),
+                        TokenUsageDimension(.agentRole, "default"),
+                        TokenUsageDimension(.usageMode, "/fast"),
+                    ].compactMap { $0 }
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-request",
+                    turnID: "turn-a",
+                    lastInput: 60,
+                    lastCached: 10,
+                    lastOutput: 8,
+                    lastReasoning: 2,
+                    lastTotal: 80,
+                    totalInput: 60,
+                    totalCached: 10,
+                    totalOutput: 8,
+                    totalReasoning: 2,
+                    totalTotal: 80
+                ),
+                receivedAt: date("2026-05-02T11:15:00Z"),
+                context: TokenUsageContext(
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "on-request"),
+                        TokenUsageDimension(.sandboxType, "workspace-write"),
+                        TokenUsageDimension(.sourceKind, "vscode"),
+                        TokenUsageDimension.boolean(.isSubagent, true),
+                        TokenUsageDimension(.agentRole, "worker"),
+                        TokenUsageDimension(.usageMode, "normal"),
+                    ].compactMap { $0 }
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-unattributed",
+                    turnID: "turn-a",
+                    lastInput: 30,
+                    lastCached: 5,
+                    lastOutput: 7,
+                    lastReasoning: 1,
+                    lastTotal: 43,
+                    totalInput: 30,
+                    totalCached: 5,
+                    totalOutput: 7,
+                    totalReasoning: 1,
+                    totalTotal: 43
+                ),
+                receivedAt: date("2026-05-02T12:15:00Z")
+            ),
+        ])
+
+        let approvalSeries = try store.tokenDashboardSeries(breakdownDimension: .approvalPolicy)
+        let approvalPoints = try store.tokenDashboardPoints(
+            breakdownDimension: .approvalPolicy,
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+        let subagentSeries = try store.tokenDashboardSeries(breakdownDimension: .isSubagent)
+        let modeSeries = try store.tokenDashboardSeries(breakdownDimension: .usageMode)
+
+        XCTAssertEqual(approvalSeries.map(\.id), [
+            "tokens_all",
+            "dimension:approval_policy:never",
+            "dimension:approval_policy:on-request",
+            "tokens_unattributed",
+        ])
+        XCTAssertEqual(approvalSeries.first { $0.id == "dimension:approval_policy:never" }?.dimensionKey, .approvalPolicy)
+        XCTAssertEqual(subagentSeries.map(\.name), ["All captured", "No", "Yes", "Unattributed"])
+        XCTAssertEqual(modeSeries.map(\.id), [
+            "tokens_all",
+            "dimension:usage_mode:fast",
+            "dimension:usage_mode:normal",
+            "tokens_unattributed",
+        ])
+        XCTAssertEqual(
+            dashboardTokenCount(approvalPoints, seriesID: "dimension:approval_policy:never", component: .input, bucketStart: date("2026-05-02T00:00:00Z")),
+            100
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(approvalPoints, seriesID: "dimension:approval_policy:on-request", component: .cached, bucketStart: date("2026-05-02T00:00:00Z")),
+            10
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(approvalPoints, seriesID: "tokens_unattributed", component: .output, bucketStart: date("2026-05-02T00:00:00Z")),
+            7
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(approvalPoints, seriesID: "tokens_all", component: .input, bucketStart: date("2026-05-02T00:00:00Z")),
+            190
+        )
+    }
+
+    func testTokenDashboardDimensionQueryDoesNotDoubleCountConflictingDimensionRows() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                lastInput: 100,
+                lastTotal: 100,
+                totalInput: 100,
+                totalTotal: 100
+            ),
+            at: date("2026-05-02T10:15:00Z")
+        )
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO token_usage_dimensions (
+                thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+            ) VALUES
+                ('thread-a', 'turn-a', 100, 'approval_policy', 'never', \(Int64(date("2026-05-02T10:15:00Z").timeIntervalSince1970))),
+                ('thread-a', 'turn-a', 100, 'approval_policy', 'on-request', \(Int64(date("2026-05-02T10:16:00Z").timeIntervalSince1970)));
+            """
+        )
+
+        let points = try store.tokenDashboardPoints(
+            breakdownDimension: .approvalPolicy,
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+
+        let aggregateInput = dashboardTokenCount(
+            points,
+            seriesID: "tokens_all",
+            component: .input,
+            bucketStart: date("2026-05-02T00:00:00Z")
+        )
+        let dimensionInput = points
+            .filter { $0.seriesKind == .dimension && $0.component == .input }
+            .reduce(Int64(0)) { $0 + $1.tokenCount }
+
+        XCTAssertEqual(aggregateInput, 100)
+        XCTAssertEqual(dimensionInput, 100)
+    }
+
     func testTokenSeriesDiscoveryReadsFromCatalog() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         try executeSQLite(
@@ -1158,12 +1329,15 @@ extension UsageHistoryStoreTests {
             VALUES ('high', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
             INSERT INTO token_project_catalog (project_path, project_name, first_seen_at, last_seen_at)
             VALUES ('/Users/example/Projects/codex_codex', 'codex_codex', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
+            INSERT INTO token_dimension_catalog (dimension_key, dimension_value, first_seen_at, last_seen_at)
+            VALUES ('approval_policy', 'never', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
             """
         )
 
         let dashboardSeries = try store.tokenDashboardSeries()
         let effortSeries = try store.tokenDashboardSeries(breakdownDimension: .effort)
         let projectSeries = try store.tokenDashboardSeries(breakdownDimension: .project)
+        let approvalPolicySeries = try store.tokenDashboardSeries(breakdownDimension: .approvalPolicy)
         let historySeries = try store.availableTokenComponentSeries()
         let rawSamples = try store.tokenUsageSamples()
 
@@ -1172,6 +1346,7 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(dashboardSeries.map(\.name), ["All captured", "gpt-5.5", "Unattributed"])
         XCTAssertEqual(effortSeries.map(\.id), ["tokens_all", "effort:high", "tokens_unattributed"])
         XCTAssertEqual(projectSeries.map(\.id), ["tokens_all", "project:/Users/example/Projects/codex_codex", "tokens_unattributed"])
+        XCTAssertEqual(approvalPolicySeries.map(\.id), ["tokens_all", "dimension:approval_policy:never", "tokens_unattributed"])
         XCTAssertEqual(historySeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
 
@@ -1272,7 +1447,11 @@ extension UsageHistoryStoreTests {
                     sessionID: "session-high",
                     projectPath: "/Users/example/Projects/codex_codex",
                     effort: "high",
-                    source: "cli"
+                    source: "cli",
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "never"),
+                        TokenUsageDimension.boolean(.isSubagent, false),
+                    ].compactMap { $0 }
                 )
             ),
             ImportedCodexTokenUsageSample(
@@ -1296,7 +1475,11 @@ extension UsageHistoryStoreTests {
                     sessionID: "session-medium",
                     projectPath: "/Users/example/Other/codex_codex",
                     effort: "medium",
-                    source: "cli"
+                    source: "cli",
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "on-request"),
+                        TokenUsageDimension.boolean(.isSubagent, true),
+                    ].compactMap { $0 }
                 )
             ),
         ])
@@ -1341,6 +1524,24 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
         XCTAssertTrue(viewModel.csvText.contains("project,month"))
         XCTAssertTrue(viewModel.csvText.contains("project:/Users/example/Projects/codex_codex,Main Work,project,/Users/example/Projects/codex_codex,Main Work,/Users/example/Projects/codex_codex,input,100"))
+
+        viewModel.selectedBreakdownDimension = .approvalPolicy
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.breakdownColumnTitle, "Approval policy")
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+        XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), [
+            "tokens_all",
+            "dimension:approval_policy:never",
+            "dimension:approval_policy:on-request",
+        ])
+
+        viewModel.selectSeries("dimension:approval_policy:never")
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["dimension:approval_policy:never"])
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
+        XCTAssertTrue(viewModel.csvText.contains("approval_policy,month"))
+        XCTAssertTrue(viewModel.csvText.contains("dimension:approval_policy:never,never,dimension,never,never,,input,100,approval_policy"))
     }
 
     @MainActor

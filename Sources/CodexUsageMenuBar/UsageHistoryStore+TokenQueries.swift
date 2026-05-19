@@ -538,6 +538,15 @@ extension UsageHistoryStore {
         periodStart: Date,
         periodEnd: Date
     ) throws -> [TokenDashboardComponentPoint] {
+        if let dimensionKey = breakdownDimension.dimensionKey {
+            return try tokenDashboardDimensionPoints(
+                dimensionKey: dimensionKey,
+                range: range,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
+        }
+
         let startTimestamp = periodStart.timeIntervalSince1970Int
         let endTimestamp = periodEnd.timeIntervalSince1970Int
         let normalizedModelExpression = Self.normalizedModelSQLExpression(column: "model")
@@ -640,9 +649,122 @@ extension UsageHistoryStore {
         }
     }
 
+    private func tokenDashboardDimensionPoints(
+        dimensionKey: TokenUsageDimensionKey,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [TokenDashboardComponentPoint] {
+        let startTimestamp = periodStart.timeIntervalSince1970Int
+        let endTimestamp = periodEnd.timeIntervalSince1970Int
+        let statement = try prepare(
+            """
+            WITH dimension_values AS (
+                SELECT thread_id, turn_id, total_total_tokens, MIN(dimension_value) AS dimension_value
+                FROM token_usage_dimensions
+                WHERE dimension_key = ?
+                GROUP BY thread_id, turn_id, total_total_tokens
+            )
+            SELECT samples.received_at,
+                dimension_values.dimension_value,
+                samples.observed_input_tokens,
+                samples.observed_cached_input_tokens,
+                samples.observed_output_tokens,
+                samples.observed_reasoning_output_tokens
+            FROM token_usage_samples AS samples
+            LEFT JOIN dimension_values
+                ON dimension_values.thread_id = samples.thread_id
+                AND dimension_values.turn_id = samples.turn_id
+                AND dimension_values.total_total_tokens = samples.total_total_tokens
+            WHERE samples.received_at >= ? AND samples.received_at < ?
+                AND (
+                    \(Self.observedTokenComponentsPredicate)
+                )
+            ORDER BY samples.received_at ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(dimensionKey.rawValue, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, startTimestamp)
+        sqlite3_bind_int64(statement, 3, endTimestamp)
+
+        var accumulators = [TokenDashboardAccumulatorKey: TokenDashboardAccumulator]()
+
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let receivedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
+                let dimensionValue = optionalColumnText(statement, index: 1)
+                let bucketStart = UsageHistoryRange.bucketStart(
+                    for: receivedAt,
+                    component: range.chartBucketComponent,
+                    calendar: calendar
+                )
+                let bucketEnd = calendar.date(byAdding: range.chartBucketComponent, value: 1, to: bucketStart)
+                    ?? bucketStart
+
+                let components: [(TokenHistoryComponent, Int64)] = [
+                    (.input, sqlite3_column_int64(statement, 2)),
+                    (.cached, sqlite3_column_int64(statement, 3)),
+                    (.output, sqlite3_column_int64(statement, 4)),
+                    (.reasoning, sqlite3_column_int64(statement, 5)),
+                ]
+
+                for (component, tokenCount) in components where tokenCount > 0 {
+                    addTokenDashboardAccumulator(
+                        bucketStart: bucketStart,
+                        bucketEnd: bucketEnd,
+                        seriesID: TokenDashboardSeries.aggregateID,
+                        seriesName: "All captured",
+                        seriesKind: .aggregate,
+                        component: component,
+                        tokenCount: tokenCount,
+                        to: &accumulators
+                    )
+
+                    let dimensionSeries = Self.tokenDashboardDimensionSeriesIdentity(
+                        key: dimensionKey,
+                        value: dimensionValue
+                    )
+                    addTokenDashboardAccumulator(
+                        bucketStart: bucketStart,
+                        bucketEnd: bucketEnd,
+                        seriesID: dimensionSeries.id,
+                        seriesName: dimensionSeries.name,
+                        seriesKind: dimensionSeries.kind,
+                        component: component,
+                        tokenCount: tokenCount,
+                        to: &accumulators
+                    )
+                }
+            case SQLITE_DONE:
+                return accumulators.values
+                    .map { accumulator in
+                        TokenDashboardComponentPoint(
+                            bucketStart: accumulator.bucketStart,
+                            bucketEnd: accumulator.bucketEnd,
+                            seriesID: accumulator.seriesID,
+                            seriesName: accumulator.seriesName,
+                            seriesKind: accumulator.seriesKind,
+                            component: accumulator.component,
+                            tokenCount: accumulator.tokenCount
+                        )
+                    }
+                    .sortedByStoreDashboardDisplayOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func tokenDashboardSeries(
         breakdownDimension: TokenDashboardBreakdownDimension = .model
     ) throws -> [TokenDashboardSeries] {
+        if let dimensionKey = breakdownDimension.dimensionKey {
+            return try tokenDashboardDimensionSeries(for: dimensionKey)
+        }
+
         switch breakdownDimension {
         case .model:
             return try tokenDashboardModelSeries()
@@ -650,6 +772,8 @@ extension UsageHistoryStore {
             return try tokenDashboardEffortSeries()
         case .project:
             return try tokenDashboardProjectSeries()
+        default:
+            return []
         }
     }
 
@@ -757,6 +881,45 @@ extension UsageHistoryStore {
                         )
                     )
                 }
+                return series.sortedByDashboardSeriesOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func tokenDashboardDimensionSeries(for key: TokenUsageDimensionKey) throws -> [TokenDashboardSeries] {
+        var series = try tokenDashboardAggregateAndUnattributedSeries()
+        let statement = try prepare(
+            """
+            SELECT dimension_value, last_seen_at
+            FROM token_dimension_catalog
+            WHERE dimension_key = ?
+            ORDER BY last_seen_at DESC, dimension_value ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(key.rawValue, to: 1, in: statement)
+
+        var values = Set<String>()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let value = columnText(statement, index: 0)
+                guard values.insert(value).inserted else {
+                    continue
+                }
+                series.append(
+                    TokenDashboardSeries(
+                        id: "dimension:\(key.rawValue):\(value)",
+                        name: key.dashboardDisplayValue(value),
+                        kind: .dimension,
+                        contextID: value,
+                        dimensionKey: key
+                    )
+                )
+            case SQLITE_DONE:
                 return series.sortedByDashboardSeriesOrder()
             default:
                 throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
@@ -926,7 +1089,20 @@ extension UsageHistoryStore {
             let fallbackName = URL(fileURLWithPath: projectPath).lastPathComponent
             let name = projectName.flatMap { $0.isEmpty ? nil : $0 } ?? (fallbackName.isEmpty ? projectPath : fallbackName)
             return ("project:\(projectPath)", name, .project)
+        default:
+            return unattributedTokenDashboardSeriesIdentity()
         }
+    }
+
+    private static func tokenDashboardDimensionSeriesIdentity(
+        key: TokenUsageDimensionKey,
+        value: String?
+    ) -> (id: String, name: String, kind: TokenDashboardSeriesKind) {
+        guard let value, !value.isEmpty else {
+            return unattributedTokenDashboardSeriesIdentity()
+        }
+
+        return ("dimension:\(key.rawValue):\(value)", key.dashboardDisplayValue(value), .dimension)
     }
 
     private static func unattributedTokenDashboardSeriesIdentity() -> (id: String, name: String, kind: TokenDashboardSeriesKind) {
@@ -1090,7 +1266,7 @@ private extension TokenDashboardSeriesKind {
         switch self {
         case .aggregate:
             return 0
-        case .model, .effort, .project:
+        case .model, .effort, .project, .dimension:
             return 1
         case .unattributed:
             return 2

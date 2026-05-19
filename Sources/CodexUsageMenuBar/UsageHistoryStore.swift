@@ -124,6 +124,64 @@ enum TokenUsageDimensionKey: String, CaseIterable, Sendable {
     case agentRole = "agent_role"
     case agentNickname = "agent_nickname"
     case usageMode = "usage_mode"
+
+    var dashboardDisplayTitle: String {
+        switch self {
+        case .originator:
+            return "Originator"
+        case .sourceKind:
+            return "Source kind"
+        case .threadSource:
+            return "Thread source"
+        case .cliVersion:
+            return "CLI version"
+        case .modelProvider:
+            return "Model provider"
+        case .memoryMode:
+            return "Memory mode"
+        case .approvalPolicy:
+            return "Approval policy"
+        case .sandboxType:
+            return "Sandbox type"
+        case .permissionProfile:
+            return "Permission profile"
+        case .realtimeActive:
+            return "Realtime active"
+        case .truncationPolicy:
+            return "Truncation policy"
+        case .isSubagent:
+            return "Subagent"
+        case .subagentParentThreadID:
+            return "Subagent parent"
+        case .subagentDepth:
+            return "Subagent depth"
+        case .agentRole:
+            return "Agent role"
+        case .agentNickname:
+            return "Agent nickname"
+        case .usageMode:
+            return "Usage mode"
+        }
+    }
+
+    func dashboardDisplayValue(_ value: String) -> String {
+        switch self {
+        case .isSubagent, .realtimeActive:
+            if value == "true" {
+                return "Yes"
+            }
+
+            if value == "false" {
+                return "No"
+            }
+
+            return value
+        case .subagentDepth:
+            return "Depth \(value)"
+        default:
+            return value
+        }
+    }
 }
 
 struct TokenUsageDimension: Hashable, Equatable, Sendable {

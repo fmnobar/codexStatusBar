@@ -4,7 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Expose additional token slices in Token Dashboard | Add dashboard grouping/filtering/export for captured originator, source, runtime policy, subagent, memory, provider, and explicit usage-mode dimensions. |
+| - | None | Backlog is clear; do a product/backlog review before adding the next item. |
 
 ## Done
 
@@ -190,7 +190,12 @@
   - Captured allowlisted session/app, runtime policy, subagent, and explicit usage-mode metadata from live notifications, session JSONL, and Codex logs.
   - Kept prompt, message, summary, instruction, tool, auth, and arbitrary unknown fields out of storage, with no `/fast` inference.
 
+- Expose additional token slices in Token Dashboard
+  - Added dashboard grouping, filtering, and CSV export for captured originator, source, runtime policy, subagent, memory, provider, and explicit usage-mode dimensions.
+  - Kept Token Dashboard defaulted to Model while exposing the added dimensions through a scalable breakdown selector.
+  - Preserved compact History, menu-bar tokens, and existing model/effort/project dashboard behavior.
+
 ## Next Candidates
 
-- Expose additional token slices in Token Dashboard
-  - Let the dashboard group, filter, and export newly captured safe dimensions such as originator, source kind, approval policy, sandbox type, subagent role, memory mode, model provider, and explicit usage mode.
+- Backlog/product review
+  - Review the app’s current usage, token, update, and diagnostics surfaces before adding the next concrete implementation item.

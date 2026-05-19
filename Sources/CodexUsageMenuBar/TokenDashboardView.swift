@@ -8,6 +8,7 @@ enum TokenDashboardSeriesKind: String, Equatable {
     case model
     case effort
     case project
+    case dimension
     case unattributed
 }
 
@@ -15,12 +16,33 @@ enum TokenDashboardBreakdownDimension: String, CaseIterable, Identifiable, Equat
     case model
     case effort
     case project
+    case originator
+    case sourceKind = "source_kind"
+    case threadSource = "thread_source"
+    case cliVersion = "cli_version"
+    case modelProvider = "model_provider"
+    case memoryMode = "memory_mode"
+    case approvalPolicy = "approval_policy"
+    case sandboxType = "sandbox_type"
+    case permissionProfile = "permission_profile"
+    case realtimeActive = "realtime_active"
+    case truncationPolicy = "truncation_policy"
+    case isSubagent = "is_subagent"
+    case subagentParentThreadID = "subagent_parent_thread_id"
+    case subagentDepth = "subagent_depth"
+    case agentRole = "agent_role"
+    case agentNickname = "agent_nickname"
+    case usageMode = "usage_mode"
 
     var id: String {
         rawValue
     }
 
     var displayTitle: String {
+        if let dimensionKey {
+            return dimensionKey.dashboardDisplayTitle
+        }
+
         switch self {
         case .model:
             return "Model"
@@ -28,7 +50,29 @@ enum TokenDashboardBreakdownDimension: String, CaseIterable, Identifiable, Equat
             return "Effort"
         case .project:
             return "Project"
+        case .originator,
+             .sourceKind,
+             .threadSource,
+             .cliVersion,
+             .modelProvider,
+             .memoryMode,
+             .approvalPolicy,
+             .sandboxType,
+             .permissionProfile,
+             .realtimeActive,
+             .truncationPolicy,
+             .isSubagent,
+             .subagentParentThreadID,
+             .subagentDepth,
+             .agentRole,
+             .agentNickname,
+             .usageMode:
+            return rawValue
         }
+    }
+
+    var dimensionKey: TokenUsageDimensionKey? {
+        TokenUsageDimensionKey(rawValue: rawValue)
     }
 }
 
@@ -38,19 +82,22 @@ struct TokenDashboardSeries: Identifiable, Equatable, Hashable {
     let kind: TokenDashboardSeriesKind
     let contextID: String
     let projectPath: String?
+    let dimensionKey: TokenUsageDimensionKey?
 
     init(
         id: String,
         name: String,
         kind: TokenDashboardSeriesKind,
         contextID: String? = nil,
-        projectPath: String? = nil
+        projectPath: String? = nil,
+        dimensionKey: TokenUsageDimensionKey? = nil
     ) {
         self.id = id
         self.name = name
         self.kind = kind
         self.contextID = contextID ?? id
         self.projectPath = projectPath
+        self.dimensionKey = dimensionKey
     }
 
     static let aggregateID = "tokens_all"
@@ -346,7 +393,7 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     var csvText: String {
-        var rows = ["breakdown_dimension,range,period_start,period_end,bucket_start,bucket_end,series_id,series_name,series_kind,context_id,context_name,project_path,component,token_count"]
+        var rows = ["breakdown_dimension,range,period_start,period_end,bucket_start,bucket_end,series_id,series_name,series_kind,context_id,context_name,project_path,component,token_count,dimension_key"]
         let formatter = ISO8601DateFormatter()
         let seriesByID = Dictionary(uniqueKeysWithValues: series.map { ($0.id, $0) })
 
@@ -355,6 +402,7 @@ final class TokenDashboardViewModel: ObservableObject {
             let contextID = pointSeries?.contextID ?? point.seriesID
             let contextName = pointSeries?.name ?? point.seriesName
             let projectPath = pointSeries?.projectPath ?? ""
+            let dimensionKey = pointSeries?.dimensionKey?.rawValue ?? selectedBreakdownDimension.dimensionKey?.rawValue ?? ""
             return [
                 selectedBreakdownDimension.rawValue,
                 selectedRange.rawValue,
@@ -370,6 +418,7 @@ final class TokenDashboardViewModel: ObservableObject {
                 Self.csvEscaped(projectPath),
                 point.component.rawValue,
                 "\(point.tokenCount)",
+                dimensionKey,
             ].joined(separator: ",")
         }
 
@@ -879,8 +928,8 @@ struct TokenDashboardView: View {
                 }
             }
             .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 220)
+            .pickerStyle(.menu)
+            .frame(width: 190)
 
             Spacer(minLength: 16)
 
@@ -1149,6 +1198,8 @@ private extension TokenDashboardSeriesKind {
         case .effort:
             return 1
         case .project:
+            return 1
+        case .dimension:
             return 1
         case .unattributed:
             return 2
