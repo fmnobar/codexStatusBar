@@ -1958,6 +1958,81 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(dimensions.contains { $0.contains("request") || $0.contains("private") || $0.contains("prompt") })
     }
 
+    func testCodexLogTokenImporterCarriesSafeContextFromEarlierTraceRows() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let contextBody = """
+        session_loop{thread_id=conversation}:run_turn{turn.id=turn-a model=gpt-5.5 codex.turn.reasoning_effort=xhigh approval_policy=never sandbox_policy.type=danger-full-access}:run_sampling_request{turn_id=turn-a model=gpt-5.5 cwd=/Users/example/Projects/carried}:try_run_sampling_request{turn_id=turn-a model=gpt-5.5} event.name="codex.websocket_event" event.kind=response.output_text.delta source=message cwd=/unsafe/message/path
+        """
+        let tokenBody = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=1000 output_token_count=20 cached_token_count=800 reasoning_token_count=5 tool_token_count=1020 event.timestamp=2026-05-17T12:48:14.035Z conversation.id=conversation
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (timestamp, contextBody),
+                (timestamp.addingTimeInterval(1), tokenBody),
+            ]
+        )
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertEqual(result.insertedCount, 1)
+        XCTAssertEqual(sample.model, "gpt-5.5")
+        XCTAssertEqual(sample.projectPath, "/Users/example/Projects/carried")
+        XCTAssertEqual(sample.projectName, "carried")
+        XCTAssertEqual(sample.effort, "xhigh")
+        XCTAssertEqual(sample.source, "codex-log")
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" }.sorted(),
+            [
+                "approval_policy=never",
+                "sandbox_type=danger-full-access",
+                "source_kind=codex-log",
+            ]
+        )
+    }
+
+    func testCodexLogTokenImporterDoesNotCarryContextAcrossConversations() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let contextBody = """
+        session_loop{thread_id=conversation-a}:run_turn{turn.id=turn-a model=gpt-5.5 codex.turn.reasoning_effort=xhigh}:run_sampling_request{turn_id=turn-a model=gpt-5.5 cwd=/Users/example/Projects/a} event.name="codex.websocket_event" event.kind=response.output_text.delta
+        """
+        let tokenBody = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=1000 output_token_count=20 cached_token_count=800 reasoning_token_count=5 tool_token_count=1020 event.timestamp=2026-05-17T12:48:14.035Z conversation.id=conversation-b
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (timestamp, contextBody),
+                (timestamp.addingTimeInterval(1), tokenBody),
+            ]
+        )
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        _ = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertNil(sample.model)
+        XCTAssertNil(sample.projectPath)
+        XCTAssertNil(sample.projectName)
+        XCTAssertNil(sample.effort)
+        XCTAssertEqual(sample.source, "codex-log")
+    }
+
     func testCodexLogTokenImporterRepairsExistingRowsWithoutInflatingTotals() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")

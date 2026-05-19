@@ -232,8 +232,33 @@ struct CodexLogTokenUsageImporter {
         SELECT id, ts, feedback_log_body
         FROM logs
         WHERE ts >= ? AND ts < ?
-            AND feedback_log_body LIKE '%event.name="codex.sse_event"%'
-            AND feedback_log_body LIKE '%event.kind=response.completed%'
+            AND (
+                (
+                    feedback_log_body LIKE '%event.name="codex.sse_event"%'
+                    AND feedback_log_body LIKE '%event.kind=response.completed%'
+                )
+                OR (
+                    (feedback_log_body LIKE '%conversation.id=%' OR feedback_log_body LIKE '%thread_id=%')
+                    AND (
+                        feedback_log_body LIKE '%cwd=%'
+                        OR feedback_log_body LIKE '%model=%'
+                        OR feedback_log_body LIKE '%slug=%'
+                        OR feedback_log_body LIKE '%reasoning_effort=%'
+                        OR feedback_log_body LIKE '%approval_policy=%'
+                        OR feedback_log_body LIKE '%sandbox_type=%'
+                        OR feedback_log_body LIKE '%sandbox_policy.type=%'
+                        OR feedback_log_body LIKE '%permission_profile=%'
+                        OR feedback_log_body LIKE '%truncation_policy=%'
+                        OR feedback_log_body LIKE '%originator=%'
+                        OR feedback_log_body LIKE '%cli_version=%'
+                        OR feedback_log_body LIKE '%app.version=%'
+                        OR feedback_log_body LIKE '%model_provider=%'
+                        OR feedback_log_body LIKE '%usage_mode=%'
+                        OR feedback_log_body LIKE '%speed_mode=%'
+                        OR feedback_log_body LIKE '%mode=%'
+                    )
+                )
+            )
         ORDER BY ts ASC, id ASC
         """
 
@@ -247,18 +272,30 @@ struct CodexLogTokenUsageImporter {
         sqlite3_bind_int64(statement, 2, Int64(interval.end.timeIntervalSince1970))
 
         var samples: [ImportedCodexTokenUsageSample] = []
+        var contextsByConversationID: [String: CodexLogTokenContextTracker] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
-            guard
-                let bodyPointer = sqlite3_column_text(statement, 2),
-                let sample = Self.sample(
-                    logID: sqlite3_column_int64(statement, 0),
-                    fallbackTimestamp: sqlite3_column_int64(statement, 1),
-                    body: String(cString: bodyPointer)
-                )
-            else {
+            guard let bodyPointer = sqlite3_column_text(statement, 2) else {
                 continue
             }
 
+            let body = String(cString: bodyPointer)
+            let metadata = CodexLogMetadataExtractor(body: body)
+            if let conversationID = metadata.conversationID, metadata.hasCarriableMetadata {
+                var tracker = contextsByConversationID[conversationID] ?? CodexLogTokenContextTracker(sessionID: conversationID)
+                tracker.apply(metadata)
+                contextsByConversationID[conversationID] = tracker
+            }
+
+            guard metadata.isResponseCompleted,
+                  let sample = Self.sample(
+                      logID: sqlite3_column_int64(statement, 0),
+                      fallbackTimestamp: sqlite3_column_int64(statement, 1),
+                      metadata: metadata,
+                      carriedContext: metadata.conversationID.flatMap { contextsByConversationID[$0] }
+                  )
+            else {
+                continue
+            }
             samples.append(sample)
         }
 
@@ -268,9 +305,9 @@ struct CodexLogTokenUsageImporter {
     private static func sample(
         logID _: Int64,
         fallbackTimestamp: Int64,
-        body: String
+        metadata: CodexLogMetadataExtractor,
+        carriedContext: CodexLogTokenContextTracker?
     ) -> ImportedCodexTokenUsageSample? {
-        let metadata = CodexLogMetadataExtractor(body: body)
         guard
             let inputTokens = metadata.intValue(for: "input_token_count"),
             let outputTokens = metadata.intValue(for: "output_token_count"),
@@ -284,18 +321,18 @@ struct CodexLogTokenUsageImporter {
         let timestampText = metadata.value(for: "event.timestamp")
         let receivedAt = timestampText.flatMap(CodexSessionTokenBackfillImporter.parseTimestamp)
             ?? Date(timeIntervalSince1970: TimeInterval(fallbackTimestamp))
-        let conversationID = metadata.value(for: "conversation.id") ?? "unknown-conversation"
+        let conversationID = metadata.conversationID ?? "unknown-conversation"
         let legacyModelID = CodexModelIdentifier.firstNormalized([
             metadata.value(for: "slug"),
             metadata.value(for: "model"),
         ])
-        let model = metadata.model
+        let model = metadata.model ?? carriedContext?.model
         let context = TokenUsageContext(
             sessionID: conversationID,
-            projectPath: metadata.projectPath,
-            effort: metadata.effort,
-            source: metadata.source ?? "codex-log",
-            dimensions: metadata.dimensions
+            projectPath: metadata.projectPath ?? carriedContext?.projectPath,
+            effort: metadata.effort ?? carriedContext?.effort,
+            source: metadata.source ?? carriedContext?.source ?? "codex-log",
+            dimensions: (carriedContext?.dimensionsList ?? []) + metadata.dimensions
         )
         let eventID = [
             timestampText ?? "\(fallbackTimestamp)",
@@ -336,21 +373,36 @@ struct CodexLogTokenUsageImporter {
 private struct CodexLogMetadataExtractor {
     let body: String
 
+    var isResponseCompleted: Bool {
+        body.contains("event.kind=response.completed")
+    }
+
+    var conversationID: String? {
+        CodexTokenContextNormalizer.normalizedIdentifier(
+            firstValue(for: [
+                "conversation.id",
+                "thread_id",
+                "thread.id",
+                "threadId",
+            ])
+        )
+    }
+
     var model: String? {
         CodexModelIdentifier.firstNormalized([
-            value(for: "slug"),
-            value(for: "model"),
-            value(for: "model_slug"),
-            value(for: "modelSlug"),
-            value(for: "codex.turn.slug"),
-            value(for: "codex.turn.model"),
-            value(for: "codex.turn.model_slug"),
-            value(for: "codex.model"),
+            contextValue(for: "slug"),
+            contextValue(for: "model"),
+            contextValue(for: "model_slug"),
+            contextValue(for: "modelSlug"),
+            contextValue(for: "codex.turn.slug"),
+            contextValue(for: "codex.turn.model"),
+            contextValue(for: "codex.turn.model_slug"),
+            contextValue(for: "codex.model"),
         ])
     }
 
     var projectPath: String? {
-        firstValue(for: [
+        firstContextValue(for: [
             "cwd",
             "project_path",
             "codex.cwd",
@@ -361,7 +413,7 @@ private struct CodexLogMetadataExtractor {
     }
 
     var effort: String? {
-        firstValue(for: [
+        firstContextValue(for: [
             "model_reasoning_effort",
             "reasoning_effort",
             "collaboration_mode.settings.reasoning_effort",
@@ -371,7 +423,7 @@ private struct CodexLogMetadataExtractor {
     }
 
     var source: String? {
-        firstValue(for: [
+        firstContextValue(for: [
             "source",
             "codex.source",
             "codex.session.source",
@@ -380,72 +432,89 @@ private struct CodexLogMetadataExtractor {
     }
 
     var dimensions: [TokenUsageDimension] {
+        dimensions(includeProvenanceDefault: true)
+    }
+
+    var explicitDimensions: [TokenUsageDimension] {
+        dimensions(includeProvenanceDefault: false)
+    }
+
+    var hasCarriableMetadata: Bool {
+        model != nil
+            || projectPath != nil
+            || effort != nil
+            || source != nil
+            || !explicitDimensions.isEmpty
+    }
+
+    private func dimensions(includeProvenanceDefault: Bool) -> [TokenUsageDimension] {
         TokenUsageDimension.unique(
             [
-                TokenUsageDimension(.originator, firstValue(for: [
+                TokenUsageDimension(.originator, firstContextValue(for: [
                     "originator",
                     "codex.originator",
                     "codex.session.originator",
                 ])),
-                TokenUsageDimension(.sourceKind, source ?? firstValue(for: [
+                TokenUsageDimension(.sourceKind, source ?? firstContextValue(for: [
                     "source_kind",
                     "codex.source_kind",
                     "codex.session.source_kind",
                     "codex.turn.source_kind",
-                ]) ?? "codex-log"),
-                TokenUsageDimension(.threadSource, firstValue(for: [
+                ]) ?? (includeProvenanceDefault ? "codex-log" : nil)),
+                TokenUsageDimension(.threadSource, firstContextValue(for: [
                     "thread_source",
                     "codex.thread_source",
                     "codex.session.thread_source",
                 ])),
-                TokenUsageDimension(.cliVersion, firstValue(for: [
+                TokenUsageDimension(.cliVersion, firstContextValue(for: [
                     "cli_version",
+                    "app.version",
                     "app_version",
                     "codex.cli_version",
                     "codex.session.cli_version",
                 ])),
-                TokenUsageDimension(.modelProvider, firstValue(for: [
+                TokenUsageDimension(.modelProvider, firstContextValue(for: [
                     "model_provider",
                     "codex.model_provider",
                     "codex.turn.model_provider",
                 ])),
-                TokenUsageDimension(.memoryMode, firstValue(for: [
+                TokenUsageDimension(.memoryMode, firstContextValue(for: [
                     "memory_mode",
                     "codex.memory_mode",
                     "codex.turn.memory_mode",
                 ])),
-                TokenUsageDimension(.approvalPolicy, firstValue(for: [
+                TokenUsageDimension(.approvalPolicy, firstContextValue(for: [
                     "approval_policy",
                     "codex.approval_policy",
                     "codex.turn.approval_policy",
                 ])),
-                TokenUsageDimension(.sandboxType, firstValue(for: [
+                TokenUsageDimension(.sandboxType, firstContextValue(for: [
                     "sandbox_type",
                     "sandbox_policy.type",
                     "codex.sandbox_type",
                     "codex.turn.sandbox_type",
                     "codex.turn.sandbox_policy.type",
                 ])),
-                TokenUsageDimension(.permissionProfile, firstValue(for: [
+                TokenUsageDimension(.permissionProfile, firstContextValue(for: [
                     "permission_profile",
                     "permission_profile.type",
                     "codex.permission_profile",
                     "codex.turn.permission_profile",
                     "codex.turn.permission_profile.type",
                 ])),
-                TokenUsageDimension(.realtimeActive, firstValue(for: [
+                TokenUsageDimension(.realtimeActive, firstContextValue(for: [
                     "realtime_active",
                     "codex.realtime_active",
                     "codex.turn.realtime_active",
                 ])),
-                TokenUsageDimension(.truncationPolicy, firstValue(for: [
+                TokenUsageDimension(.truncationPolicy, firstContextValue(for: [
                     "truncation_policy",
                     "truncation_policy.mode",
                     "codex.truncation_policy",
                     "codex.turn.truncation_policy",
                     "codex.turn.truncation_policy.mode",
                 ])),
-                TokenUsageDimension(.usageMode, firstValue(for: [
+                TokenUsageDimension(.usageMode, firstContextValue(for: [
                     "usage_mode",
                     "speed_mode",
                     "mode",
@@ -463,25 +532,33 @@ private struct CodexLogMetadataExtractor {
     }
 
     func value(for key: String) -> String? {
+        value(for: key, in: body)
+    }
+
+    private func contextValue(for key: String) -> String? {
+        value(for: key, in: contextLookupBody)
+    }
+
+    private func value(for key: String, in searchBody: String) -> String? {
         let escapedKey = NSRegularExpression.escapedPattern(for: key)
-        let pattern = "(?<![A-Za-z0-9_.-])\(escapedKey)\\s*=\\s*(?:\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'|([^\\s,;]+))"
+        let pattern = "(?<![A-Za-z0-9_.-])\(escapedKey)\\s*=\\s*(?:\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'|([^\\s,;\\}\\]\\)]+))"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return nil
         }
 
-        let range = NSRange(body.startIndex..<body.endIndex, in: body)
-        guard let match = regex.firstMatch(in: body, range: range) else {
+        let range = NSRange(searchBody.startIndex..<searchBody.endIndex, in: searchBody)
+        guard let match = regex.firstMatch(in: searchBody, range: range) else {
             return nil
         }
 
         for index in 1..<match.numberOfRanges {
             guard match.range(at: index).location != NSNotFound,
-                  let valueRange = Range(match.range(at: index), in: body)
+                  let valueRange = Range(match.range(at: index), in: searchBody)
             else {
                 continue
             }
 
-            let value = String(body[valueRange])
+            let value = String(searchBody[valueRange])
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
             return value.isEmpty ? nil : value
         }
@@ -497,6 +574,64 @@ private struct CodexLogMetadataExtractor {
         }
 
         return nil
+    }
+
+    private func firstContextValue(for keys: [String]) -> String? {
+        for key in keys {
+            if let value = contextValue(for: key) {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private var contextLookupBody: String {
+        guard !isResponseCompleted,
+              let eventNameRange = body.range(of: " event.name=") ?? body.range(of: "event.name=")
+        else {
+            return body
+        }
+
+        return String(body[..<eventNameRange.lowerBound])
+    }
+}
+
+private struct CodexLogTokenContextTracker {
+    var model: String?
+    var sessionID: String?
+    var projectPath: String?
+    var effort: String?
+    var source: String?
+    var dimensions: [TokenUsageDimensionKey: TokenUsageDimension] = [:]
+
+    init(sessionID: String?) {
+        self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
+    }
+
+    mutating func apply(_ metadata: CodexLogMetadataExtractor) {
+        if let conversationID = metadata.conversationID {
+            sessionID = conversationID
+        }
+        if let model = metadata.model {
+            self.model = model
+        }
+        if let projectPath = metadata.projectPath {
+            self.projectPath = projectPath
+        }
+        if let effort = metadata.effort {
+            self.effort = effort
+        }
+        if let source = metadata.source {
+            self.source = source
+        }
+        for dimension in metadata.explicitDimensions {
+            dimensions[dimension.key] = dimension
+        }
+    }
+
+    var dimensionsList: [TokenUsageDimension] {
+        Array(dimensions.values)
     }
 }
 
