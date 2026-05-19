@@ -991,9 +991,9 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             threadSource = try? container.decodeIfPresent(String.self, forKey: .threadSource)
             approvalPolicy = try? container.decodeIfPresent(String.self, forKey: .approvalPolicy)
             sandboxPolicy = try? container.decodeIfPresent(CodexSandboxPolicyPayload.self, forKey: .sandboxPolicy)
-            permissionProfile = try? container.decodeIfPresent(String.self, forKey: .permissionProfile)
+            permissionProfile = Self.decodeFlexibleString(from: container, .permissionProfile)
             realtimeActive = try? container.decodeIfPresent(Bool.self, forKey: .realtimeActive)
-            truncationPolicy = try? container.decodeIfPresent(String.self, forKey: .truncationPolicy)
+            truncationPolicy = Self.decodeFlexibleString(from: container, .truncationPolicy)
             usageMode = try? container.decodeIfPresent(String.self, forKey: .usageMode)
             speedMode = try? container.decodeIfPresent(String.self, forKey: .speedMode)
             mode = try? container.decodeIfPresent(String.self, forKey: .mode)
@@ -1002,6 +1002,17 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             model = try container.decodeIfPresent(String.self, forKey: .model)
             slug = try container.decodeIfPresent(String.self, forKey: .slug)
             modelSlug = try container.decodeIfPresent(String.self, forKey: .modelSlug)
+        }
+
+        private static func decodeFlexibleString(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            _ key: CodingKeys
+        ) -> String? {
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return value
+            }
+
+            return (try? container.decodeIfPresent(CodexSafeMetadataValuePayload.self, forKey: key))?.value
         }
     }
 

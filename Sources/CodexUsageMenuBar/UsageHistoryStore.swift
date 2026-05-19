@@ -447,7 +447,7 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let currentTokenContextCleanupVersion = "1"
     static let tokenDimensionCleanupMetadataKey = "token_dimension_cleanup_version"
     static let currentTokenDimensionCleanupVersion = "1"
-    static let currentSessionTokenContextImportVersion = "2"
+    static let currentSessionTokenContextImportVersion = "3"
     static let resetCohortTolerance: Int64 = 60 * 60
     static let observedTokenComponentsPredicate = """
         observed_input_tokens > 0

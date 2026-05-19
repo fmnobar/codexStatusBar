@@ -196,6 +196,32 @@ struct CodexSandboxPolicyPayload: Decodable, Equatable {
     }
 }
 
+struct CodexSafeMetadataValuePayload: Decodable, Equatable {
+    let value: String?
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let value = try? container.decode(String.self)
+        {
+            self.value = value
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = (try? container.decodeIfPresent(String.self, forKey: .type))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .mode))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .value))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .name))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case mode
+        case value
+        case name
+    }
+}
+
 struct CodexThreadTokenUsage: Equatable {
     let last: CodexTokenUsageBreakdown
     let total: CodexTokenUsageBreakdown
@@ -400,10 +426,10 @@ struct ThreadTokenUsageUpdatedNotificationPayload: Decodable {
         approvalPolicy = Self.decodeString(from: container, .approvalPolicy, .approvalPolicySnake)
         sandboxPolicy = (try? container.decodeIfPresent(CodexSandboxPolicyPayload.self, forKey: .sandboxPolicy))
             ?? (try? container.decodeIfPresent(CodexSandboxPolicyPayload.self, forKey: .sandboxPolicySnake))
-        permissionProfile = Self.decodeString(from: container, .permissionProfile, .permissionProfileSnake)
+        permissionProfile = Self.decodeFlexibleString(from: container, .permissionProfile, .permissionProfileSnake)
         realtimeActive = (try? container.decodeIfPresent(Bool.self, forKey: .realtimeActive))
             ?? (try? container.decodeIfPresent(Bool.self, forKey: .realtimeActiveSnake))
-        truncationPolicy = Self.decodeString(from: container, .truncationPolicy, .truncationPolicySnake)
+        truncationPolicy = Self.decodeFlexibleString(from: container, .truncationPolicy, .truncationPolicySnake)
         usageMode = Self.decodeString(from: container, .usageMode, .usageModeSnake)
         speedMode = Self.decodeString(from: container, .speedMode, .speedModeSnake)
         mode = Self.decodeString(from: container, .mode)
@@ -415,6 +441,19 @@ struct ThreadTokenUsageUpdatedNotificationPayload: Decodable {
     ) -> String? {
         keys.lazy.compactMap { key in
             try? container.decodeIfPresent(String.self, forKey: key)
+        }.first
+    }
+
+    private static func decodeFlexibleString(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        _ keys: CodingKeys...
+    ) -> String? {
+        keys.lazy.compactMap { key in
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return value
+            }
+
+            return (try? container.decodeIfPresent(CodexSafeMetadataValuePayload.self, forKey: key))?.value
         }.first
     }
 

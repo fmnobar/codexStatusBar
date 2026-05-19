@@ -247,6 +247,10 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(sample.projectPath, "/Users/example/Projects/codex_codex")
         XCTAssertEqual(sample.projectName, "codex_codex")
         XCTAssertEqual(sample.source, "cli")
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            ["source_kind=cli"]
+        )
     }
 
     func testSessionTokenBackfillAppliesTurnContextProjectAndEffortChanges() async throws {
@@ -327,7 +331,7 @@ extension UsageHistoryStoreTests {
                     timestamp: "2026-05-17T15:00:01Z",
                     model: "gpt-5.5",
                     effort: "high",
-                    extraPayload: #","approval_policy":"never","permission_profile":"full","realtime_active":true,"truncation_policy":"auto","usage_mode":"/fast","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019c-parent-thread","depth":1,"agent_role":"explorer","agent_nickname":"Raman"}}}"#
+                    extraPayload: #","approval_policy":"never","permission_profile":{"type":"full"},"realtime_active":true,"truncation_policy":{"mode":"auto","limit":10000},"usage_mode":"/fast","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019c-parent-thread","depth":1,"agent_role":"explorer","agent_nickname":"Raman"}}}"#
                 ),
                 tokenCountLine(
                     timestamp: "2026-05-17T15:00:10Z",
@@ -450,7 +454,7 @@ extension UsageHistoryStoreTests {
                 effort = NULL,
                 source = NULL;
             UPDATE codex_session_token_imports
-            SET context_version = NULL;
+            SET context_version = '2';
             """
         )
 

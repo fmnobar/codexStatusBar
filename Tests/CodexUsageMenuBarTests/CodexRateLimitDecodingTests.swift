@@ -253,9 +253,9 @@ final class CodexRateLimitDecodingTests: XCTestCase {
               "memory_mode": "enabled",
               "approval_policy": "never",
               "sandbox_policy": {"type": "danger-full-access"},
-              "permission_profile": "full",
+              "permission_profile": {"type": "full"},
               "realtime_active": true,
-              "truncation_policy": "auto",
+              "truncation_policy": {"mode": "auto", "limit": 10000},
               "usage_mode": "/fast",
               "token_usage": {
                 "last": {
