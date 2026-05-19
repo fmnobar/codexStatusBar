@@ -106,7 +106,7 @@ struct UsageHistoryDatabaseInfo: Equatable {
     let totalByteSize: Int64
 }
 
-enum TokenUsageDimensionKey: String, CaseIterable, Sendable {
+enum TokenUsageDimensionKey: String, CaseIterable, Codable, Sendable {
     case originator
     case sourceKind = "source_kind"
     case threadSource = "thread_source"

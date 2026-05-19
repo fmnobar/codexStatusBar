@@ -445,6 +445,63 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testTokenPayloadAuditStorePersistsExportsAndClears() throws {
+        let auditURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit.json")
+        let store = CodexTokenPayloadAuditStore(fileURL: auditURL)
+        let audit = tokenPayloadAudit()
+
+        XCTAssertNil(store.latestAudit)
+
+        store.record(audit)
+
+        XCTAssertEqual(store.latestAudit, audit)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: auditURL.path))
+
+        let reloadedStore = CodexTokenPayloadAuditStore(fileURL: auditURL)
+        XCTAssertEqual(reloadedStore.latestAudit, audit)
+        XCTAssertTrue(try XCTUnwrap(reloadedStore.exportData()).contains(Data("gpt-5.5".utf8)))
+
+        reloadedStore.clear()
+
+        XCTAssertNil(reloadedStore.latestAudit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: auditURL.path))
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsExportsAndClearsTokenPayloadAudit() async throws {
+        let (historyStore, _) = try makeTemporaryStore()
+        let auditURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit.json")
+        let auditStore = CodexTokenPayloadAuditStore(fileURL: auditURL)
+        let viewModel = DataManagementSettingsViewModel(
+            store: historyStore,
+            defaults: makeIsolatedDefaults(),
+            tokenPayloadAuditStore: auditStore
+        )
+        let audit = tokenPayloadAudit()
+        let exportURL = try makeTemporaryDirectory().appendingPathComponent("audit.json")
+
+        XCTAssertFalse(viewModel.canExportTokenPayloadAudit)
+        XCTAssertEqual(viewModel.tokenPayloadAuditCapturedAtText, "No capture yet")
+
+        auditStore.record(audit)
+
+        XCTAssertEqual(viewModel.tokenPayloadAudit, audit)
+        XCTAssertTrue(viewModel.canExportTokenPayloadAudit)
+
+        viewModel.exportTokenPayloadAudit(to: exportURL)
+
+        XCTAssertEqual(viewModel.statusMessage, "Payload audit exported.")
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+
+        viewModel.clearTokenPayloadAudit()
+
+        XCTAssertEqual(viewModel.statusMessage, "Payload audit cleared.")
+        XCTAssertNil(viewModel.tokenPayloadAudit)
+        XCTAssertFalse(viewModel.canExportTokenPayloadAudit)
+    }
+
+    @MainActor
     func testSettingsViewModelLoadsRenamesAndResetsProjectNames() async throws {
         let (store, _) = try makeTemporaryStore()
         _ = try store.importTokenUsageSamples([
@@ -559,6 +616,38 @@ extension UsageHistoryStoreTests {
         XCTAssertNil(failingViewModel.tokenImportSummaryText)
         XCTAssertEqual(failingViewModel.errorMessage, "Token history could not be imported.")
         XCTAssertNil(failingViewModel.statusMessage)
+    }
+
+    private func tokenPayloadAudit() -> CodexTokenUsagePayloadAudit {
+        CodexTokenUsagePayloadAudit(
+            capturedAt: date("2026-05-19T12:00:00Z"),
+            threadID: "thread-a",
+            turnID: "turn-a",
+            fields: [
+                CodexTokenPayloadAuditField(
+                    keyPath: "model",
+                    category: .model,
+                    presence: .present,
+                    valueKind: "string",
+                    sanitizedValue: "gpt-5.5",
+                    normalizedValue: "gpt-5.5",
+                    dimensionKey: nil,
+                    dimensionValue: nil,
+                    notes: []
+                ),
+                CodexTokenPayloadAuditField(
+                    keyPath: "prompt",
+                    category: .appSession,
+                    presence: .rejected,
+                    valueKind: "string",
+                    sanitizedValue: nil,
+                    normalizedValue: nil,
+                    dimensionKey: nil,
+                    dimensionValue: nil,
+                    notes: ["Value rejected by safe normalizer."]
+                ),
+            ]
+        )
     }
 
 }

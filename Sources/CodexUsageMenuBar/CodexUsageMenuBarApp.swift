@@ -9,7 +9,8 @@ struct CodexUsageMenuBarApp: App {
         Settings {
             DataManagementSettingsView(
                 database: appDelegate.historyDatabase,
-                updateMonitor: appDelegate.updateMonitor
+                updateMonitor: appDelegate.updateMonitor,
+                tokenPayloadAuditStore: appDelegate.tokenPayloadAuditStore
             )
         }
     }
@@ -19,6 +20,7 @@ struct CodexUsageMenuBarApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let historyDatabase: UsageHistoryDatabaseWorker
     let updateMonitor: AppUpdateMonitor
+    let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
 
@@ -26,10 +28,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppFreshnessRuntime.captureLaunchFingerprint()
         let resolvedHistoryDatabase = UsageHistoryDatabaseWorker.applicationSupportStoreWithInMemoryFallback()
         let historyRecorder = UsageHistoryRecorder(database: resolvedHistoryDatabase)
+        let codexClient = CodexAppServerClient()
+        let payloadAuditStore = CodexTokenPayloadAuditStore.applicationSupportStore()
+        codexClient.onTokenUsagePayloadAudit = { audit in
+            payloadAuditStore.record(audit)
+        }
         historyDatabase = resolvedHistoryDatabase
         updateMonitor = AppUpdateMonitor()
+        tokenPayloadAuditStore = payloadAuditStore
         viewModel = MenuBarStatusViewModel(
-            client: CodexAppServerClient(),
+            client: codexClient,
             historyRecorder: historyRecorder,
             tokenUsageRecorder: historyRecorder
         )

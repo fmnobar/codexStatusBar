@@ -350,6 +350,149 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         )
     }
 
+    func testTokenPayloadAuditorCapturesOnlySafeMetadata() throws {
+        let params = try jsonObject(
+            """
+            {
+              "thread_id": "thread-123",
+              "turn_id": "turn-456",
+              "modelSlug": "gpt-5.5",
+              "source": {
+                "subagent": {
+                  "thread_spawn": {
+                    "parent_thread_id": "parent-1",
+                    "depth": 2,
+                    "agent_role": "worker",
+                    "agent_nickname": "Build"
+                  }
+                }
+              },
+              "approval_policy": {"type": "never"},
+              "sandbox_policy": {"type": "danger-full-access"},
+              "prompt": "do not store this text",
+              "auth_token": "secret-token",
+              "tool_payload": {"command": "rm -rf /"},
+              "token_usage": {
+                "last": {
+                  "inputTokens": 120,
+                  "cachedInputTokens": 90,
+                  "outputTokens": 30,
+                  "reasoningOutputTokens": 4,
+                  "totalTokens": 150
+                },
+                "total": {
+                  "inputTokens": 1000,
+                  "cachedInputTokens": 700,
+                  "outputTokens": 200,
+                  "reasoningOutputTokens": 40,
+                  "totalTokens": 1200
+                },
+                "info": {
+                  "cwd": "/Users/example/Project",
+                  "reasoning_effort": "xhigh",
+                  "usage_mode": "/fast",
+                  "cli_version": "0.78.0"
+                }
+              }
+            }
+            """
+        )
+
+        let audit = try XCTUnwrap(CodexTokenPayloadAuditor.audit(params: params, capturedAt: Date(timeIntervalSince1970: 1_777_000_000)))
+
+        XCTAssertEqual(audit.threadID, "thread-123")
+        XCTAssertEqual(audit.turnID, "turn-456")
+        XCTAssertEqual(try auditField("modelSlug", in: audit).normalizedValue, "gpt-5.5")
+        XCTAssertEqual(try auditField("tokenUsage.info.cwd", in: audit).normalizedValue, "/Users/example/Project")
+        XCTAssertEqual(try auditField("tokenUsage.info.reasoningEffort", in: audit).normalizedValue, "xhigh")
+        XCTAssertEqual(try auditField("source", in: audit).dimensionValue, "subagent")
+        XCTAssertEqual(try auditField("approvalPolicy", in: audit).dimensionValue, "never")
+        XCTAssertEqual(try auditField("sandboxPolicy", in: audit).dimensionValue, "danger-full-access")
+        XCTAssertEqual(try auditField("tokenUsage.info.usageMode", in: audit).dimensionValue, "fast")
+        XCTAssertEqual(try auditField("tokenUsage.info.cliVersion", in: audit).dimensionValue, "0.78.0")
+        XCTAssertTrue(audit.hasModelMetadata)
+        XCTAssertTrue(audit.hasProjectMetadata)
+        XCTAssertTrue(audit.hasEffortMetadata)
+        XCTAssertTrue(audit.hasSourceMetadata)
+        XCTAssertTrue(audit.hasRuntimePolicyMetadata)
+        XCTAssertFalse(audit.fields.contains { $0.keyPath.contains("prompt") || $0.keyPath.contains("auth") || $0.keyPath.contains("tool") })
+        XCTAssertFalse(audit.fields.compactMap(\.sanitizedValue).contains { $0.contains("do not store") || $0.contains("secret-token") || $0.contains("rm -rf") })
+    }
+
+    @MainActor
+    func testAppServerClientEmitsAuditAndTokenUsageIndependently() throws {
+        let client = CodexAppServerClient()
+        var receivedAudit: CodexTokenUsagePayloadAudit?
+        var receivedNotification: CodexTokenUsageNotification?
+        client.onTokenUsagePayloadAudit = { receivedAudit = $0 }
+        client.onTokenUsage = { receivedNotification = $0 }
+
+        try client.handleIncomingMessage(data: Data(
+            """
+            {
+              "method": "thread/tokenUsage/updated",
+              "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "model": "gpt-5.5",
+                "source": {"unsupported": {"message": "ignored"}},
+                "tokenUsage": {
+                  "last": {
+                    "inputTokens": 120,
+                    "cachedInputTokens": 90,
+                    "outputTokens": 30,
+                    "reasoningOutputTokens": 4,
+                    "totalTokens": 150
+                  },
+                  "total": {
+                    "inputTokens": 1000,
+                    "cachedInputTokens": 700,
+                    "outputTokens": 200,
+                    "reasoningOutputTokens": 40,
+                    "totalTokens": 1200
+                  }
+                }
+              }
+            }
+            """.utf8
+        ))
+
+        let audit = try XCTUnwrap(receivedAudit)
+        let notification = try XCTUnwrap(receivedNotification)
+
+        XCTAssertEqual(notification.threadID, "thread-1")
+        XCTAssertEqual(notification.model, "gpt-5.5")
+        XCTAssertEqual(notification.tokenUsage.total.totalTokens, 1200)
+        XCTAssertEqual(try auditField("model", in: audit).normalizedValue, "gpt-5.5")
+        XCTAssertEqual(try auditField("source", in: audit).presence, .unsupported)
+    }
+
+    @MainActor
+    func testAppServerClientEmitsAuditBeforeMalformedTokenPayloadThrows() throws {
+        let client = CodexAppServerClient()
+        var receivedAudit: CodexTokenUsagePayloadAudit?
+        var receivedNotification: CodexTokenUsageNotification?
+        client.onTokenUsagePayloadAudit = { receivedAudit = $0 }
+        client.onTokenUsage = { receivedNotification = $0 }
+
+        XCTAssertThrowsError(try client.handleIncomingMessage(data: Data(
+            """
+            {
+              "method": "thread/tokenUsage/updated",
+              "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "model": "gpt-5.5"
+              }
+            }
+            """.utf8
+        )))
+
+        XCTAssertEqual(receivedAudit?.threadID, "thread-1")
+        XCTAssertEqual(try auditField("model", in: XCTUnwrap(receivedAudit)).normalizedValue, "gpt-5.5")
+        XCTAssertNil(receivedNotification)
+    }
+
     private func decodeTokenUsageModel(
         extraRoot: String = "",
         extraTokenUsage: String = ""
@@ -386,5 +529,13 @@ final class CodexRateLimitDecodingTests: XCTestCase {
             .decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: data)
             .toDomainNotification()
             .model
+    }
+
+    private func jsonObject(_ json: String) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    private func auditField(_ keyPath: String, in audit: CodexTokenUsagePayloadAudit) throws -> CodexTokenPayloadAuditField {
+        try XCTUnwrap(audit.fields.first { $0.keyPath == keyPath })
     }
 }

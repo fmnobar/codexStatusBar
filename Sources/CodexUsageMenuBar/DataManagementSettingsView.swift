@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -40,37 +41,48 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var isImportingTokenHistory = false
     @Published private(set) var tokenImportSummaryText: String?
     @Published private(set) var projectEntries: [TokenProjectCatalogEntry] = []
+    @Published private(set) var tokenPayloadAudit: CodexTokenUsagePayloadAudit?
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
     private let byteFormatter: ByteCountFormatter
     private let tokenBackfillImporter: CodexSessionTokenBackfillImporting
+    private let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     private var databaseInfo: UsageHistoryDatabaseInfo?
+    private var tokenPayloadAuditCancellable: AnyCancellable?
 
     init(
         database: UsageHistoryDatabaseWorking,
         defaults: UserDefaults = .standard,
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
-        tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter()
+        tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
+        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore()
     ) {
         self.database = database
         self.defaults = defaults
         self.byteFormatter = byteFormatter
         self.tokenBackfillImporter = tokenBackfillImporter
+        self.tokenPayloadAuditStore = tokenPayloadAuditStore
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
+        tokenPayloadAudit = tokenPayloadAuditStore.latestAudit
+        tokenPayloadAuditCancellable = tokenPayloadAuditStore.$latestAudit.sink { [weak self] audit in
+            self?.tokenPayloadAudit = audit
+        }
     }
 
     convenience init(
         store: UsageHistoryStore,
         defaults: UserDefaults = .standard,
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
-        tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter()
+        tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
+        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore()
     ) {
         self.init(
             database: UsageHistoryDatabaseWorker(store: store),
             defaults: defaults,
             byteFormatter: byteFormatter,
-            tokenBackfillImporter: tokenBackfillImporter
+            tokenBackfillImporter: tokenBackfillImporter,
+            tokenPayloadAuditStore: tokenPayloadAuditStore
         )
     }
 
@@ -80,6 +92,18 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
     var canRevealDatabase: Bool {
         databaseURL != nil
+    }
+
+    var canExportTokenPayloadAudit: Bool {
+        tokenPayloadAudit != nil
+    }
+
+    var tokenPayloadAuditCapturedAtText: String {
+        guard let capturedAt = tokenPayloadAudit?.capturedAt else {
+            return "No capture yet"
+        }
+
+        return Self.auditDateFormatter.string(from: capturedAt)
     }
 
     func refreshDatabaseInfo() async {
@@ -187,6 +211,29 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
     }
 
+    func exportTokenPayloadAudit(to destinationURL: URL) {
+        do {
+            guard let data = try tokenPayloadAuditStore.exportData() else {
+                statusMessage = nil
+                errorMessage = "No live token payload audit has been captured yet."
+                return
+            }
+
+            try data.write(to: destinationURL, options: .atomic)
+            statusMessage = "Payload audit exported."
+            errorMessage = nil
+        } catch {
+            statusMessage = nil
+            errorMessage = "Payload audit could not be exported."
+        }
+    }
+
+    func clearTokenPayloadAudit() {
+        tokenPayloadAuditStore.clear()
+        statusMessage = "Payload audit cleared."
+        errorMessage = nil
+    }
+
     func importTokenHistoryFromCodexSessions() {
         importRecentTokenHistoryFromCodexSessions()
     }
@@ -236,6 +283,13 @@ final class DataManagementSettingsViewModel: ObservableObject {
             errorMessage = "Token history could not be imported."
         }
     }
+
+    private static let auditDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 }
 
 struct DataManagementSettingsView: View {
@@ -249,9 +303,15 @@ struct DataManagementSettingsView: View {
 
     init(
         database: UsageHistoryDatabaseWorking,
-        updateMonitor: AppUpdateMonitor = AppUpdateMonitor()
+        updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
+        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore()
     ) {
-        _viewModel = StateObject(wrappedValue: DataManagementSettingsViewModel(database: database))
+        _viewModel = StateObject(
+            wrappedValue: DataManagementSettingsViewModel(
+                database: database,
+                tokenPayloadAuditStore: tokenPayloadAuditStore
+            )
+        )
         self.updateMonitor = updateMonitor
     }
 
@@ -261,6 +321,7 @@ struct DataManagementSettingsView: View {
                 databaseSection
                 retentionSection
                 tokenHistorySection
+                liveTokenPayloadSection
                 projectsSection
                 feedbackSection
             }
@@ -412,6 +473,66 @@ struct DataManagementSettingsView: View {
         }
     }
 
+    private var liveTokenPayloadSection: some View {
+        Section("Live Token Payload") {
+            if let audit = viewModel.tokenPayloadAudit {
+                LabeledContent("Last capture") {
+                    Text(viewModel.tokenPayloadAuditCapturedAtText)
+                        .monospacedDigit()
+                }
+
+                LabeledContent("Fields") {
+                    Text("\(audit.capturedFieldCount) captured, \(audit.rejectedFieldCount) rejected")
+                        .monospacedDigit()
+                }
+
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Model")
+                        Text(presenceText(audit.hasModelMetadata))
+                    }
+                    GridRow {
+                        Text("Project")
+                        Text(presenceText(audit.hasProjectMetadata))
+                    }
+                    GridRow {
+                        Text("Effort")
+                        Text(presenceText(audit.hasEffortMetadata))
+                    }
+                    GridRow {
+                        Text("Source")
+                        Text(presenceText(audit.hasSourceMetadata))
+                    }
+                    GridRow {
+                        Text("Runtime")
+                        Text(presenceText(audit.hasRuntimePolicyMetadata))
+                    }
+                }
+                .font(.caption)
+
+                Text(audit.interpretationText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No live token payload has been captured yet. This updates after Codex emits a token usage notification while the app is running.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Export Payload Audit...") {
+                    exportTokenPayloadAudit()
+                }
+                .disabled(!viewModel.canExportTokenPayloadAudit)
+
+                Button("Clear Payload Audit") {
+                    viewModel.clearTokenPayloadAudit()
+                }
+                .disabled(viewModel.tokenPayloadAudit == nil)
+            }
+        }
+    }
+
     private var projectsSection: some View {
         Section("Projects") {
             if viewModel.projectEntries.isEmpty {
@@ -523,6 +644,23 @@ struct DataManagementSettingsView: View {
         }
 
         pendingImportURL = url
+    }
+
+    private func exportTokenPayloadAudit() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "codex-live-token-payload-audit.json"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        viewModel.exportTokenPayloadAudit(to: url)
+    }
+
+    private func presenceText(_ isPresent: Bool) -> String {
+        isPresent ? "Present" : "Missing"
     }
 
     private var sqliteBackupContentType: UTType {

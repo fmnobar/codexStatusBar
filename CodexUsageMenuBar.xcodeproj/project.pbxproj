@@ -80,6 +80,7 @@
 		AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */; };
 		D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
 		ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */; };
+		ED158C1DA325D4FA480D76DC /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -341,6 +342,7 @@
 				A41000000000000000000021 /* AppBuildFreshness.swift in Sources */,
 				A50000000000000000000021 /* AppUpdateCheck.swift in Sources */,
 				A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */,
+				ED158C1DA325D4FA480D76DC /* CodexAppServerClient.swift in Sources */,
 				A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */,
 				A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */,
 				A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */,

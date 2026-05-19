@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 enum CodexUsageDiagnosticsClassification: String, Codable, Equatable {
@@ -87,6 +88,553 @@ enum CodexUsageDiagnosticsExporter {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(snapshot)
+    }
+}
+
+enum CodexTokenPayloadAuditCategory: String, Codable, Equatable {
+    case identifier
+    case model
+    case project
+    case effort
+    case source
+    case runtimePolicy = "runtime_policy"
+    case appSession = "app_session"
+    case subagent
+    case usageMode = "usage_mode"
+}
+
+enum CodexTokenPayloadAuditPresence: String, Codable, Equatable {
+    case present
+    case missing
+    case unsupported
+    case rejected
+}
+
+struct CodexTokenPayloadAuditField: Codable, Equatable, Identifiable {
+    let keyPath: String
+    let category: CodexTokenPayloadAuditCategory
+    let presence: CodexTokenPayloadAuditPresence
+    let valueKind: String?
+    let sanitizedValue: String?
+    let normalizedValue: String?
+    let dimensionKey: TokenUsageDimensionKey?
+    let dimensionValue: String?
+    let notes: [String]
+
+    var id: String { keyPath }
+}
+
+struct CodexTokenUsagePayloadAudit: Codable, Equatable {
+    let schemaVersion: Int
+    let capturedAt: Date
+    let threadID: String?
+    let turnID: String?
+    let fields: [CodexTokenPayloadAuditField]
+
+    init(
+        capturedAt: Date,
+        threadID: String?,
+        turnID: String?,
+        fields: [CodexTokenPayloadAuditField]
+    ) {
+        schemaVersion = 1
+        self.capturedAt = capturedAt
+        self.threadID = threadID
+        self.turnID = turnID
+        self.fields = fields
+    }
+
+    var hasModelMetadata: Bool {
+        hasUsableField(in: .model)
+    }
+
+    var hasProjectMetadata: Bool {
+        hasUsableField(in: .project)
+    }
+
+    var hasEffortMetadata: Bool {
+        hasUsableField(in: .effort)
+    }
+
+    var hasSourceMetadata: Bool {
+        hasUsableField(in: .source)
+    }
+
+    var hasRuntimePolicyMetadata: Bool {
+        hasUsableField(in: .runtimePolicy)
+    }
+
+    var capturedFieldCount: Int {
+        fields.filter { $0.presence == .present }.count
+    }
+
+    var rejectedFieldCount: Int {
+        fields.filter { $0.presence == .rejected || $0.presence == .unsupported }.count
+    }
+
+    var interpretationText: String {
+        let present = [
+            hasModelMetadata ? "model" : nil,
+            hasProjectMetadata ? "project" : nil,
+            hasEffortMetadata ? "effort" : nil,
+            hasSourceMetadata ? "source" : nil,
+            hasRuntimePolicyMetadata ? "runtime policy" : nil,
+        ].compactMap(\.self)
+
+        guard !present.isEmpty else {
+            return "Live token payloads have not exposed useful attribution metadata yet."
+        }
+
+        return "Live token payloads exposed: \(present.joined(separator: ", "))."
+    }
+
+    private func hasUsableField(in category: CodexTokenPayloadAuditCategory) -> Bool {
+        fields.contains { field in
+            field.category == category
+                && field.presence == .present
+                && (
+                    field.normalizedValue?.isEmpty == false
+                        || field.dimensionValue?.isEmpty == false
+                )
+        }
+    }
+}
+
+enum CodexTokenPayloadAuditExporter {
+    static func jsonData(for audit: CodexTokenUsagePayloadAudit) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(audit)
+    }
+}
+
+@MainActor
+final class CodexTokenPayloadAuditStore: ObservableObject {
+    @Published private(set) var latestAudit: CodexTokenUsagePayloadAudit?
+
+    private let fileURL: URL
+    private let fileManager: FileManager
+
+    init(fileURL: URL, fileManager: FileManager = .default) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+        latestAudit = try? Self.loadAudit(from: fileURL)
+    }
+
+    static func applicationSupportStore() -> CodexTokenPayloadAuditStore {
+        let directoryURL = (try? UsageHistoryStore.applicationSupportDirectoryURL())
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("CodexStatusBar", isDirectory: true)
+        return CodexTokenPayloadAuditStore(
+            fileURL: directoryURL.appendingPathComponent("live-token-payload-audit.json")
+        )
+    }
+
+    func record(_ audit: CodexTokenUsagePayloadAudit) {
+        latestAudit = audit
+        do {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try CodexTokenPayloadAuditExporter.jsonData(for: audit).write(to: fileURL, options: .atomic)
+        } catch {
+            // Diagnostics must never affect token recording.
+        }
+    }
+
+    func exportData() throws -> Data? {
+        guard let latestAudit else {
+            return nil
+        }
+
+        return try CodexTokenPayloadAuditExporter.jsonData(for: latestAudit)
+    }
+
+    func clear() {
+        latestAudit = nil
+        try? fileManager.removeItem(at: fileURL)
+    }
+
+    private static func loadAudit(from fileURL: URL) throws -> CodexTokenUsagePayloadAudit {
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(CodexTokenUsagePayloadAudit.self, from: data)
+    }
+}
+
+enum CodexTokenPayloadAuditor {
+    private struct FieldSpec {
+        let keyPath: String
+        let paths: [[String]]
+        let category: CodexTokenPayloadAuditCategory
+        let normalizer: FieldNormalizer
+
+        init(
+            _ keyPath: String,
+            paths: [[String]]? = nil,
+            category: CodexTokenPayloadAuditCategory,
+            normalizer: FieldNormalizer
+        ) {
+            self.keyPath = keyPath
+            self.paths = paths ?? [keyPath.split(separator: ".").map(String.init)]
+            self.category = category
+            self.normalizer = normalizer
+        }
+    }
+
+    private enum FieldNormalizer {
+        case identifier
+        case model
+        case projectPath
+        case source
+        case dimension(TokenUsageDimensionKey)
+        case mode
+        case booleanDimension(TokenUsageDimensionKey)
+        case integerDimension(TokenUsageDimensionKey)
+        case flexibleDimension(TokenUsageDimensionKey)
+        case objectSummary
+    }
+
+    private static let fieldSpecs: [FieldSpec] = [
+        FieldSpec("threadId", paths: [["threadId"], ["thread_id"]], category: .identifier, normalizer: .identifier),
+        FieldSpec("turnId", paths: [["turnId"], ["turn_id"]], category: .identifier, normalizer: .identifier),
+
+        FieldSpec("model", category: .model, normalizer: .model),
+        FieldSpec("slug", category: .model, normalizer: .model),
+        FieldSpec("modelSlug", paths: [["modelSlug"], ["model_slug"]], category: .model, normalizer: .model),
+        FieldSpec("tokenUsage.model", paths: [["tokenUsage", "model"], ["token_usage", "model"]], category: .model, normalizer: .model),
+        FieldSpec("tokenUsage.slug", paths: [["tokenUsage", "slug"], ["token_usage", "slug"]], category: .model, normalizer: .model),
+        FieldSpec("tokenUsage.modelSlug", paths: [["tokenUsage", "modelSlug"], ["token_usage", "modelSlug"], ["tokenUsage", "model_slug"], ["token_usage", "model_slug"]], category: .model, normalizer: .model),
+        FieldSpec("tokenUsage.info.model", paths: [["tokenUsage", "info", "model"], ["token_usage", "info", "model"]], category: .model, normalizer: .model),
+        FieldSpec("tokenUsage.info.slug", paths: [["tokenUsage", "info", "slug"], ["token_usage", "info", "slug"]], category: .model, normalizer: .model),
+        FieldSpec("tokenUsage.info.modelSlug", paths: [["tokenUsage", "info", "modelSlug"], ["token_usage", "info", "modelSlug"], ["tokenUsage", "info", "model_slug"], ["token_usage", "info", "model_slug"]], category: .model, normalizer: .model),
+
+        FieldSpec("cwd", category: .project, normalizer: .projectPath),
+        FieldSpec("projectPath", paths: [["projectPath"], ["project_path"]], category: .project, normalizer: .projectPath),
+        FieldSpec("projectName", paths: [["projectName"], ["project_name"]], category: .project, normalizer: .identifier),
+        FieldSpec("tokenUsage.info.cwd", paths: [["tokenUsage", "info", "cwd"], ["token_usage", "info", "cwd"]], category: .project, normalizer: .projectPath),
+        FieldSpec("tokenUsage.info.projectPath", paths: [["tokenUsage", "info", "projectPath"], ["token_usage", "info", "project_path"]], category: .project, normalizer: .projectPath),
+        FieldSpec("tokenUsage.info.projectName", paths: [["tokenUsage", "info", "projectName"], ["token_usage", "info", "project_name"]], category: .project, normalizer: .identifier),
+
+        FieldSpec("effort", category: .effort, normalizer: .identifier),
+        FieldSpec("reasoningEffort", paths: [["reasoningEffort"], ["reasoning_effort"]], category: .effort, normalizer: .identifier),
+        FieldSpec("collaborationMode.settings.reasoningEffort", paths: [["collaborationMode", "settings", "reasoningEffort"], ["collaboration_mode", "settings", "reasoning_effort"]], category: .effort, normalizer: .identifier),
+        FieldSpec("tokenUsage.info.effort", paths: [["tokenUsage", "info", "effort"], ["token_usage", "info", "effort"]], category: .effort, normalizer: .identifier),
+        FieldSpec("tokenUsage.info.reasoningEffort", paths: [["tokenUsage", "info", "reasoningEffort"], ["token_usage", "info", "reasoning_effort"]], category: .effort, normalizer: .identifier),
+
+        FieldSpec("source", category: .source, normalizer: .source),
+        FieldSpec("sourceKind", paths: [["sourceKind"], ["source_kind"]], category: .source, normalizer: .dimension(.sourceKind)),
+        FieldSpec("originator", category: .source, normalizer: .dimension(.originator)),
+        FieldSpec("threadSource", paths: [["threadSource"], ["thread_source"]], category: .source, normalizer: .dimension(.threadSource)),
+        FieldSpec("tokenUsage.info.source", paths: [["tokenUsage", "info", "source"], ["token_usage", "info", "source"]], category: .source, normalizer: .source),
+        FieldSpec("tokenUsage.info.sourceKind", paths: [["tokenUsage", "info", "sourceKind"], ["token_usage", "info", "source_kind"]], category: .source, normalizer: .dimension(.sourceKind)),
+        FieldSpec("tokenUsage.info.originator", paths: [["tokenUsage", "info", "originator"], ["token_usage", "info", "originator"]], category: .source, normalizer: .dimension(.originator)),
+        FieldSpec("tokenUsage.info.threadSource", paths: [["tokenUsage", "info", "threadSource"], ["token_usage", "info", "thread_source"]], category: .source, normalizer: .dimension(.threadSource)),
+
+        FieldSpec("cliVersion", paths: [["cliVersion"], ["cli_version"]], category: .appSession, normalizer: .dimension(.cliVersion)),
+        FieldSpec("modelProvider", paths: [["modelProvider"], ["model_provider"]], category: .appSession, normalizer: .dimension(.modelProvider)),
+        FieldSpec("memoryMode", paths: [["memoryMode"], ["memory_mode"]], category: .appSession, normalizer: .dimension(.memoryMode)),
+        FieldSpec("tokenUsage.info.cliVersion", paths: [["tokenUsage", "info", "cliVersion"], ["token_usage", "info", "cli_version"]], category: .appSession, normalizer: .dimension(.cliVersion)),
+        FieldSpec("tokenUsage.info.modelProvider", paths: [["tokenUsage", "info", "modelProvider"], ["token_usage", "info", "model_provider"]], category: .appSession, normalizer: .dimension(.modelProvider)),
+        FieldSpec("tokenUsage.info.memoryMode", paths: [["tokenUsage", "info", "memoryMode"], ["token_usage", "info", "memory_mode"]], category: .appSession, normalizer: .dimension(.memoryMode)),
+
+        FieldSpec("approvalPolicy", paths: [["approvalPolicy"], ["approval_policy"]], category: .runtimePolicy, normalizer: .flexibleDimension(.approvalPolicy)),
+        FieldSpec("sandboxPolicy", paths: [["sandboxPolicy"], ["sandbox_policy"]], category: .runtimePolicy, normalizer: .flexibleDimension(.sandboxType)),
+        FieldSpec("sandboxPolicy.type", paths: [["sandboxPolicy", "type"], ["sandbox_policy", "type"]], category: .runtimePolicy, normalizer: .dimension(.sandboxType)),
+        FieldSpec("permissionProfile", paths: [["permissionProfile"], ["permission_profile"]], category: .runtimePolicy, normalizer: .flexibleDimension(.permissionProfile)),
+        FieldSpec("truncationPolicy", paths: [["truncationPolicy"], ["truncation_policy"]], category: .runtimePolicy, normalizer: .flexibleDimension(.truncationPolicy)),
+        FieldSpec("realtimeActive", paths: [["realtimeActive"], ["realtime_active"]], category: .runtimePolicy, normalizer: .booleanDimension(.realtimeActive)),
+        FieldSpec("tokenUsage.info.approvalPolicy", paths: [["tokenUsage", "info", "approvalPolicy"], ["token_usage", "info", "approval_policy"]], category: .runtimePolicy, normalizer: .flexibleDimension(.approvalPolicy)),
+        FieldSpec("tokenUsage.info.sandboxPolicy", paths: [["tokenUsage", "info", "sandboxPolicy"], ["token_usage", "info", "sandbox_policy"]], category: .runtimePolicy, normalizer: .flexibleDimension(.sandboxType)),
+        FieldSpec("tokenUsage.info.sandboxPolicy.type", paths: [["tokenUsage", "info", "sandboxPolicy", "type"], ["token_usage", "info", "sandbox_policy", "type"]], category: .runtimePolicy, normalizer: .dimension(.sandboxType)),
+        FieldSpec("tokenUsage.info.permissionProfile", paths: [["tokenUsage", "info", "permissionProfile"], ["token_usage", "info", "permission_profile"]], category: .runtimePolicy, normalizer: .flexibleDimension(.permissionProfile)),
+        FieldSpec("tokenUsage.info.truncationPolicy", paths: [["tokenUsage", "info", "truncationPolicy"], ["token_usage", "info", "truncation_policy"]], category: .runtimePolicy, normalizer: .flexibleDimension(.truncationPolicy)),
+        FieldSpec("tokenUsage.info.realtimeActive", paths: [["tokenUsage", "info", "realtimeActive"], ["token_usage", "info", "realtime_active"]], category: .runtimePolicy, normalizer: .booleanDimension(.realtimeActive)),
+
+        FieldSpec("usageMode", paths: [["usageMode"], ["usage_mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("speedMode", paths: [["speedMode"], ["speed_mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("mode", category: .usageMode, normalizer: .mode),
+        FieldSpec("tokenUsage.usageMode", paths: [["tokenUsage", "usageMode"], ["token_usage", "usage_mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("tokenUsage.speedMode", paths: [["tokenUsage", "speedMode"], ["token_usage", "speed_mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("tokenUsage.mode", paths: [["tokenUsage", "mode"], ["token_usage", "mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("tokenUsage.info.usageMode", paths: [["tokenUsage", "info", "usageMode"], ["token_usage", "info", "usage_mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("tokenUsage.info.speedMode", paths: [["tokenUsage", "info", "speedMode"], ["token_usage", "info", "speed_mode"]], category: .usageMode, normalizer: .mode),
+        FieldSpec("tokenUsage.info.mode", paths: [["tokenUsage", "info", "mode"], ["token_usage", "info", "mode"]], category: .usageMode, normalizer: .mode),
+
+        FieldSpec("source.subagent.thread_spawn.parent_thread_id", category: .subagent, normalizer: .dimension(.subagentParentThreadID)),
+        FieldSpec("source.subagent.thread_spawn.depth", category: .subagent, normalizer: .integerDimension(.subagentDepth)),
+        FieldSpec("source.subagent.thread_spawn.agent_role", category: .subagent, normalizer: .dimension(.agentRole)),
+        FieldSpec("source.subagent.thread_spawn.agent_nickname", category: .subagent, normalizer: .dimension(.agentNickname)),
+    ]
+
+    static func audit(params: Any, capturedAt: Date = Date()) -> CodexTokenUsagePayloadAudit? {
+        guard let object = params as? [String: Any] else {
+            return nil
+        }
+
+        let fields = fieldSpecs.map { field(in: object, spec: $0) }
+        let threadID = normalizedString(at: [["threadId"], ["thread_id"]], in: object)
+        let turnID = normalizedString(at: [["turnId"], ["turn_id"]], in: object)
+        return CodexTokenUsagePayloadAudit(
+            capturedAt: capturedAt,
+            threadID: threadID,
+            turnID: turnID,
+            fields: fields
+        )
+    }
+
+    private static func field(in object: [String: Any], spec: FieldSpec) -> CodexTokenPayloadAuditField {
+        guard let rawValue = value(at: spec.paths, in: object) else {
+            return CodexTokenPayloadAuditField(
+                keyPath: spec.keyPath,
+                category: spec.category,
+                presence: .missing,
+                valueKind: nil,
+                sanitizedValue: nil,
+                normalizedValue: nil,
+                dimensionKey: nil,
+                dimensionValue: nil,
+                notes: []
+            )
+        }
+
+        let result = normalize(rawValue, with: spec.normalizer)
+        return CodexTokenPayloadAuditField(
+            keyPath: spec.keyPath,
+            category: spec.category,
+            presence: result.presence,
+            valueKind: valueKind(rawValue),
+            sanitizedValue: result.sanitizedValue,
+            normalizedValue: result.normalizedValue,
+            dimensionKey: result.dimension?.key,
+            dimensionValue: result.dimension?.value,
+            notes: result.notes
+        )
+    }
+
+    private struct NormalizationResult {
+        let presence: CodexTokenPayloadAuditPresence
+        let sanitizedValue: String?
+        let normalizedValue: String?
+        let dimension: TokenUsageDimension?
+        let notes: [String]
+    }
+
+    private static func normalize(_ rawValue: Any, with normalizer: FieldNormalizer) -> NormalizationResult {
+        switch normalizer {
+        case .identifier:
+            return normalizedScalar(rawValue) { CodexTokenContextNormalizer.normalizedIdentifier($0) }
+        case .model:
+            return normalizedScalar(rawValue) { CodexModelIdentifier.normalized($0) }
+        case .projectPath:
+            return normalizedScalar(rawValue) { CodexTokenContextNormalizer.normalizedProjectPath($0) }
+        case .source:
+            if let object = rawValue as? [String: Any] {
+                let hasSubagent = object["subagent"] is [String: Any]
+                return NormalizationResult(
+                    presence: hasSubagent ? .present : .unsupported,
+                    sanitizedValue: nil,
+                    normalizedValue: hasSubagent ? "subagent" : nil,
+                    dimension: hasSubagent ? TokenUsageDimension(.sourceKind, "subagent") : nil,
+                    notes: hasSubagent ? ["Object source captured through source.subagent.* fields."] : ["Object source shape has no allowlisted attribution fields."]
+                )
+            }
+            return normalizedDimension(rawValue, key: .sourceKind)
+        case .dimension(let key):
+            return normalizedDimension(rawValue, key: key)
+        case .mode:
+            let stringValue = scalarString(rawValue)
+            let dimension = TokenUsageDimension(.usageMode, stringValue)
+            return resultForScalar(
+                rawValue: rawValue,
+                sanitizedValue: stringValue,
+                normalizedValue: dimension?.value,
+                dimension: dimension
+            )
+        case .booleanDimension(let key):
+            guard let boolValue = rawValue as? Bool else {
+                return NormalizationResult(
+                    presence: .unsupported,
+                    sanitizedValue: nil,
+                    normalizedValue: nil,
+                    dimension: nil,
+                    notes: ["Expected a boolean value."]
+                )
+            }
+            let dimension = TokenUsageDimension.boolean(key, boolValue)
+            return NormalizationResult(
+                presence: dimension == nil ? .rejected : .present,
+                sanitizedValue: boolValue ? "true" : "false",
+                normalizedValue: dimension?.value,
+                dimension: dimension,
+                notes: dimension == nil ? ["Value rejected by safe normalizer."] : []
+            )
+        case .integerDimension(let key):
+            guard let intValue = rawValue as? Int else {
+                return NormalizationResult(
+                    presence: .unsupported,
+                    sanitizedValue: nil,
+                    normalizedValue: nil,
+                    dimension: nil,
+                    notes: ["Expected an integer value."]
+                )
+            }
+            let dimension = TokenUsageDimension.integer(key, intValue)
+            return NormalizationResult(
+                presence: dimension == nil ? .rejected : .present,
+                sanitizedValue: "\(intValue)",
+                normalizedValue: dimension?.value,
+                dimension: dimension,
+                notes: dimension == nil ? ["Value rejected by safe normalizer."] : []
+            )
+        case .flexibleDimension(let key):
+            let extractedValue = flexibleString(rawValue)
+            return normalizedDimension(extractedValue as Any, key: key)
+        case .objectSummary:
+            return NormalizationResult(
+                presence: .unsupported,
+                sanitizedValue: nil,
+                normalizedValue: nil,
+                dimension: nil,
+                notes: ["Object shape is only audited through allowlisted child fields."]
+            )
+        }
+    }
+
+    private static func normalizedDimension(_ rawValue: Any, key: TokenUsageDimensionKey) -> NormalizationResult {
+        let stringValue = scalarString(rawValue)
+        let dimension = TokenUsageDimension(key, stringValue)
+        return resultForScalar(
+            rawValue: rawValue,
+            sanitizedValue: stringValue,
+            normalizedValue: dimension?.value,
+            dimension: dimension
+        )
+    }
+
+    private static func normalizedScalar(
+        _ rawValue: Any,
+        normalize: (String?) -> String?
+    ) -> NormalizationResult {
+        let stringValue = scalarString(rawValue)
+        return resultForScalar(
+            rawValue: rawValue,
+            sanitizedValue: stringValue,
+            normalizedValue: normalize(stringValue),
+            dimension: nil
+        )
+    }
+
+    private static func resultForScalar(
+        rawValue: Any,
+        sanitizedValue: String?,
+        normalizedValue: String?,
+        dimension: TokenUsageDimension?
+    ) -> NormalizationResult {
+        guard sanitizedValue != nil else {
+            return NormalizationResult(
+                presence: .unsupported,
+                sanitizedValue: nil,
+                normalizedValue: nil,
+                dimension: nil,
+                notes: ["Expected a scalar safe value."]
+            )
+        }
+
+        guard normalizedValue != nil || dimension != nil else {
+            return NormalizationResult(
+                presence: .rejected,
+                sanitizedValue: nil,
+                normalizedValue: nil,
+                dimension: nil,
+                notes: ["Value rejected by safe normalizer."]
+            )
+        }
+
+        return NormalizationResult(
+            presence: .present,
+            sanitizedValue: sanitizedValue,
+            normalizedValue: normalizedValue,
+            dimension: dimension,
+            notes: []
+        )
+    }
+
+    private static func scalarString(_ rawValue: Any) -> String? {
+        switch rawValue {
+        case let string as String:
+            return string
+        case let bool as Bool:
+            return bool ? "true" : "false"
+        case let int as Int:
+            return "\(int)"
+        case let int64 as Int64:
+            return "\(int64)"
+        case let double as Double where double.isFinite:
+            return double.rounded() == double ? "\(Int64(double))" : "\(double)"
+        default:
+            return nil
+        }
+    }
+
+    private static func flexibleString(_ rawValue: Any) -> String? {
+        if let scalar = scalarString(rawValue) {
+            return scalar
+        }
+
+        guard let object = rawValue as? [String: Any] else {
+            return nil
+        }
+
+        return ["type", "mode", "value", "name"].lazy.compactMap { key in
+            scalarString(object[key] as Any)
+        }.first
+    }
+
+    private static func normalizedString(at paths: [[String]], in object: [String: Any]) -> String? {
+        value(at: paths, in: object)
+            .flatMap(scalarString)
+            .flatMap(CodexTokenContextNormalizer.normalizedIdentifier)
+    }
+
+    private static func value(at paths: [[String]], in object: [String: Any]) -> Any? {
+        for path in paths {
+            var current: Any = object
+            var found = true
+            for component in path {
+                guard let dictionary = current as? [String: Any],
+                      let next = dictionary[component]
+                else {
+                    found = false
+                    break
+                }
+                current = next
+            }
+
+            if found {
+                return current
+            }
+        }
+
+        return nil
+    }
+
+    private static func valueKind(_ rawValue: Any) -> String {
+        switch rawValue {
+        case is String:
+            return "string"
+        case is Bool:
+            return "boolean"
+        case is Int, is Int64, is Double:
+            return "number"
+        case is [String: Any]:
+            return "object"
+        case is [Any]:
+            return "array"
+        case is NSNull:
+            return "null"
+        default:
+            return "unknown"
+        }
     }
 }
 

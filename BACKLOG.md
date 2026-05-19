@@ -4,7 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
+| 1 | Review live token payload audit sample | After a live token notification is captured in Settings Data, review/export the sanitized sample and decide whether to record live context fields directly or join live events with safe turn context. |
 
 ## Done
 
@@ -216,8 +216,15 @@
   - Kept diagnostics read-only while preserving existing token totals, chart semantics, dashboard filtering, and menu-bar text.
   - Added coverage rows to Token Dashboard CSV export so missing metadata can be inspected outside the app.
 
+- Audit live token notification context payloads
+  - Added a sanitized audit path for live `thread/tokenUsage/updated` payload context fields.
+  - Persisted the latest bounded audit sample under Application Support without changing token totals or token storage semantics.
+  - Added Data settings status, export, and clear controls for the live payload audit.
+  - Kept prompt, message, tool, auth, and arbitrary unknown values out of persisted diagnostics.
+
 ## Next Candidates
 
-- Audit live token notification context payloads
-  - Add a sanitized diagnostics path for live token notifications to confirm whether app-server token events now include project, effort, source, or runtime policy metadata.
-  - If live payloads do not include these fields, plan a join with the latest safe `turn_context` metadata rather than guessing.
+- Review live token payload audit sample
+  - Use the new Data settings readout/export after a live token event arrives.
+  - If useful fields are present, plan `Record live token context fields directly`.
+  - If useful fields are absent, plan `Join live token events with latest safe turn context`.
