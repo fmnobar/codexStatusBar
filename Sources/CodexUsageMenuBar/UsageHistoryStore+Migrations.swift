@@ -121,6 +121,7 @@ extension UsageHistoryStore {
             CREATE TABLE IF NOT EXISTS token_project_catalog (
                 project_path TEXT PRIMARY KEY,
                 project_name TEXT NOT NULL,
+                display_name TEXT,
                 first_seen_at INTEGER NOT NULL,
                 last_seen_at INTEGER NOT NULL
             )
@@ -162,6 +163,7 @@ extension UsageHistoryStore {
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_cached", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_output", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_reasoning", definition: "INTEGER NOT NULL DEFAULT 0")
+        try addColumnIfNeeded(table: "token_project_catalog", column: "display_name", definition: "TEXT")
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_bucket_timestamp ON usage_samples(window, bucket_id, timestamp DESC)")
@@ -523,6 +525,20 @@ extension UsageHistoryStore {
     }
 
     func rebuildTokenContextCatalogs() throws {
+        try execute("DROP TABLE IF EXISTS temp_token_project_display_names")
+        try execute(
+            """
+            CREATE TEMP TABLE temp_token_project_display_names AS
+            SELECT project_path, display_name
+            FROM token_project_catalog
+            WHERE display_name IS NOT NULL
+                AND NULLIF(TRIM(display_name), '') IS NOT NULL
+            """
+        )
+        defer {
+            try? execute("DROP TABLE IF EXISTS temp_token_project_display_names")
+        }
+
         try execute("DELETE FROM token_project_catalog")
         try execute("DELETE FROM token_effort_catalog")
         try execute("DELETE FROM token_source_catalog")
@@ -543,6 +559,21 @@ extension UsageHistoryStore {
                     OR observed_total_tokens > 0
                 )
             GROUP BY project_path
+            """
+        )
+        try execute(
+            """
+            UPDATE token_project_catalog
+            SET display_name = (
+                SELECT display_name
+                FROM temp_token_project_display_names
+                WHERE temp_token_project_display_names.project_path = token_project_catalog.project_path
+            )
+            WHERE EXISTS (
+                SELECT 1
+                FROM temp_token_project_display_names
+                WHERE temp_token_project_display_names.project_path = token_project_catalog.project_path
+            )
             """
         )
         try execute(

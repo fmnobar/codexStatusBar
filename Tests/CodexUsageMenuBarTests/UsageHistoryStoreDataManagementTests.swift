@@ -154,6 +154,121 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
 
+    func testTokenProjectDisplayNamesCanBeRenamedResetAndSurviveCatalogRebuild() async throws {
+        let notificationCenter = NotificationCenter()
+        let (store, _) = try makeTemporaryStore(notificationCenter: notificationCenter)
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z"),
+                context: TokenUsageContext(projectPath: "/Users/example/Projects/backup-project")
+            ),
+        ])
+        let expectation = expectation(description: "Rename posts history change notification")
+        let observer = notificationCenter.addObserver(
+            forName: UsageHistoryStore.didChangeNotification,
+            object: store,
+            queue: nil
+        ) { _ in
+            expectation.fulfill()
+        }
+
+        try store.updateTokenProjectDisplayName(
+            projectPath: "/Users/example/Projects/backup-project",
+            displayName: "Client Work"
+        )
+        await fulfillment(of: [expectation], timeout: 1)
+        notificationCenter.removeObserver(observer)
+
+        var entries = try store.tokenProjectCatalogEntries()
+        XCTAssertEqual(entries.first?.generatedName, "backup-project")
+        XCTAssertEqual(entries.first?.displayName, "Client Work")
+        XCTAssertEqual(entries.first?.effectiveDisplayName, "Client Work")
+        XCTAssertEqual(
+            try store.tokenDashboardSeries(breakdownDimension: .project).first { $0.id == "project:/Users/example/Projects/backup-project" }?.name,
+            "Client Work"
+        )
+
+        try store.rebuildTokenContextCatalogs()
+        entries = try store.tokenProjectCatalogEntries()
+        XCTAssertEqual(entries.first?.displayName, "Client Work")
+
+        try store.updateTokenProjectDisplayName(
+            projectPath: "/Users/example/Projects/backup-project",
+            displayName: "   "
+        )
+
+        entries = try store.tokenProjectCatalogEntries()
+        XCTAssertNil(entries.first?.displayName)
+        XCTAssertEqual(entries.first?.effectiveDisplayName, "backup-project")
+    }
+
+    func testTokenProjectDisplayNameRejectsControlCharacters() async throws {
+        let (store, _) = try makeTemporaryStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z"),
+                context: TokenUsageContext(projectPath: "/Users/example/Projects/backup-project")
+            ),
+        ])
+
+        XCTAssertThrowsError(
+            try store.updateTokenProjectDisplayName(
+                projectPath: "/Users/example/Projects/backup-project",
+                displayName: "Bad\nName"
+            )
+        ) { error in
+            XCTAssertEqual(error.localizedDescription, UsageHistoryStoreError.invalidProjectDisplayName.localizedDescription)
+        }
+    }
+
+    func testBackupImportPreservesTokenProjectDisplayNames() async throws {
+        let (sourceStore, _) = try makeTemporaryStore()
+        _ = try sourceStore.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z"),
+                context: TokenUsageContext(projectPath: "/Users/example/Projects/backup-project")
+            ),
+        ])
+        try sourceStore.updateTokenProjectDisplayName(
+            projectPath: "/Users/example/Projects/backup-project",
+            displayName: "Client Work"
+        )
+        let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
+        try sourceStore.exportBackup(to: backupURL)
+        let (destinationStore, _) = try makeTemporaryStore()
+
+        try destinationStore.importBackup(from: backupURL)
+
+        let entries = try destinationStore.tokenProjectCatalogEntries()
+        XCTAssertEqual(entries.first?.displayName, "Client Work")
+        XCTAssertEqual(entries.first?.effectiveDisplayName, "Client Work")
+    }
+
     func testBackupImportCleansMalformedTokenModelLabelsAndRebuildsCatalogs() async throws {
         let sourceDirectoryURL = try makeTemporaryDirectory()
         let sourceURL = sourceDirectoryURL.appendingPathComponent("source.sqlite3")
@@ -259,6 +374,49 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.errorMessage, "Backup could not be imported.")
         XCTAssertNil(viewModel.statusMessage)
+    }
+
+    @MainActor
+    func testSettingsViewModelLoadsRenamesAndResetsProjectNames() async throws {
+        let (store, _) = try makeTemporaryStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z"),
+                context: TokenUsageContext(projectPath: "/Users/example/Projects/backup-project")
+            ),
+        ])
+        let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
+        await viewModel.refreshProjectEntries()
+
+        XCTAssertEqual(viewModel.projectEntries.map(\.effectiveDisplayName), ["backup-project"])
+
+        guard let entry = viewModel.projectEntries.first else {
+            XCTFail("Expected project entry")
+            return
+        }
+        await viewModel.renameProject(entry, displayName: "Client Work")
+
+        XCTAssertEqual(viewModel.statusMessage, "Project name updated.")
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertEqual(viewModel.projectEntries.map(\.effectiveDisplayName), ["Client Work"])
+
+        await viewModel.renameProject(viewModel.projectEntries[0], displayName: "Bad\nName")
+
+        XCTAssertEqual(viewModel.errorMessage, UsageHistoryStoreError.invalidProjectDisplayName.localizedDescription)
+
+        await viewModel.resetProjectName(viewModel.projectEntries[0])
+
+        XCTAssertEqual(viewModel.statusMessage, "Project name reset.")
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertEqual(viewModel.projectEntries.map(\.effectiveDisplayName), ["backup-project"])
     }
 
     @MainActor

@@ -37,6 +37,10 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(tables.contains("token_project_catalog"))
         XCTAssertTrue(tables.contains("token_effort_catalog"))
         XCTAssertTrue(tables.contains("token_source_catalog"))
+        XCTAssertTrue(
+            try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_project_catalog')")
+                .contains("display_name")
+        )
         XCTAssertTrue(indexes.contains("idx_usage_samples_window_bucket_timestamp"))
         XCTAssertTrue(indexes.contains("idx_usage_rollups_window_bucket_sample_timestamp"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_model_received_at"))

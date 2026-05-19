@@ -56,6 +56,8 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func exportBackup(to destinationURL: URL) async throws
     func importBackup(from sourceURL: URL) async throws
     func clearHistory() async throws
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry]
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws
     func importTokenHistory(
         importer: CodexSessionTokenBackfillImporting,
         request: CodexSessionTokenBackfillRequest
@@ -231,6 +233,16 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     func clearHistory() throws {
         let store = try store()
         try store.clearHistory()
+    }
+
+    func tokenProjectCatalogEntries() throws -> [TokenProjectCatalogEntry] {
+        let store = try store()
+        return try store.tokenProjectCatalogEntries()
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) throws {
+        let store = try store()
+        try store.updateTokenProjectDisplayName(projectPath: projectPath, displayName: displayName)
     }
 
     func importTokenHistory(

@@ -728,20 +728,21 @@ extension UsageHistoryStore {
         var series = try tokenDashboardAggregateAndUnattributedSeries()
         let statement = try prepare(
             """
-            SELECT project_path, project_name, last_seen_at
+            SELECT project_path, project_name, display_name, last_seen_at
             FROM token_project_catalog
             ORDER BY last_seen_at DESC, project_name ASC, project_path ASC
             """
         )
         defer { sqlite3_finalize(statement) }
 
-        var projectRows: [(path: String, name: String)] = []
+        var projectRows: [(path: String, generatedName: String, displayName: String?)] = []
         while true {
             switch sqlite3_step(statement) {
             case SQLITE_ROW:
                 projectRows.append((
                     path: columnText(statement, index: 0),
-                    name: columnText(statement, index: 1)
+                    generatedName: columnText(statement, index: 1),
+                    displayName: optionalColumnText(statement, index: 2)
                 ))
             case SQLITE_DONE:
                 let displayNames = Self.disambiguatedProjectDisplayNames(for: projectRows)
@@ -749,7 +750,7 @@ extension UsageHistoryStore {
                     series.append(
                         TokenDashboardSeries(
                             id: "project:\(row.path)",
-                            name: displayNames[row.path] ?? row.name,
+                            name: displayNames[row.path] ?? Self.projectBaseDisplayName(for: row),
                             kind: .project,
                             contextID: row.path,
                             projectPath: row.path
@@ -787,6 +788,81 @@ extension UsageHistoryStore {
 
     func tokenDashboardBounds() throws -> UsageHistoryBounds? {
         try tokenComponentHistoryBounds()
+    }
+
+    func tokenProjectCatalogEntries() throws -> [TokenProjectCatalogEntry] {
+        let statement = try prepare(
+            """
+            SELECT project_path, project_name, display_name, first_seen_at, last_seen_at
+            FROM token_project_catalog
+            ORDER BY last_seen_at DESC, project_name ASC, project_path ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var entries: [TokenProjectCatalogEntry] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                entries.append(
+                    TokenProjectCatalogEntry(
+                        projectPath: columnText(statement, index: 0),
+                        generatedName: columnText(statement, index: 1),
+                        displayName: optionalColumnText(statement, index: 2),
+                        firstSeenAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 3))),
+                        lastSeenAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 4)))
+                    )
+                )
+            case SQLITE_DONE:
+                return entries.sorted { lhs, rhs in
+                    if lhs.lastSeenAt != rhs.lastSeenAt {
+                        return lhs.lastSeenAt > rhs.lastSeenAt
+                    }
+
+                    let nameComparison = lhs.effectiveDisplayName.localizedStandardCompare(rhs.effectiveDisplayName)
+                    if nameComparison != .orderedSame {
+                        return nameComparison == .orderedAscending
+                    }
+
+                    return lhs.projectPath.localizedStandardCompare(rhs.projectPath) == .orderedAscending
+                }
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) throws {
+        try updateTokenProjectDisplayName(projectPath: projectPath, displayName: displayName, postNotification: true)
+    }
+
+    func updateTokenProjectDisplayName(
+        projectPath: String,
+        displayName: String?,
+        postNotification: Bool,
+        requireExisting: Bool = true
+    ) throws {
+        let normalizedDisplayName = try Self.normalizedProjectDisplayNameForStorage(displayName)
+        let statement = try prepare(
+            """
+            UPDATE token_project_catalog
+            SET display_name = ?
+            WHERE project_path = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindOptionalText(normalizedDisplayName, to: 1, in: statement)
+        bindText(projectPath, to: 2, in: statement)
+        try step(statement)
+
+        guard !requireExisting || sqlite3_changes(database) > 0 else {
+            throw UsageHistoryStoreError.databaseOperationFailed("Project was not found.")
+        }
+
+        if postNotification {
+            notificationCenter.post(name: Self.didChangeNotification, object: self)
+        }
     }
 
     private static func tokenDashboardSeriesIdentity(
@@ -836,16 +912,26 @@ extension UsageHistoryStore {
         return fallback
     }
 
+    static func normalizedProjectDisplayNameForStorage(_ value: String?) throws -> String? {
+        if CodexTokenContextNormalizer.isInvalidNonBlankProjectDisplayName(value) {
+            throw UsageHistoryStoreError.invalidProjectDisplayName
+        }
+
+        return CodexTokenContextNormalizer.normalizedProjectDisplayName(value)
+    }
+
     private static func disambiguatedProjectDisplayNames(
-        for rows: [(path: String, name: String)]
+        for rows: [(path: String, generatedName: String, displayName: String?)]
     ) -> [String: String] {
-        let nameCounts = Dictionary(grouping: rows, by: \.name).mapValues(\.count)
+        let nameCounts = Dictionary(grouping: rows) { row in
+            projectBaseDisplayName(for: row)
+        }.mapValues(\.count)
         var displayNames = [String: String]()
         var candidateCounts = [String: Int]()
 
         for row in rows {
-            let baseName = row.name.isEmpty ? URL(fileURLWithPath: row.path).lastPathComponent : row.name
-            guard nameCounts[row.name, default: 0] > 1 else {
+            let baseName = projectBaseDisplayName(for: row)
+            guard nameCounts[baseName, default: 0] > 1 else {
                 displayNames[row.path] = baseName
                 continue
             }
@@ -869,6 +955,24 @@ extension UsageHistoryStore {
         }
 
         return displayNames
+    }
+
+    private static func projectBaseDisplayName(
+        for row: (path: String, generatedName: String, displayName: String?)
+    ) -> String {
+        if let displayName = row.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayName.isEmpty
+        {
+            return displayName
+        }
+
+        let generatedName = row.generatedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !generatedName.isEmpty {
+            return generatedName
+        }
+
+        let fallback = URL(fileURLWithPath: row.path).lastPathComponent
+        return fallback.isEmpty ? row.path : fallback
     }
 }
 

@@ -189,6 +189,14 @@ extension UsageHistoryStore {
             column: "context_version",
             schema: "imported_usage_history"
         ) ? "context_version" : "NULL"
+        let importedHasProjectDisplayNames = try tableExists(
+            table: "token_project_catalog",
+            schema: "imported_usage_history"
+        ) && tableHasColumn(
+            table: "token_project_catalog",
+            column: "display_name",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -268,7 +276,43 @@ extension UsageHistoryStore {
         _ = try cleanupTokenContextValues()
         try recomputeStoredUsageConsumption()
         try rebuildSeriesCatalogs()
+        if importedHasProjectDisplayNames {
+            try importTokenProjectDisplayNamesFromAttachedBackup()
+        }
         notificationCenter.post(name: Self.didChangeNotification, object: self)
+    }
+
+    private func importTokenProjectDisplayNamesFromAttachedBackup() throws {
+        let statement = try prepare(
+            """
+            SELECT project_path, display_name
+            FROM imported_usage_history.token_project_catalog
+            WHERE display_name IS NOT NULL
+                AND NULLIF(TRIM(display_name), '') IS NOT NULL
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let projectPath = columnText(statement, index: 0)
+                let displayName = columnText(statement, index: 1)
+                guard !CodexTokenContextNormalizer.isInvalidNonBlankProjectDisplayName(displayName) else {
+                    continue
+                }
+                try updateTokenProjectDisplayName(
+                    projectPath: projectPath,
+                    displayName: displayName,
+                    postNotification: false,
+                    requireExisting: false
+                )
+            case SQLITE_DONE:
+                return
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
     }
 
     static func applicationSupportDirectoryURL() throws -> URL {

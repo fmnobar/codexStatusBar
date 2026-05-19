@@ -39,6 +39,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isImportingTokenHistory = false
     @Published private(set) var tokenImportSummaryText: String?
+    @Published private(set) var projectEntries: [TokenProjectCatalogEntry] = []
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -94,6 +95,19 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
     }
 
+    func refreshProjectEntries() async {
+        do {
+            projectEntries = try await database.tokenProjectCatalogEntries()
+        } catch {
+            projectEntries = []
+        }
+    }
+
+    func refreshData() async {
+        await refreshDatabaseInfo()
+        await refreshProjectEntries()
+    }
+
     func revealDatabaseInFinder() {
         guard let databaseURL else {
             return
@@ -119,7 +133,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
             try await database.importBackup(from: sourceURL)
             statusMessage = "Backup imported."
             errorMessage = nil
-            await refreshDatabaseInfo()
+            await refreshData()
         } catch {
             statusMessage = nil
             errorMessage = "Backup could not be imported."
@@ -132,10 +146,44 @@ final class DataManagementSettingsViewModel: ObservableObject {
             statusMessage = "History cleared."
             errorMessage = nil
             tokenImportSummaryText = nil
-            await refreshDatabaseInfo()
+            projectEntries = []
+            await refreshData()
         } catch {
             statusMessage = nil
             errorMessage = "History could not be cleared."
+        }
+    }
+
+    func renameProject(_ entry: TokenProjectCatalogEntry, displayName: String) async {
+        do {
+            try await database.updateTokenProjectDisplayName(
+                projectPath: entry.projectPath,
+                displayName: displayName
+            )
+            statusMessage = "Project name updated."
+            errorMessage = nil
+            await refreshProjectEntries()
+        } catch UsageHistoryStoreError.invalidProjectDisplayName {
+            statusMessage = nil
+            errorMessage = UsageHistoryStoreError.invalidProjectDisplayName.localizedDescription
+        } catch {
+            statusMessage = nil
+            errorMessage = "Project name could not be updated."
+        }
+    }
+
+    func resetProjectName(_ entry: TokenProjectCatalogEntry) async {
+        do {
+            try await database.updateTokenProjectDisplayName(
+                projectPath: entry.projectPath,
+                displayName: nil
+            )
+            statusMessage = "Project name reset."
+            errorMessage = nil
+            await refreshProjectEntries()
+        } catch {
+            statusMessage = nil
+            errorMessage = "Project name could not be reset."
         }
     }
 
@@ -181,7 +229,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         case .success(let summary):
             tokenImportSummaryText = summary.statusMessage
             Task {
-                await refreshDatabaseInfo()
+                await refreshData()
             }
         case .failure:
             tokenImportSummaryText = nil
@@ -196,6 +244,8 @@ struct DataManagementSettingsView: View {
     @AppStorage(SettingsTabSelectionStore.key) private var selectedTabRaw = SettingsTabSelection.data.rawValue
     @State private var isConfirmingClear = false
     @State private var pendingImportURL: URL?
+    @State private var projectBeingRenamed: TokenProjectCatalogEntry?
+    @State private var projectNameDraft = ""
 
     init(
         database: UsageHistoryDatabaseWorking,
@@ -211,6 +261,7 @@ struct DataManagementSettingsView: View {
                 databaseSection
                 retentionSection
                 tokenHistorySection
+                projectsSection
                 feedbackSection
             }
             .formStyle(.grouped)
@@ -230,7 +281,10 @@ struct DataManagementSettingsView: View {
         .frame(width: 580, height: 540)
         .scenePadding()
         .task {
-            await viewModel.refreshDatabaseInfo()
+            await viewModel.refreshData()
+        }
+        .sheet(item: $projectBeingRenamed) { entry in
+            projectRenameSheet(for: entry)
         }
         .alert("Clear History?", isPresented: $isConfirmingClear) {
             Button("Clear History", role: .destructive) {
@@ -356,6 +410,80 @@ struct DataManagementSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var projectsSection: some View {
+        Section("Projects") {
+            if viewModel.projectEntries.isEmpty {
+                Text("No project token history has been imported yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.projectEntries) { entry in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(entry.effectiveDisplayName)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+
+                            Text(entry.projectPath)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(entry.projectPath)
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Button("Rename...") {
+                            projectNameDraft = entry.effectiveDisplayName
+                            projectBeingRenamed = entry
+                        }
+
+                        Button("Reset Name") {
+                            Task {
+                                await viewModel.resetProjectName(entry)
+                            }
+                        }
+                        .disabled(entry.displayName == nil)
+                    }
+                }
+            }
+        }
+    }
+
+    private func projectRenameSheet(for entry: TokenProjectCatalogEntry) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rename Project")
+                .font(.headline)
+
+            Text(entry.projectPath)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+
+            TextField("Project name", text: $projectNameDraft)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    projectBeingRenamed = nil
+                }
+                Button("Save") {
+                    let displayName = projectNameDraft
+                    projectBeingRenamed = nil
+                    Task {
+                        await viewModel.renameProject(entry, displayName: displayName)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 
     @ViewBuilder

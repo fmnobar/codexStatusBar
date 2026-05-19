@@ -78,6 +78,7 @@ enum UsageHistoryStoreError: LocalizedError {
     case statementPreparationFailed(String)
     case databaseUnavailable
     case invalidBackup
+    case invalidProjectDisplayName
     case fileOperationFailed(String)
 
     var errorDescription: String? {
@@ -92,6 +93,8 @@ enum UsageHistoryStoreError: LocalizedError {
             return "Usage history database is not available."
         case .invalidBackup:
             return "Selected file is not a valid usage history backup."
+        case .invalidProjectDisplayName:
+            return "Project name cannot contain line breaks or control characters."
         case .fileOperationFailed(let message):
             return "Usage history file operation failed: \(message)"
         }
@@ -101,6 +104,20 @@ enum UsageHistoryStoreError: LocalizedError {
 struct UsageHistoryDatabaseInfo: Equatable {
     let databaseURL: URL
     let totalByteSize: Int64
+}
+
+struct TokenProjectCatalogEntry: Identifiable, Equatable, Sendable {
+    let projectPath: String
+    let generatedName: String
+    let displayName: String?
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+
+    var id: String { projectPath }
+
+    var effectiveDisplayName: String {
+        displayName ?? generatedName
+    }
 }
 
 struct StoredTokenUsageSample: Equatable {
@@ -197,6 +214,28 @@ enum CodexTokenContextNormalizer {
         let lastPathComponent = URL(fileURLWithPath: projectPath).lastPathComponent
             .trimmingCharacters(in: trimSet)
         return lastPathComponent.isEmpty ? nil : lastPathComponent
+    }
+
+    static func normalizedProjectDisplayName(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        guard !trimmedValue.isEmpty else {
+            return nil
+        }
+
+        guard trimmedValue.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return trimmedValue
+    }
+
+    static func isInvalidNonBlankProjectDisplayName(_ value: String?) -> Bool {
+        let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        guard !trimmedValue.isEmpty else {
+            return false
+        }
+
+        return normalizedProjectDisplayName(trimmedValue) == nil
     }
 }
 

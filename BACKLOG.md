@@ -4,8 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Add editable project names for token analytics | Build a local project catalog from captured project paths and let users rename projects for dashboard display while keeping original paths available for audit/debugging. |
-| 2 | Track additional safe token slices as Codex exposes them | Capture future explicit token/session dimensions when available, including an explicit fast/normal mode only if Codex records it directly. |
+| 1 | Track additional safe token slices as Codex exposes them | Capture future explicit token/session dimensions when available, including an explicit fast/normal mode only if Codex records it directly. |
 
 ## Done
 
@@ -181,10 +180,12 @@
   - Reused stored model, effort, and project catalogs so available breakdown rows stay stable without scanning raw token history.
   - Kept the stacked category chart style unchanged while filtering summaries, chart rows, table rows, and CSV export to the selected breakdown rows.
 
-## Next Candidates
-
 - Add editable project names for token analytics
-  - Let users rename captured project paths locally after project-level token analytics exist.
+  - Added local project aliases stored on the token project catalog while keeping project paths as the stable identifier.
+  - Added project rename and reset controls in Data settings.
+  - Updated Token Dashboard project breakdowns and CSV export to use aliases while preserving full project paths for audit/debugging.
+
+## Next Candidates
 
 - Track additional safe token slices as Codex exposes them
   - Store future explicit dimensions, including fast/normal only if Codex records it directly rather than requiring inference.

@@ -363,7 +363,7 @@ final class TokenDashboardViewModel: ObservableObject {
                 formatter.string(from: point.bucketStart),
                 formatter.string(from: point.bucketEnd),
                 Self.csvEscaped(point.seriesID),
-                Self.csvEscaped(point.seriesName),
+                Self.csvEscaped(contextName),
                 point.seriesKind.rawValue,
                 Self.csvEscaped(contextID),
                 Self.csvEscaped(contextName),

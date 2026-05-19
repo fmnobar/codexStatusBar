@@ -1156,17 +1156,22 @@ extension UsageHistoryStoreTests {
         viewModel.selectSeries(TokenDashboardSeries.aggregateID)
         XCTAssertEqual(viewModel.selectedSeriesIDs, [TokenDashboardSeries.aggregateID])
 
+        try store.updateTokenProjectDisplayName(
+            projectPath: "/Users/example/Projects/codex_codex",
+            displayName: "Main Work"
+        )
         viewModel.selectedBreakdownDimension = .project
         await viewModel.reload()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Project")
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+        XCTAssertTrue(viewModel.breakdownRows.contains { $0.series.name == "Main Work" })
 
         viewModel.selectSeries("project:/Users/example/Projects/codex_codex")
 
         XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
         XCTAssertTrue(viewModel.csvText.contains("project,month"))
-        XCTAssertTrue(viewModel.csvText.contains("project:/Users/example/Projects/codex_codex,codex_codex,project,/Users/example/Projects/codex_codex,codex_codex (Projects),/Users/example/Projects/codex_codex,input,100"))
+        XCTAssertTrue(viewModel.csvText.contains("project:/Users/example/Projects/codex_codex,Main Work,project,/Users/example/Projects/codex_codex,Main Work,/Users/example/Projects/codex_codex,input,100"))
     }
 
     @MainActor
