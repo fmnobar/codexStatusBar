@@ -4,7 +4,8 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Review live token payload audit sample | After a live token notification is captured in Settings Data, review/export the sanitized sample and decide whether to record live context fields directly or join live events with safe turn context. |
+| 1 | Make live token payload audit capture observable | A real Codex CLI token-generating probe completed while the installed app was running, but no `live-token-payload-audit.json` was written; add diagnostics that show whether the app-server connection receives token notifications, whether audit sanitization runs, and why no bounded sample is persisted. |
+| 2 | Review live token payload audit sample | After a live token notification is captured in Settings Data, review/export the sanitized sample and decide whether to record live context fields directly or join live events with safe turn context. |
 
 ## Done
 
