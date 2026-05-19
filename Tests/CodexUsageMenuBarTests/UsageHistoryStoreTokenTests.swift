@@ -493,7 +493,7 @@ extension UsageHistoryStoreTests {
                 receivedAt: date("2026-04-14T20:00:00Z"),
                 context: TokenUsageContext(
                     sessionID: "/Users/example/session.jsonl",
-                    projectPath: "relative/path",
+                    projectPath: "/Users/example/project}:trace_span",
                     effort: "high/unsafe",
                     source: "cli\nprompt"
                 )

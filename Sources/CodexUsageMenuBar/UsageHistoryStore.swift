@@ -354,6 +354,9 @@ enum CodexTokenContextNormalizer {
         guard trimmedValue.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
             return nil
         }
+        guard !trimmedValue.contains("{"), !trimmedValue.contains("}") else {
+            return nil
+        }
 
         let url = URL(fileURLWithPath: trimmedValue)
         let standardizedPath = url.standardizedFileURL.path
