@@ -29,6 +29,13 @@ enum StatusItemTitleLayout {
     }
 }
 
+@MainActor
+enum StatusItemVisibility {
+    static func forceVisible(_ statusItem: NSStatusItem) {
+        statusItem.isVisible = true
+    }
+}
+
 enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
     case fiveHour
     case sevenDay

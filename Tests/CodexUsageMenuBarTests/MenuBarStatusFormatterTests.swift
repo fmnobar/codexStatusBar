@@ -46,6 +46,21 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testStatusItemVisibilityCanRestoreHiddenItem() {
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        defer {
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
+
+        statusItem.isVisible = false
+        XCTAssertFalse(statusItem.isVisible)
+
+        StatusItemVisibility.forceVisible(statusItem)
+
+        XCTAssertTrue(statusItem.isVisible)
+    }
+
     func testMenuBarDisplayOptionsStoreDefaultsToLimitOnly() {
         let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

@@ -29,6 +29,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.updateMonitor = updateMonitor
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.autosaveName = "CodexStatusBarStatusItem"
+        StatusItemVisibility.forceVisible(statusItem)
         super.init()
 
         configurePopover()
@@ -60,6 +61,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func configureStatusItem() {
+        StatusItemVisibility.forceVisible(statusItem)
+
         guard let button = statusItem.button else {
             return
         }
@@ -110,6 +113,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.attributedTitle = attributedTitle
         button.cell?.lineBreakMode = .byTruncatingTail
         statusItem.length = StatusItemTitleLayout.length(for: visibleText, font: font)
+        StatusItemVisibility.forceVisible(statusItem)
     }
 
     private func updateStatusItemToolTip(_ text: String?) {
