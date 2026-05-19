@@ -452,7 +452,12 @@ extension UsageHistoryStoreTests {
 
         XCTAssertNil(store.latestAudit)
 
-        store.record(audit)
+        switch store.record(audit) {
+        case .success:
+            break
+        case .failure(let error):
+            XCTFail("Expected audit persistence to succeed, got \(error)")
+        }
 
         XCTAssertEqual(store.latestAudit, audit)
         XCTAssertTrue(FileManager.default.fileExists(atPath: auditURL.path))
@@ -468,14 +473,65 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testTokenPayloadAuditStoreReportsWriteFailureWithoutDroppingLatestAudit() throws {
+        let blockedParentURL = try makeTemporaryDirectory().appendingPathComponent("not-a-directory")
+        try Data("blocked".utf8).write(to: blockedParentURL)
+        let auditURL = blockedParentURL.appendingPathComponent("live-token-payload-audit.json")
+        let store = CodexTokenPayloadAuditStore(fileURL: auditURL)
+        let audit = tokenPayloadAudit()
+
+        switch store.record(audit) {
+        case .success:
+            XCTFail("Expected audit persistence to fail")
+        case .failure:
+            break
+        }
+
+        XCTAssertEqual(store.latestAudit, audit)
+    }
+
+    @MainActor
+    func testAppServerAuditDiagnosticsStoreTracksPersistsAndClearsCaptureState() throws {
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        let store = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL, now: { Date(timeIntervalSince1970: 1_777_100_000) })
+
+        store.record(.connected(mode: .standardIO))
+        store.record(.inboundMethod("thread/tokenUsage/updated"))
+        store.record(.tokenUsageNotification)
+        store.record(.auditSanitizeAttempt(success: true))
+        store.record(.auditPersistAttempt(success: true, errorText: nil))
+
+        XCTAssertTrue(store.diagnostics.isConnected)
+        XCTAssertEqual(store.diagnostics.connectionMode, .standardIO)
+        XCTAssertEqual(store.diagnostics.lastInboundMethod, "thread/tokenUsage/updated")
+        XCTAssertEqual(store.diagnostics.tokenUsageNotificationCount, 1)
+        XCTAssertEqual(store.diagnostics.auditSanitizeSuccessCount, 1)
+        XCTAssertEqual(store.diagnostics.lastAuditPersistenceStatus, .succeeded)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: diagnosticsURL.path))
+
+        let reloadedStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+        XCTAssertEqual(reloadedStore.diagnostics.tokenUsageNotificationCount, 1)
+        XCTAssertEqual(reloadedStore.diagnostics.lastAuditPersistenceStatus, .succeeded)
+
+        reloadedStore.clear()
+
+        XCTAssertEqual(reloadedStore.diagnostics.tokenUsageNotificationCount, 0)
+        XCTAssertEqual(reloadedStore.diagnostics.lastAuditPersistenceStatus, .notAttempted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: diagnosticsURL.path))
+    }
+
+    @MainActor
     func testSettingsViewModelShowsExportsAndClearsTokenPayloadAudit() async throws {
         let (historyStore, _) = try makeTemporaryStore()
         let auditURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit.json")
         let auditStore = CodexTokenPayloadAuditStore(fileURL: auditURL)
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        let diagnosticsStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
         let viewModel = DataManagementSettingsViewModel(
             store: historyStore,
             defaults: makeIsolatedDefaults(),
-            tokenPayloadAuditStore: auditStore
+            tokenPayloadAuditStore: auditStore,
+            tokenPayloadAuditDiagnosticsStore: diagnosticsStore
         )
         let audit = tokenPayloadAudit()
         let exportURL = try makeTemporaryDirectory().appendingPathComponent("audit.json")
@@ -484,9 +540,17 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.tokenPayloadAuditCapturedAtText, "No capture yet")
 
         auditStore.record(audit)
+        diagnosticsStore.record(.connected(mode: .standardIO))
+        diagnosticsStore.record(.inboundMethod("thread/tokenUsage/updated"))
+        diagnosticsStore.record(.tokenUsageNotification)
+        diagnosticsStore.record(.auditSanitizeAttempt(success: true))
+        diagnosticsStore.record(.auditPersistAttempt(success: true, errorText: nil))
 
         XCTAssertEqual(viewModel.tokenPayloadAudit, audit)
         XCTAssertTrue(viewModel.canExportTokenPayloadAudit)
+        XCTAssertEqual(viewModel.tokenPayloadAuditDiagnosticsConnectionText, "Connected via stdio")
+        XCTAssertEqual(viewModel.tokenPayloadAuditDiagnosticsLastMethodText, "thread/tokenUsage/updated")
+        XCTAssertEqual(viewModel.tokenPayloadAuditDiagnosticsLastAuditStatusText, "Audit persisted")
 
         viewModel.exportTokenPayloadAudit(to: exportURL)
 
@@ -499,6 +563,11 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.statusMessage, "Payload audit cleared.")
         XCTAssertNil(viewModel.tokenPayloadAudit)
         XCTAssertFalse(viewModel.canExportTokenPayloadAudit)
+
+        viewModel.clearTokenPayloadAuditDiagnostics()
+
+        XCTAssertEqual(viewModel.statusMessage, "Capture diagnostics cleared.")
+        XCTAssertEqual(viewModel.tokenPayloadAuditDiagnostics.tokenUsageNotificationCount, 0)
     }
 
     @MainActor

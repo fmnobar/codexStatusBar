@@ -42,31 +42,40 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var tokenImportSummaryText: String?
     @Published private(set) var projectEntries: [TokenProjectCatalogEntry] = []
     @Published private(set) var tokenPayloadAudit: CodexTokenUsagePayloadAudit?
+    @Published private(set) var tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
     private let byteFormatter: ByteCountFormatter
     private let tokenBackfillImporter: CodexSessionTokenBackfillImporting
     private let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
+    private let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private var databaseInfo: UsageHistoryDatabaseInfo?
     private var tokenPayloadAuditCancellable: AnyCancellable?
+    private var tokenPayloadAuditDiagnosticsCancellable: AnyCancellable?
 
     init(
         database: UsageHistoryDatabaseWorking,
         defaults: UserDefaults = .standard,
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
-        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore()
+        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
+        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
     ) {
         self.database = database
         self.defaults = defaults
         self.byteFormatter = byteFormatter
         self.tokenBackfillImporter = tokenBackfillImporter
         self.tokenPayloadAuditStore = tokenPayloadAuditStore
+        self.tokenPayloadAuditDiagnosticsStore = tokenPayloadAuditDiagnosticsStore
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
         tokenPayloadAudit = tokenPayloadAuditStore.latestAudit
+        tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
         tokenPayloadAuditCancellable = tokenPayloadAuditStore.$latestAudit.sink { [weak self] audit in
             self?.tokenPayloadAudit = audit
+        }
+        tokenPayloadAuditDiagnosticsCancellable = tokenPayloadAuditDiagnosticsStore.$diagnostics.sink { [weak self] diagnostics in
+            self?.tokenPayloadAuditDiagnostics = diagnostics
         }
     }
 
@@ -75,14 +84,16 @@ final class DataManagementSettingsViewModel: ObservableObject {
         defaults: UserDefaults = .standard,
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
-        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore()
+        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
+        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
     ) {
         self.init(
             database: UsageHistoryDatabaseWorker(store: store),
             defaults: defaults,
             byteFormatter: byteFormatter,
             tokenBackfillImporter: tokenBackfillImporter,
-            tokenPayloadAuditStore: tokenPayloadAuditStore
+            tokenPayloadAuditStore: tokenPayloadAuditStore,
+            tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore
         )
     }
 
@@ -104,6 +115,26 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
 
         return Self.auditDateFormatter.string(from: capturedAt)
+    }
+
+    var tokenPayloadAuditDiagnosticsUpdatedAtText: String {
+        Self.auditDateFormatter.string(from: tokenPayloadAuditDiagnostics.lastUpdatedAt)
+    }
+
+    var tokenPayloadAuditDiagnosticsConnectionText: String {
+        tokenPayloadAuditDiagnostics.connectionStatusText
+    }
+
+    var tokenPayloadAuditDiagnosticsLastMethodText: String {
+        tokenPayloadAuditDiagnostics.lastInboundMethod ?? "--"
+    }
+
+    var tokenPayloadAuditDiagnosticsLastAuditStatusText: String {
+        tokenPayloadAuditDiagnostics.lastAuditStatusText
+    }
+
+    var tokenPayloadAuditDiagnosticsLastErrorText: String {
+        tokenPayloadAuditDiagnostics.lastErrorText
     }
 
     func refreshDatabaseInfo() async {
@@ -234,6 +265,12 @@ final class DataManagementSettingsViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func clearTokenPayloadAuditDiagnostics() {
+        tokenPayloadAuditDiagnosticsStore.clear()
+        statusMessage = "Capture diagnostics cleared."
+        errorMessage = nil
+    }
+
     func importTokenHistoryFromCodexSessions() {
         importRecentTokenHistoryFromCodexSessions()
     }
@@ -304,12 +341,14 @@ struct DataManagementSettingsView: View {
     init(
         database: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
-        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore()
+        tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
+        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
     ) {
         _viewModel = StateObject(
             wrappedValue: DataManagementSettingsViewModel(
                 database: database,
-                tokenPayloadAuditStore: tokenPayloadAuditStore
+                tokenPayloadAuditStore: tokenPayloadAuditStore,
+                tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore
             )
         )
         self.updateMonitor = updateMonitor
@@ -519,6 +558,57 @@ struct DataManagementSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Capture diagnostics")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Connection")
+                        Text(viewModel.tokenPayloadAuditDiagnosticsConnectionText)
+                    }
+                    GridRow {
+                        Text("Last method")
+                        Text(viewModel.tokenPayloadAuditDiagnosticsLastMethodText)
+                            .monospaced()
+                    }
+                    GridRow {
+                        Text("Token notifications")
+                        Text("\(viewModel.tokenPayloadAuditDiagnostics.tokenUsageNotificationCount)")
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Sanitized")
+                        Text("\(viewModel.tokenPayloadAuditDiagnostics.auditSanitizeSuccessCount)/\(viewModel.tokenPayloadAuditDiagnostics.auditSanitizeAttemptCount)")
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Audit write")
+                        Text(viewModel.tokenPayloadAuditDiagnosticsLastAuditStatusText)
+                    }
+                    GridRow {
+                        Text("Last update")
+                        Text(viewModel.tokenPayloadAuditDiagnosticsUpdatedAtText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.tokenPayloadAuditDiagnosticsLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+
+                Text(viewModel.tokenPayloadAuditDiagnostics.interpretationText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 Button("Export Payload Audit...") {
                     exportTokenPayloadAudit()
@@ -529,6 +619,10 @@ struct DataManagementSettingsView: View {
                     viewModel.clearTokenPayloadAudit()
                 }
                 .disabled(viewModel.tokenPayloadAudit == nil)
+
+                Button("Clear Capture Diagnostics") {
+                    viewModel.clearTokenPayloadAuditDiagnostics()
+                }
             }
         }
     }

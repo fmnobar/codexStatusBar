@@ -7,6 +7,7 @@ protocol CodexRateLimitClientProtocol: AnyObject {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)? { get set }
     var onTokenUsage: ((CodexTokenUsageNotification) -> Void)? { get set }
     var onTokenUsagePayloadAudit: ((CodexTokenUsagePayloadAudit) -> Void)? { get set }
+    var onAppServerAuditDiagnosticEvent: ((CodexAppServerAuditDiagnosticEvent) -> Void)? { get set }
 
     func start() async throws -> CodexUsageSnapshot
     func refresh() async throws -> CodexUsageSnapshot

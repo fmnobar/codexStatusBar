@@ -4,8 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Make live token payload audit capture observable | A real Codex CLI token-generating probe completed while the installed app was running, but no `live-token-payload-audit.json` was written; add diagnostics that show whether the app-server connection receives token notifications, whether audit sanitization runs, and why no bounded sample is persisted. |
-| 2 | Review live token payload audit sample | After a live token notification is captured in Settings Data, review/export the sanitized sample and decide whether to record live context fields directly or join live events with safe turn context. |
+| 1 | Review live token payload audit sample | After a live token notification is captured in Settings Data, review/export the sanitized sample and decide whether to record live context fields directly or join live events with safe turn context. |
 
 ## Done
 
@@ -222,6 +221,11 @@
   - Persisted the latest bounded audit sample under Application Support without changing token totals or token storage semantics.
   - Added Data settings status, export, and clear controls for the live payload audit.
   - Kept prompt, message, tool, auth, and arbitrary unknown values out of persisted diagnostics.
+
+- Make live token payload audit capture observable
+  - Added app-server capture diagnostics for connection state, inbound JSON-RPC method names, rate-limit and token notification counts, audit sanitization, audit persistence, and last errors.
+  - Made audit persistence report success or failure without blocking token notification handling.
+  - Surfaced the diagnostic state in Data settings with a separate clear action while keeping raw payload values out of diagnostics.
 
 ## Next Candidates
 

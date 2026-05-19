@@ -676,6 +676,7 @@ private final class MockCodexRateLimitClient: CodexRateLimitClientProtocol {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)?
     var onTokenUsage: ((CodexTokenUsageNotification) -> Void)?
     var onTokenUsagePayloadAudit: ((CodexTokenUsagePayloadAudit) -> Void)?
+    var onAppServerAuditDiagnosticEvent: ((CodexAppServerAuditDiagnosticEvent) -> Void)?
 
     private(set) var startCallCount = 0
     private(set) var refreshCallCount = 0

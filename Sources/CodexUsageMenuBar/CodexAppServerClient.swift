@@ -31,6 +31,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)?
     var onTokenUsage: ((CodexTokenUsageNotification) -> Void)?
     var onTokenUsagePayloadAudit: ((CodexTokenUsagePayloadAudit) -> Void)?
+    var onAppServerAuditDiagnosticEvent: ((CodexAppServerAuditDiagnosticEvent) -> Void)?
 
     private let decoder = JSONDecoder()
     private let urlSession: URLSession
@@ -223,12 +224,14 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         try process.run()
         self.process = process
         try await initializeSessionIfNeeded()
+        onAppServerAuditDiagnosticEvent?(.connected(mode: .standardIO))
     }
 
     private func connectToServer(on port: Int) async throws {
         currentPort = port
         try openWebSocketIfNeeded()
         try await initializeSessionIfNeeded()
+        onAppServerAuditDiagnosticEvent?(.connected(mode: .webSocket))
     }
 
     private func openWebSocketIfNeeded() throws {
@@ -448,9 +451,19 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
             return
         }
 
+        onAppServerAuditDiagnosticEvent?(.inboundMethod(method))
+
         if method == "account/rateLimits/updated", let params = object["params"] {
-            let notificationData = try makeJSONData(from: params)
-            let notification = try decoder.decode(AccountRateLimitsUpdatedNotificationPayload.self, from: notificationData)
+            onAppServerAuditDiagnosticEvent?(.rateLimitNotification)
+
+            let notification: AccountRateLimitsUpdatedNotificationPayload
+            do {
+                let notificationData = try makeJSONData(from: params)
+                notification = try decoder.decode(AccountRateLimitsUpdatedNotificationPayload.self, from: notificationData)
+            } catch {
+                onAppServerAuditDiagnosticEvent?(.receiveError(error.localizedDescription))
+                throw error
+            }
 
             if notification.isCodexRelated {
                 Task { @MainActor [weak self] in
@@ -469,13 +482,22 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
                 }
             }
         } else if method == "thread/tokenUsage/updated", let params = object["params"] {
-            if let audit = CodexTokenPayloadAuditor.audit(params: params) {
+            onAppServerAuditDiagnosticEvent?(.tokenUsageNotification)
+
+            let audit = CodexTokenPayloadAuditor.audit(params: params)
+            onAppServerAuditDiagnosticEvent?(.auditSanitizeAttempt(success: audit != nil))
+            if let audit {
                 onTokenUsagePayloadAudit?(audit)
             }
 
-            let notificationData = try makeJSONData(from: params)
-            let notification = try decoder.decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: notificationData)
-            onTokenUsage?(notification.toDomainNotification())
+            do {
+                let notificationData = try makeJSONData(from: params)
+                let notification = try decoder.decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: notificationData)
+                onTokenUsage?(notification.toDomainNotification())
+            } catch {
+                onAppServerAuditDiagnosticEvent?(.receiveError(error.localizedDescription))
+                throw error
+            }
         }
     }
 
@@ -506,6 +528,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     }
 
     private func handleReceiveFailure(_ error: Error) {
+        onAppServerAuditDiagnosticEvent?(.receiveError(error.localizedDescription))
         failPendingRequests(with: error)
         resetSocketState()
     }
@@ -542,6 +565,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         standardIOBuffer.removeAll(keepingCapacity: true)
         isInitialized = false
         failPendingRequests(with: CodexClientError.websocketUnavailable)
+        onAppServerAuditDiagnosticEvent?(.disconnected(errorText: nil))
     }
 
     private func stopManagedProcess() {

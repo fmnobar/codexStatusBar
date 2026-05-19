@@ -209,6 +209,220 @@ enum CodexTokenPayloadAuditExporter {
     }
 }
 
+enum CodexAppServerConnectionMode: String, Codable, Equatable {
+    case unknown
+    case webSocket = "web_socket"
+    case standardIO = "standard_io"
+}
+
+enum CodexTokenPayloadAuditPersistenceStatus: String, Codable, Equatable {
+    case notAttempted = "not_attempted"
+    case succeeded
+    case failed
+}
+
+enum CodexAppServerAuditDiagnosticEvent: Equatable {
+    case connected(mode: CodexAppServerConnectionMode)
+    case disconnected(errorText: String?)
+    case inboundMethod(String)
+    case rateLimitNotification
+    case tokenUsageNotification
+    case auditSanitizeAttempt(success: Bool)
+    case auditPersistAttempt(success: Bool, errorText: String?)
+    case receiveError(String)
+}
+
+struct CodexAppServerAuditDiagnostics: Codable, Equatable {
+    let schemaVersion: Int
+    var startedAt: Date
+    var lastUpdatedAt: Date
+    var connectionMode: CodexAppServerConnectionMode
+    var isConnected: Bool
+    var lastInboundMethod: String?
+    var inboundNotificationCount: Int
+    var rateLimitNotificationCount: Int
+    var tokenUsageNotificationCount: Int
+    var auditSanitizeAttemptCount: Int
+    var auditSanitizeSuccessCount: Int
+    var auditPersistAttemptCount: Int
+    var auditPersistSuccessCount: Int
+    var auditPersistFailureCount: Int
+    var lastAuditPersistenceStatus: CodexTokenPayloadAuditPersistenceStatus
+    var lastAuditPersistedAt: Date?
+    var lastPersistenceError: String?
+    var lastReceiveError: String?
+
+    init(now: Date = Date()) {
+        schemaVersion = 1
+        startedAt = now
+        lastUpdatedAt = now
+        connectionMode = .unknown
+        isConnected = false
+        lastInboundMethod = nil
+        inboundNotificationCount = 0
+        rateLimitNotificationCount = 0
+        tokenUsageNotificationCount = 0
+        auditSanitizeAttemptCount = 0
+        auditSanitizeSuccessCount = 0
+        auditPersistAttemptCount = 0
+        auditPersistSuccessCount = 0
+        auditPersistFailureCount = 0
+        lastAuditPersistenceStatus = .notAttempted
+        lastAuditPersistedAt = nil
+        lastPersistenceError = nil
+        lastReceiveError = nil
+    }
+
+    var connectionStatusText: String {
+        guard isConnected else {
+            return connectionMode == .unknown ? "No connection yet" : "Disconnected"
+        }
+
+        switch connectionMode {
+        case .webSocket:
+            return "Connected via WebSocket"
+        case .standardIO:
+            return "Connected via stdio"
+        case .unknown:
+            return "Connected"
+        }
+    }
+
+    var lastAuditStatusText: String {
+        switch lastAuditPersistenceStatus {
+        case .notAttempted:
+            return "No audit write attempted"
+        case .succeeded:
+            return "Audit persisted"
+        case .failed:
+            return "Audit persist failed"
+        }
+    }
+
+    var lastErrorText: String {
+        lastPersistenceError ?? lastReceiveError ?? "None"
+    }
+
+    var interpretationText: String {
+        if tokenUsageNotificationCount == 0 {
+            return "No token usage notification has reached the status app yet."
+        }
+
+        if auditSanitizeSuccessCount == 0 {
+            return "Token usage notifications arrived, but no sanitized audit sample was produced."
+        }
+
+        if lastAuditPersistenceStatus == .failed {
+            return "Token usage notifications arrived and sanitized, but writing the audit file failed."
+        }
+
+        if auditPersistSuccessCount > 0 {
+            return "Token usage notifications arrived, sanitized, and persisted."
+        }
+
+        return "Token usage notifications arrived and sanitized; audit persistence has not completed yet."
+    }
+}
+
+@MainActor
+final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
+    @Published private(set) var diagnostics: CodexAppServerAuditDiagnostics
+
+    private let fileURL: URL
+    private let fileManager: FileManager
+    private let now: () -> Date
+
+    init(
+        fileURL: URL,
+        fileManager: FileManager = .default,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+        self.now = now
+        diagnostics = (try? Self.loadDiagnostics(from: fileURL)) ?? CodexAppServerAuditDiagnostics(now: now())
+    }
+
+    static func applicationSupportStore() -> CodexAppServerAuditDiagnosticsStore {
+        let directoryURL = (try? UsageHistoryStore.applicationSupportDirectoryURL())
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("CodexStatusBar", isDirectory: true)
+        return CodexAppServerAuditDiagnosticsStore(
+            fileURL: directoryURL.appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        )
+    }
+
+    func record(_ event: CodexAppServerAuditDiagnosticEvent) {
+        var updated = diagnostics
+        let eventDate = now()
+        updated.lastUpdatedAt = eventDate
+
+        switch event {
+        case .connected(let mode):
+            updated.connectionMode = mode
+            updated.isConnected = true
+            updated.lastReceiveError = nil
+        case .disconnected(let errorText):
+            updated.isConnected = false
+            if let errorText {
+                updated.lastReceiveError = errorText
+            }
+        case .inboundMethod(let method):
+            updated.lastInboundMethod = method
+            updated.inboundNotificationCount += 1
+        case .rateLimitNotification:
+            updated.rateLimitNotificationCount += 1
+        case .tokenUsageNotification:
+            updated.tokenUsageNotificationCount += 1
+        case .auditSanitizeAttempt(let success):
+            updated.auditSanitizeAttemptCount += 1
+            if success {
+                updated.auditSanitizeSuccessCount += 1
+            }
+        case .auditPersistAttempt(let success, let errorText):
+            updated.auditPersistAttemptCount += 1
+            if success {
+                updated.auditPersistSuccessCount += 1
+                updated.lastAuditPersistenceStatus = .succeeded
+                updated.lastAuditPersistedAt = eventDate
+                updated.lastPersistenceError = nil
+            } else {
+                updated.auditPersistFailureCount += 1
+                updated.lastAuditPersistenceStatus = .failed
+                updated.lastPersistenceError = errorText
+            }
+        case .receiveError(let errorText):
+            updated.lastReceiveError = errorText
+        }
+
+        diagnostics = updated
+        persist(updated)
+    }
+
+    func clear() {
+        diagnostics = CodexAppServerAuditDiagnostics(now: now())
+        try? fileManager.removeItem(at: fileURL)
+    }
+
+    private func persist(_ diagnostics: CodexAppServerAuditDiagnostics) {
+        do {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(diagnostics).write(to: fileURL, options: .atomic)
+        } catch {
+            // Diagnostics must never affect app-server handling.
+        }
+    }
+
+    private static func loadDiagnostics(from fileURL: URL) throws -> CodexAppServerAuditDiagnostics {
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(CodexAppServerAuditDiagnostics.self, from: data)
+    }
+}
+
 @MainActor
 final class CodexTokenPayloadAuditStore: ObservableObject {
     @Published private(set) var latestAudit: CodexTokenUsagePayloadAudit?
@@ -230,13 +444,15 @@ final class CodexTokenPayloadAuditStore: ObservableObject {
         )
     }
 
-    func record(_ audit: CodexTokenUsagePayloadAudit) {
+    @discardableResult
+    func record(_ audit: CodexTokenUsagePayloadAudit) -> Result<Void, Error> {
         latestAudit = audit
         do {
             try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try CodexTokenPayloadAuditExporter.jsonData(for: audit).write(to: fileURL, options: .atomic)
+            return .success(())
         } catch {
-            // Diagnostics must never affect token recording.
+            return .failure(error)
         }
     }
 

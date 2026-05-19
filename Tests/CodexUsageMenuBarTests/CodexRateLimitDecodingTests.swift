@@ -424,8 +424,10 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         let client = CodexAppServerClient()
         var receivedAudit: CodexTokenUsagePayloadAudit?
         var receivedNotification: CodexTokenUsageNotification?
+        var diagnosticEvents: [CodexAppServerAuditDiagnosticEvent] = []
         client.onTokenUsagePayloadAudit = { receivedAudit = $0 }
         client.onTokenUsage = { receivedNotification = $0 }
+        client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
 
         try client.handleIncomingMessage(data: Data(
             """
@@ -465,6 +467,9 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(notification.tokenUsage.total.totalTokens, 1200)
         XCTAssertEqual(try auditField("model", in: audit).normalizedValue, "gpt-5.5")
         XCTAssertEqual(try auditField("source", in: audit).presence, .unsupported)
+        XCTAssertTrue(diagnosticEvents.contains(.inboundMethod("thread/tokenUsage/updated")))
+        XCTAssertTrue(diagnosticEvents.contains(.tokenUsageNotification))
+        XCTAssertTrue(diagnosticEvents.contains(.auditSanitizeAttempt(success: true)))
     }
 
     @MainActor
@@ -472,8 +477,10 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         let client = CodexAppServerClient()
         var receivedAudit: CodexTokenUsagePayloadAudit?
         var receivedNotification: CodexTokenUsageNotification?
+        var diagnosticEvents: [CodexAppServerAuditDiagnosticEvent] = []
         client.onTokenUsagePayloadAudit = { receivedAudit = $0 }
         client.onTokenUsage = { receivedNotification = $0 }
+        client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
 
         XCTAssertThrowsError(try client.handleIncomingMessage(data: Data(
             """
@@ -491,6 +498,50 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(receivedAudit?.threadID, "thread-1")
         XCTAssertEqual(try auditField("model", in: XCTUnwrap(receivedAudit)).normalizedValue, "gpt-5.5")
         XCTAssertNil(receivedNotification)
+        XCTAssertTrue(diagnosticEvents.contains(.tokenUsageNotification))
+        XCTAssertTrue(diagnosticEvents.contains(.auditSanitizeAttempt(success: true)))
+        XCTAssertTrue(diagnosticEvents.contains { event in
+            if case .receiveError = event {
+                return true
+            }
+            return false
+        })
+    }
+
+    @MainActor
+    func testAppServerClientEmitsDiagnosticsForGenericAndRateLimitNotifications() throws {
+        let client = CodexAppServerClient()
+        var diagnosticEvents: [CodexAppServerAuditDiagnosticEvent] = []
+        client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
+
+        try client.handleIncomingMessage(data: Data(
+            """
+            {
+              "method": "example/notification",
+              "params": {}
+            }
+            """.utf8
+        ))
+
+        XCTAssertTrue(diagnosticEvents.contains(.inboundMethod("example/notification")))
+
+        XCTAssertThrowsError(try client.handleIncomingMessage(data: Data(
+            """
+            {
+              "method": "account/rateLimits/updated",
+              "params": {}
+            }
+            """.utf8
+        )))
+
+        XCTAssertTrue(diagnosticEvents.contains(.inboundMethod("account/rateLimits/updated")))
+        XCTAssertTrue(diagnosticEvents.contains(.rateLimitNotification))
+        XCTAssertTrue(diagnosticEvents.contains { event in
+            if case .receiveError = event {
+                return true
+            }
+            return false
+        })
     }
 
     private func decodeTokenUsageModel(
