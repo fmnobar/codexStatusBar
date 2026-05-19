@@ -182,6 +182,21 @@ enum TokenUsageDimensionKey: String, CaseIterable, Sendable {
             return value
         }
     }
+
+    func isMeaningfulDashboardValue(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else {
+            return false
+        }
+
+        switch self {
+        case .sourceKind:
+            return value != "codex-log"
+        default:
+            return true
+        }
+    }
 }
 
 struct TokenUsageDimension: Hashable, Equatable, Sendable {

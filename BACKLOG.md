@@ -4,10 +4,9 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Stop showing low-signal importer provenance as token breakdowns | Treat `codex-log` and unattributed-only `source_kind` splits as internal ingestion provenance, not user-facing analytics; hide dashboard dimensions unless they have meaningful explicit values for the selected period. |
-| 2 | Fix Codex log context extraction and backfill safe metadata | Improve the `logs_2.sqlite` token importer so it extracts safe span metadata like `cwd`, model, originator, app version, and explicit reasoning effort without swallowing adjacent trace text or request payloads, then repair today's log-derived token rows. |
-| 3 | Add token attribution coverage diagnostics | Add a small diagnostics/readout showing how much of a selected token period is attributed by model, project, effort, and safe dimensions so missing metadata is visible instead of silently producing mostly `Unattributed`. |
-| 4 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
+| 1 | Fix Codex log context extraction and backfill safe metadata | Improve the `logs_2.sqlite` token importer so it extracts safe span metadata like `cwd`, model, originator, app version, and explicit reasoning effort without swallowing adjacent trace text or request payloads, then repair today's log-derived token rows. |
+| 2 | Add token attribution coverage diagnostics | Add a small diagnostics/readout showing how much of a selected token period is attributed by model, project, effort, and safe dimensions so missing metadata is visible instead of silently producing mostly `Unattributed`. |
+| 3 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
 
 ## Done
 
@@ -203,12 +202,13 @@
   - Hardened session/live metadata decoding for current object-shaped permission profile and truncation policy fields while preserving string payload compatibility.
   - Repaired token context and safe dimension catalogs through the existing deterministic import keys without changing observed token totals.
 
-## Next Candidates
-
 - Stop showing low-signal importer provenance as token breakdowns
-  - `Source kind` currently shows `codex-log` versus `Unattributed`, which is ingestion provenance rather than a useful user-facing slice.
-  - Hide or demote dimensions that only distinguish importer source from missing metadata.
-  - Keep genuinely useful explicit source values, such as `vscode`, `cli`, or future app-provided sources, when they are actually present.
+  - Treated `source_kind=codex-log` versus `Unattributed` as ingestion provenance rather than a useful user-facing slice.
+  - Made generic token dashboard dimensions period-aware so empty or attribution-only slices do not appear for the selected period.
+  - Hid `source_kind=codex-log` from user-facing breakdown rows while keeping it stored for diagnostics and importer repair.
+  - Kept genuinely useful explicit source values, such as `vscode`, `cli`, or future app-provided sources, when they are actually present.
+
+## Next Candidates
 
 - Fix Codex log context extraction and backfill safe metadata
   - Current log rows contain safe span text such as `model=gpt-5.5`, `cwd=/Users/.../codex_codex`, and `codex.turn.reasoning_effort=xhigh`, but the importer is not reliably converting that into project/effort catalogs.

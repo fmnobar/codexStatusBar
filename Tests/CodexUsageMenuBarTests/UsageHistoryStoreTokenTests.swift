@@ -1352,8 +1352,10 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(historySeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
 
-    func testTokenDashboardAvailableBreakdownsHideUncatalogedDimensions() async throws {
+    func testTokenDashboardAvailableBreakdownsHideUncatalogedAndLowSignalDimensions() async throws {
         let store = try makeStore()
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
         try store.record(
             tokenUsage: tokenNotification(
                 threadID: "thread-a",
@@ -1368,8 +1370,12 @@ extension UsageHistoryStoreTests {
         )
 
         XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model])
+        XCTAssertEqual(
+            try store.tokenDashboardAvailableBreakdownDimensions(periodStart: periodStart, periodEnd: periodEnd),
+            [.model]
+        )
 
-        try store.importTokenUsageSamples([
+        _ = try store.importTokenUsageSamples([
             ImportedCodexTokenUsageSample(
                 notification: tokenNotification(
                     threadID: "thread-b",
@@ -1387,8 +1393,108 @@ extension UsageHistoryStoreTests {
             ),
         ])
 
+        XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model])
+        XCTAssertEqual(
+            try store.tokenDashboardAvailableBreakdownDimensions(periodStart: periodStart, periodEnd: periodEnd),
+            [.model]
+        )
+        XCTAssertEqual(
+            try store.tokenDashboardSeries(breakdownDimension: .sourceKind).map(\.id),
+            ["tokens_all", "tokens_unattributed"]
+        )
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-outside-period",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 75,
+                    lastTotal: 75,
+                    totalInput: 75,
+                    totalTotal: 75
+                ),
+                receivedAt: date("2026-06-03T11:00:00Z"),
+                context: TokenUsageContext(
+                    dimensions: [TokenUsageDimension(.sourceKind, "cli")].compactMap { $0 }
+                )
+            ),
+        ])
+
         XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model, .sourceKind])
-        XCTAssertFalse(try store.tokenDashboardAvailableBreakdownDimensions().contains(.isSubagent))
+        XCTAssertEqual(
+            try store.tokenDashboardAvailableBreakdownDimensions(periodStart: periodStart, periodEnd: periodEnd),
+            [.model]
+        )
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-c",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 25,
+                    lastTotal: 25,
+                    totalInput: 25,
+                    totalTotal: 25
+                ),
+                receivedAt: date("2026-05-03T11:00:00Z"),
+                context: TokenUsageContext(
+                    dimensions: [TokenUsageDimension(.sourceKind, "vscode")].compactMap { $0 }
+                )
+            ),
+        ])
+
+        XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model, .sourceKind])
+        XCTAssertEqual(
+            try store.tokenDashboardAvailableBreakdownDimensions(periodStart: periodStart, periodEnd: periodEnd),
+            [.model, .sourceKind]
+        )
+        XCTAssertEqual(
+            try store.tokenDashboardSeries(
+                breakdownDimension: .sourceKind,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            ).map(\.id),
+            ["tokens_all", "dimension:source_kind:vscode", "tokens_unattributed"]
+        )
+        XCTAssertFalse(
+            try store.tokenDashboardAvailableBreakdownDimensions(periodStart: periodStart, periodEnd: periodEnd)
+                .contains(.isSubagent)
+        )
+
+        let sourceKindPoints = try store.tokenDashboardPoints(
+            breakdownDimension: .sourceKind,
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(
+                sourceKindPoints,
+                seriesID: "dimension:source_kind:vscode",
+                component: .input,
+                bucketStart: date("2026-05-03T00:00:00Z")
+            ),
+            25
+        )
+        XCTAssertNil(
+            dashboardTokenCount(
+                sourceKindPoints,
+                seriesID: "dimension:source_kind:codex-log",
+                component: .input,
+                bucketStart: date("2026-05-03T00:00:00Z")
+            )
+        )
+        XCTAssertEqual(
+            dashboardTokenCount(
+                sourceKindPoints,
+                seriesID: TokenDashboardSeries.unattributedID,
+                component: .input,
+                bucketStart: date("2026-05-03T00:00:00Z")
+            ),
+            150
+        )
     }
 
     @MainActor
@@ -1585,6 +1691,11 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 165)
         XCTAssertTrue(viewModel.csvText.contains("approval_policy,month"))
         XCTAssertTrue(viewModel.csvText.contains("dimension:approval_policy:never,never,dimension,never,never,,input,100,approval_policy"))
+
+        viewModel.selectedRange = .day
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
     }
 
     @MainActor

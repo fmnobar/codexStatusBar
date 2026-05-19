@@ -660,7 +660,21 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             WITH dimension_values AS (
-                SELECT thread_id, turn_id, total_total_tokens, MIN(dimension_value) AS dimension_value
+                SELECT thread_id,
+                    turn_id,
+                    total_total_tokens,
+                    COALESCE(
+                        MIN(
+                            CASE
+                                WHEN NOT (
+                                    dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                                    AND dimension_value = 'codex-log'
+                                )
+                                THEN dimension_value
+                            END
+                        ),
+                        MIN(dimension_value)
+                    ) AS dimension_value
                 FROM token_usage_dimensions
                 WHERE dimension_key = ?
                 GROUP BY thread_id, turn_id, total_total_tokens
@@ -761,8 +775,24 @@ extension UsageHistoryStore {
     func tokenDashboardSeries(
         breakdownDimension: TokenDashboardBreakdownDimension = .model
     ) throws -> [TokenDashboardSeries] {
+        try tokenDashboardSeries(
+            breakdownDimension: breakdownDimension,
+            periodStart: nil,
+            periodEnd: nil
+        )
+    }
+
+    func tokenDashboardSeries(
+        breakdownDimension: TokenDashboardBreakdownDimension = .model,
+        periodStart: Date?,
+        periodEnd: Date?
+    ) throws -> [TokenDashboardSeries] {
         if let dimensionKey = breakdownDimension.dimensionKey {
-            return try tokenDashboardDimensionSeries(for: dimensionKey)
+            return try tokenDashboardDimensionSeries(
+                for: dimensionKey,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
         }
 
         switch breakdownDimension {
@@ -792,6 +822,12 @@ extension UsageHistoryStore {
             """
             SELECT DISTINCT dimension_key
             FROM token_dimension_catalog
+            WHERE dimension_value IS NOT NULL
+                AND trim(dimension_value) <> ''
+                AND NOT (
+                    dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                    AND dimension_value = 'codex-log'
+                )
             ORDER BY dimension_key ASC
             """
         )
@@ -813,6 +849,99 @@ extension UsageHistoryStore {
             default:
                 throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
             }
+        }
+    }
+
+    func tokenDashboardAvailableBreakdownDimensions(periodStart: Date, periodEnd: Date) throws -> [TokenDashboardBreakdownDimension] {
+        var dimensions: [TokenDashboardBreakdownDimension] = [.model]
+
+        if try hasTokenDashboardContextRows(column: "effort", periodStart: periodStart, periodEnd: periodEnd) {
+            dimensions.append(.effort)
+        }
+
+        if try hasTokenDashboardContextRows(column: "project_path", periodStart: periodStart, periodEnd: periodEnd) {
+            dimensions.append(.project)
+        }
+
+        let statement = try prepare(
+            """
+            SELECT DISTINCT dimensions.dimension_key
+            FROM token_usage_dimensions AS dimensions
+            JOIN token_usage_samples AS samples
+                ON samples.thread_id = dimensions.thread_id
+                AND samples.turn_id = dimensions.turn_id
+                AND samples.total_total_tokens = dimensions.total_total_tokens
+            WHERE samples.received_at >= ? AND samples.received_at < ?
+                AND (
+                    \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
+                )
+                AND dimensions.dimension_value IS NOT NULL
+                AND trim(dimensions.dimension_value) <> ''
+                AND NOT (
+                    dimensions.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                    AND dimensions.dimension_value = 'codex-log'
+                )
+            ORDER BY dimensions.dimension_key ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        var meaningfulKeys = Set<TokenDashboardBreakdownDimension>()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let dimension = TokenDashboardBreakdownDimension(rawValue: columnText(statement, index: 0)),
+                      dimension.dimensionKey != nil
+                else {
+                    continue
+                }
+                meaningfulKeys.insert(dimension)
+            case SQLITE_DONE:
+                var seen = Set(dimensions)
+                for dimension in TokenDashboardBreakdownDimension.allCases {
+                    guard meaningfulKeys.contains(dimension),
+                          seen.insert(dimension).inserted
+                    else {
+                        continue
+                    }
+                    dimensions.append(dimension)
+                }
+                return dimensions
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func hasTokenDashboardContextRows(column: String, periodStart: Date, periodEnd: Date) throws -> Bool {
+        let statement = try prepare(
+            """
+            SELECT 1
+            FROM token_usage_samples
+            WHERE received_at >= ? AND received_at < ?
+                AND \(column) IS NOT NULL
+                AND trim(\(column)) <> ''
+                AND (
+                    \(Self.observedTokenComponentsPredicate)
+                )
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return true
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
         }
     }
 
@@ -941,26 +1070,59 @@ extension UsageHistoryStore {
         }
     }
 
-    private func tokenDashboardDimensionSeries(for key: TokenUsageDimensionKey) throws -> [TokenDashboardSeries] {
+    private func tokenDashboardDimensionSeries(
+        for key: TokenUsageDimensionKey,
+        periodStart: Date?,
+        periodEnd: Date?
+    ) throws -> [TokenDashboardSeries] {
         var series = try tokenDashboardAggregateAndUnattributedSeries()
+        let periodFilter: String
+        if periodStart != nil, periodEnd != nil {
+            periodFilter = """
+                AND EXISTS (
+                    SELECT 1
+                    FROM token_usage_dimensions AS dimensions
+                    JOIN token_usage_samples AS samples
+                        ON samples.thread_id = dimensions.thread_id
+                        AND samples.turn_id = dimensions.turn_id
+                        AND samples.total_total_tokens = dimensions.total_total_tokens
+                    WHERE dimensions.dimension_key = token_dimension_catalog.dimension_key
+                        AND dimensions.dimension_value = token_dimension_catalog.dimension_value
+                        AND samples.received_at >= ? AND samples.received_at < ?
+                        AND (
+                            \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
+                        )
+                )
+            """
+        } else {
+            periodFilter = ""
+        }
+
         let statement = try prepare(
             """
             SELECT dimension_value, last_seen_at
             FROM token_dimension_catalog
             WHERE dimension_key = ?
+            \(periodFilter)
             ORDER BY last_seen_at DESC, dimension_value ASC
             """
         )
         defer { sqlite3_finalize(statement) }
 
         bindText(key.rawValue, to: 1, in: statement)
+        if let periodStart, let periodEnd {
+            sqlite3_bind_int64(statement, 2, periodStart.timeIntervalSince1970Int)
+            sqlite3_bind_int64(statement, 3, periodEnd.timeIntervalSince1970Int)
+        }
 
         var values = Set<String>()
         while true {
             switch sqlite3_step(statement) {
             case SQLITE_ROW:
                 let value = columnText(statement, index: 0)
-                guard values.insert(value).inserted else {
+                guard key.isMeaningfulDashboardValue(value),
+                      values.insert(value).inserted
+                else {
                     continue
                 }
                 series.append(
@@ -1151,7 +1313,7 @@ extension UsageHistoryStore {
         key: TokenUsageDimensionKey,
         value: String?
     ) -> (id: String, name: String, kind: TokenDashboardSeriesKind) {
-        guard let value, !value.isEmpty else {
+        guard let value, key.isMeaningfulDashboardValue(value) else {
             return unattributedTokenDashboardSeriesIdentity()
         }
 

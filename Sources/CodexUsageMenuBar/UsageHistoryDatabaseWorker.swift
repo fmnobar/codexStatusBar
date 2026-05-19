@@ -205,7 +205,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         let store = try store()
-        let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions()
+        let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
+            periodStart: request.periodStart,
+            periodEnd: request.periodEnd
+        )
         return TokenDashboardLoadResult(
             points: try store.tokenDashboardPoints(
                 breakdownDimension: request.breakdownDimension,
@@ -213,7 +216,11 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
                 periodStart: request.periodStart,
                 periodEnd: request.periodEnd
             ),
-            series: try store.tokenDashboardSeries(breakdownDimension: request.breakdownDimension),
+            series: try store.tokenDashboardSeries(
+                breakdownDimension: request.breakdownDimension,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
             availableBreakdownDimensions: availableBreakdownDimensions,
             historyBounds: try store.tokenDashboardBounds()
         )
