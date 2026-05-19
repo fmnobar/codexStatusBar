@@ -500,6 +500,16 @@ final class MenuBarStatusFormatterTests: XCTestCase {
 
         XCTAssertEqual(freshnessText, "Offline, showing last update from 3m ago")
     }
+
+    func testFreshnessTextCanDescribeOfflineWithoutPriorSnapshot() {
+        let now = ISO8601DateFormatter().date(from: "2026-04-14T20:00:00Z")!
+
+        XCTAssertEqual(
+            MenuBarStatusFormatter.freshnessText(lastUpdatedAt: nil, now: now, isOffline: true),
+            "Offline"
+        )
+        XCTAssertNil(MenuBarStatusFormatter.freshnessText(lastUpdatedAt: nil, now: now, isOffline: false))
+    }
 }
 
 @MainActor

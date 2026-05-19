@@ -326,7 +326,7 @@ enum MenuBarStatusFormatter {
 
     static func freshnessText(lastUpdatedAt: Date?, now: Date, isOffline: Bool) -> String? {
         guard let lastUpdatedAt else {
-            return nil
+            return isOffline ? "Offline" : nil
         }
 
         let ageText = relativeAgeText(since: lastUpdatedAt, now: now)

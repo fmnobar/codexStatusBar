@@ -1,10 +1,5 @@
 import Foundation
 
-struct CachedCodexUsageSnapshot: Equatable, Sendable {
-    let snapshot: CodexUsageSnapshot
-    let recordedAt: Date
-}
-
 enum UsageLimitWindow: String, CaseIterable, Codable, Identifiable, Equatable {
     case fiveHour
     case sevenDay

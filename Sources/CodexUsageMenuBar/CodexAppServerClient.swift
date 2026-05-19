@@ -42,6 +42,9 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     private var currentPort: Int?
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveLoopTask: Task<Void, Never>?
+    private var standardInputFileHandle: FileHandle?
+    private var standardOutputFileHandle: FileHandle?
+    private var standardIOBuffer = Data()
     private var nextRequestID = 1
     private var pendingRequests: [Int: CheckedContinuation<Any, Error>] = [:]
     private var isInitialized = false
@@ -91,7 +94,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     }
 
     private func ensureConnected() async throws {
-        if isInitialized, webSocketTask != nil {
+        if isInitialized, webSocketTask != nil || standardInputFileHandle != nil {
             return
         }
 
@@ -119,9 +122,28 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
                 currentPort = nil
             }
 
+            resetSocketState()
+            currentPort = nil
+        }
+
+        let executableURL = try resolveCodexExecutableURL()
+        if executableSupportsWebSocketListen(executableURL) {
+            for port in portRange {
+                do {
+                    try await startManagedWebSocketServer(on: port, executableURL: executableURL)
+                    ownsProcess = true
+                    return
+                } catch {
+                    stopManagedProcess()
+                    resetSocketState()
+                    currentPort = nil
+                }
+            }
+        } else {
             do {
-                try await startManagedServer(on: port)
+                try await startManagedStandardIOServer(executableURL: executableURL)
                 ownsProcess = true
+                currentPort = nil
                 return
             } catch {
                 stopManagedProcess()
@@ -133,8 +155,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         throw CodexClientError.appServerUnavailable
     }
 
-    private func startManagedServer(on port: Int) async throws {
-        let executableURL = try resolveCodexExecutableURL()
+    private func startManagedWebSocketServer(on port: Int, executableURL: URL) async throws {
         let nullDevice = FileHandle(forWritingAtPath: "/dev/null")
 
         let process = Process()
@@ -142,6 +163,11 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         process.arguments = ["app-server", "--listen", "ws://127.0.0.1:\(port)"]
         process.standardOutput = nullDevice
         process.standardError = nullDevice
+        process.terminationHandler = { [weak self] process in
+            Task { @MainActor [weak self] in
+                self?.handleManagedProcessTermination(process)
+            }
+        }
 
         try process.run()
         self.process = process
@@ -164,6 +190,38 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         }
 
         throw CodexClientError.appServerUnavailable
+    }
+
+    private func startManagedStandardIOServer(executableURL: URL) async throws {
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let nullDevice = FileHandle(forWritingAtPath: "/dev/null")
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = ["app-server", "--listen", "stdio://"]
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = nullDevice
+        process.terminationHandler = { [weak self] process in
+            Task { @MainActor [weak self] in
+                self?.handleManagedProcessTermination(process)
+            }
+        }
+
+        standardInputFileHandle = inputPipe.fileHandleForWriting
+        standardOutputFileHandle = outputPipe.fileHandleForReading
+        standardIOBuffer.removeAll(keepingCapacity: true)
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            Task { @MainActor [weak self] in
+                self?.handleStandardOutputData(data)
+            }
+        }
+
+        try process.run()
+        self.process = process
+        try await initializeSessionIfNeeded()
     }
 
     private func connectToServer(on port: Int) async throws {
@@ -292,7 +350,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
     }
 
     private func sendRequest(method: String, params: Any?) async throws -> Any {
-        guard let webSocketTask else {
+        guard webSocketTask != nil || standardInputFileHandle != nil else {
             throw CodexClientError.websocketUnavailable
         }
 
@@ -320,14 +378,23 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
                     return
                 }
 
-                do {
-                    try await webSocketTask.send(.string(text))
-                } catch {
-                    await MainActor.run {
-                        self.pendingRequests.removeValue(forKey: requestID)?.resume(throwing: error)
-                    }
-                }
+                await self.sendPayload(text, requestID: requestID)
             }
+        }
+    }
+
+    private func sendPayload(_ text: String, requestID: Int) async {
+        do {
+            if let webSocketTask {
+                try await webSocketTask.send(.string(text))
+            } else if let standardInputFileHandle {
+                let framedText = text + "\n"
+                try standardInputFileHandle.write(contentsOf: Data(framedText.utf8))
+            } else {
+                throw CodexClientError.websocketUnavailable
+            }
+        } catch {
+            pendingRequests.removeValue(forKey: requestID)?.resume(throwing: error)
         }
     }
 
@@ -407,9 +474,45 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         }
     }
 
+    private func handleStandardOutputData(_ data: Data) {
+        guard !data.isEmpty else {
+            handleReceiveFailure(CodexClientError.appServerUnavailable)
+            return
+        }
+
+        standardIOBuffer.append(data)
+        let lineSeparator = Data([0x0A])
+
+        while let newlineRange = standardIOBuffer.firstRange(of: lineSeparator) {
+            let lineData = standardIOBuffer.subdata(in: standardIOBuffer.startIndex..<newlineRange.lowerBound)
+            standardIOBuffer.removeSubrange(standardIOBuffer.startIndex..<newlineRange.upperBound)
+
+            guard !lineData.isEmpty else {
+                continue
+            }
+
+            do {
+                try handleIncomingMessage(data: lineData)
+            } catch {
+                handleReceiveFailure(error)
+                return
+            }
+        }
+    }
+
     private func handleReceiveFailure(_ error: Error) {
         failPendingRequests(with: error)
         resetSocketState()
+    }
+
+    private func handleManagedProcessTermination(_ terminatedProcess: Process) {
+        guard process === terminatedProcess else {
+            return
+        }
+
+        process = nil
+        ownsProcess = false
+        handleReceiveFailure(CodexClientError.appServerUnavailable)
     }
 
     private func failPendingRequests(with error: Error) {
@@ -426,6 +529,12 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         receiveLoopTask = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+        standardOutputFileHandle?.readabilityHandler = nil
+        try? standardInputFileHandle?.close()
+        try? standardOutputFileHandle?.close()
+        standardInputFileHandle = nil
+        standardOutputFileHandle = nil
+        standardIOBuffer.removeAll(keepingCapacity: true)
         isInitialized = false
         failPendingRequests(with: CodexClientError.websocketUnavailable)
     }
@@ -434,6 +543,8 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         guard ownsProcess, let process else {
             return
         }
+
+        process.terminationHandler = nil
 
         if process.isRunning {
             process.terminate()
@@ -462,6 +573,27 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
         }
 
         throw CodexClientError.codexExecutableNotFound
+    }
+
+    private func executableSupportsWebSocketListen(_ executableURL: URL) -> Bool {
+        let process = Process()
+        let outputPipe = Pipe()
+
+        process.executableURL = executableURL
+        process.arguments = ["app-server", "--help"]
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let helpText = String(decoding: output, as: UTF8.self)
+        return CodexAppServerListenSupport.supportsWebSocket(helpText: helpText)
     }
 
     private func candidateCodexExecutableURLs(fileManager: FileManager) -> [URL] {

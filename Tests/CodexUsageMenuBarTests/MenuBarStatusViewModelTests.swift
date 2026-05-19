@@ -56,29 +56,17 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
-    func testStartFallsBackToCachedUsageWhenAppServerIsUnavailable() async {
-        let recordedAt = ISO8601DateFormatter().date(from: "2026-05-19T13:18:00Z")!
+    func testStartFailureShowsExplicitOfflineStateWithoutUsageValues() async {
         let now = ISO8601DateFormatter().date(from: "2026-05-19T14:18:00Z")!
-        let cachedSnapshot = CodexRateLimitSnapshot(
-            primary: CodexRateLimitWindow(usedPercent: 1, windowDurationMinutes: nil, resetsAt: nil),
-            secondary: CodexRateLimitWindow(usedPercent: 29, windowDurationMinutes: nil, resetsAt: nil)
-        )
         let client = MockCodexRateLimitClient(
             startResponses: [Result<CodexUsageSnapshot, Error>.failure(MockClientError.sample)],
             refreshResponses: [Result<CodexUsageSnapshot, Error>]()
-        )
-        let cachedLoader = MockCachedUsageSnapshotLoader(
-            snapshot: CachedCodexUsageSnapshot(
-                snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: cachedSnapshot),
-                recordedAt: recordedAt
-            )
         )
 
         let viewModel = MenuBarStatusViewModel(
             client: client,
             now: { now },
             refreshInterval: 3_600,
-            cachedUsageSnapshotLoader: cachedLoader,
             selectedMenuBarDisplayWindow: .sevenDay,
             persistSelection: { _ in },
             loadLaunchAtLoginEnabled: { false },
@@ -87,12 +75,12 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         await viewModel.start()
 
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 71%")
-        XCTAssertEqual(viewModel.footerStatusText, "Offline, showing last update from 1h ago")
-        XCTAssertTrue(viewModel.hasSnapshot)
-        XCTAssertTrue(viewModel.isStaleSnapshot)
-        XCTAssertNil(viewModel.errorMessage)
-        XCTAssertEqual(viewModel.statusItemVisualState, StatusItemVisualState.stale)
+        XCTAssertEqual(viewModel.menuBarPercentText, "Offline")
+        XCTAssertEqual(viewModel.footerStatusText, "Offline")
+        XCTAssertFalse(viewModel.hasSnapshot)
+        XCTAssertFalse(viewModel.isStaleSnapshot)
+        XCTAssertEqual(viewModel.errorMessage, "Unable to load Codex usage.")
+        XCTAssertEqual(viewModel.statusItemVisualState, StatusItemVisualState.error)
 
         viewModel.stop()
     }
@@ -293,7 +281,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isStaleSnapshot)
         XCTAssertEqual(viewModel.statusItemVisualState, .stale)
         XCTAssertEqual(viewModel.footerStatusText, "Offline, showing last update from 3m ago")
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 89%")
+        XCTAssertEqual(viewModel.menuBarPercentText, "Offline")
 
         viewModel.stop()
     }
@@ -354,7 +342,8 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.hasSnapshot)
         XCTAssertEqual(viewModel.errorMessage, "Unable to load Codex usage.")
         XCTAssertEqual(viewModel.statusItemVisualState, StatusItemVisualState.error)
-        XCTAssertEqual(viewModel.menuBarPercentText, "--")
+        XCTAssertEqual(viewModel.menuBarPercentText, "Offline")
+        XCTAssertEqual(viewModel.footerStatusText, "Offline")
 
         viewModel.stop()
     }
@@ -800,18 +789,6 @@ private actor MockUsageHistoryRecorder: UsageHistoryRecording {
 
     func recordsSnapshot() -> [(snapshot: CodexUsageSnapshot, date: Date)] {
         records
-    }
-}
-
-private actor MockCachedUsageSnapshotLoader: CachedUsageSnapshotLoading {
-    private let snapshot: CachedCodexUsageSnapshot?
-
-    init(snapshot: CachedCodexUsageSnapshot?) {
-        self.snapshot = snapshot
-    }
-
-    func latestUsageSnapshot() async -> CachedCodexUsageSnapshot? {
-        snapshot
     }
 }
 

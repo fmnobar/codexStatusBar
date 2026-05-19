@@ -34,7 +34,6 @@ struct TokenDashboardLoadResult: Equatable {
 
 protocol UsageHistoryDatabaseWorking: Sendable {
     func record(snapshot: CodexUsageSnapshot, at date: Date) async
-    func latestUsageSnapshot() async -> CachedCodexUsageSnapshot?
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals?
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
@@ -106,14 +105,6 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             try store.record(snapshot: snapshot, at: date)
         } catch {
             // History should never interrupt the live menu bar status.
-        }
-    }
-
-    func latestUsageSnapshot() -> CachedCodexUsageSnapshot? {
-        do {
-            return try store().latestUsageSnapshot()
-        } catch {
-            return nil
         }
     }
 

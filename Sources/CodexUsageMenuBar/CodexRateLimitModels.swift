@@ -362,3 +362,9 @@ struct WhamRateLimitWindowPayload: Decodable {
         )
     }
 }
+
+enum CodexAppServerListenSupport {
+    static func supportsWebSocket(helpText: String) -> Bool {
+        helpText.contains("ws://")
+    }
+}

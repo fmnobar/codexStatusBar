@@ -1,6 +1,20 @@
 import XCTest
 
 final class CodexRateLimitDecodingTests: XCTestCase {
+    func testAppServerListenSupportDetectsWebSocketSupport() {
+        let legacyHelp = """
+        --listen <URL>
+            Supported values: `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`
+        """
+        let currentHelp = """
+        --listen <URL>
+            Supported values: `stdio://`, `unix://`, `unix://PATH`, `off`
+        """
+
+        XCTAssertTrue(CodexAppServerListenSupport.supportsWebSocket(helpText: legacyHelp))
+        XCTAssertFalse(CodexAppServerListenSupport.supportsWebSocket(helpText: currentHelp))
+    }
+
     func testDecodesPayloadAndPrefersMainCodexBucket() throws {
         let data = Data(
             """
