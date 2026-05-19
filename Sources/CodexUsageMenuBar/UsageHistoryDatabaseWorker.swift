@@ -42,6 +42,7 @@ struct TokenDashboardLoadRequest: Equatable {
 struct TokenDashboardLoadResult: Equatable {
     let points: [TokenDashboardComponentPoint]
     let series: [TokenDashboardSeries]
+    let attributionCoverageRows: [TokenAttributionCoverageRow]
     let availableBreakdownDimensions: [TokenDashboardBreakdownDimension]
     let historyBounds: UsageHistoryBounds?
 }
@@ -218,6 +219,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             ),
             series: try store.tokenDashboardSeries(
                 breakdownDimension: request.breakdownDimension,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            attributionCoverageRows: try store.tokenAttributionCoverageRows(
                 periodStart: request.periodStart,
                 periodEnd: request.periodEnd
             ),

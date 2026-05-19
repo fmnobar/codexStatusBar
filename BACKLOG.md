@@ -4,8 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Add token attribution coverage diagnostics | Add a small diagnostics/readout showing how much of a selected token period is attributed by model, project, effort, and safe dimensions so missing metadata is visible instead of silently producing mostly `Unattributed`. |
-| 2 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
+| 1 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
 
 ## Done
 
@@ -212,11 +211,12 @@
   - Repaired log-derived token rows through the existing duplicate/model/context/dimension repair path without changing observed token totals.
   - Preserved importer provenance while preventing adjacent trace or request text from becoming visible metadata.
 
-## Next Candidates
-
 - Add token attribution coverage diagnostics
-  - Show attribution coverage for the selected dashboard period, for example model/project/effort/source coverage percentages.
-  - This should make missing metadata clear and prevent misleading dropdowns that mostly show `Unattributed`.
+  - Added Token Dashboard diagnostics showing attributed, missing, percent, and distinct-value counts by token volume for model, project, effort, source, and meaningful safe dimensions.
+  - Kept diagnostics read-only while preserving existing token totals, chart semantics, dashboard filtering, and menu-bar text.
+  - Added coverage rows to Token Dashboard CSV export so missing metadata can be inspected outside the app.
+
+## Next Candidates
 
 - Audit live token notification context payloads
   - Add a sanitized diagnostics path for live token notifications to confirm whether app-server token events now include project, effort, source, or runtime policy metadata.

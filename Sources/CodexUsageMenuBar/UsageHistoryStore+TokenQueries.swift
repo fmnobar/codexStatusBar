@@ -1168,6 +1168,246 @@ extension UsageHistoryStore {
         try tokenComponentHistoryBounds()
     }
 
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) throws -> [TokenAttributionCoverageRow] {
+        let totalTokenCount = try totalObservedTokenCount(periodStart: periodStart, periodEnd: periodEnd)
+        guard totalTokenCount > 0 else {
+            return []
+        }
+
+        var rows: [TokenAttributionCoverageRow] = [
+            try tokenColumnAttributionCoverageRow(
+                id: "model",
+                title: "Model",
+                valueExpression: Self.normalizedModelSQLExpression(column: "model"),
+                totalTokenCount: totalTokenCount,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            ),
+            try tokenColumnAttributionCoverageRow(
+                id: "project",
+                title: "Project",
+                valueExpression: "project_path",
+                totalTokenCount: totalTokenCount,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            ),
+            try tokenColumnAttributionCoverageRow(
+                id: "effort",
+                title: "Effort",
+                valueExpression: "effort",
+                totalTokenCount: totalTokenCount,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            ),
+            try tokenColumnAttributionCoverageRow(
+                id: "source",
+                title: "Source",
+                valueExpression: "source",
+                totalTokenCount: totalTokenCount,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            ),
+        ]
+
+        rows += try tokenDimensionAttributionCoverageRows(
+            totalTokenCount: totalTokenCount,
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+
+        return rows
+    }
+
+    private func totalObservedTokenCount(periodStart: Date, periodEnd: Date) throws -> Int64 {
+        let statement = try prepare(
+            """
+            SELECT IFNULL(SUM(\(Self.observedTokenVolumeSQLExpression())), 0)
+            FROM token_usage_samples
+            WHERE received_at >= ? AND received_at < ?
+                AND (
+                    \(Self.observedTokenComponentsPredicate)
+                )
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return 0
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func tokenColumnAttributionCoverageRow(
+        id: String,
+        title: String,
+        valueExpression: String,
+        totalTokenCount: Int64,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> TokenAttributionCoverageRow {
+        let statement = try prepare(
+            """
+            WITH period_samples AS (
+                SELECT \(Self.observedTokenVolumeSQLExpression()) AS token_count,
+                    \(valueExpression) AS value
+                FROM token_usage_samples
+                WHERE received_at >= ? AND received_at < ?
+                    AND (
+                        \(Self.observedTokenComponentsPredicate)
+                    )
+            )
+            SELECT IFNULL(SUM(
+                    CASE
+                        WHEN value IS NOT NULL AND trim(value) <> ''
+                            THEN token_count
+                        ELSE 0
+                    END
+                ), 0),
+                COUNT(DISTINCT
+                    CASE
+                        WHEN value IS NOT NULL AND trim(value) <> ''
+                            THEN value
+                    END
+                )
+            FROM period_samples
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            let attributedTokenCount = sqlite3_column_int64(statement, 0)
+            return TokenAttributionCoverageRow(
+                id: id,
+                title: title,
+                attributedTokenCount: attributedTokenCount,
+                missingTokenCount: max(totalTokenCount - attributedTokenCount, 0),
+                distinctValueCount: Int(sqlite3_column_int(statement, 1)),
+                dimensionKey: nil
+            )
+        case SQLITE_DONE:
+            return TokenAttributionCoverageRow(
+                id: id,
+                title: title,
+                attributedTokenCount: 0,
+                missingTokenCount: totalTokenCount,
+                distinctValueCount: 0,
+                dimensionKey: nil
+            )
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func tokenDimensionAttributionCoverageRows(
+        totalTokenCount: Int64,
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [TokenAttributionCoverageRow] {
+        let statement = try prepare(
+            """
+            WITH period_samples AS (
+                SELECT thread_id,
+                    turn_id,
+                    total_total_tokens,
+                    \(Self.observedTokenVolumeSQLExpression()) AS token_count
+                FROM token_usage_samples
+                WHERE received_at >= ? AND received_at < ?
+                    AND (
+                        \(Self.observedTokenComponentsPredicate)
+                    )
+            ),
+            sample_values AS (
+                SELECT period_samples.thread_id,
+                    period_samples.turn_id,
+                    period_samples.total_total_tokens,
+                    dimensions.dimension_key,
+                    period_samples.token_count,
+                    MIN(
+                        CASE
+                            WHEN dimensions.dimension_value IS NOT NULL
+                                AND trim(dimensions.dimension_value) <> ''
+                                AND NOT (
+                                    dimensions.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                                    AND dimensions.dimension_value = 'codex-log'
+                                )
+                                THEN dimensions.dimension_value
+                        END
+                    ) AS value
+                FROM period_samples
+                JOIN token_usage_dimensions AS dimensions
+                    ON dimensions.thread_id = period_samples.thread_id
+                    AND dimensions.turn_id = period_samples.turn_id
+                    AND dimensions.total_total_tokens = period_samples.total_total_tokens
+                GROUP BY period_samples.thread_id,
+                    period_samples.turn_id,
+                    period_samples.total_total_tokens,
+                    dimensions.dimension_key,
+                    period_samples.token_count
+            )
+            SELECT dimension_key,
+                IFNULL(SUM(
+                    CASE
+                        WHEN value IS NOT NULL AND trim(value) <> ''
+                            THEN token_count
+                        ELSE 0
+                    END
+                ), 0),
+                COUNT(DISTINCT
+                    CASE
+                        WHEN value IS NOT NULL AND trim(value) <> ''
+                            THEN value
+                    END
+                )
+            FROM sample_values
+            GROUP BY dimension_key
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        var rowsByKey: [TokenUsageDimensionKey: TokenAttributionCoverageRow] = [:]
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let key = TokenUsageDimensionKey(rawValue: columnText(statement, index: 0)) else {
+                    continue
+                }
+
+                let attributedTokenCount = sqlite3_column_int64(statement, 1)
+                let distinctValueCount = Int(sqlite3_column_int(statement, 2))
+                guard attributedTokenCount > 0, distinctValueCount > 0 else {
+                    continue
+                }
+
+                rowsByKey[key] = TokenAttributionCoverageRow(
+                    id: "dimension:\(key.rawValue)",
+                    title: key.dashboardDisplayTitle,
+                    attributedTokenCount: attributedTokenCount,
+                    missingTokenCount: max(totalTokenCount - attributedTokenCount, 0),
+                    distinctValueCount: distinctValueCount,
+                    dimensionKey: key
+                )
+            case SQLITE_DONE:
+                return TokenUsageDimensionKey.allCases.compactMap { rowsByKey[$0] }
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func tokenProjectCatalogEntries() throws -> [TokenProjectCatalogEntry] {
         let statement = try prepare(
             """
@@ -1334,6 +1574,16 @@ extension UsageHistoryStore {
         }
 
         return fallback
+    }
+
+    private static func observedTokenVolumeSQLExpression(prefix: String = "") -> String {
+        let columnPrefix = prefix.isEmpty ? "" : "\(prefix)."
+        return """
+        IFNULL(\(columnPrefix)observed_input_tokens, 0)
+            + IFNULL(\(columnPrefix)observed_cached_input_tokens, 0)
+            + IFNULL(\(columnPrefix)observed_output_tokens, 0)
+            + IFNULL(\(columnPrefix)observed_reasoning_output_tokens, 0)
+        """
     }
 
     static func normalizedProjectDisplayNameForStorage(_ value: String?) throws -> String? {

@@ -1313,6 +1313,98 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(dimensionInput, 100)
     }
 
+    func testTokenAttributionCoverageRowsMeasureTokenVolumeByDimension() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-attributed",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(
+                    projectPath: "/Users/example/Projects/codex_codex",
+                    effort: "xhigh",
+                    source: "cli",
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "never"),
+                        TokenUsageDimension(.sourceKind, "cli"),
+                    ].compactMap { $0 }
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-model-only",
+                    turnID: "turn-a",
+                    model: "gpt-5.4",
+                    lastInput: 60,
+                    lastCached: 10,
+                    lastOutput: 8,
+                    lastReasoning: 2,
+                    lastTotal: 80,
+                    totalInput: 60,
+                    totalCached: 10,
+                    totalOutput: 8,
+                    totalReasoning: 2,
+                    totalTotal: 80
+                ),
+                receivedAt: date("2026-05-02T11:15:00Z"),
+                context: TokenUsageContext(
+                    dimensions: [TokenUsageDimension(.sourceKind, "codex-log")].compactMap { $0 }
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-unattributed",
+                    turnID: "turn-a",
+                    lastInput: 30,
+                    lastCached: 5,
+                    lastOutput: 7,
+                    lastReasoning: 1,
+                    lastTotal: 43,
+                    totalInput: 30,
+                    totalCached: 5,
+                    totalOutput: 7,
+                    totalReasoning: 1,
+                    totalTotal: 43
+                ),
+                receivedAt: date("2026-05-02T12:15:00Z")
+            ),
+        ])
+
+        let rows = try store.tokenAttributionCoverageRows(
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+        let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+
+        XCTAssertEqual(rowsByID["model"]?.attributedTokenCount, 245)
+        XCTAssertEqual(rowsByID["model"]?.missingTokenCount, 43)
+        XCTAssertEqual(rowsByID["model"]?.totalTokenCount, 288)
+        XCTAssertEqual(rowsByID["model"]?.distinctValueCount, 2)
+        XCTAssertEqual(rowsByID["project"]?.attributedTokenCount, 165)
+        XCTAssertEqual(rowsByID["project"]?.missingTokenCount, 123)
+        XCTAssertEqual(rowsByID["effort"]?.attributedTokenCount, 165)
+        XCTAssertEqual(rowsByID["source"]?.attributedTokenCount, 165)
+        XCTAssertEqual(rowsByID["dimension:approval_policy"]?.attributedTokenCount, 165)
+        XCTAssertEqual(rowsByID["dimension:source_kind"]?.attributedTokenCount, 165)
+        XCTAssertEqual(rowsByID["dimension:source_kind"]?.missingTokenCount, 123)
+        XCTAssertEqual(rowsByID["dimension:source_kind"]?.distinctValueCount, 1)
+        XCTAssertNil(rowsByID["dimension:usage_mode"])
+        XCTAssertEqual(rowsByID["model"]?.attributedPercent ?? 0, 245.0 / 288.0, accuracy: 0.0001)
+    }
+
     func testTokenSeriesDiscoveryReadsFromCatalog() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         try executeSQLite(
@@ -1560,6 +1652,8 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.formattedYAxisValue(10_000), "10,000")
         XCTAssertEqual(viewModel.formattedYAxisValue(1_200_000_000), "1.2B")
         XCTAssertTrue(viewModel.csvText.contains("model,month,2026-05-01T00:00:00Z,2026-06-01T00:00:00Z,2026-05-02T00:00:00Z,2026-05-03T00:00:00Z,tokens_all,All captured,aggregate,all,All captured,,input,100"))
+        XCTAssertTrue(viewModel.csvText.contains("coverage_dimension,dimension_title,attributed_tokens,missing_tokens,total_tokens,attributed_percent,distinct_values,dimension_key"))
+        XCTAssertTrue(viewModel.csvText.contains("model,Model,215,0,215,1.0000,2,"))
 
         viewModel.selectSeries("model:gpt-5.5")
 
@@ -1638,6 +1732,14 @@ extension UsageHistoryStoreTests {
         )
         await viewModel.reload()
 
+        let coverageRowsByID = Dictionary(uniqueKeysWithValues: viewModel.attributionCoverageRows.map { ($0.id, $0) })
+        XCTAssertEqual(coverageRowsByID["model"]?.attributedTokenCount, 215)
+        XCTAssertEqual(coverageRowsByID["project"]?.attributedTokenCount, 215)
+        XCTAssertEqual(coverageRowsByID["effort"]?.attributedTokenCount, 215)
+        XCTAssertEqual(coverageRowsByID["source"]?.attributedTokenCount, 215)
+        XCTAssertEqual(coverageRowsByID["dimension:approval_policy"]?.distinctValueCount, 2)
+        XCTAssertEqual(coverageRowsByID["dimension:is_subagent"]?.distinctValueCount, 2)
+
         viewModel.selectedBreakdownDimension = .effort
         await viewModel.reload()
 
@@ -1696,6 +1798,7 @@ extension UsageHistoryStoreTests {
         await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
+        XCTAssertTrue(viewModel.attributionCoverageRows.isEmpty)
     }
 
     @MainActor

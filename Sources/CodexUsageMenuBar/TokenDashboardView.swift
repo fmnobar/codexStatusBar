@@ -156,6 +156,27 @@ struct TokenDashboardBreakdownRow: Identifiable, Equatable {
     }
 }
 
+struct TokenAttributionCoverageRow: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let attributedTokenCount: Int64
+    let missingTokenCount: Int64
+    let distinctValueCount: Int
+    let dimensionKey: TokenUsageDimensionKey?
+
+    var totalTokenCount: Int64 {
+        attributedTokenCount + missingTokenCount
+    }
+
+    var attributedPercent: Double {
+        guard totalTokenCount > 0 else {
+            return 0
+        }
+
+        return Double(attributedTokenCount) / Double(totalTokenCount)
+    }
+}
+
 struct TokenDashboardEmptyState: Equatable {
     let title: String
     let message: String
@@ -190,6 +211,7 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var selectedPeriodStart: Date
     @Published private(set) var points: [TokenDashboardComponentPoint] = []
     @Published private(set) var series: [TokenDashboardSeries] = []
+    @Published private(set) var attributionCoverageRows: [TokenAttributionCoverageRow] = []
     @Published private(set) var availableBreakdownDimensions: [TokenDashboardBreakdownDimension] = [.model]
     @Published private(set) var selectedSeriesIDs: Set<String> = []
     @Published private(set) var historyBounds: UsageHistoryBounds?
@@ -423,6 +445,23 @@ final class TokenDashboardViewModel: ObservableObject {
             ].joined(separator: ",")
         }
 
+        if !attributionCoverageRows.isEmpty {
+            rows.append("")
+            rows.append("coverage_dimension,dimension_title,attributed_tokens,missing_tokens,total_tokens,attributed_percent,distinct_values,dimension_key")
+            rows += attributionCoverageRows.map { row in
+                [
+                    row.id,
+                    Self.csvEscaped(row.title),
+                    "\(row.attributedTokenCount)",
+                    "\(row.missingTokenCount)",
+                    "\(row.totalTokenCount)",
+                    String(format: "%.4f", row.attributedPercent),
+                    "\(row.distinctValueCount)",
+                    row.dimensionKey?.rawValue ?? "",
+                ].joined(separator: ",")
+            }
+        }
+
         return rows.joined(separator: "\n") + "\n"
     }
 
@@ -467,12 +506,18 @@ final class TokenDashboardViewModel: ObservableObject {
 
             availableBreakdownDimensions = result.availableBreakdownDimensions
             guard result.availableBreakdownDimensions.contains(selectedBreakdownDimension) else {
+                points = []
+                series = []
+                attributionCoverageRows = []
+                historyBounds = result.historyBounds
+                selectedSeriesIDs = []
                 selectedBreakdownDimension = .model
                 return false
             }
 
             points = result.points
             series = result.series
+            attributionCoverageRows = result.attributionCoverageRows
             historyBounds = result.historyBounds
             reconcileSelection()
             errorMessage = nil
@@ -484,6 +529,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
             points = []
             series = []
+            attributionCoverageRows = []
             availableBreakdownDimensions = [.model]
             historyBounds = nil
             selectedSeriesIDs = []
@@ -597,6 +643,10 @@ final class TokenDashboardViewModel: ObservableObject {
 
     func formattedYAxisValue(_ value: Double) -> String {
         Self.compactTokenAxisText(value)
+    }
+
+    func formattedPercent(_ value: Double) -> String {
+        value.formatted(.percent.precision(.fractionLength(0)))
     }
 
     func color(for component: TokenHistoryComponent?) -> Color {
@@ -1088,6 +1138,19 @@ struct TokenDashboardView: View {
 
     private var modelBreakdown: some View {
         VStack(alignment: .leading, spacing: 10) {
+            breakdownTable
+
+            Divider()
+
+            attributionCoverage
+        }
+        .padding(14)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var breakdownTable: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 7) {
                 GridRow {
                     Text(viewModel.breakdownColumnTitle)
@@ -1142,9 +1205,62 @@ struct TokenDashboardView: View {
                 }
             }
         }
-        .padding(14)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var attributionCoverage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Attribution")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if viewModel.attributionCoverageRows.isEmpty {
+                Text("No attribution data")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 6) {
+                    GridRow {
+                        Text("Dimension")
+                            .frame(width: modelColumnWidth, alignment: .leading)
+                        Text("Attributed")
+                            .frame(width: primaryNumberColumnWidth, alignment: .trailing)
+                        Text("Missing")
+                            .frame(width: numberColumnWidth, alignment: .trailing)
+                        Text("%")
+                            .frame(width: outputColumnWidth, alignment: .trailing)
+                        Text("Values")
+                            .frame(width: reasoningColumnWidth, alignment: .trailing)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                    ForEach(viewModel.attributionCoverageRows) { row in
+                        GridRow {
+                            Text(row.title)
+                                .lineLimit(1)
+                                .frame(width: modelColumnWidth, alignment: .leading)
+                                .help(row.dimensionKey?.rawValue ?? row.title)
+
+                            Text(viewModel.formattedTokenValue(row.attributedTokenCount))
+                                .frame(width: primaryNumberColumnWidth, alignment: .trailing)
+
+                            Text(viewModel.formattedTokenValue(row.missingTokenCount))
+                                .foregroundStyle(.secondary)
+                                .frame(width: numberColumnWidth, alignment: .trailing)
+
+                            Text(viewModel.formattedPercent(row.attributedPercent))
+                                .frame(width: outputColumnWidth, alignment: .trailing)
+
+                            Text("\(row.distinctValueCount)")
+                                .foregroundStyle(.secondary)
+                                .frame(width: reasoningColumnWidth, alignment: .trailing)
+                        }
+                        .font(.caption)
+                        .monospacedDigit()
+                    }
+                }
+            }
+        }
     }
 
     private func width(for component: TokenHistoryComponent) -> CGFloat {
