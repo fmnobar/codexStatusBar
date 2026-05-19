@@ -310,6 +310,103 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(samples.map(\.source), ["cli", "vscode"])
     }
 
+    func testSessionTokenBackfillCapturesSafeContextDimensions() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-dimensions.jsonl")
+        try writeSessionLines(
+            [
+                sessionMetaLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    sessionID: "session-dimensions",
+                    cwd: "/Users/example/Projects/codex_codex",
+                    extraPayload: #","originator":"vscode","cli_version":"0.78.0","model_provider":"openai","memory_mode":"enabled","thread_source":"cli""#
+                ),
+                turnContextLine(
+                    timestamp: "2026-05-17T15:00:01Z",
+                    model: "gpt-5.5",
+                    effort: "high",
+                    extraPayload: #","approval_policy":"never","permission_profile":"full","realtime_active":true,"truncation_policy":"auto","usage_mode":"/fast","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019c-parent-thread","depth":1,"agent_role":"explorer","agent_nickname":"Raman"}}}"#
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            [
+                "agent_nickname=Raman",
+                "agent_role=explorer",
+                "approval_policy=never",
+                "cli_version=0.78.0",
+                "is_subagent=true",
+                "memory_mode=enabled",
+                "model_provider=openai",
+                "originator=vscode",
+                "permission_profile=full",
+                "realtime_active=true",
+                "sandbox_type=danger-full-access",
+                "source_kind=subagent",
+                "subagent_depth=1",
+                "subagent_parent_thread_id=019c-parent-thread",
+                "thread_source=cli",
+                "truncation_policy=auto",
+                "usage_mode=fast",
+            ]
+        )
+    }
+
+    func testSessionTokenBackfillDoesNotInferUsageModeWithoutExplicitMetadata() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-no-mode.jsonl")
+        try writeSessionLines(
+            [
+                turnContextLine(timestamp: "2026-05-17T15:00:01Z", model: "gpt-5.4-mini", effort: "low"),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+
+        XCTAssertFalse(
+            try store.tokenDimensionCatalogEntries().contains { $0.key == .usageMode },
+            "Usage mode must only come from explicit usage_mode, speed_mode, or mode metadata."
+        )
+    }
+
     func testSessionTokenBackfillReimportsUnchangedOlderContextVersionToRepairContext() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
@@ -369,6 +466,64 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(sample.effort, "medium")
         XCTAssertEqual(sample.source, "cli")
         XCTAssertEqual(sample.observedTotalTokens, 165)
+    }
+
+    func testSessionTokenBackfillReimportsUnchangedOlderContextVersionToRepairDimensions() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-dimension-repair.jsonl")
+        try writeSessionLines(
+            [
+                turnContextLine(
+                    timestamp: "2026-05-17T15:00:01Z",
+                    model: "gpt-5.5",
+                    extraPayload: #","usage_mode":"/fast","approval_policy":"never""#
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            DELETE FROM token_usage_dimensions;
+            DELETE FROM token_dimension_catalog;
+            UPDATE codex_session_token_imports
+            SET context_version = NULL;
+            """
+        )
+
+        let repairSummary = try importer.importTokenHistory(into: store)
+
+        XCTAssertEqual(repairSummary.filesScanned, 1)
+        XCTAssertEqual(repairSummary.tokenEventsImported, 0)
+        XCTAssertEqual(repairSummary.duplicateEventsSkipped, 1)
+        XCTAssertEqual(repairSummary.dimensionEventsRepaired, 3)
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            [
+                "approval_policy=never",
+                "sandbox_type=danger-full-access",
+                "usage_mode=fast",
+            ]
+        )
+        XCTAssertEqual(try store.tokenUsageSamples().first?.observedTotalTokens, 165)
     }
 
     func testSessionTokenBackfillIsIdempotent() async throws {

@@ -469,7 +469,8 @@ extension UsageHistoryStoreTests {
         totalOutput: Int64 = 0,
         totalReasoning: Int64 = 0,
         totalTotal: Int64,
-        contextWindow: Int64? = nil
+        contextWindow: Int64? = nil,
+        dimensions: [TokenUsageDimension] = []
     ) -> CodexTokenUsageNotification {
         CodexTokenUsageNotification(
             threadID: threadID,
@@ -491,7 +492,8 @@ extension UsageHistoryStoreTests {
                     totalTokens: totalTotal
                 ),
                 modelContextWindow: contextWindow
-            )
+            ),
+            dimensions: dimensions
         )
     }
 
@@ -538,21 +540,28 @@ extension UsageHistoryStoreTests {
         totalReasoning: Int64,
         totalTotal: Int64,
         contextWindow: Int64? = nil,
-        model: String? = nil
+        model: String? = nil,
+        extraInfo: String = ""
     ) -> String {
         let contextWindowValue = contextWindow.map(String.init) ?? "null"
         let modelFragment = model.map { #","model":"\#($0)""# } ?? ""
         return """
-        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\(lastInput),"cached_input_tokens":\(lastCached),"output_tokens":\(lastOutput),"reasoning_output_tokens":\(lastReasoning),"total_tokens":\(lastTotal)},"total_token_usage":{"input_tokens":\(totalInput),"cached_input_tokens":\(totalCached),"output_tokens":\(totalOutput),"reasoning_output_tokens":\(totalReasoning),"total_tokens":\(totalTotal)},"model_context_window":\(contextWindowValue)\(modelFragment)}}}
+        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\(lastInput),"cached_input_tokens":\(lastCached),"output_tokens":\(lastOutput),"reasoning_output_tokens":\(lastReasoning),"total_tokens":\(lastTotal)},"total_token_usage":{"input_tokens":\(totalInput),"cached_input_tokens":\(totalCached),"output_tokens":\(totalOutput),"reasoning_output_tokens":\(totalReasoning),"total_tokens":\(totalTotal)},"model_context_window":\(contextWindowValue)\(modelFragment)\(extraInfo)}}}
         """
     }
 
-    func sessionMetaLine(timestamp: String, sessionID: String? = nil, cwd: String? = nil, source: String? = nil) -> String {
+    func sessionMetaLine(
+        timestamp: String,
+        sessionID: String? = nil,
+        cwd: String? = nil,
+        source: String? = nil,
+        extraPayload: String = ""
+    ) -> String {
         let sessionIDFragment = sessionID.map { #","id":"\#($0)""# } ?? ""
         let cwdFragment = cwd.map { #","cwd":"\#($0)""# } ?? ""
         let sourceFragment = source.map { #","source":"\#($0)""# } ?? ""
         return """
-        {"timestamp":"\(timestamp)","type":"session_meta","payload":{\(String([sessionIDFragment, cwdFragment, sourceFragment].joined().dropFirst()))}}
+        {"timestamp":"\(timestamp)","type":"session_meta","payload":{\(String([sessionIDFragment, cwdFragment, sourceFragment, extraPayload].joined().dropFirst()))}}
         """
     }
 
@@ -561,13 +570,14 @@ extension UsageHistoryStoreTests {
         model: String,
         cwd: String? = nil,
         effort: String? = nil,
-        source: String? = nil
+        source: String? = nil,
+        extraPayload: String = ""
     ) -> String {
         let cwdFragment = cwd.map { #","cwd":"\#($0)""# } ?? ""
         let effortFragment = effort.map { #","effort":"\#($0)""# } ?? ""
         let sourceFragment = source.map { #","source":"\#($0)""# } ?? ""
         return """
-        {"timestamp":"\(timestamp)","type":"turn_context","payload":{"model":"\(model)"\(cwdFragment)\(effortFragment)\(sourceFragment),"sandbox_policy":{"type":"danger-full-access"}}}
+        {"timestamp":"\(timestamp)","type":"turn_context","payload":{"model":"\(model)"\(cwdFragment)\(effortFragment)\(sourceFragment),"sandbox_policy":{"type":"danger-full-access"}\(extraPayload)}}
         """
     }
 

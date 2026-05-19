@@ -230,6 +230,85 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(notification.tokenUsage.total.totalTokens, 12000)
     }
 
+    func testDecodesThreadTokenUsageNotificationSafeDimensions() throws {
+        let data = Data(
+            """
+            {
+              "thread_id": "thread-123",
+              "turn_id": "turn-456",
+              "originator": "vscode",
+              "source": {
+                "subagent": {
+                  "thread_spawn": {
+                    "parent_thread_id": "019c-parent-thread",
+                    "depth": 2,
+                    "agent_role": "explorer",
+                    "agent_nickname": "Raman"
+                  }
+                }
+              },
+              "thread_source": "cli",
+              "cli_version": "0.78.0",
+              "model_provider": "openai",
+              "memory_mode": "enabled",
+              "approval_policy": "never",
+              "sandbox_policy": {"type": "danger-full-access"},
+              "permission_profile": "full",
+              "realtime_active": true,
+              "truncation_policy": "auto",
+              "usage_mode": "/fast",
+              "token_usage": {
+                "last": {
+                  "inputTokens": 1200,
+                  "cachedInputTokens": 900,
+                  "outputTokens": 300,
+                  "reasoningOutputTokens": 40,
+                  "totalTokens": 1500
+                },
+                "total": {
+                  "inputTokens": 10000,
+                  "cachedInputTokens": 7000,
+                  "outputTokens": 2000,
+                  "reasoningOutputTokens": 400,
+                  "totalTokens": 12000
+                },
+                "model_context_window": 258400
+              }
+            }
+            """.utf8
+        )
+
+        let payload = try JSONDecoder().decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: data)
+        let notification = payload.toDomainNotification()
+        let dimensionPairs = notification.dimensions.map { "\($0.key.rawValue)=\($0.value)" }
+
+        XCTAssertEqual(notification.threadID, "thread-123")
+        XCTAssertEqual(notification.turnID, "turn-456")
+        XCTAssertEqual(notification.tokenUsage.modelContextWindow, 258400)
+        XCTAssertEqual(
+            dimensionPairs,
+            [
+                "agent_nickname=Raman",
+                "agent_role=explorer",
+                "approval_policy=never",
+                "cli_version=0.78.0",
+                "is_subagent=true",
+                "memory_mode=enabled",
+                "model_provider=openai",
+                "originator=vscode",
+                "permission_profile=full",
+                "realtime_active=true",
+                "sandbox_type=danger-full-access",
+                "source_kind=subagent",
+                "subagent_depth=2",
+                "subagent_parent_thread_id=019c-parent-thread",
+                "thread_source=cli",
+                "truncation_policy=auto",
+                "usage_mode=fast",
+            ]
+        )
+    }
+
     func testDecodesThreadTokenUsageNotificationModelIdentifiers() throws {
         XCTAssertEqual(
             try decodeTokenUsageModel(extraRoot: #","model":" codex-future-1 ""#),

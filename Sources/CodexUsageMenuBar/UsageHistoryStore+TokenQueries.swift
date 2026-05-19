@@ -832,6 +832,39 @@ extension UsageHistoryStore {
         }
     }
 
+    func tokenDimensionCatalogEntries() throws -> [TokenUsageDimensionCatalogEntry] {
+        let statement = try prepare(
+            """
+            SELECT dimension_key, dimension_value, first_seen_at, last_seen_at
+            FROM token_dimension_catalog
+            ORDER BY dimension_key ASC, last_seen_at DESC, dimension_value ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var entries: [TokenUsageDimensionCatalogEntry] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                guard let key = TokenUsageDimensionKey(rawValue: columnText(statement, index: 0)) else {
+                    continue
+                }
+                entries.append(
+                    TokenUsageDimensionCatalogEntry(
+                        key: key,
+                        value: columnText(statement, index: 1),
+                        firstSeenAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 2))),
+                        lastSeenAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 3)))
+                    )
+                )
+            case SQLITE_DONE:
+                return entries
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func updateTokenProjectDisplayName(projectPath: String, displayName: String?) throws {
         try updateTokenProjectDisplayName(projectPath: projectPath, displayName: displayName, postNotification: true)
     }

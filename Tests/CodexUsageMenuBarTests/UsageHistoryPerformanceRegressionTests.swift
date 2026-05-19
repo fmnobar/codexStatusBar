@@ -170,6 +170,19 @@ extension UsageHistoryStoreTests {
         )
         XCTAssertPlanMentions(effortPlan, "token_effort_catalog")
         XCTAssertPlanDoesNotMention(effortPlan, "token_usage_samples")
+
+        let dimensionPlan = try queryPlan(
+            at: fixture.databaseURL,
+            sql: """
+            SELECT dimension_key, dimension_value, last_seen_at
+            FROM token_dimension_catalog
+            WHERE dimension_key = 'usage_mode'
+            ORDER BY last_seen_at DESC, dimension_value ASC
+            """
+        )
+        XCTAssertPlanMentions(dimensionPlan, "token_dimension_catalog")
+        XCTAssertPlanDoesNotMention(dimensionPlan, "token_usage_samples")
+        XCTAssertPlanDoesNotMention(dimensionPlan, "token_usage_dimensions")
     }
 
     func testHistoryAndDashboardSnapshotsStayWithinConservativeBudgets() async throws {

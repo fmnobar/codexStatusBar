@@ -37,6 +37,8 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(tables.contains("token_project_catalog"))
         XCTAssertTrue(tables.contains("token_effort_catalog"))
         XCTAssertTrue(tables.contains("token_source_catalog"))
+        XCTAssertTrue(tables.contains("token_usage_dimensions"))
+        XCTAssertTrue(tables.contains("token_dimension_catalog"))
         XCTAssertTrue(
             try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_project_catalog')")
                 .contains("display_name")
@@ -47,6 +49,9 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_project_received_at"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_effort_received_at"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_observed_components_received_at"))
+        XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_sample"))
+        XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_key_value_seen"))
+        XCTAssertTrue(indexes.contains("idx_token_dimension_catalog_key_seen"))
     }
 
     func testTokenModelCleanupMigrationRepairsStoredRowsAndCatalogs() async throws {

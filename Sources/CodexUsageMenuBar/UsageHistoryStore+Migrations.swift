@@ -145,6 +145,30 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_usage_dimensions (
+                thread_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                total_total_tokens INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                dimension_value TEXT NOT NULL,
+                seen_at INTEGER NOT NULL,
+                PRIMARY KEY (thread_id, turn_id, total_total_tokens, dimension_key, dimension_value)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_dimension_catalog (
+                dimension_key TEXT NOT NULL,
+                dimension_value TEXT NOT NULL,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                PRIMARY KEY (dimension_key, dimension_value)
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -188,9 +212,13 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_token_project_catalog_last_seen ON token_project_catalog(last_seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_effort_catalog_last_seen ON token_effort_catalog(last_seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_source_catalog_last_seen ON token_source_catalog(last_seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_dimensions_sample ON token_usage_dimensions(thread_id, turn_id, total_total_tokens)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_dimensions_key_value_seen ON token_usage_dimensions(dimension_key, dimension_value, seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_dimension_catalog_key_seen ON token_dimension_catalog(dimension_key, last_seen_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
         try cleanupTokenContextValuesIfNeeded()
+        try cleanupTokenDimensionsIfNeeded()
         try recomputeStoredUsageConsumptionIfNeeded()
         try rebuildSeriesCatalogsIfNeeded()
     }
@@ -342,6 +370,96 @@ extension UsageHistoryStore {
         return didChange
     }
 
+    func cleanupTokenDimensionsIfNeeded() throws {
+        guard try metadataValue(for: Self.tokenDimensionCleanupMetadataKey) != Self.currentTokenDimensionCleanupVersion else {
+            return
+        }
+
+        if try cleanupTokenDimensions() {
+            try rebuildTokenDimensionCatalog()
+        }
+        try setMetadataValue(Self.currentTokenDimensionCleanupVersion, for: Self.tokenDimensionCleanupMetadataKey)
+    }
+
+    @discardableResult
+    func cleanupTokenDimensions() throws -> Bool {
+        struct DimensionRow {
+            let rowID: Int64
+            let threadID: String
+            let turnID: String
+            let totalTotalTokens: Int64
+            let key: String
+            let value: String
+            let seenAt: Int64
+        }
+
+        var rows: [DimensionRow] = []
+        do {
+            let statement = try prepare(
+                """
+                SELECT rowid, thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+                FROM token_usage_dimensions
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+
+            rowLoop:
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_ROW:
+                    rows.append(
+                        DimensionRow(
+                            rowID: sqlite3_column_int64(statement, 0),
+                            threadID: columnText(statement, index: 1),
+                            turnID: columnText(statement, index: 2),
+                            totalTotalTokens: sqlite3_column_int64(statement, 3),
+                            key: columnText(statement, index: 4),
+                            value: columnText(statement, index: 5),
+                            seenAt: sqlite3_column_int64(statement, 6)
+                        )
+                    )
+                case SQLITE_DONE:
+                    break rowLoop
+                default:
+                    throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+                }
+            }
+        }
+
+        guard !rows.isEmpty else {
+            return false
+        }
+
+        var didChange = false
+        try transaction {
+            for row in rows {
+                guard let key = TokenUsageDimensionKey(rawValue: row.key),
+                      let normalizedDimension = TokenUsageDimension(key, row.value)
+                else {
+                    try deleteTokenUsageDimension(rowID: row.rowID)
+                    didChange = true
+                    continue
+                }
+
+                guard normalizedDimension.value != row.value else {
+                    continue
+                }
+
+                try insertTokenUsageDimension(
+                    threadID: row.threadID,
+                    turnID: row.turnID,
+                    totalTotalTokens: row.totalTotalTokens,
+                    dimension: normalizedDimension,
+                    seenAt: row.seenAt
+                )
+                try deleteTokenUsageDimension(rowID: row.rowID)
+                didChange = true
+            }
+        }
+
+        return didChange
+    }
+
     func rebuildSeriesCatalogsIfNeeded() throws {
         guard try metadataValue(for: Self.seriesCatalogMetadataKey) != Self.currentSeriesCatalogVersion else {
             return
@@ -354,6 +472,7 @@ extension UsageHistoryStore {
         try rebuildUsageSeriesCatalog()
         try rebuildTokenSeriesCatalog()
         try rebuildTokenContextCatalogs()
+        try rebuildTokenDimensionCatalog()
         try setMetadataValue(Self.currentSeriesCatalogVersion, for: Self.seriesCatalogMetadataKey)
     }
 
@@ -608,6 +727,23 @@ extension UsageHistoryStore {
                     OR observed_total_tokens > 0
                 )
             GROUP BY source
+            """
+        )
+    }
+
+    func rebuildTokenDimensionCatalog() throws {
+        try execute("DELETE FROM token_dimension_catalog")
+        try execute(
+            """
+            INSERT INTO token_dimension_catalog (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            )
+            SELECT dimension_key,
+                dimension_value,
+                MIN(seen_at) AS first_seen_at,
+                MAX(seen_at) AS last_seen_at
+            FROM token_usage_dimensions
+            GROUP BY dimension_key, dimension_value
             """
         )
     }

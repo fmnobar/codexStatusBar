@@ -260,6 +260,71 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "SELECT source FROM token_source_catalog"), ["cli"])
     }
 
+    func testTokenUsageImportStoresSafeDimensionsAndCatalog() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+        let dimensions = [
+            TokenUsageDimension(.originator, "vscode"),
+            TokenUsageDimension(.approvalPolicy, "never"),
+            TokenUsageDimension(.sandboxType, "danger-full-access"),
+            TokenUsageDimension(.usageMode, "/fast"),
+            TokenUsageDimension.boolean(.isSubagent, true),
+            TokenUsageDimension(.subagentParentThreadID, "019c-parent-thread"),
+        ].compactMap(\.self)
+
+        let result = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-dimensions",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastCached: 25,
+                    lastOutput: 10,
+                    lastReasoning: 5,
+                    lastTotal: 140,
+                    totalInput: 100,
+                    totalCached: 25,
+                    totalOutput: 10,
+                    totalReasoning: 5,
+                    totalTotal: 140,
+                    dimensions: dimensions
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+
+        XCTAssertEqual(result, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT dimension_key || '=' || dimension_value
+                FROM token_usage_dimensions
+                ORDER BY dimension_key, dimension_value
+                """
+            ),
+            [
+                "approval_policy=never",
+                "is_subagent=true",
+                "originator=vscode",
+                "sandbox_type=danger-full-access",
+                "subagent_parent_thread_id=019c-parent-thread",
+                "usage_mode=fast",
+            ]
+        )
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            [
+                "approval_policy=never",
+                "is_subagent=true",
+                "originator=vscode",
+                "sandbox_type=danger-full-access",
+                "subagent_parent_thread_id=019c-parent-thread",
+                "usage_mode=fast",
+            ]
+        )
+    }
+
     func testTokenUsageReimportRepairsMissingContextWithoutInflatingTotals() async throws {
         let store = try makeStore()
         let receivedAt = date("2026-04-14T20:00:00Z")
@@ -306,6 +371,110 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(sample.source, "vscode")
         XCTAssertEqual(sample.observedTotalTokens, 100)
         XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 100)
+    }
+
+    func testTokenUsageReimportRepairsMissingDimensionsWithoutInflatingTotals() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-dimension-repair",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+
+        let repairResult = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-dimension-repair",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100,
+                    dimensions: [
+                        TokenUsageDimension(.threadSource, "cli"),
+                        TokenUsageDimension(.usageMode, "fast"),
+                    ].compactMap(\.self)
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+
+        XCTAssertEqual(
+            repairResult,
+            TokenUsageImportResult(insertedCount: 0, duplicateCount: 1, repairedDimensionCount: 2)
+        )
+        XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 100)
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT dimension_key || '=' || dimension_value FROM token_usage_dimensions ORDER BY dimension_key"
+            ),
+            ["thread_source=cli", "usage_mode=fast"]
+        )
+    }
+
+    func testTokenDimensionCleanupMigrationNormalizesAndDropsUnsafeRows() async throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+        var store: UsageHistoryStore? = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        try store?.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-cleanup",
+                turnID: "turn-a",
+                lastInput: 100,
+                lastTotal: 100,
+                totalInput: 100,
+                totalTotal: 100
+            ),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        store = nil
+        let timestamp = Int64(date("2026-04-14T20:00:00Z").timeIntervalSince1970)
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO token_usage_dimensions (
+                thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+            ) VALUES
+                ('thread-cleanup', 'turn-a', 100, 'usage_mode', '/fast', \(timestamp)),
+                ('thread-cleanup', 'turn-a', 100, 'source_kind', '/Users/example/session.jsonl', \(timestamp)),
+                ('thread-cleanup', 'turn-a', 100, 'instructions', 'do not store this', \(timestamp));
+            DELETE FROM usage_history_metadata WHERE key = 'token_dimension_cleanup_version';
+            """
+        )
+
+        let reopenedStore = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT dimension_key || '=' || dimension_value FROM token_usage_dimensions ORDER BY dimension_key"
+            ),
+            ["usage_mode=fast"]
+        )
+        XCTAssertEqual(
+            try reopenedStore.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            ["usage_mode=fast"]
+        )
+        XCTAssertEqual(try reopenedStore.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 100)
     }
 
     func testTokenUsageImportRejectsUnsafeContextValues() async throws {
@@ -1342,7 +1511,7 @@ extension UsageHistoryStoreTests {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
         let timestamp = date("2026-05-17T12:48:13Z")
         let body = """
-        event.name="codex.sse_event" event.kind=response.completed input_token_count=146059 output_token_count=37 cached_token_count=145280 reasoning_token_count=0 tool_token_count=146096 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=019dd6bb-c26b-72c2-bb51-0fff5324362a model=gpt-5.5 slug=gpt-5.5
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=146059 output_token_count=37 cached_token_count=145280 reasoning_token_count=0 tool_token_count=146096 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=019dd6bb-c26b-72c2-bb51-0fff5324362a model=gpt-5.5 slug=gpt-5.5 source=desktop usage_mode=/fast approval_policy=never sandbox_type=danger-full-access permission_profile=full
         """
         let duplicateBody = body + " user.email=\"private@example.com\""
         try createCodexLogsDatabase(
@@ -1376,6 +1545,16 @@ extension UsageHistoryStoreTests {
             )
         )
         XCTAssertEqual(samples.map(\.model), ["gpt-5.5"])
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            [
+                "approval_policy=never",
+                "permission_profile=full",
+                "sandbox_type=danger-full-access",
+                "source_kind=desktop",
+                "usage_mode=fast",
+            ]
+        )
         XCTAssertFalse(samples.contains { $0.threadID.contains("private") || $0.turnID.contains("private") })
     }
 

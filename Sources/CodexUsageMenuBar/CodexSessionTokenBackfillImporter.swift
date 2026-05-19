@@ -22,17 +22,20 @@ struct TokenUsageImportResult: Equatable, Sendable {
     let duplicateCount: Int
     let repairedModelCount: Int
     let repairedContextCount: Int
+    let repairedDimensionCount: Int
 
     init(
         insertedCount: Int,
         duplicateCount: Int,
         repairedModelCount: Int = 0,
-        repairedContextCount: Int = 0
+        repairedContextCount: Int = 0,
+        repairedDimensionCount: Int = 0
     ) {
         self.insertedCount = insertedCount
         self.duplicateCount = duplicateCount
         self.repairedModelCount = repairedModelCount
         self.repairedContextCount = repairedContextCount
+        self.repairedDimensionCount = repairedDimensionCount
     }
 
     static let empty = TokenUsageImportResult(insertedCount: 0, duplicateCount: 0)
@@ -116,6 +119,7 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
     let duplicateEventsSkipped: Int
     let modelEventsRepaired: Int
     let contextEventsRepaired: Int
+    let dimensionEventsRepaired: Int
     let failedLinesSkipped: Int
     let elapsedTime: TimeInterval
 
@@ -129,6 +133,7 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
         duplicateEventsSkipped: Int,
         modelEventsRepaired: Int = 0,
         contextEventsRepaired: Int = 0,
+        dimensionEventsRepaired: Int = 0,
         failedLinesSkipped: Int,
         elapsedTime: TimeInterval = 0
     ) {
@@ -141,6 +146,7 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
         self.duplicateEventsSkipped = duplicateEventsSkipped
         self.modelEventsRepaired = modelEventsRepaired
         self.contextEventsRepaired = contextEventsRepaired
+        self.dimensionEventsRepaired = dimensionEventsRepaired
         self.failedLinesSkipped = failedLinesSkipped
         self.elapsedTime = elapsedTime
     }
@@ -173,6 +179,10 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
 
         if contextEventsRepaired > 0 {
             parts.append("\(contextEventsRepaired) context rows repaired.")
+        }
+
+        if dimensionEventsRepaired > 0 {
+            parts.append("\(dimensionEventsRepaired) dimension rows repaired.")
         }
 
         if failedLinesSkipped > 0 {
@@ -282,7 +292,14 @@ struct CodexLogTokenUsageImporter {
             sessionID: conversationID,
             projectPath: value(for: "cwd", in: body),
             effort: value(for: "model_reasoning_effort", in: body) ?? value(for: "reasoning_effort", in: body),
-            source: value(for: "source", in: body) ?? "codex-log"
+            source: value(for: "source", in: body) ?? "codex-log",
+            dimensions: [
+                TokenUsageDimension(.sourceKind, value(for: "source", in: body) ?? "codex-log"),
+                TokenUsageDimension(.usageMode, value(for: "usage_mode", in: body) ?? value(for: "speed_mode", in: body) ?? value(for: "mode", in: body)),
+                TokenUsageDimension(.approvalPolicy, value(for: "approval_policy", in: body)),
+                TokenUsageDimension(.sandboxType, value(for: "sandbox_type", in: body)),
+                TokenUsageDimension(.permissionProfile, value(for: "permission_profile", in: body)),
+            ].compactMap(\.self)
         )
         let eventID = [
             timestampText ?? "\(fallbackTimestamp)",
@@ -389,6 +406,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         var duplicateEventsSkipped = 0
         var modelEventsRepaired = 0
         var contextEventsRepaired = 0
+        var dimensionEventsRepaired = 0
 
         let sessionFiles = discoveredFiles.filter { candidate in
             guard shouldInclude(candidate: candidate, request: request) else {
@@ -412,6 +430,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             duplicateEventsSkipped += importResult.duplicateCount
             modelEventsRepaired += importResult.repairedModelCount
             contextEventsRepaired += importResult.repairedContextCount
+            dimensionEventsRepaired += importResult.repairedDimensionCount
             try store.recordCodexSessionTokenImportFile(
                 candidate.metadata,
                 importedAt: Int64(Date().timeIntervalSince1970),
@@ -429,6 +448,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             duplicateEventsSkipped: duplicateEventsSkipped,
             modelEventsRepaired: modelEventsRepaired,
             contextEventsRepaired: contextEventsRepaired,
+            dimensionEventsRepaired: dimensionEventsRepaired,
             failedLinesSkipped: failedLinesSkipped,
             elapsedTime: Date().timeIntervalSince(startedAt)
         )
@@ -592,7 +612,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                     samples.append(ImportedCodexTokenUsageSample(
                         notification: notification,
                         receivedAt: receivedAt,
-                        context: currentContext.context
+                        context: currentContext.context(adding: info.dimensions)
                     ))
                 } catch {
                     failedLinesSkipped += 1
@@ -664,7 +684,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                     samples.append(ImportedCodexTokenUsageSample(
                         notification: notification,
                         receivedAt: receivedAt,
-                        context: currentContext.context
+                        context: currentContext.context(adding: info.dimensions)
                     ))
                 } catch {
                     failedLinesSkipped += 1
@@ -862,8 +882,21 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         let type: String?
         let id: String?
         let cwd: String?
-        let source: String?
+        let source: CodexSafeSourceMetadataPayload?
         let effort: String?
+        let originator: String?
+        let cliVersion: String?
+        let modelProvider: String?
+        let memoryMode: String?
+        let threadSource: String?
+        let approvalPolicy: String?
+        let sandboxPolicy: CodexSandboxPolicyPayload?
+        let permissionProfile: String?
+        let realtimeActive: Bool?
+        let truncationPolicy: String?
+        let usageMode: String?
+        let speedMode: String?
+        let mode: String?
         let collaborationMode: CollaborationMode?
         let info: Info?
         let model: String?
@@ -889,11 +922,33 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         }
 
         var safeSource: String? {
-            CodexTokenContextNormalizer.normalizedIdentifier(source)
+            source?.dimensions.first { $0.key == .sourceKind }?.value
         }
 
         var hasModelMetadata: Bool {
             model != nil || slug != nil || modelSlug != nil
+        }
+
+        var dimensions: [TokenUsageDimension] {
+            TokenUsageDimension.unique(
+                [
+                    TokenUsageDimension(.originator, originator),
+                    TokenUsageDimension(.sourceKind, safeSource),
+                    TokenUsageDimension(.threadSource, threadSource),
+                    TokenUsageDimension(.cliVersion, cliVersion),
+                    TokenUsageDimension(.modelProvider, modelProvider),
+                    TokenUsageDimension(.memoryMode, memoryMode),
+                    TokenUsageDimension(.approvalPolicy, approvalPolicy),
+                    TokenUsageDimension(.sandboxType, sandboxPolicy?.type),
+                    TokenUsageDimension(.permissionProfile, permissionProfile),
+                    TokenUsageDimension.boolean(.realtimeActive, realtimeActive),
+                    TokenUsageDimension(.truncationPolicy, truncationPolicy),
+                    TokenUsageDimension(.usageMode, usageMode ?? speedMode ?? mode),
+                    TokenUsageDimension(.usageMode, info?.usageMode ?? info?.speedMode ?? info?.mode),
+                ].compactMap(\.self)
+                    + (source?.dimensions ?? [])
+                    + (info?.dimensions ?? [])
+            )
         }
 
         enum CodingKeys: String, CodingKey {
@@ -902,6 +957,19 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             case cwd
             case source
             case effort
+            case originator
+            case cliVersion = "cli_version"
+            case modelProvider = "model_provider"
+            case memoryMode = "memory_mode"
+            case threadSource = "thread_source"
+            case approvalPolicy = "approval_policy"
+            case sandboxPolicy = "sandbox_policy"
+            case permissionProfile = "permission_profile"
+            case realtimeActive = "realtime_active"
+            case truncationPolicy = "truncation_policy"
+            case usageMode = "usage_mode"
+            case speedMode = "speed_mode"
+            case mode
             case collaborationMode = "collaboration_mode"
             case info
             case model
@@ -914,8 +982,21 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             type = try container.decodeIfPresent(String.self, forKey: .type)
             id = try? container.decodeIfPresent(String.self, forKey: .id)
             cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
-            source = try? container.decodeIfPresent(String.self, forKey: .source)
+            source = try? container.decodeIfPresent(CodexSafeSourceMetadataPayload.self, forKey: .source)
             effort = try? container.decodeIfPresent(String.self, forKey: .effort)
+            originator = try? container.decodeIfPresent(String.self, forKey: .originator)
+            cliVersion = try? container.decodeIfPresent(String.self, forKey: .cliVersion)
+            modelProvider = try? container.decodeIfPresent(String.self, forKey: .modelProvider)
+            memoryMode = try? container.decodeIfPresent(String.self, forKey: .memoryMode)
+            threadSource = try? container.decodeIfPresent(String.self, forKey: .threadSource)
+            approvalPolicy = try? container.decodeIfPresent(String.self, forKey: .approvalPolicy)
+            sandboxPolicy = try? container.decodeIfPresent(CodexSandboxPolicyPayload.self, forKey: .sandboxPolicy)
+            permissionProfile = try? container.decodeIfPresent(String.self, forKey: .permissionProfile)
+            realtimeActive = try? container.decodeIfPresent(Bool.self, forKey: .realtimeActive)
+            truncationPolicy = try? container.decodeIfPresent(String.self, forKey: .truncationPolicy)
+            usageMode = try? container.decodeIfPresent(String.self, forKey: .usageMode)
+            speedMode = try? container.decodeIfPresent(String.self, forKey: .speedMode)
+            mode = try? container.decodeIfPresent(String.self, forKey: .mode)
             collaborationMode = try? container.decode(CollaborationMode.self, forKey: .collaborationMode)
             info = try? container.decode(Info.self, forKey: .info)
             model = try container.decodeIfPresent(String.self, forKey: .model)
@@ -931,9 +1012,20 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         let model: String?
         let slug: String?
         let modelSlug: String?
+        let usageMode: String?
+        let speedMode: String?
+        let mode: String?
 
         var modelIdentifier: String? {
             CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
+        }
+
+        var dimensions: [TokenUsageDimension] {
+            TokenUsageDimension.unique(
+                [
+                    TokenUsageDimension(.usageMode, usageMode ?? speedMode ?? mode),
+                ].compactMap(\.self)
+            )
         }
 
         var hasModelMetadata: Bool {
@@ -947,6 +1039,9 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             case model
             case slug
             case modelSlug
+            case usageMode = "usage_mode"
+            case speedMode = "speed_mode"
+            case mode
         }
     }
 
@@ -968,6 +1063,7 @@ private struct CodexSessionTokenContextTracker {
     var projectPath: String?
     var effort: String?
     var source: String?
+    var dimensions: [TokenUsageDimensionKey: TokenUsageDimension] = [:]
 
     init(sessionID: String?) {
         self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
@@ -990,6 +1086,7 @@ private struct CodexSessionTokenContextTracker {
         if let effort = payload.safeEffort {
             self.effort = effort
         }
+        applyDimensions(payload.dimensions)
     }
 
     mutating func applyTurnContext(from payload: CodexSessionTokenBackfillLine.Payload?) {
@@ -1006,14 +1103,26 @@ private struct CodexSessionTokenContextTracker {
         if let source = payload.safeSource {
             self.source = source
         }
+        applyDimensions(payload.dimensions)
+    }
+
+    mutating func applyDimensions(_ newDimensions: [TokenUsageDimension]) {
+        for dimension in newDimensions {
+            dimensions[dimension.key] = dimension
+        }
     }
 
     var context: TokenUsageContext? {
+        context(adding: [])
+    }
+
+    func context(adding additionalDimensions: [TokenUsageDimension]) -> TokenUsageContext? {
         let context = TokenUsageContext(
             sessionID: sessionID,
             projectPath: projectPath,
             effort: effort,
-            source: source
+            source: source,
+            dimensions: Array(dimensions.values) + additionalDimensions
         )
         return context.hasAnyValue ? context : nil
     }

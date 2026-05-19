@@ -43,11 +43,13 @@ extension UsageHistoryStore {
         var duplicateCount = 0
         var repairedModelCount = 0
         var repairedContextCount = 0
+        var repairedDimensionCount = 0
 
         try transaction {
             for sample in samples {
                 let notification = sample.notification
                 let cumulativeTotal = notification.tokenUsage.total.totalTokens
+                let receivedAt = Self.roundedToSecond(sample.receivedAt).timeIntervalSince1970Int
 
                 if try tokenSampleExists(
                     threadID: notification.threadID,
@@ -70,6 +72,11 @@ extension UsageHistoryStore {
                     ) {
                         repairedContextCount += 1
                     }
+                    repairedDimensionCount += try upsertTokenUsageDimensions(
+                        notification: notification,
+                        context: sample.context,
+                        seenAt: receivedAt
+                    )
 
                     duplicateCount += 1
                     continue
@@ -82,7 +89,7 @@ extension UsageHistoryStore {
                 )
                 try insertTokenUsageSample(
                     notification: notification,
-                    timestamp: Self.roundedToSecond(sample.receivedAt).timeIntervalSince1970Int,
+                    timestamp: receivedAt,
                     observedTokens: observedTokens,
                     context: sample.context
                 )
@@ -97,7 +104,7 @@ extension UsageHistoryStore {
             }
         }
 
-        if insertedCount > 0 || repairedModelCount > 0 || repairedContextCount > 0 {
+        if insertedCount > 0 || repairedModelCount > 0 || repairedContextCount > 0 || repairedDimensionCount > 0 {
             notificationCenter.post(name: Self.didChangeNotification, object: self)
         }
 
@@ -105,7 +112,8 @@ extension UsageHistoryStore {
             insertedCount: insertedCount,
             duplicateCount: duplicateCount,
             repairedModelCount: repairedModelCount,
-            repairedContextCount: repairedContextCount
+            repairedContextCount: repairedContextCount,
+            repairedDimensionCount: repairedDimensionCount
         )
     }
 
@@ -742,6 +750,11 @@ extension UsageHistoryStore {
             observedTokens: observedTokens
         )
         try upsertTokenContextCatalog(context: normalizedContext, seenAt: timestamp, observedTokens: observedTokens)
+        _ = try upsertTokenUsageDimensions(
+            notification: notification,
+            context: normalizedContext,
+            seenAt: timestamp
+        )
         if didRepairExistingModel || shouldRepairExistingModel {
             try rebuildTokenSeriesCatalog()
         }
@@ -922,6 +935,95 @@ extension UsageHistoryStore {
         }
         defer { sqlite3_finalize(statement) }
 
+        try step(statement)
+    }
+
+    @discardableResult
+    func upsertTokenUsageDimensions(
+        notification: CodexTokenUsageNotification,
+        context: TokenUsageContext?,
+        seenAt: Int64
+    ) throws -> Int {
+        let dimensions = TokenUsageDimension.unique(notification.dimensions + (context?.dimensions ?? []))
+        guard !dimensions.isEmpty else {
+            return 0
+        }
+
+        var insertedCount = 0
+        for dimension in dimensions {
+            if try insertTokenUsageDimension(
+                threadID: notification.threadID,
+                turnID: notification.turnID,
+                totalTotalTokens: notification.tokenUsage.total.totalTokens,
+                dimension: dimension,
+                seenAt: seenAt
+            ) {
+                insertedCount += 1
+            }
+            try upsertTokenDimensionCatalog(dimension: dimension, seenAt: seenAt)
+        }
+
+        return insertedCount
+    }
+
+    @discardableResult
+    func insertTokenUsageDimension(
+        threadID: String,
+        turnID: String,
+        totalTotalTokens: Int64,
+        dimension: TokenUsageDimension,
+        seenAt: Int64
+    ) throws -> Bool {
+        let statement = try prepare(
+            """
+            INSERT OR IGNORE INTO token_usage_dimensions (
+                thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(threadID, to: 1, in: statement)
+        bindText(turnID, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, totalTotalTokens)
+        bindText(dimension.key.rawValue, to: 4, in: statement)
+        bindText(dimension.value, to: 5, in: statement)
+        sqlite3_bind_int64(statement, 6, seenAt)
+
+        try step(statement)
+        return sqlite3_changes(database) > 0
+    }
+
+    func deleteTokenUsageDimension(rowID: Int64) throws {
+        let statement = try prepare(
+            """
+            DELETE FROM token_usage_dimensions
+            WHERE rowid = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, rowID)
+        try step(statement)
+    }
+
+    func upsertTokenDimensionCatalog(dimension: TokenUsageDimension, seenAt: Int64) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO token_dimension_catalog (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(dimension_key, dimension_value) DO UPDATE SET
+                first_seen_at = MIN(token_dimension_catalog.first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(token_dimension_catalog.last_seen_at, excluded.last_seen_at)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(dimension.key.rawValue, to: 1, in: statement)
+        bindText(dimension.value, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, seenAt)
+        sqlite3_bind_int64(statement, 4, seenAt)
         try step(statement)
     }
 

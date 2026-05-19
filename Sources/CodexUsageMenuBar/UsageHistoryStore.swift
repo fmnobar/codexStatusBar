@@ -106,6 +106,83 @@ struct UsageHistoryDatabaseInfo: Equatable {
     let totalByteSize: Int64
 }
 
+enum TokenUsageDimensionKey: String, CaseIterable, Sendable {
+    case originator
+    case sourceKind = "source_kind"
+    case threadSource = "thread_source"
+    case cliVersion = "cli_version"
+    case modelProvider = "model_provider"
+    case memoryMode = "memory_mode"
+    case approvalPolicy = "approval_policy"
+    case sandboxType = "sandbox_type"
+    case permissionProfile = "permission_profile"
+    case realtimeActive = "realtime_active"
+    case truncationPolicy = "truncation_policy"
+    case isSubagent = "is_subagent"
+    case subagentParentThreadID = "subagent_parent_thread_id"
+    case subagentDepth = "subagent_depth"
+    case agentRole = "agent_role"
+    case agentNickname = "agent_nickname"
+    case usageMode = "usage_mode"
+}
+
+struct TokenUsageDimension: Hashable, Equatable, Sendable {
+    let key: TokenUsageDimensionKey
+    let value: String
+
+    init?(_ key: TokenUsageDimensionKey, _ rawValue: String?) {
+        let normalizedValue: String?
+        switch key {
+        case .usageMode:
+            normalizedValue = CodexTokenContextNormalizer.normalizedModeValue(rawValue)
+        case .realtimeActive, .isSubagent, .subagentDepth:
+            normalizedValue = CodexTokenContextNormalizer.normalizedIdentifier(rawValue)
+        default:
+            normalizedValue = CodexTokenContextNormalizer.normalizedDimensionValue(rawValue)
+        }
+
+        guard let normalizedValue else {
+            return nil
+        }
+
+        self.key = key
+        self.value = normalizedValue
+    }
+
+    static func boolean(_ key: TokenUsageDimensionKey, _ value: Bool?) -> TokenUsageDimension? {
+        guard let value else {
+            return nil
+        }
+
+        return TokenUsageDimension(key, value ? "true" : "false")
+    }
+
+    static func integer(_ key: TokenUsageDimensionKey, _ value: Int?) -> TokenUsageDimension? {
+        guard let value else {
+            return nil
+        }
+
+        return TokenUsageDimension(key, "\(value)")
+    }
+
+    static func unique(_ dimensions: [TokenUsageDimension]) -> [TokenUsageDimension] {
+        Array(Set(dimensions)).sorted { lhs, rhs in
+            if lhs.key.rawValue != rhs.key.rawValue {
+                return lhs.key.rawValue < rhs.key.rawValue
+            }
+
+            return lhs.value.localizedStandardCompare(rhs.value) == .orderedAscending
+        }
+    }
+}
+
+struct TokenUsageDimensionCatalogEntry: Equatable, Sendable {
+    let key: TokenUsageDimensionKey
+    let value: String
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+}
+
 struct TokenProjectCatalogEntry: Identifiable, Equatable, Sendable {
     let projectPath: String
     let generatedName: String
@@ -146,18 +223,21 @@ struct TokenUsageContext: Equatable, Sendable {
     let projectName: String?
     let effort: String?
     let source: String?
+    let dimensions: [TokenUsageDimension]
 
     init(
         sessionID: String? = nil,
         projectPath: String? = nil,
         effort: String? = nil,
-        source: String? = nil
+        source: String? = nil,
+        dimensions: [TokenUsageDimension] = []
     ) {
         self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
         self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
         self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
         self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
         self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+        self.dimensions = TokenUsageDimension.unique(dimensions)
     }
 
     var hasAnyValue: Bool {
@@ -166,6 +246,7 @@ struct TokenUsageContext: Equatable, Sendable {
             || projectName != nil
             || effort != nil
             || source != nil
+            || !dimensions.isEmpty
     }
 }
 
@@ -237,6 +318,31 @@ enum CodexTokenContextNormalizer {
 
         return normalizedProjectDisplayName(trimmedValue) == nil
     }
+
+    static func normalizedDimensionValue(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.count <= 120 else {
+            return nil
+        }
+
+        let allowedCharacters = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-@ "
+        )
+        guard trimmedValue.unicodeScalars.allSatisfy({ allowedCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return trimmedValue
+    }
+
+    static func normalizedModeValue(_ value: String?) -> String? {
+        var trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        if trimmedValue.hasPrefix("/") {
+            trimmedValue.removeFirst()
+        }
+
+        return normalizedIdentifier(trimmedValue)
+    }
 }
 
 enum UsageHistoryRawRetention: Int, CaseIterable, Identifiable, Equatable {
@@ -281,7 +387,9 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let currentTokenModelCleanupVersion = "1"
     static let tokenContextCleanupMetadataKey = "token_context_cleanup_version"
     static let currentTokenContextCleanupVersion = "1"
-    static let currentSessionTokenContextImportVersion = "1"
+    static let tokenDimensionCleanupMetadataKey = "token_dimension_cleanup_version"
+    static let currentTokenDimensionCleanupVersion = "1"
+    static let currentSessionTokenContextImportVersion = "2"
     static let resetCohortTolerance: Int64 = 60 * 60
     static let observedTokenComponentsPredicate = """
         observed_input_tokens > 0

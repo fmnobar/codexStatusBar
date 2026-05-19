@@ -4,7 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Track additional safe token slices as Codex exposes them | Capture future explicit token/session dimensions when available, including an explicit fast/normal mode only if Codex records it directly. |
+| 1 | Expose additional token slices in Token Dashboard | Add dashboard grouping/filtering/export for captured originator, source, runtime policy, subagent, memory, provider, and explicit usage-mode dimensions. |
 
 ## Done
 
@@ -185,7 +185,12 @@
   - Added project rename and reset controls in Data settings.
   - Updated Token Dashboard project breakdowns and CSV export to use aliases while preserving full project paths for audit/debugging.
 
+- Track additional safe token slices as Codex exposes them
+  - Added generic token dimension and dimension-catalog tables so future explicit metadata can be stored without schema churn.
+  - Captured allowlisted session/app, runtime policy, subagent, and explicit usage-mode metadata from live notifications, session JSONL, and Codex logs.
+  - Kept prompt, message, summary, instruction, tool, auth, and arbitrary unknown fields out of storage, with no `/fast` inference.
+
 ## Next Candidates
 
-- Track additional safe token slices as Codex exposes them
-  - Store future explicit dimensions, including fast/normal only if Codex records it directly rather than requiring inference.
+- Expose additional token slices in Token Dashboard
+  - Let the dashboard group, filter, and export newly captured safe dimensions such as originator, source kind, approval policy, sandbox type, subagent role, memory mode, model provider, and explicit usage mode.

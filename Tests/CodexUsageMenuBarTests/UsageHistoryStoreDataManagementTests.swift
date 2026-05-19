@@ -269,6 +269,74 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(entries.first?.effectiveDisplayName, "Client Work")
     }
 
+    func testBackupImportPreservesTokenDimensions() async throws {
+        let (sourceStore, _) = try makeTemporaryStore()
+        _ = try sourceStore.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120,
+                    dimensions: [
+                        TokenUsageDimension(.originator, "vscode"),
+                        TokenUsageDimension(.usageMode, "/fast"),
+                    ].compactMap(\.self)
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z")
+            ),
+        ])
+        let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
+        try sourceStore.exportBackup(to: backupURL)
+        let (destinationStore, databaseURL) = try makeTemporaryStore()
+
+        try destinationStore.importBackup(from: backupURL)
+
+        XCTAssertEqual(
+            try destinationStore.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            ["originator=vscode", "usage_mode=fast"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT dimension_key || '=' || dimension_value FROM token_usage_dimensions ORDER BY dimension_key"
+            ),
+            ["originator=vscode", "usage_mode=fast"]
+        )
+    }
+
+    func testClearHistoryRemovesTokenDimensions() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120,
+                    dimensions: [TokenUsageDimension(.usageMode, "fast")].compactMap(\.self)
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z")
+            ),
+        ])
+
+        try store.clearHistory()
+
+        XCTAssertEqual(try store.tokenDimensionCatalogEntries(), [])
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_usage_dimensions"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_dimension_catalog"),
+            ["0"]
+        )
+    }
+
     func testBackupImportCleansMalformedTokenModelLabelsAndRebuildsCatalogs() async throws {
         let sourceDirectoryURL = try makeTemporaryDirectory()
         let sourceURL = sourceDirectoryURL.appendingPathComponent("source.sqlite3")

@@ -31,12 +31,14 @@ extension UsageHistoryStore {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
+            try execute("DELETE FROM token_usage_dimensions")
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
             try execute("DELETE FROM token_series_catalog")
             try execute("DELETE FROM token_project_catalog")
             try execute("DELETE FROM token_effort_catalog")
             try execute("DELETE FROM token_source_catalog")
+            try execute("DELETE FROM token_dimension_catalog")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -135,6 +137,10 @@ extension UsageHistoryStore {
             table: "token_usage_samples",
             schema: "imported_usage_history"
         )
+        let importedHasTokenUsageDimensions = try tableExists(
+            table: "token_usage_dimensions",
+            schema: "imported_usage_history"
+        )
         let importedObservedInputExpression = try importedHasTokenUsageSamples && tableHasColumn(
             table: "token_usage_samples",
             column: "observed_input_tokens",
@@ -202,12 +208,14 @@ extension UsageHistoryStore {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
+            try execute("DELETE FROM token_usage_dimensions")
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
             try execute("DELETE FROM token_series_catalog")
             try execute("DELETE FROM token_project_catalog")
             try execute("DELETE FROM token_effort_catalog")
             try execute("DELETE FROM token_source_catalog")
+            try execute("DELETE FROM token_dimension_catalog")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -259,6 +267,23 @@ extension UsageHistoryStore {
                     """
                 )
             }
+            if importedHasTokenUsageDimensions {
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO token_usage_dimensions (
+                        thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+                    )
+                    SELECT dimension_rows.thread_id, dimension_rows.turn_id,
+                        dimension_rows.total_total_tokens, dimension_rows.dimension_key,
+                        dimension_rows.dimension_value, dimension_rows.seen_at
+                    FROM imported_usage_history.token_usage_dimensions dimension_rows
+                    INNER JOIN token_usage_samples samples
+                        ON samples.thread_id = dimension_rows.thread_id
+                        AND samples.turn_id = dimension_rows.turn_id
+                        AND samples.total_total_tokens = dimension_rows.total_total_tokens
+                    """
+                )
+            }
             if importedHasSessionTokenImports {
                 try execute(
                     """
@@ -274,6 +299,7 @@ extension UsageHistoryStore {
 
         _ = try cleanupTokenModelLabels()
         _ = try cleanupTokenContextValues()
+        _ = try cleanupTokenDimensions()
         try recomputeStoredUsageConsumption()
         try rebuildSeriesCatalogs()
         if importedHasProjectDisplayNames {
