@@ -4,17 +4,35 @@ import SQLite3
 struct ImportedCodexTokenUsageSample: Equatable {
     let notification: CodexTokenUsageNotification
     let receivedAt: Date
+    let context: TokenUsageContext?
+
+    init(
+        notification: CodexTokenUsageNotification,
+        receivedAt: Date,
+        context: TokenUsageContext? = nil
+    ) {
+        self.notification = notification
+        self.receivedAt = receivedAt
+        self.context = context?.hasAnyValue == true ? context : nil
+    }
 }
 
 struct TokenUsageImportResult: Equatable, Sendable {
     let insertedCount: Int
     let duplicateCount: Int
     let repairedModelCount: Int
+    let repairedContextCount: Int
 
-    init(insertedCount: Int, duplicateCount: Int, repairedModelCount: Int = 0) {
+    init(
+        insertedCount: Int,
+        duplicateCount: Int,
+        repairedModelCount: Int = 0,
+        repairedContextCount: Int = 0
+    ) {
         self.insertedCount = insertedCount
         self.duplicateCount = duplicateCount
         self.repairedModelCount = repairedModelCount
+        self.repairedContextCount = repairedContextCount
     }
 
     static let empty = TokenUsageImportResult(insertedCount: 0, duplicateCount: 0)
@@ -73,6 +91,19 @@ struct CodexSessionTokenImportFileRecord: Equatable, Sendable {
     let metadata: CodexSessionTokenImportFileMetadata
     let importedAt: Int64
     let status: CodexSessionTokenImportFileStatus
+    let contextVersion: String?
+
+    init(
+        metadata: CodexSessionTokenImportFileMetadata,
+        importedAt: Int64,
+        status: CodexSessionTokenImportFileStatus,
+        contextVersion: String? = UsageHistoryStore.currentSessionTokenContextImportVersion
+    ) {
+        self.metadata = metadata
+        self.importedAt = importedAt
+        self.status = status
+        self.contextVersion = contextVersion
+    }
 }
 
 struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
@@ -84,6 +115,7 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
     let tokenEventsImported: Int
     let duplicateEventsSkipped: Int
     let modelEventsRepaired: Int
+    let contextEventsRepaired: Int
     let failedLinesSkipped: Int
     let elapsedTime: TimeInterval
 
@@ -96,6 +128,7 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
         tokenEventsImported: Int,
         duplicateEventsSkipped: Int,
         modelEventsRepaired: Int = 0,
+        contextEventsRepaired: Int = 0,
         failedLinesSkipped: Int,
         elapsedTime: TimeInterval = 0
     ) {
@@ -107,6 +140,7 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
         self.tokenEventsImported = tokenEventsImported
         self.duplicateEventsSkipped = duplicateEventsSkipped
         self.modelEventsRepaired = modelEventsRepaired
+        self.contextEventsRepaired = contextEventsRepaired
         self.failedLinesSkipped = failedLinesSkipped
         self.elapsedTime = elapsedTime
     }
@@ -135,6 +169,10 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
 
         if modelEventsRepaired > 0 {
             parts.append("\(modelEventsRepaired) model labels repaired.")
+        }
+
+        if contextEventsRepaired > 0 {
+            parts.append("\(contextEventsRepaired) context rows repaired.")
         }
 
         if failedLinesSkipped > 0 {
@@ -240,6 +278,12 @@ struct CodexLogTokenUsageImporter {
             value(for: "slug", in: body),
             value(for: "model", in: body),
         ])
+        let context = TokenUsageContext(
+            sessionID: conversationID,
+            projectPath: value(for: "cwd", in: body),
+            effort: value(for: "model_reasoning_effort", in: body) ?? value(for: "reasoning_effort", in: body),
+            source: value(for: "source", in: body) ?? "codex-log"
+        )
         let eventID = [
             timestampText ?? "\(fallbackTimestamp)",
             "\(inputTokens)",
@@ -272,7 +316,7 @@ struct CodexLogTokenUsageImporter {
             tokenUsage: tokenUsage
         )
 
-        return ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt)
+        return ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt, context: context)
     }
 
     private static func intValue(for key: String, in body: String) -> Int64? {
@@ -314,6 +358,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
     let fileManager: FileManager
     private static let tokenCountLineNeedle = Data(#""token_count""#.utf8)
     private static let turnContextLineNeedle = Data(#""turn_context""#.utf8)
+    private static let sessionMetaLineNeedle = Data(#""session_meta""#.utf8)
 
     init(
         sourceDirectories: [URL] = Self.defaultSourceDirectories(),
@@ -343,6 +388,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         var tokenEventsImported = 0
         var duplicateEventsSkipped = 0
         var modelEventsRepaired = 0
+        var contextEventsRepaired = 0
 
         let sessionFiles = discoveredFiles.filter { candidate in
             guard shouldInclude(candidate: candidate, request: request) else {
@@ -365,6 +411,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             tokenEventsImported += importResult.insertedCount
             duplicateEventsSkipped += importResult.duplicateCount
             modelEventsRepaired += importResult.repairedModelCount
+            contextEventsRepaired += importResult.repairedContextCount
             try store.recordCodexSessionTokenImportFile(
                 candidate.metadata,
                 importedAt: Int64(Date().timeIntervalSince1970),
@@ -381,6 +428,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             tokenEventsImported: tokenEventsImported,
             duplicateEventsSkipped: duplicateEventsSkipped,
             modelEventsRepaired: modelEventsRepaired,
+            contextEventsRepaired: contextEventsRepaired,
             failedLinesSkipped: failedLinesSkipped,
             elapsedTime: Date().timeIntervalSince(startedAt)
         )
@@ -478,6 +526,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         return record.status == .imported
             && record.metadata.fileSize == metadata.fileSize
             && record.metadata.modifiedAt == metadata.modifiedAt
+            && record.contextVersion == UsageHistoryStore.currentSessionTokenContextImportVersion
     }
 
     private func parseSessionFile(_ fileURL: URL) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
@@ -503,12 +552,19 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         var samples: [ImportedCodexTokenUsageSample] = []
         var failedLinesSkipped = 0
         let sessionID = Self.sessionIdentifier(for: fileURL)
+        var currentContext = CodexSessionTokenContextTracker(sessionID: sessionID)
         var currentModel: String?
 
         do {
             while let line = try lineReader.nextRelevantLineData() {
                 do {
                     let decodedLine = try decoder.decode(CodexSessionTokenBackfillLine.self, from: line.data)
+                    if decodedLine.isSessionMetadata {
+                        currentContext.applyMetadata(from: decodedLine.payload)
+                    }
+                    if decodedLine.isTurnContext {
+                        currentContext.applyTurnContext(from: decodedLine.payload)
+                    }
                     if decodedLine.payload?.hasModelMetadata == true {
                         currentModel = decodedLine.payload?.modelIdentifier
                     }
@@ -533,7 +589,11 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                         model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
                         tokenUsage: tokenUsage
                     )
-                    samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
+                    samples.append(ImportedCodexTokenUsageSample(
+                        notification: notification,
+                        receivedAt: receivedAt,
+                        context: currentContext.context
+                    ))
                 } catch {
                     failedLinesSkipped += 1
                 }
@@ -553,6 +613,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         var samples: [ImportedCodexTokenUsageSample] = []
         var failedLinesSkipped = 0
         let sessionID = Self.sessionIdentifier(for: fileURL)
+        var currentContext = CodexSessionTokenContextTracker(sessionID: sessionID)
         var currentModel: String?
         var lineIndex = 0
 
@@ -570,6 +631,12 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
 
                 do {
                     let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
+                    if line.isSessionMetadata {
+                        currentContext.applyMetadata(from: line.payload)
+                    }
+                    if line.isTurnContext {
+                        currentContext.applyTurnContext(from: line.payload)
+                    }
                     if line.payload?.hasModelMetadata == true {
                         currentModel = line.payload?.modelIdentifier
                     }
@@ -594,7 +661,11 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                         model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
                         tokenUsage: tokenUsage
                     )
-                    samples.append(ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt))
+                    samples.append(ImportedCodexTokenUsageSample(
+                        notification: notification,
+                        receivedAt: receivedAt,
+                        context: currentContext.context
+                    ))
                 } catch {
                     failedLinesSkipped += 1
                 }
@@ -610,6 +681,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         let searchablePrefix = lineData.prefix(4_096)
         return searchablePrefix.range(of: tokenCountLineNeedle) != nil
             || searchablePrefix.range(of: turnContextLineNeedle) != nil
+            || searchablePrefix.range(of: sessionMetaLineNeedle) != nil
     }
 
     private final class GrepRelevantLineReader {
@@ -625,7 +697,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
             process.arguments = [
                 "-anE",
-                #""token_count"|"turn_context""#,
+                #""token_count"|"turn_context"|"session_meta""#,
                 fileURL.path,
             ]
             process.standardOutput = pipe
@@ -778,8 +850,21 @@ private struct CodexSessionTokenBackfillLine: Decodable {
     let timestamp: String?
     let payload: Payload?
 
+    var isSessionMetadata: Bool {
+        type == "session_meta"
+    }
+
+    var isTurnContext: Bool {
+        type == "turn_context" || payload?.type == "turn_context"
+    }
+
     struct Payload: Decodable {
         let type: String?
+        let id: String?
+        let cwd: String?
+        let source: String?
+        let effort: String?
+        let collaborationMode: CollaborationMode?
         let info: Info?
         let model: String?
         let slug: String?
@@ -789,12 +874,35 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             CodexModelIdentifier.firstNormalized([model, slug, modelSlug])
         }
 
+        var safeSessionID: String? {
+            CodexTokenContextNormalizer.normalizedIdentifier(id)
+        }
+
+        var safeProjectPath: String? {
+            CodexTokenContextNormalizer.normalizedProjectPath(cwd)
+        }
+
+        var safeEffort: String? {
+            CodexTokenContextNormalizer.normalizedIdentifier(
+                effort ?? collaborationMode?.settings?.reasoningEffort
+            )
+        }
+
+        var safeSource: String? {
+            CodexTokenContextNormalizer.normalizedIdentifier(source)
+        }
+
         var hasModelMetadata: Bool {
             model != nil || slug != nil || modelSlug != nil
         }
 
         enum CodingKeys: String, CodingKey {
             case type
+            case id
+            case cwd
+            case source
+            case effort
+            case collaborationMode = "collaboration_mode"
             case info
             case model
             case slug
@@ -804,6 +912,11 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             type = try container.decodeIfPresent(String.self, forKey: .type)
+            id = try? container.decodeIfPresent(String.self, forKey: .id)
+            cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
+            source = try? container.decodeIfPresent(String.self, forKey: .source)
+            effort = try? container.decodeIfPresent(String.self, forKey: .effort)
+            collaborationMode = try? container.decode(CollaborationMode.self, forKey: .collaborationMode)
             info = try? container.decode(Info.self, forKey: .info)
             model = try container.decodeIfPresent(String.self, forKey: .model)
             slug = try container.decodeIfPresent(String.self, forKey: .slug)
@@ -835,6 +948,74 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             case slug
             case modelSlug
         }
+    }
+
+    struct CollaborationMode: Decodable {
+        let settings: Settings?
+
+        struct Settings: Decodable {
+            let reasoningEffort: String?
+
+            enum CodingKeys: String, CodingKey {
+                case reasoningEffort = "reasoning_effort"
+            }
+        }
+    }
+}
+
+private struct CodexSessionTokenContextTracker {
+    var sessionID: String?
+    var projectPath: String?
+    var effort: String?
+    var source: String?
+
+    init(sessionID: String?) {
+        self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
+    }
+
+    mutating func applyMetadata(from payload: CodexSessionTokenBackfillLine.Payload?) {
+        guard let payload else {
+            return
+        }
+
+        if let sessionID = payload.safeSessionID {
+            self.sessionID = sessionID
+        }
+        if let projectPath = payload.safeProjectPath {
+            self.projectPath = projectPath
+        }
+        if let source = payload.safeSource {
+            self.source = source
+        }
+        if let effort = payload.safeEffort {
+            self.effort = effort
+        }
+    }
+
+    mutating func applyTurnContext(from payload: CodexSessionTokenBackfillLine.Payload?) {
+        guard let payload else {
+            return
+        }
+
+        if let projectPath = payload.safeProjectPath {
+            self.projectPath = projectPath
+        }
+        if let effort = payload.safeEffort {
+            self.effort = effort
+        }
+        if let source = payload.safeSource {
+            self.source = source
+        }
+    }
+
+    var context: TokenUsageContext? {
+        let context = TokenUsageContext(
+            sessionID: sessionID,
+            projectPath: projectPath,
+            effort: effort,
+            source: source
+        )
+        return context.hasAnyValue ? context : nil
     }
 }
 

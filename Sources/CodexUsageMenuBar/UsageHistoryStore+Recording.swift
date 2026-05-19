@@ -42,6 +42,7 @@ extension UsageHistoryStore {
         var insertedCount = 0
         var duplicateCount = 0
         var repairedModelCount = 0
+        var repairedContextCount = 0
 
         try transaction {
             for sample in samples {
@@ -61,6 +62,14 @@ extension UsageHistoryStore {
                     ) {
                         repairedModelCount += 1
                     }
+                    if try repairTokenSampleContextIfNeeded(
+                        threadID: notification.threadID,
+                        turnID: notification.turnID,
+                        cumulativeTotalTokens: cumulativeTotal,
+                        context: sample.context
+                    ) {
+                        repairedContextCount += 1
+                    }
 
                     duplicateCount += 1
                     continue
@@ -74,7 +83,8 @@ extension UsageHistoryStore {
                 try insertTokenUsageSample(
                     notification: notification,
                     timestamp: Self.roundedToSecond(sample.receivedAt).timeIntervalSince1970Int,
-                    observedTokens: observedTokens
+                    observedTokens: observedTokens,
+                    context: sample.context
                 )
                 insertedCount += 1
             }
@@ -82,16 +92,20 @@ extension UsageHistoryStore {
             if repairedModelCount > 0 {
                 try rebuildTokenSeriesCatalog()
             }
+            if repairedContextCount > 0 {
+                try rebuildTokenContextCatalogs()
+            }
         }
 
-        if insertedCount > 0 || repairedModelCount > 0 {
+        if insertedCount > 0 || repairedModelCount > 0 || repairedContextCount > 0 {
             notificationCenter.post(name: Self.didChangeNotification, object: self)
         }
 
         return TokenUsageImportResult(
             insertedCount: insertedCount,
             duplicateCount: duplicateCount,
-            repairedModelCount: repairedModelCount
+            repairedModelCount: repairedModelCount,
+            repairedContextCount: repairedContextCount
         )
     }
 
@@ -588,37 +602,67 @@ extension UsageHistoryStore {
     func insertTokenUsageSample(
         notification: CodexTokenUsageNotification,
         timestamp: Int64,
-        observedTokens: CodexTokenUsageBreakdown
+        observedTokens: CodexTokenUsageBreakdown,
+        context: TokenUsageContext? = nil
     ) throws {
         let normalizedModel = normalizedModelName(notification.model)
-        let existingModelState = try tokenSampleModelState(
+        let normalizedContext = context?.hasAnyValue == true ? context : nil
+        let existingState = try tokenSampleRepairState(
             threadID: notification.threadID,
             turnID: notification.turnID,
             cumulativeTotalTokens: notification.tokenUsage.total.totalTokens
         )
-        let existingNormalizedModel = CodexModelIdentifier.normalized(existingModelState.model)
-        let shouldRepairExistingModel = existingModelState.exists
+        let existingNormalizedModel = CodexModelIdentifier.normalized(existingState.model)
+        let shouldRepairExistingModel = existingState.exists
             && normalizedModel != nil
             && (
                 existingNormalizedModel == nil
-                    || (existingNormalizedModel == normalizedModel && existingModelState.model != normalizedModel)
+                    || (existingNormalizedModel == normalizedModel && existingState.model != normalizedModel)
             )
+        let shouldRepairExistingContext = existingState.exists
+            && tokenContextNeedsRepair(existing: existingState.context, incoming: normalizedContext)
         let statement = try prepare(
             """
             INSERT INTO token_usage_samples (
-                thread_id, turn_id, model, received_at, model_context_window,
+                thread_id, turn_id, model, session_id, project_path, project_name,
+                effort, source, received_at, model_context_window,
                 last_input_tokens, last_cached_input_tokens, last_output_tokens,
                 last_reasoning_output_tokens, last_total_tokens,
                 total_input_tokens, total_cached_input_tokens, total_output_tokens,
                 total_reasoning_output_tokens, total_total_tokens,
                 observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
                 observed_reasoning_output_tokens, observed_total_tokens
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(thread_id, turn_id, total_total_tokens) DO UPDATE SET
                 model = CASE
                     WHEN NULLIF(TRIM(token_usage_samples.model, char(9) || char(10) || char(13) || ' '), '') IS NULL
                         THEN excluded.model
                     ELSE token_usage_samples.model
+                END,
+                session_id = CASE
+                    WHEN NULLIF(TRIM(token_usage_samples.session_id, char(9) || char(10) || char(13) || ' '), '') IS NULL
+                        THEN excluded.session_id
+                    ELSE token_usage_samples.session_id
+                END,
+                project_path = CASE
+                    WHEN NULLIF(TRIM(token_usage_samples.project_path, char(9) || char(10) || char(13) || ' '), '') IS NULL
+                        THEN excluded.project_path
+                    ELSE token_usage_samples.project_path
+                END,
+                project_name = CASE
+                    WHEN NULLIF(TRIM(token_usage_samples.project_name, char(9) || char(10) || char(13) || ' '), '') IS NULL
+                        THEN excluded.project_name
+                    ELSE token_usage_samples.project_name
+                END,
+                effort = CASE
+                    WHEN NULLIF(TRIM(token_usage_samples.effort, char(9) || char(10) || char(13) || ' '), '') IS NULL
+                        THEN excluded.effort
+                    ELSE token_usage_samples.effort
+                END,
+                source = CASE
+                    WHEN NULLIF(TRIM(token_usage_samples.source, char(9) || char(10) || char(13) || ' '), '') IS NULL
+                        THEN excluded.source
+                    ELSE token_usage_samples.source
                 END,
                 received_at = excluded.received_at,
                 model_context_window = excluded.model_context_window,
@@ -646,23 +690,28 @@ extension UsageHistoryStore {
         bindText(notification.threadID, to: 1, in: statement)
         bindText(notification.turnID, to: 2, in: statement)
         bindOptionalText(normalizedModel, to: 3, in: statement)
-        sqlite3_bind_int64(statement, 4, timestamp)
-        bindOptionalInt(notification.tokenUsage.modelContextWindow, to: 5, in: statement)
-        sqlite3_bind_int64(statement, 6, last.inputTokens)
-        sqlite3_bind_int64(statement, 7, last.cachedInputTokens)
-        sqlite3_bind_int64(statement, 8, last.outputTokens)
-        sqlite3_bind_int64(statement, 9, last.reasoningOutputTokens)
-        sqlite3_bind_int64(statement, 10, last.totalTokens)
-        sqlite3_bind_int64(statement, 11, total.inputTokens)
-        sqlite3_bind_int64(statement, 12, total.cachedInputTokens)
-        sqlite3_bind_int64(statement, 13, total.outputTokens)
-        sqlite3_bind_int64(statement, 14, total.reasoningOutputTokens)
-        sqlite3_bind_int64(statement, 15, total.totalTokens)
-        sqlite3_bind_int64(statement, 16, observedTokens.inputTokens)
-        sqlite3_bind_int64(statement, 17, observedTokens.cachedInputTokens)
-        sqlite3_bind_int64(statement, 18, observedTokens.outputTokens)
-        sqlite3_bind_int64(statement, 19, observedTokens.reasoningOutputTokens)
-        sqlite3_bind_int64(statement, 20, observedTokens.totalTokens)
+        bindOptionalText(normalizedContext?.sessionID, to: 4, in: statement)
+        bindOptionalText(normalizedContext?.projectPath, to: 5, in: statement)
+        bindOptionalText(normalizedContext?.projectName, to: 6, in: statement)
+        bindOptionalText(normalizedContext?.effort, to: 7, in: statement)
+        bindOptionalText(normalizedContext?.source, to: 8, in: statement)
+        sqlite3_bind_int64(statement, 9, timestamp)
+        bindOptionalInt(notification.tokenUsage.modelContextWindow, to: 10, in: statement)
+        sqlite3_bind_int64(statement, 11, last.inputTokens)
+        sqlite3_bind_int64(statement, 12, last.cachedInputTokens)
+        sqlite3_bind_int64(statement, 13, last.outputTokens)
+        sqlite3_bind_int64(statement, 14, last.reasoningOutputTokens)
+        sqlite3_bind_int64(statement, 15, last.totalTokens)
+        sqlite3_bind_int64(statement, 16, total.inputTokens)
+        sqlite3_bind_int64(statement, 17, total.cachedInputTokens)
+        sqlite3_bind_int64(statement, 18, total.outputTokens)
+        sqlite3_bind_int64(statement, 19, total.reasoningOutputTokens)
+        sqlite3_bind_int64(statement, 20, total.totalTokens)
+        sqlite3_bind_int64(statement, 21, observedTokens.inputTokens)
+        sqlite3_bind_int64(statement, 22, observedTokens.cachedInputTokens)
+        sqlite3_bind_int64(statement, 23, observedTokens.outputTokens)
+        sqlite3_bind_int64(statement, 24, observedTokens.reasoningOutputTokens)
+        sqlite3_bind_int64(statement, 25, observedTokens.totalTokens)
 
         try step(statement)
         let didRepairExistingModel: Bool
@@ -676,24 +725,39 @@ extension UsageHistoryStore {
         } else {
             didRepairExistingModel = false
         }
+        let didRepairExistingContext: Bool
+        if shouldRepairExistingContext {
+            didRepairExistingContext = try repairTokenSampleContextIfNeeded(
+                threadID: notification.threadID,
+                turnID: notification.turnID,
+                cumulativeTotalTokens: notification.tokenUsage.total.totalTokens,
+                context: normalizedContext
+            )
+        } else {
+            didRepairExistingContext = false
+        }
         try upsertTokenSeriesCatalog(
             model: normalizedModel,
             seenAt: timestamp,
             observedTokens: observedTokens
         )
+        try upsertTokenContextCatalog(context: normalizedContext, seenAt: timestamp, observedTokens: observedTokens)
         if didRepairExistingModel || shouldRepairExistingModel {
             try rebuildTokenSeriesCatalog()
         }
+        if didRepairExistingContext || shouldRepairExistingContext {
+            try rebuildTokenContextCatalogs()
+        }
     }
 
-    func tokenSampleModelState(
+    func tokenSampleRepairState(
         threadID: String,
         turnID: String,
         cumulativeTotalTokens: Int64
-    ) throws -> (exists: Bool, model: String?) {
+    ) throws -> (exists: Bool, model: String?, context: TokenUsageContext?) {
         let statement = try prepare(
             """
-            SELECT model
+            SELECT model, session_id, project_path, effort, source
             FROM token_usage_samples
             WHERE thread_id = ? AND turn_id = ? AND total_total_tokens = ?
             LIMIT 1
@@ -707,9 +771,18 @@ extension UsageHistoryStore {
 
         switch sqlite3_step(statement) {
         case SQLITE_ROW:
-            return (true, optionalColumnText(statement, index: 0))
+            return (
+                true,
+                optionalColumnText(statement, index: 0),
+                TokenUsageContext(
+                    sessionID: optionalColumnText(statement, index: 1),
+                    projectPath: optionalColumnText(statement, index: 2),
+                    effort: optionalColumnText(statement, index: 3),
+                    source: optionalColumnText(statement, index: 4)
+                )
+            )
         case SQLITE_DONE:
-            return (false, nil)
+            return (false, nil, nil)
         default:
             throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
         }
@@ -725,16 +798,16 @@ extension UsageHistoryStore {
             return false
         }
 
-        let existingModelState = try tokenSampleModelState(
+        let existingState = try tokenSampleRepairState(
             threadID: threadID,
             turnID: turnID,
             cumulativeTotalTokens: cumulativeTotalTokens
         )
-        let existingNormalizedModel = CodexModelIdentifier.normalized(existingModelState.model)
+        let existingNormalizedModel = CodexModelIdentifier.normalized(existingState.model)
         guard existingNormalizedModel == nil || existingNormalizedModel == normalizedModel else {
             return false
         }
-        guard existingModelState.model != normalizedModel else {
+        guard existingState.model != normalizedModel else {
             return false
         }
 
@@ -756,6 +829,73 @@ extension UsageHistoryStore {
 
         try step(statement)
         return sqlite3_changes(database) > 0
+    }
+
+    func repairTokenSampleContextIfNeeded(
+        threadID: String,
+        turnID: String,
+        cumulativeTotalTokens: Int64,
+        context: TokenUsageContext?
+    ) throws -> Bool {
+        guard let context, context.hasAnyValue else {
+            return false
+        }
+
+        let existingState = try tokenSampleRepairState(
+            threadID: threadID,
+            turnID: turnID,
+            cumulativeTotalTokens: cumulativeTotalTokens
+        )
+        guard existingState.exists,
+              tokenContextNeedsRepair(existing: existingState.context, incoming: context)
+        else {
+            return false
+        }
+        let repairedContext = TokenUsageContext(
+            sessionID: existingState.context?.sessionID ?? context.sessionID,
+            projectPath: existingState.context?.projectPath ?? context.projectPath,
+            effort: existingState.context?.effort ?? context.effort,
+            source: existingState.context?.source ?? context.source
+        )
+
+        let statement = try prepare(
+            """
+            UPDATE token_usage_samples
+            SET session_id = ?,
+                project_path = ?,
+                project_name = ?,
+                effort = ?,
+                source = ?
+            WHERE thread_id = ?
+                AND turn_id = ?
+                AND total_total_tokens = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindOptionalText(repairedContext.sessionID, to: 1, in: statement)
+        bindOptionalText(repairedContext.projectPath, to: 2, in: statement)
+        bindOptionalText(repairedContext.projectName, to: 3, in: statement)
+        bindOptionalText(repairedContext.effort, to: 4, in: statement)
+        bindOptionalText(repairedContext.source, to: 5, in: statement)
+        bindText(threadID, to: 6, in: statement)
+        bindText(turnID, to: 7, in: statement)
+        sqlite3_bind_int64(statement, 8, cumulativeTotalTokens)
+
+        try step(statement)
+        return sqlite3_changes(database) > 0
+    }
+
+    func tokenContextNeedsRepair(existing: TokenUsageContext?, incoming: TokenUsageContext?) -> Bool {
+        guard let incoming, incoming.hasAnyValue else {
+            return false
+        }
+
+        return (existing?.sessionID == nil && incoming.sessionID != nil)
+            || (existing?.projectPath == nil && incoming.projectPath != nil)
+            || (existing?.projectName == nil && incoming.projectName != nil)
+            || (existing?.effort == nil && incoming.effort != nil)
+            || (existing?.source == nil && incoming.source != nil)
     }
 
     func updateStoredTokenModel(from rawModel: String, to normalizedModel: String?) throws {
@@ -840,6 +980,74 @@ extension UsageHistoryStore {
                 hasReasoning: observedTokens.reasoningOutputTokens > 0
             )
         }
+    }
+
+    func upsertTokenContextCatalog(
+        context: TokenUsageContext?,
+        seenAt: Int64,
+        observedTokens: CodexTokenUsageBreakdown
+    ) throws {
+        guard let context, context.hasAnyValue else {
+            return
+        }
+        guard observedTokens.totalTokens > 0
+                || observedTokens.inputTokens > 0
+                || observedTokens.cachedInputTokens > 0
+                || observedTokens.outputTokens > 0
+                || observedTokens.reasoningOutputTokens > 0
+        else {
+            return
+        }
+
+        if let projectPath = context.projectPath, let projectName = context.projectName {
+            try upsertTokenProjectCatalog(projectPath: projectPath, projectName: projectName, seenAt: seenAt)
+        }
+        if let effort = context.effort {
+            try upsertTokenDimensionCatalog(table: "token_effort_catalog", column: "effort", value: effort, seenAt: seenAt)
+        }
+        if let source = context.source {
+            try upsertTokenDimensionCatalog(table: "token_source_catalog", column: "source", value: source, seenAt: seenAt)
+        }
+    }
+
+    func upsertTokenProjectCatalog(projectPath: String, projectName: String, seenAt: Int64) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO token_project_catalog (
+                project_path, project_name, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(project_path) DO UPDATE SET
+                project_name = excluded.project_name,
+                first_seen_at = MIN(token_project_catalog.first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(token_project_catalog.last_seen_at, excluded.last_seen_at)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectPath, to: 1, in: statement)
+        bindText(projectName, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, seenAt)
+        sqlite3_bind_int64(statement, 4, seenAt)
+        try step(statement)
+    }
+
+    func upsertTokenDimensionCatalog(table: String, column: String, value: String, seenAt: Int64) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO \(table) (
+                \(column), first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?)
+            ON CONFLICT(\(column)) DO UPDATE SET
+                first_seen_at = MIN(\(table).first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(\(table).last_seen_at, excluded.last_seen_at)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(value, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, seenAt)
+        sqlite3_bind_int64(statement, 3, seenAt)
+        try step(statement)
     }
 
     func upsertTokenSeriesCatalogRow(

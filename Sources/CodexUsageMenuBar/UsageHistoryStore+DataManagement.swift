@@ -34,6 +34,9 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
             try execute("DELETE FROM token_series_catalog")
+            try execute("DELETE FROM token_project_catalog")
+            try execute("DELETE FROM token_effort_catalog")
+            try execute("DELETE FROM token_source_catalog")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -156,6 +159,36 @@ extension UsageHistoryStore {
             table: "codex_session_token_imports",
             schema: "imported_usage_history"
         )
+        let importedSessionIDExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "session_id",
+            schema: "imported_usage_history"
+        ) ? "session_id" : "NULL"
+        let importedProjectPathExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "project_path",
+            schema: "imported_usage_history"
+        ) ? "project_path" : "NULL"
+        let importedProjectNameExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "project_name",
+            schema: "imported_usage_history"
+        ) ? "project_name" : "NULL"
+        let importedEffortExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "effort",
+            schema: "imported_usage_history"
+        ) ? "effort" : "NULL"
+        let importedSourceExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "source",
+            schema: "imported_usage_history"
+        ) ? "source" : "NULL"
+        let importedContextVersionExpression = try importedHasSessionTokenImports && tableHasColumn(
+            table: "codex_session_token_imports",
+            column: "context_version",
+            schema: "imported_usage_history"
+        ) ? "context_version" : "NULL"
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -164,6 +197,9 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
             try execute("DELETE FROM token_series_catalog")
+            try execute("DELETE FROM token_project_catalog")
+            try execute("DELETE FROM token_effort_catalog")
+            try execute("DELETE FROM token_source_catalog")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -191,7 +227,8 @@ extension UsageHistoryStore {
                 try execute(
                     """
                     INSERT INTO token_usage_samples (
-                        thread_id, turn_id, model, received_at, model_context_window,
+                        thread_id, turn_id, model, session_id, project_path, project_name,
+                        effort, source, received_at, model_context_window,
                         last_input_tokens, last_cached_input_tokens, last_output_tokens,
                         last_reasoning_output_tokens, last_total_tokens,
                         total_input_tokens, total_cached_input_tokens, total_output_tokens,
@@ -199,7 +236,10 @@ extension UsageHistoryStore {
                         observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
                         observed_reasoning_output_tokens, observed_total_tokens
                     )
-                    SELECT thread_id, turn_id, model, received_at, model_context_window,
+                    SELECT thread_id, turn_id, model,
+                        \(importedSessionIDExpression), \(importedProjectPathExpression),
+                        \(importedProjectNameExpression), \(importedEffortExpression),
+                        \(importedSourceExpression), received_at, model_context_window,
                         last_input_tokens, last_cached_input_tokens, last_output_tokens,
                         last_reasoning_output_tokens, last_total_tokens,
                         total_input_tokens, total_cached_input_tokens, total_output_tokens,
@@ -215,9 +255,9 @@ extension UsageHistoryStore {
                 try execute(
                     """
                     INSERT INTO codex_session_token_imports (
-                        file_path, file_size, modified_at, imported_at, status
+                        file_path, file_size, modified_at, imported_at, status, context_version
                     )
-                    SELECT file_path, file_size, modified_at, imported_at, status
+                    SELECT file_path, file_size, modified_at, imported_at, status, \(importedContextVersionExpression)
                     FROM imported_usage_history.codex_session_token_imports
                     """
                 )
@@ -225,6 +265,7 @@ extension UsageHistoryStore {
         }
 
         _ = try cleanupTokenModelLabels()
+        _ = try cleanupTokenContextValues()
         try recomputeStoredUsageConsumption()
         try rebuildSeriesCatalogs()
         notificationCenter.post(name: Self.didChangeNotification, object: self)

@@ -5,7 +5,8 @@ extension UsageHistoryStore {
     func tokenUsageSamples() throws -> [StoredTokenUsageSample] {
         let statement = try prepare(
             """
-            SELECT thread_id, turn_id, model, received_at, model_context_window,
+            SELECT thread_id, turn_id, model, session_id, project_path, project_name,
+                effort, source, received_at, model_context_window,
                 last_input_tokens, last_cached_input_tokens, last_output_tokens,
                 last_reasoning_output_tokens, last_total_tokens,
                 total_input_tokens, total_cached_input_tokens, total_output_tokens,
@@ -27,27 +28,32 @@ extension UsageHistoryStore {
                         threadID: columnText(statement, index: 0),
                         turnID: columnText(statement, index: 1),
                         model: optionalColumnText(statement, index: 2),
-                        receivedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 3))),
-                        modelContextWindow: optionalColumnInt(statement, index: 4),
+                        sessionID: optionalColumnText(statement, index: 3),
+                        projectPath: optionalColumnText(statement, index: 4),
+                        projectName: optionalColumnText(statement, index: 5),
+                        effort: optionalColumnText(statement, index: 6),
+                        source: optionalColumnText(statement, index: 7),
+                        receivedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 8))),
+                        modelContextWindow: optionalColumnInt(statement, index: 9),
                         last: CodexTokenUsageBreakdown(
-                            inputTokens: sqlite3_column_int64(statement, 5),
-                            cachedInputTokens: sqlite3_column_int64(statement, 6),
-                            outputTokens: sqlite3_column_int64(statement, 7),
-                            reasoningOutputTokens: sqlite3_column_int64(statement, 8),
-                            totalTokens: sqlite3_column_int64(statement, 9)
-                        ),
-                        total: CodexTokenUsageBreakdown(
                             inputTokens: sqlite3_column_int64(statement, 10),
                             cachedInputTokens: sqlite3_column_int64(statement, 11),
                             outputTokens: sqlite3_column_int64(statement, 12),
                             reasoningOutputTokens: sqlite3_column_int64(statement, 13),
                             totalTokens: sqlite3_column_int64(statement, 14)
                         ),
-                        observedInputTokens: optionalColumnInt(statement, index: 15),
-                        observedCachedInputTokens: optionalColumnInt(statement, index: 16),
-                        observedOutputTokens: optionalColumnInt(statement, index: 17),
-                        observedReasoningOutputTokens: optionalColumnInt(statement, index: 18),
-                        observedTotalTokens: sqlite3_column_int64(statement, 19)
+                        total: CodexTokenUsageBreakdown(
+                            inputTokens: sqlite3_column_int64(statement, 15),
+                            cachedInputTokens: sqlite3_column_int64(statement, 16),
+                            outputTokens: sqlite3_column_int64(statement, 17),
+                            reasoningOutputTokens: sqlite3_column_int64(statement, 18),
+                            totalTokens: sqlite3_column_int64(statement, 19)
+                        ),
+                        observedInputTokens: optionalColumnInt(statement, index: 20),
+                        observedCachedInputTokens: optionalColumnInt(statement, index: 21),
+                        observedOutputTokens: optionalColumnInt(statement, index: 22),
+                        observedReasoningOutputTokens: optionalColumnInt(statement, index: 23),
+                        observedTotalTokens: sqlite3_column_int64(statement, 24)
                     )
                 )
             case SQLITE_DONE:

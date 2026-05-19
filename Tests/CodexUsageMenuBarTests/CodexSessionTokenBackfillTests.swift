@@ -208,6 +208,169 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.tokenUsageSamples().map(\.model), ["o-series-next"])
     }
 
+    func testSessionTokenBackfillAppliesSessionMetadataContextToTokenEvents() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-context.jsonl")
+        try writeSessionLines(
+            [
+                sessionMetaLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    sessionID: "019c-token-session",
+                    cwd: "/Users/example/Projects/codex_codex",
+                    source: "cli"
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(into: store)
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(sample.sessionID, "019c-token-session")
+        XCTAssertEqual(sample.projectPath, "/Users/example/Projects/codex_codex")
+        XCTAssertEqual(sample.projectName, "codex_codex")
+        XCTAssertEqual(sample.source, "cli")
+    }
+
+    func testSessionTokenBackfillAppliesTurnContextProjectAndEffortChanges() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-context-switch.jsonl")
+        try writeSessionLines(
+            [
+                sessionMetaLine(timestamp: "2026-05-17T15:00:00Z", sessionID: "session-context", source: "cli"),
+                turnContextLine(
+                    timestamp: "2026-05-17T15:00:01Z",
+                    model: "gpt-5.4",
+                    cwd: "/Users/example/Projects/alpha",
+                    effort: "high"
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                turnContextLine(
+                    timestamp: "2026-05-17T15:05:00Z",
+                    model: "gpt-5.4-mini",
+                    cwd: "/Users/example/Projects/beta",
+                    effort: "xhigh",
+                    source: "vscode"
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:05:10Z",
+                    lastInput: 200,
+                    lastCached: 100,
+                    lastOutput: 30,
+                    lastReasoning: 10,
+                    lastTotal: 340,
+                    totalInput: 300,
+                    totalCached: 140,
+                    totalOutput: 50,
+                    totalReasoning: 15,
+                    totalTotal: 505
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(samples.map(\.model), ["gpt-5.4", "gpt-5.4-mini"])
+        XCTAssertEqual(samples.map(\.projectName), ["alpha", "beta"])
+        XCTAssertEqual(samples.map(\.effort), ["high", "xhigh"])
+        XCTAssertEqual(samples.map(\.source), ["cli", "vscode"])
+    }
+
+    func testSessionTokenBackfillReimportsUnchangedOlderContextVersionToRepairContext() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-context-repair.jsonl")
+        try writeSessionLines(
+            [
+                sessionMetaLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    sessionID: "session-repair",
+                    cwd: "/Users/example/Projects/repaired",
+                    source: "cli"
+                ),
+                turnContextLine(timestamp: "2026-05-17T15:00:01Z", model: "gpt-5.5", effort: "medium"),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        _ = try importer.importTokenHistory(into: store)
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            UPDATE token_usage_samples
+            SET session_id = NULL,
+                project_path = NULL,
+                project_name = NULL,
+                effort = NULL,
+                source = NULL;
+            UPDATE codex_session_token_imports
+            SET context_version = NULL;
+            """
+        )
+
+        let repairSummary = try importer.importTokenHistory(into: store)
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertEqual(repairSummary.filesScanned, 1)
+        XCTAssertEqual(repairSummary.tokenEventsImported, 0)
+        XCTAssertEqual(repairSummary.duplicateEventsSkipped, 1)
+        XCTAssertEqual(repairSummary.contextEventsRepaired, 1)
+        XCTAssertEqual(sample.sessionID, "session-repair")
+        XCTAssertEqual(sample.projectName, "repaired")
+        XCTAssertEqual(sample.effort, "medium")
+        XCTAssertEqual(sample.source, "cli")
+        XCTAssertEqual(sample.observedTotalTokens, 165)
+    }
+
     func testSessionTokenBackfillIsIdempotent() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)

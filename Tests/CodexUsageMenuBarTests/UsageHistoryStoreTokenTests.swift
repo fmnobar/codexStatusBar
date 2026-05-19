@@ -32,6 +32,11 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(samples.first?.threadID, "thread-a")
         XCTAssertEqual(samples.first?.turnID, "turn-a")
         XCTAssertEqual(samples.first?.model, "gpt-5.5")
+        XCTAssertNil(samples.first?.sessionID)
+        XCTAssertNil(samples.first?.projectPath)
+        XCTAssertNil(samples.first?.projectName)
+        XCTAssertNil(samples.first?.effort)
+        XCTAssertNil(samples.first?.source)
         XCTAssertEqual(samples.first?.modelContextWindow, 258_400)
         XCTAssertEqual(samples.first?.last.inputTokens, 120)
         XCTAssertEqual(samples.first?.last.cachedInputTokens, 80)
@@ -205,6 +210,134 @@ extension UsageHistoryStoreTests {
             "model:codex-stable-model",
             "model:gpt-5.6",
         ])
+    }
+
+    func testTokenUsageImportStoresContextDimensionsAndCatalogs() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+        let context = TokenUsageContext(
+            sessionID: "session-abc",
+            projectPath: "/Users/example/Projects/codex_codex",
+            effort: "xhigh",
+            source: "cli"
+        )
+
+        let result = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-context",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 125,
+                    lastCached: 25,
+                    lastOutput: 10,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 125,
+                    totalCached: 25,
+                    totalOutput: 10,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                receivedAt: receivedAt,
+                context: context
+            ),
+        ])
+
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(result, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(samples.first?.sessionID, "session-abc")
+        XCTAssertEqual(samples.first?.projectPath, "/Users/example/Projects/codex_codex")
+        XCTAssertEqual(samples.first?.projectName, "codex_codex")
+        XCTAssertEqual(samples.first?.effort, "xhigh")
+        XCTAssertEqual(samples.first?.source, "cli")
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT project_path || '|' || project_name FROM token_project_catalog"),
+            ["/Users/example/Projects/codex_codex|codex_codex"]
+        )
+        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "SELECT effort FROM token_effort_catalog"), ["xhigh"])
+        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "SELECT source FROM token_source_catalog"), ["cli"])
+    }
+
+    func testTokenUsageReimportRepairsMissingContextWithoutInflatingTotals() async throws {
+        let store = try makeStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-context",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+
+        let repairResult = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-context",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: receivedAt,
+                context: TokenUsageContext(
+                    sessionID: "session-context",
+                    projectPath: "/Users/example/Projects/context-project",
+                    effort: "high",
+                    source: "vscode"
+                )
+            ),
+        ])
+
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertEqual(repairResult, TokenUsageImportResult(insertedCount: 0, duplicateCount: 1, repairedContextCount: 1))
+        XCTAssertEqual(sample.projectName, "context-project")
+        XCTAssertEqual(sample.effort, "high")
+        XCTAssertEqual(sample.source, "vscode")
+        XCTAssertEqual(sample.observedTotalTokens, 100)
+        XCTAssertEqual(try store.tokenTotalForDay(containing: receivedAt, calendar: calendar), 100)
+    }
+
+    func testTokenUsageImportRejectsUnsafeContextValues() async throws {
+        let store = try makeStore()
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-unsafe",
+                    turnID: "turn-a",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: date("2026-04-14T20:00:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "/Users/example/session.jsonl",
+                    projectPath: "relative/path",
+                    effort: "high/unsafe",
+                    source: "cli\nprompt"
+                )
+            ),
+        ])
+
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertNil(sample.sessionID)
+        XCTAssertNil(sample.projectPath)
+        XCTAssertNil(sample.projectName)
+        XCTAssertNil(sample.effort)
+        XCTAssertEqual(sample.source, "cli")
     }
 
     func testTokenUsageReimportRepairsMalformedExistingModelWithoutInflatingTotals() async throws {

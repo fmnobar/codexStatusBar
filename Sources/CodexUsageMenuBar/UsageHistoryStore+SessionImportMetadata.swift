@@ -5,7 +5,7 @@ extension UsageHistoryStore {
     func codexSessionTokenImportFileRecord(path: String) throws -> CodexSessionTokenImportFileRecord? {
         let statement = try prepare(
             """
-            SELECT file_path, file_size, modified_at, imported_at, status
+            SELECT file_path, file_size, modified_at, imported_at, status, context_version
             FROM codex_session_token_imports
             WHERE file_path = ?
             LIMIT 1
@@ -26,7 +26,8 @@ extension UsageHistoryStore {
             return CodexSessionTokenImportFileRecord(
                 metadata: metadata,
                 importedAt: sqlite3_column_int64(statement, 3),
-                status: status
+                status: status,
+                contextVersion: optionalColumnText(statement, index: 5)
             )
         case SQLITE_DONE:
             return nil
@@ -43,13 +44,14 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             INSERT INTO codex_session_token_imports (
-                file_path, file_size, modified_at, imported_at, status
-            ) VALUES (?, ?, ?, ?, ?)
+                file_path, file_size, modified_at, imported_at, status, context_version
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 file_size = excluded.file_size,
                 modified_at = excluded.modified_at,
                 imported_at = excluded.imported_at,
-                status = excluded.status
+                status = excluded.status,
+                context_version = excluded.context_version
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -59,6 +61,7 @@ extension UsageHistoryStore {
         sqlite3_bind_int64(statement, 3, metadata.modifiedAt)
         sqlite3_bind_int64(statement, 4, importedAt)
         bindText(status.rawValue, to: 5, in: statement)
+        bindText(Self.currentSessionTokenContextImportVersion, to: 6, in: statement)
 
         try step(statement)
     }
@@ -66,7 +69,7 @@ extension UsageHistoryStore {
     func codexSessionTokenImportFileRecords() throws -> [CodexSessionTokenImportFileRecord] {
         let statement = try prepare(
             """
-            SELECT file_path, file_size, modified_at, imported_at, status
+            SELECT file_path, file_size, modified_at, imported_at, status, context_version
             FROM codex_session_token_imports
             ORDER BY file_path
             """
@@ -87,7 +90,8 @@ extension UsageHistoryStore {
                     CodexSessionTokenImportFileRecord(
                         metadata: metadata,
                         importedAt: sqlite3_column_int64(statement, 3),
-                        status: status
+                        status: status,
+                        contextVersion: optionalColumnText(statement, index: 5)
                     )
                 )
             case SQLITE_DONE:

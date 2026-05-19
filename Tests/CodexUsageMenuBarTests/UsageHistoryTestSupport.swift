@@ -547,9 +547,27 @@ extension UsageHistoryStoreTests {
         """
     }
 
-    func turnContextLine(timestamp: String, model: String) -> String {
+    func sessionMetaLine(timestamp: String, sessionID: String? = nil, cwd: String? = nil, source: String? = nil) -> String {
+        let sessionIDFragment = sessionID.map { #","id":"\#($0)""# } ?? ""
+        let cwdFragment = cwd.map { #","cwd":"\#($0)""# } ?? ""
+        let sourceFragment = source.map { #","source":"\#($0)""# } ?? ""
+        return """
+        {"timestamp":"\(timestamp)","type":"session_meta","payload":{\(String([sessionIDFragment, cwdFragment, sourceFragment].joined().dropFirst()))}}
         """
-        {"timestamp":"\(timestamp)","type":"turn_context","payload":{"model":"\(model)","sandbox_policy":{"type":"danger-full-access"}}}
+    }
+
+    func turnContextLine(
+        timestamp: String,
+        model: String,
+        cwd: String? = nil,
+        effort: String? = nil,
+        source: String? = nil
+    ) -> String {
+        let cwdFragment = cwd.map { #","cwd":"\#($0)""# } ?? ""
+        let effortFragment = effort.map { #","effort":"\#($0)""# } ?? ""
+        let sourceFragment = source.map { #","source":"\#($0)""# } ?? ""
+        return """
+        {"timestamp":"\(timestamp)","type":"turn_context","payload":{"model":"\(model)"\(cwdFragment)\(effortFragment)\(sourceFragment),"sandbox_policy":{"type":"danger-full-access"}}}
         """
     }
 

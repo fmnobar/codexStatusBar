@@ -4,6 +4,9 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
+| 1 | Add Token Dashboard breakdowns by model, effort, and project | Add dashboard filters/grouping for model, reasoning effort, and project using stored token context dimensions. Keep token category totals visible and avoid inferred mode labels until Codex exposes an explicit signal. |
+| 2 | Add editable project names for token analytics | Build a local project catalog from captured project paths and let users rename projects for dashboard display while keeping original paths available for audit/debugging. |
+| 3 | Track additional safe token slices as Codex exposes them | Capture future explicit token/session dimensions when available, including an explicit fast/normal mode only if Codex records it directly. |
 
 ## Done
 
@@ -169,7 +172,18 @@
   - Added a non-blocking popover prompt for available updates with Updates and Later actions.
   - Reused the existing Updates settings download/install flow while keeping right-click menu behavior unchanged.
 
+- Capture token context dimensions for project and effort
+  - Added nullable token context fields for session id, project path/name, reasoning effort, and source.
+  - Extended session/log backfill to read safe metadata from `session_meta` and `turn_context` without decoding prompt, message, or tool content.
+  - Added re-import repair for missing context/model metadata plus project, effort, and source catalogs for future dashboard breakdowns.
+
 ## Next Candidates
 
-- Backlog/product review
-  - Review the app after the latest update, token, history, and performance work to decide the next product priority.
+- Add Token Dashboard breakdowns by model, effort, and project
+  - Add filters and grouped summaries once the context dimensions are stored and backfilled.
+
+- Add editable project names for token analytics
+  - Let users rename captured project paths locally after project-level token analytics exist.
+
+- Track additional safe token slices as Codex exposes them
+  - Store future explicit dimensions, including fast/normal only if Codex records it directly rather than requiring inference.

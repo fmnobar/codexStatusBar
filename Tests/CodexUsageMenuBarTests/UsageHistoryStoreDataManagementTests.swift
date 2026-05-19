@@ -112,18 +112,26 @@ extension UsageHistoryStoreTests {
     func testBackupExportProducesImportableDatabase() async throws {
         let (sourceStore, _) = try makeTemporaryStore()
         try sourceStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
-        try sourceStore.record(
-            tokenUsage: tokenNotification(
-                threadID: "thread-a",
-                turnID: "turn-a",
-                model: "gpt-5.5",
-                lastInput: 120,
-                lastTotal: 120,
-                totalInput: 120,
-                totalTotal: 120
+        _ = try sourceStore.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 120,
+                    lastTotal: 120,
+                    totalInput: 120,
+                    totalTotal: 120
+                ),
+                receivedAt: date("2026-04-14T20:10:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-backup",
+                    projectPath: "/Users/example/Projects/backup-project",
+                    effort: "high",
+                    source: "cli"
+                )
             ),
-            at: date("2026-04-14T20:10:00Z")
-        )
+        ])
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
 
         try sourceStore.exportBackup(to: backupURL)
@@ -137,7 +145,11 @@ extension UsageHistoryStoreTests {
         let points = try destinationStore.points(range: .day, window: .sevenDay, now: date("2026-04-14T21:00:00Z"), calendar: calendar)
 
         XCTAssertEqual(points.map(\.usedPercent), [20])
-        XCTAssertEqual(try destinationStore.tokenUsageSamples().map(\.observedTotalTokens), [120])
+        let tokenSamples = try destinationStore.tokenUsageSamples()
+        XCTAssertEqual(tokenSamples.map(\.observedTotalTokens), [120])
+        XCTAssertEqual(tokenSamples.first?.projectName, "backup-project")
+        XCTAssertEqual(tokenSamples.first?.effort, "high")
+        XCTAssertEqual(tokenSamples.first?.source, "cli")
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
     }

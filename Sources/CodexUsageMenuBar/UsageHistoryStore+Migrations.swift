@@ -43,6 +43,11 @@ extension UsageHistoryStore {
                 thread_id TEXT NOT NULL,
                 turn_id TEXT NOT NULL,
                 model TEXT,
+                session_id TEXT,
+                project_path TEXT,
+                project_name TEXT,
+                effort TEXT,
+                source TEXT,
                 received_at INTEGER NOT NULL,
                 model_context_window INTEGER,
                 last_input_tokens INTEGER NOT NULL,
@@ -71,7 +76,8 @@ extension UsageHistoryStore {
                 file_size INTEGER NOT NULL,
                 modified_at INTEGER NOT NULL,
                 imported_at INTEGER NOT NULL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                context_version TEXT
             )
             """
         )
@@ -110,13 +116,47 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_project_catalog (
+                project_path TEXT PRIMARY KEY,
+                project_name TEXT NOT NULL,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_effort_catalog (
+                effort TEXT PRIMARY KEY,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_source_catalog (
+                source TEXT PRIMARY KEY,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "session_id", definition: "TEXT")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "project_path", definition: "TEXT")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "project_name", definition: "TEXT")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "effort", definition: "TEXT")
+        try addColumnIfNeeded(table: "token_usage_samples", column: "source", definition: "TEXT")
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_input_tokens", definition: "INTEGER")
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_cached_input_tokens", definition: "INTEGER")
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_output_tokens", definition: "INTEGER")
         try addColumnIfNeeded(table: "token_usage_samples", column: "observed_reasoning_output_tokens", definition: "INTEGER")
+        try addColumnIfNeeded(table: "codex_session_token_imports", column: "context_version", definition: "TEXT")
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_total", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_input", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_cached", definition: "INTEGER NOT NULL DEFAULT 0")
@@ -129,6 +169,9 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_bucket_sample_timestamp ON usage_rollups(window, bucket_id, sample_timestamp DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_received_at ON token_usage_samples(received_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_model_received_at ON token_usage_samples(model, received_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_project_received_at ON token_usage_samples(project_path, received_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_effort_received_at ON token_usage_samples(effort, received_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_source_received_at ON token_usage_samples(source, received_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_thread_total ON token_usage_samples(thread_id, total_total_tokens)")
         try execute(
             """
@@ -140,8 +183,12 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_token_imports_status ON codex_session_token_imports(status, imported_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_series_catalog_window_seen ON usage_series_catalog(window, seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_series_catalog_kind_seen ON token_series_catalog(series_kind, seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_project_catalog_last_seen ON token_project_catalog(last_seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_effort_catalog_last_seen ON token_effort_catalog(last_seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_token_source_catalog_last_seen ON token_source_catalog(last_seen_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
+        try cleanupTokenContextValuesIfNeeded()
         try recomputeStoredUsageConsumptionIfNeeded()
         try rebuildSeriesCatalogsIfNeeded()
     }
@@ -203,6 +250,96 @@ extension UsageHistoryStore {
         return didChange
     }
 
+    func cleanupTokenContextValuesIfNeeded() throws {
+        guard try metadataValue(for: Self.tokenContextCleanupMetadataKey) != Self.currentTokenContextCleanupVersion else {
+            return
+        }
+
+        if try cleanupTokenContextValues() {
+            try rebuildTokenContextCatalogs()
+        }
+        try setMetadataValue(Self.currentTokenContextCleanupVersion, for: Self.tokenContextCleanupMetadataKey)
+    }
+
+    @discardableResult
+    func cleanupTokenContextValues() throws -> Bool {
+        struct ContextRow {
+            let rowID: Int64
+            let context: TokenUsageContext
+        }
+
+        var rows: [ContextRow] = []
+        do {
+            let statement = try prepare(
+                """
+                SELECT rowid, session_id, project_path, effort, source
+                FROM token_usage_samples
+                WHERE session_id IS NOT NULL
+                    OR project_path IS NOT NULL
+                    OR project_name IS NOT NULL
+                    OR effort IS NOT NULL
+                    OR source IS NOT NULL
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+
+            rowLoop:
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_ROW:
+                    rows.append(
+                        ContextRow(
+                            rowID: sqlite3_column_int64(statement, 0),
+                            context: TokenUsageContext(
+                                sessionID: optionalColumnText(statement, index: 1),
+                                projectPath: optionalColumnText(statement, index: 2),
+                                effort: optionalColumnText(statement, index: 3),
+                                source: optionalColumnText(statement, index: 4)
+                            )
+                        )
+                    )
+                case SQLITE_DONE:
+                    break rowLoop
+                default:
+                    throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+                }
+            }
+        }
+
+        guard !rows.isEmpty else {
+            return false
+        }
+
+        var didChange = false
+        try transaction {
+            for row in rows {
+                let statement = try prepare(
+                    """
+                    UPDATE token_usage_samples
+                    SET session_id = ?,
+                        project_path = ?,
+                        project_name = ?,
+                        effort = ?,
+                        source = ?
+                    WHERE rowid = ?
+                    """
+                )
+                defer { sqlite3_finalize(statement) }
+
+                bindOptionalText(row.context.sessionID, to: 1, in: statement)
+                bindOptionalText(row.context.projectPath, to: 2, in: statement)
+                bindOptionalText(row.context.projectName, to: 3, in: statement)
+                bindOptionalText(row.context.effort, to: 4, in: statement)
+                bindOptionalText(row.context.source, to: 5, in: statement)
+                sqlite3_bind_int64(statement, 6, row.rowID)
+                try step(statement)
+                didChange = didChange || sqlite3_changes(database) > 0
+            }
+        }
+
+        return didChange
+    }
+
     func rebuildSeriesCatalogsIfNeeded() throws {
         guard try metadataValue(for: Self.seriesCatalogMetadataKey) != Self.currentSeriesCatalogVersion else {
             return
@@ -214,6 +351,7 @@ extension UsageHistoryStore {
     func rebuildSeriesCatalogs() throws {
         try rebuildUsageSeriesCatalog()
         try rebuildTokenSeriesCatalog()
+        try rebuildTokenContextCatalogs()
         try setMetadataValue(Self.currentSeriesCatalogVersion, for: Self.seriesCatalogMetadataKey)
     }
 
@@ -380,6 +518,65 @@ extension UsageHistoryStore {
                 OR has_cached = 1
                 OR has_output = 1
                 OR has_reasoning = 1
+            """
+        )
+    }
+
+    func rebuildTokenContextCatalogs() throws {
+        try execute("DELETE FROM token_project_catalog")
+        try execute("DELETE FROM token_effort_catalog")
+        try execute("DELETE FROM token_source_catalog")
+
+        try execute(
+            """
+            INSERT INTO token_project_catalog (
+                project_path, project_name, first_seen_at, last_seen_at
+            )
+            SELECT project_path,
+                COALESCE(NULLIF(TRIM(project_name), ''), project_path) AS project_name,
+                MIN(received_at) AS first_seen_at,
+                MAX(received_at) AS last_seen_at
+            FROM token_usage_samples
+            WHERE project_path IS NOT NULL
+                AND (
+                    \(Self.observedTokenComponentsPredicate)
+                    OR observed_total_tokens > 0
+                )
+            GROUP BY project_path
+            """
+        )
+        try execute(
+            """
+            INSERT INTO token_effort_catalog (
+                effort, first_seen_at, last_seen_at
+            )
+            SELECT effort,
+                MIN(received_at) AS first_seen_at,
+                MAX(received_at) AS last_seen_at
+            FROM token_usage_samples
+            WHERE effort IS NOT NULL
+                AND (
+                    \(Self.observedTokenComponentsPredicate)
+                    OR observed_total_tokens > 0
+                )
+            GROUP BY effort
+            """
+        )
+        try execute(
+            """
+            INSERT INTO token_source_catalog (
+                source, first_seen_at, last_seen_at
+            )
+            SELECT source,
+                MIN(received_at) AS first_seen_at,
+                MAX(received_at) AS last_seen_at
+            FROM token_usage_samples
+            WHERE source IS NOT NULL
+                AND (
+                    \(Self.observedTokenComponentsPredicate)
+                    OR observed_total_tokens > 0
+                )
+            GROUP BY source
             """
         )
     }

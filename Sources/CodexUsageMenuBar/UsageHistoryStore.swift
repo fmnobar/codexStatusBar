@@ -107,6 +107,11 @@ struct StoredTokenUsageSample: Equatable {
     let threadID: String
     let turnID: String
     let model: String?
+    let sessionID: String?
+    let projectPath: String?
+    let projectName: String?
+    let effort: String?
+    let source: String?
     let receivedAt: Date
     let modelContextWindow: Int64?
     let last: CodexTokenUsageBreakdown
@@ -116,6 +121,83 @@ struct StoredTokenUsageSample: Equatable {
     let observedOutputTokens: Int64?
     let observedReasoningOutputTokens: Int64?
     let observedTotalTokens: Int64
+}
+
+struct TokenUsageContext: Equatable, Sendable {
+    let sessionID: String?
+    let projectPath: String?
+    let projectName: String?
+    let effort: String?
+    let source: String?
+
+    init(
+        sessionID: String? = nil,
+        projectPath: String? = nil,
+        effort: String? = nil,
+        source: String? = nil
+    ) {
+        self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
+        self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
+        self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
+        self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
+        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+    }
+
+    var hasAnyValue: Bool {
+        sessionID != nil
+            || projectPath != nil
+            || projectName != nil
+            || effort != nil
+            || source != nil
+    }
+}
+
+enum CodexTokenContextNormalizer {
+    private static let trimSet = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+    private static let safeIdentifierCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+    )
+
+    static func normalizedIdentifier(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        guard !trimmedValue.isEmpty else {
+            return nil
+        }
+
+        let firstTokenScalars = trimmedValue.unicodeScalars.split { trimSet.contains($0) }.first
+        guard let firstTokenScalars else {
+            return nil
+        }
+        guard firstTokenScalars.allSatisfy({ safeIdentifierCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return String(String.UnicodeScalarView(firstTokenScalars))
+    }
+
+    static func normalizedProjectPath(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.hasPrefix("/") else {
+            return nil
+        }
+        guard trimmedValue.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+
+        let url = URL(fileURLWithPath: trimmedValue)
+        let standardizedPath = url.standardizedFileURL.path
+        guard standardizedPath.hasPrefix("/"), projectName(standardizedPath) != nil else {
+            return nil
+        }
+
+        return standardizedPath
+    }
+
+    static func projectName(_ projectPath: String) -> String? {
+        let lastPathComponent = URL(fileURLWithPath: projectPath).lastPathComponent
+            .trimmingCharacters(in: trimSet)
+        return lastPathComponent.isEmpty ? nil : lastPathComponent
+    }
 }
 
 enum UsageHistoryRawRetention: Int, CaseIterable, Identifiable, Equatable {
@@ -155,9 +237,12 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let consumptionAlgorithmMetadataKey = "usage_consumption_algorithm_version"
     static let currentConsumptionAlgorithmVersion = "5"
     static let seriesCatalogMetadataKey = "series_catalog_version"
-    static let currentSeriesCatalogVersion = "1"
+    static let currentSeriesCatalogVersion = "2"
     static let tokenModelCleanupMetadataKey = "token_model_cleanup_version"
     static let currentTokenModelCleanupVersion = "1"
+    static let tokenContextCleanupMetadataKey = "token_context_cleanup_version"
+    static let currentTokenContextCleanupVersion = "1"
+    static let currentSessionTokenContextImportVersion = "1"
     static let resetCohortTolerance: Int64 = 60 * 60
     static let observedTokenComponentsPredicate = """
         observed_input_tokens > 0

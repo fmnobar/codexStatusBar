@@ -34,9 +34,14 @@ extension UsageHistoryStoreTests {
 
         XCTAssertTrue(tables.contains("usage_series_catalog"))
         XCTAssertTrue(tables.contains("token_series_catalog"))
+        XCTAssertTrue(tables.contains("token_project_catalog"))
+        XCTAssertTrue(tables.contains("token_effort_catalog"))
+        XCTAssertTrue(tables.contains("token_source_catalog"))
         XCTAssertTrue(indexes.contains("idx_usage_samples_window_bucket_timestamp"))
         XCTAssertTrue(indexes.contains("idx_usage_rollups_window_bucket_sample_timestamp"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_model_received_at"))
+        XCTAssertTrue(indexes.contains("idx_token_usage_samples_project_received_at"))
+        XCTAssertTrue(indexes.contains("idx_token_usage_samples_effort_received_at"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_observed_components_received_at"))
     }
 
@@ -95,6 +100,9 @@ extension UsageHistoryStoreTests {
         )
 
         XCTAssertEqual(samples.first?.observedInputTokens, nil)
+        XCTAssertNil(samples.first?.sessionID)
+        XCTAssertNil(samples.first?.projectPath)
+        XCTAssertNil(samples.first?.effort)
         XCTAssertEqual(inputPoints.map(\.tokenCount), [120])
         XCTAssertTrue(componentBucketPoints.isEmpty)
         XCTAssertEqual(try store.availableTokenSeries(category: .total).map(\.id), ["tokens_all"])
