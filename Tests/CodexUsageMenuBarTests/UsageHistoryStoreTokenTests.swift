@@ -1913,6 +1913,195 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(samples.contains { $0.threadID.contains("private") || $0.turnID.contains("private") })
     }
 
+    func testCodexLogTokenImporterExtractsDottedContextAndSafeDimensions() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=1000 output_token_count=20 cached_token_count=800 reasoning_token_count=5 tool_token_count=1020 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation codex.turn.model=gpt-5.6 cwd="/Users/example/Projects/with space" codex.turn.reasoning_effort=xhigh;request.payload=private source=desktop originator=vscode codex.cli_version=1.2.3 codex.turn.model_provider=openai codex.turn.approval_policy=never codex.turn.sandbox_policy.type=danger-full-access codex.turn.permission_profile.type=full codex.turn.truncation_policy.mode=auto codex.turn.realtime_active=true usage_mode=/fast prompt="do not store this"
+        """
+        try createCodexLogsDatabase(at: databaseURL, rows: [(timestamp, body)])
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+        let dimensions = try store.tokenDimensionCatalogEntries()
+            .map { "\($0.key.rawValue)=\($0.value)" }
+            .sorted()
+
+        XCTAssertEqual(result, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(sample.model, "gpt-5.6")
+        XCTAssertEqual(sample.sessionID, "conversation")
+        XCTAssertEqual(sample.projectPath, "/Users/example/Projects/with space")
+        XCTAssertEqual(sample.projectName, "with space")
+        XCTAssertEqual(sample.effort, "xhigh")
+        XCTAssertEqual(sample.source, "desktop")
+        XCTAssertEqual(
+            dimensions,
+            [
+                "approval_policy=never",
+                "cli_version=1.2.3",
+                "model_provider=openai",
+                "originator=vscode",
+                "permission_profile=full",
+                "realtime_active=true",
+                "sandbox_type=danger-full-access",
+                "source_kind=desktop",
+                "truncation_policy=auto",
+                "usage_mode=fast",
+            ]
+        )
+        XCTAssertFalse(dimensions.contains { $0.contains("request") || $0.contains("private") || $0.contains("prompt") })
+    }
+
+    func testCodexLogTokenImporterRepairsExistingRowsWithoutInflatingTotals() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let timestampText = "2026-05-17T12:48:13.035Z"
+        let threadID = [
+            "codex-log:conversation",
+            [
+                timestampText,
+                "1000",
+                "800",
+                "20",
+                "5",
+                "unknown-model",
+            ].joined(separator: ":"),
+        ].joined(separator: ":")
+        try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: threadID,
+                    turnID: "response.completed",
+                    lastInput: 1000,
+                    lastCached: 800,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 1020,
+                    totalInput: 1000,
+                    totalCached: 800,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 1020
+                ),
+                receivedAt: timestamp
+            ),
+        ])
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=1000 output_token_count=20 cached_token_count=800 reasoning_token_count=5 tool_token_count=1020 event.timestamp=\(timestampText) conversation.id=conversation codex.turn.model=gpt-5.6 codex.turn.cwd=/Users/example/Projects/repaired codex.turn.reasoning_effort=xhigh source=desktop codex.turn.approval_policy=never codex.turn.sandbox_type=danger-full-access
+        """
+        try createCodexLogsDatabase(at: databaseURL, rows: [(timestamp, body)])
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+        let totals = try store.tokenCategoryTotalsForDay(containing: timestamp, calendar: calendar)
+
+        XCTAssertEqual(result.insertedCount, 0)
+        XCTAssertEqual(result.duplicateCount, 1)
+        XCTAssertEqual(result.repairedModelCount, 1)
+        XCTAssertEqual(result.repairedContextCount, 1)
+        XCTAssertGreaterThanOrEqual(result.repairedDimensionCount, 3)
+        XCTAssertEqual(try store.tokenUsageSamples().count, 1)
+        XCTAssertEqual(sample.model, "gpt-5.6")
+        XCTAssertEqual(sample.projectPath, "/Users/example/Projects/repaired")
+        XCTAssertEqual(sample.projectName, "repaired")
+        XCTAssertEqual(sample.effort, "xhigh")
+        XCTAssertEqual(sample.source, "desktop")
+        XCTAssertEqual(
+            totals,
+            TokenCategoryTotals(
+                inputTokens: 1000,
+                cachedInputTokens: 800,
+                outputTokens: 20,
+                reasoningOutputTokens: 5,
+                totalTokens: 1020
+            )
+        )
+        XCTAssertEqual(
+            try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" }.sorted(),
+            [
+                "approval_policy=never",
+                "sandbox_type=danger-full-access",
+                "source_kind=desktop",
+            ]
+        )
+        XCTAssertEqual(try store.tokenDashboardAvailableBreakdownDimensions(), [.model, .effort, .project, .approvalPolicy, .sandboxType, .sourceKind])
+    }
+
+    func testCodexLogTokenImporterPreservesExistingSafeContextWhenLaterLogOmitsIt() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let timestampText = "2026-05-17T12:48:13.035Z"
+        let threadID = [
+            "codex-log:conversation",
+            [
+                timestampText,
+                "1000",
+                "800",
+                "20",
+                "5",
+                "gpt-5.5",
+            ].joined(separator: ":"),
+        ].joined(separator: ":")
+        try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: threadID,
+                    turnID: "response.completed",
+                    model: "gpt-5.5",
+                    lastInput: 1000,
+                    lastCached: 800,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 1020,
+                    totalInput: 1000,
+                    totalCached: 800,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 1020
+                ),
+                receivedAt: timestamp,
+                context: TokenUsageContext(
+                    sessionID: "conversation",
+                    projectPath: "/Users/example/Projects/original",
+                    effort: "xhigh"
+                )
+            ),
+        ])
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=1000 output_token_count=20 cached_token_count=800 reasoning_token_count=5 tool_token_count=1020 event.timestamp=\(timestampText) conversation.id=conversation model=gpt-5.5 slug=gpt-5.5 source=desktop
+        """
+        try createCodexLogsDatabase(at: databaseURL, rows: [(timestamp, body)])
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+
+        XCTAssertEqual(result.insertedCount, 0)
+        XCTAssertEqual(result.duplicateCount, 1)
+        XCTAssertEqual(sample.projectPath, "/Users/example/Projects/original")
+        XCTAssertEqual(sample.projectName, "original")
+        XCTAssertEqual(sample.effort, "xhigh")
+        XCTAssertEqual(sample.source, "desktop")
+        XCTAssertEqual(try store.tokenUsageSamples().count, 1)
+    }
+
     func testRecentTokenHistoryImportUsesCodexDesktopLogs() async throws {
         let store = try makeStore()
         let tempDirectory = try makeTemporaryDirectory()

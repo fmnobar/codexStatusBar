@@ -270,36 +270,32 @@ struct CodexLogTokenUsageImporter {
         fallbackTimestamp: Int64,
         body: String
     ) -> ImportedCodexTokenUsageSample? {
+        let metadata = CodexLogMetadataExtractor(body: body)
         guard
-            let inputTokens = intValue(for: "input_token_count", in: body),
-            let outputTokens = intValue(for: "output_token_count", in: body),
-            let cachedInputTokens = intValue(for: "cached_token_count", in: body),
-            let reasoningOutputTokens = intValue(for: "reasoning_token_count", in: body)
+            let inputTokens = metadata.intValue(for: "input_token_count"),
+            let outputTokens = metadata.intValue(for: "output_token_count"),
+            let cachedInputTokens = metadata.intValue(for: "cached_token_count"),
+            let reasoningOutputTokens = metadata.intValue(for: "reasoning_token_count")
         else {
             return nil
         }
 
-        let totalTokens = intValue(for: "tool_token_count", in: body) ?? (inputTokens + outputTokens)
-        let timestampText = value(for: "event.timestamp", in: body)
+        let totalTokens = metadata.intValue(for: "tool_token_count") ?? (inputTokens + outputTokens)
+        let timestampText = metadata.value(for: "event.timestamp")
         let receivedAt = timestampText.flatMap(CodexSessionTokenBackfillImporter.parseTimestamp)
             ?? Date(timeIntervalSince1970: TimeInterval(fallbackTimestamp))
-        let conversationID = value(for: "conversation.id", in: body) ?? "unknown-conversation"
-        let model = CodexModelIdentifier.firstNormalized([
-            value(for: "slug", in: body),
-            value(for: "model", in: body),
+        let conversationID = metadata.value(for: "conversation.id") ?? "unknown-conversation"
+        let legacyModelID = CodexModelIdentifier.firstNormalized([
+            metadata.value(for: "slug"),
+            metadata.value(for: "model"),
         ])
+        let model = metadata.model
         let context = TokenUsageContext(
             sessionID: conversationID,
-            projectPath: value(for: "cwd", in: body),
-            effort: value(for: "model_reasoning_effort", in: body) ?? value(for: "reasoning_effort", in: body),
-            source: value(for: "source", in: body) ?? "codex-log",
-            dimensions: [
-                TokenUsageDimension(.sourceKind, value(for: "source", in: body) ?? "codex-log"),
-                TokenUsageDimension(.usageMode, value(for: "usage_mode", in: body) ?? value(for: "speed_mode", in: body) ?? value(for: "mode", in: body)),
-                TokenUsageDimension(.approvalPolicy, value(for: "approval_policy", in: body)),
-                TokenUsageDimension(.sandboxType, value(for: "sandbox_type", in: body)),
-                TokenUsageDimension(.permissionProfile, value(for: "permission_profile", in: body)),
-            ].compactMap(\.self)
+            projectPath: metadata.projectPath,
+            effort: metadata.effort,
+            source: metadata.source ?? "codex-log",
+            dimensions: metadata.dimensions
         )
         let eventID = [
             timestampText ?? "\(fallbackTimestamp)",
@@ -307,7 +303,7 @@ struct CodexLogTokenUsageImporter {
             "\(cachedInputTokens)",
             "\(outputTokens)",
             "\(reasoningOutputTokens)",
-            model ?? "unknown-model",
+            legacyModelID ?? "unknown-model",
         ].joined(separator: ":")
         let tokenUsage = CodexThreadTokenUsage(
             last: CodexTokenUsageBreakdown(
@@ -335,25 +331,172 @@ struct CodexLogTokenUsageImporter {
 
         return ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt, context: context)
     }
+}
 
-    private static func intValue(for key: String, in body: String) -> Int64? {
-        value(for: key, in: body).flatMap(Int64.init)
+private struct CodexLogMetadataExtractor {
+    let body: String
+
+    var model: String? {
+        CodexModelIdentifier.firstNormalized([
+            value(for: "slug"),
+            value(for: "model"),
+            value(for: "model_slug"),
+            value(for: "modelSlug"),
+            value(for: "codex.turn.slug"),
+            value(for: "codex.turn.model"),
+            value(for: "codex.turn.model_slug"),
+            value(for: "codex.model"),
+        ])
     }
 
-    private static func value(for key: String, in body: String) -> String? {
-        let pattern = "(?:^| )\(NSRegularExpression.escapedPattern(for: key))=([^ ]+)"
+    var projectPath: String? {
+        firstValue(for: [
+            "cwd",
+            "project_path",
+            "codex.cwd",
+            "codex.project.cwd",
+            "codex.session.cwd",
+            "codex.turn.cwd",
+        ])
+    }
+
+    var effort: String? {
+        firstValue(for: [
+            "model_reasoning_effort",
+            "reasoning_effort",
+            "collaboration_mode.settings.reasoning_effort",
+            "codex.reasoning_effort",
+            "codex.turn.reasoning_effort",
+        ])
+    }
+
+    var source: String? {
+        firstValue(for: [
+            "source",
+            "codex.source",
+            "codex.session.source",
+            "codex.turn.source",
+        ])
+    }
+
+    var dimensions: [TokenUsageDimension] {
+        TokenUsageDimension.unique(
+            [
+                TokenUsageDimension(.originator, firstValue(for: [
+                    "originator",
+                    "codex.originator",
+                    "codex.session.originator",
+                ])),
+                TokenUsageDimension(.sourceKind, source ?? firstValue(for: [
+                    "source_kind",
+                    "codex.source_kind",
+                    "codex.session.source_kind",
+                    "codex.turn.source_kind",
+                ]) ?? "codex-log"),
+                TokenUsageDimension(.threadSource, firstValue(for: [
+                    "thread_source",
+                    "codex.thread_source",
+                    "codex.session.thread_source",
+                ])),
+                TokenUsageDimension(.cliVersion, firstValue(for: [
+                    "cli_version",
+                    "app_version",
+                    "codex.cli_version",
+                    "codex.session.cli_version",
+                ])),
+                TokenUsageDimension(.modelProvider, firstValue(for: [
+                    "model_provider",
+                    "codex.model_provider",
+                    "codex.turn.model_provider",
+                ])),
+                TokenUsageDimension(.memoryMode, firstValue(for: [
+                    "memory_mode",
+                    "codex.memory_mode",
+                    "codex.turn.memory_mode",
+                ])),
+                TokenUsageDimension(.approvalPolicy, firstValue(for: [
+                    "approval_policy",
+                    "codex.approval_policy",
+                    "codex.turn.approval_policy",
+                ])),
+                TokenUsageDimension(.sandboxType, firstValue(for: [
+                    "sandbox_type",
+                    "sandbox_policy.type",
+                    "codex.sandbox_type",
+                    "codex.turn.sandbox_type",
+                    "codex.turn.sandbox_policy.type",
+                ])),
+                TokenUsageDimension(.permissionProfile, firstValue(for: [
+                    "permission_profile",
+                    "permission_profile.type",
+                    "codex.permission_profile",
+                    "codex.turn.permission_profile",
+                    "codex.turn.permission_profile.type",
+                ])),
+                TokenUsageDimension(.realtimeActive, firstValue(for: [
+                    "realtime_active",
+                    "codex.realtime_active",
+                    "codex.turn.realtime_active",
+                ])),
+                TokenUsageDimension(.truncationPolicy, firstValue(for: [
+                    "truncation_policy",
+                    "truncation_policy.mode",
+                    "codex.truncation_policy",
+                    "codex.turn.truncation_policy",
+                    "codex.turn.truncation_policy.mode",
+                ])),
+                TokenUsageDimension(.usageMode, firstValue(for: [
+                    "usage_mode",
+                    "speed_mode",
+                    "mode",
+                    "codex.usage_mode",
+                    "codex.turn.usage_mode",
+                    "codex.turn.speed_mode",
+                    "codex.turn.mode",
+                ])),
+            ].compactMap(\.self)
+        )
+    }
+
+    func intValue(for key: String) -> Int64? {
+        value(for: key).flatMap(Int64.init)
+    }
+
+    func value(for key: String) -> String? {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?<![A-Za-z0-9_.-])\(escapedKey)\\s*=\\s*(?:\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'|([^\\s,;]+))"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return nil
         }
 
         let range = NSRange(body.startIndex..<body.endIndex, in: body)
-        guard let match = regex.firstMatch(in: body, range: range),
-              let valueRange = Range(match.range(at: 1), in: body)
-        else {
+        guard let match = regex.firstMatch(in: body, range: range) else {
             return nil
         }
 
-        return String(body[valueRange]).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        for index in 1..<match.numberOfRanges {
+            guard match.range(at: index).location != NSNotFound,
+                  let valueRange = Range(match.range(at: index), in: body)
+            else {
+                continue
+            }
+
+            let value = String(body[valueRange])
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            return value.isEmpty ? nil : value
+        }
+
+        return nil
+    }
+
+    private func firstValue(for keys: [String]) -> String? {
+        for key in keys {
+            if let value = value(for: key) {
+                return value
+            }
+        }
+
+        return nil
     }
 }
 

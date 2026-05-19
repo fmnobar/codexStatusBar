@@ -4,9 +4,8 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Fix Codex log context extraction and backfill safe metadata | Improve the `logs_2.sqlite` token importer so it extracts safe span metadata like `cwd`, model, originator, app version, and explicit reasoning effort without swallowing adjacent trace text or request payloads, then repair today's log-derived token rows. |
-| 2 | Add token attribution coverage diagnostics | Add a small diagnostics/readout showing how much of a selected token period is attributed by model, project, effort, and safe dimensions so missing metadata is visible instead of silently producing mostly `Unattributed`. |
-| 3 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
+| 1 | Add token attribution coverage diagnostics | Add a small diagnostics/readout showing how much of a selected token period is attributed by model, project, effort, and safe dimensions so missing metadata is visible instead of silently producing mostly `Unattributed`. |
+| 2 | Audit live token notification context payloads | Capture a sanitized sample of live `thread/tokenUsage/updated` context fields and decide whether live events can populate project, effort, source, or runtime policy metadata directly or must be joined with recent session/turn context. |
 
 ## Done
 
@@ -208,12 +207,12 @@
   - Hid `source_kind=codex-log` from user-facing breakdown rows while keeping it stored for diagnostics and importer repair.
   - Kept genuinely useful explicit source values, such as `vscode`, `cli`, or future app-provided sources, when they are actually present.
 
-## Next Candidates
-
 - Fix Codex log context extraction and backfill safe metadata
-  - Current log rows contain safe span text such as `model=gpt-5.5`, `cwd=/Users/.../codex_codex`, and `codex.turn.reasoning_effort=xhigh`, but the importer is not reliably converting that into project/effort catalogs.
-  - Tighten span parsing so it captures only the exact safe value and rejects adjacent trace or request text.
-  - Backfill repaired metadata into existing log-derived token samples without re-counting tokens.
+  - Added a safe log metadata extractor for exact span values, including dotted trace keys for `cwd`, model, reasoning effort, source, and runtime-policy fields.
+  - Repaired log-derived token rows through the existing duplicate/model/context/dimension repair path without changing observed token totals.
+  - Preserved importer provenance while preventing adjacent trace or request text from becoming visible metadata.
+
+## Next Candidates
 
 - Add token attribution coverage diagnostics
   - Show attribution coverage for the selected dashboard period, for example model/project/effort/source coverage percentages.
