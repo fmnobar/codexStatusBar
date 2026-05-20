@@ -362,19 +362,28 @@ struct MenuBarContentView: View {
                     await viewModel.manualRefresh()
                 }
             } label: {
-                TimelineView(.animation) { context in
-                    let rotation = refreshRotation(at: context.date)
-
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
-                        .rotationEffect(rotation)
-                        .frame(width: 18, height: 18)
-                }
+                refreshButtonIcon
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isRefreshing)
             .help(viewModel.isRefreshing ? "Refreshing…" : "Refresh")
             .accessibilityLabel(viewModel.isRefreshing ? "Refreshing" : "Refresh")
+        }
+    }
+
+    @ViewBuilder
+    private var refreshButtonIcon: some View {
+        if viewModel.isRefreshing {
+            TimelineView(.animation) { context in
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 13, weight: .semibold))
+                    .rotationEffect(refreshRotation(at: context.date))
+                    .frame(width: 18, height: 18)
+            }
+        } else {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 18, height: 18)
         }
     }
 
