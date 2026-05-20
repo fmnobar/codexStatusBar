@@ -16,6 +16,7 @@ struct MenuBarContentView: View {
     var onContentSizeChange: (NSSize) -> Void
     var appVersionInfo: AppVersionInfo
     @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
+    @StateObject private var historyViewModel: UsageHistoryViewModel
     @State private var expandedSection: MenuBarPopoverExpandedSection?
 
     init(
@@ -36,6 +37,7 @@ struct MenuBarContentView: View {
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
         _freshnessViewModel = StateObject(wrappedValue: freshnessViewModel)
+        _historyViewModel = StateObject(wrappedValue: UsageHistoryViewModel(database: historyDatabase))
     }
 
     var body: some View {
@@ -79,6 +81,7 @@ struct MenuBarContentView: View {
         .background(contentSizeReader)
         .onAppear {
             freshnessViewModel.refresh()
+            historyViewModel.activateCurrentPeriod()
             Task {
                 await updateMonitor.checkIfNeeded()
             }
@@ -159,7 +162,7 @@ struct MenuBarContentView: View {
             expandableHeader(title: "History", systemImage: "chart.xyaxis.line", section: .history)
 
             if expandedSection == .history {
-                CompactUsageHistoryPanel(database: historyDatabase)
+                CompactUsageHistoryPanel(viewModel: historyViewModel)
             }
         }
     }
@@ -582,7 +585,7 @@ private struct CompactHistoryMenuControl<Value: Hashable>: View {
 }
 
 private struct CompactUsageHistoryPanel: View {
-    @StateObject private var viewModel: UsageHistoryViewModel
+    @ObservedObject private var viewModel: UsageHistoryViewModel
     private static let seriesColors: [Color] = [
         .blue,
         .green,
@@ -592,10 +595,8 @@ private struct CompactUsageHistoryPanel: View {
         .teal,
     ]
 
-    init(database: UsageHistoryDatabaseWorking) {
-        _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
-            database: database
-        ))
+    init(viewModel: UsageHistoryViewModel) {
+        self.viewModel = viewModel
     }
 
     var body: some View {

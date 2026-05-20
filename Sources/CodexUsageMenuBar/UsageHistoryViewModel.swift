@@ -81,9 +81,11 @@ struct UsageHistoryHoverIndex: Equatable {
 }
 
 enum UsageHistoryEmptyStateKind: Equatable {
+    case loading
     case noHistory
     case noDataForSelection
     case hiddenSeries
+    case loadFailed
 }
 
 struct UsageHistoryEmptyStatePresentation: Equatable {
@@ -156,6 +158,7 @@ final class UsageHistoryViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var hoverSelection: UsageHistoryHoverSelection?
     @Published private(set) var hasAnyRecordedHistory = false
+    @Published private(set) var isLoadingHistory = true
     @Published private(set) var selectedPeriodStart = Date(timeIntervalSince1970: 0) {
         didSet {
             refreshChartCachesForPendingReload()
@@ -462,6 +465,24 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     var emptyStatePresentation: UsageHistoryEmptyStatePresentation {
+        if isLoadingHistory && !hasVisiblePoints {
+            return UsageHistoryEmptyStatePresentation(
+                kind: .loading,
+                systemImage: "clock.arrow.circlepath",
+                title: "Loading history",
+                message: "Reading local usage samples."
+            )
+        }
+
+        if errorMessage != nil && !hasVisiblePoints {
+            return UsageHistoryEmptyStatePresentation(
+                kind: .loadFailed,
+                systemImage: "exclamationmark.triangle",
+                title: "History unavailable",
+                message: "Try refreshing Codex Status Bar."
+            )
+        }
+
         if hasHistory && !hasVisiblePoints {
             return UsageHistoryEmptyStatePresentation(
                 kind: .hiddenSeries,
@@ -530,6 +551,7 @@ final class UsageHistoryViewModel: ObservableObject {
 
         syncCurrentPeriodIfNeeded()
         let generation = nextReloadGeneration()
+        isLoadingHistory = true
         let queryPeriod = periodForQuery()
         let request = UsageHistoryLoadRequest(
             chartKind: selectedChartKind,
@@ -553,6 +575,7 @@ final class UsageHistoryViewModel: ObservableObject {
             tokenComponentBucketPoints = result.tokenComponentBucketPoints
             series = result.series
             hasAnyRecordedHistory = result.hasAnyHistory
+            isLoadingHistory = false
             historyBounds = result.historyBounds
             reconcileSelectedSeries()
             rebuildChartCaches()
@@ -571,6 +594,7 @@ final class UsageHistoryViewModel: ObservableObject {
             series = []
             selectedSeriesIDs = []
             hasAnyRecordedHistory = false
+            isLoadingHistory = false
             historyBounds = nil
             rebuildChartCaches()
             clearHoverSelectionAndCancelPendingWork()
@@ -580,6 +604,7 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func scheduleReload() {
+        isLoadingHistory = true
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.performReload()

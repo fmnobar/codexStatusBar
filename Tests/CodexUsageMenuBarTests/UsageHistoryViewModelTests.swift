@@ -1104,6 +1104,9 @@ extension UsageHistoryStoreTests {
             now: { self.date("2026-04-14T21:00:00Z") },
             calendar: calendar
         )
+
+        XCTAssertEqual(emptyViewModel.emptyStatePresentation.kind, .loading)
+
         await emptyViewModel.reload()
 
         XCTAssertEqual(emptyViewModel.emptyStatePresentation.kind, .noHistory)
@@ -1120,6 +1123,24 @@ extension UsageHistoryStoreTests {
 
         XCTAssertTrue(viewModel.hasAnyRecordedHistory)
         XCTAssertEqual(viewModel.emptyStatePresentation.kind, .noDataForSelection)
+    }
+
+    @MainActor
+    func testHistoryLoadFailureDoesNotPresentAsNoHistory() async throws {
+        let database = UsageHistoryDatabaseWorker(storeFactory: {
+            throw UsageHistoryStoreError.databaseUnavailable
+        })
+        let viewModel = UsageHistoryViewModel(
+            database: database,
+            now: { self.date("2026-04-14T21:00:00Z") },
+            calendar: calendar
+        )
+
+        let didLoad = await viewModel.reload()
+
+        XCTAssertFalse(didLoad)
+        XCTAssertEqual(viewModel.emptyStatePresentation.kind, .loadFailed)
+        XCTAssertEqual(viewModel.errorMessage, "History could not be loaded.")
     }
 
     @MainActor
