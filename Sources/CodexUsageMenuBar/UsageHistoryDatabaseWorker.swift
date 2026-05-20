@@ -142,7 +142,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
         do {
             let store = try store()
-            let captureState = importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar)
+            let captureState = try store.codexLiveTokenCaptureState()
             guard captureState.hasSuccessfulCheck(containing: date, calendar: calendar) else {
                 return nil
             }
@@ -155,7 +155,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
         do {
             let store = try store()
-            let captureState = importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar)
+            let captureState = try store.codexLiveTokenCaptureState()
             guard captureState.hasSuccessfulCheck(containing: date, calendar: calendar) else {
                 return nil
             }
@@ -206,7 +206,6 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             )
         case .tokens:
             points = []
-            _ = importRecentTokenHistoryIfNeeded(store: store, at: request.now, calendar: request.calendar)
             tokenComponentBucketPoints = try store.tokenComponentBucketPoints(
                 range: request.range,
                 periodStart: request.periodStart,
@@ -232,7 +231,6 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         let store = try store()
-        _ = importRecentTokenHistoryIfNeeded(store: store, at: Date(), calendar: .autoupdatingCurrent)
         let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
             periodStart: request.periodStart,
             periodEnd: request.periodEnd

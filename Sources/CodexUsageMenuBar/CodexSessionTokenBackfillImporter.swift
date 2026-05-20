@@ -283,9 +283,14 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
 
 struct CodexLogTokenUsageImporter {
     let logsDatabaseURL: URL
+    let incrementalContextLookbackRowCount: Int64
 
-    init(logsDatabaseURL: URL = Self.defaultLogsDatabaseURL()) {
+    init(
+        logsDatabaseURL: URL = Self.defaultLogsDatabaseURL(),
+        incrementalContextLookbackRowCount: Int64 = 500
+    ) {
         self.logsDatabaseURL = logsDatabaseURL
+        self.incrementalContextLookbackRowCount = max(incrementalContextLookbackRowCount, 0)
     }
 
     static func defaultLogsDatabaseURL(fileManager: FileManager = .default) -> URL {
@@ -412,10 +417,21 @@ struct CodexLogTokenUsageImporter {
         }
         defer { sqlite3_close(database) }
 
+        let latestLogRowID = try Self.maxLogRowID(
+            in: database,
+            startTimestamp: interval.start.timeIntervalSince1970Int,
+            endTimestamp: interval.end.timeIntervalSince1970Int
+        )
+        let contextFloorLogRowID = incrementalContextFloorLogRowID(
+            afterLogRowID: afterLogRowID,
+            latestLogRowID: latestLogRowID
+        )
+
         let sql = """
         SELECT id, ts, feedback_log_body
         FROM logs
-        WHERE ts >= ? AND ts < ?
+        WHERE id > ?
+            AND ts >= ? AND ts < ?
             AND (
                 (
                     (feedback_log_body LIKE '%conversation.id=%' OR feedback_log_body LIKE '%thread_id=%')
@@ -439,8 +455,7 @@ struct CodexLogTokenUsageImporter {
                     )
                 )
                 OR (
-                    id > ?
-                    AND feedback_log_body LIKE '%event.name="codex.sse_event"%'
+                    feedback_log_body LIKE '%event.name="codex.sse_event"%'
                     AND feedback_log_body LIKE '%event.kind=response.completed%'
                 )
             )
@@ -453,13 +468,13 @@ struct CodexLogTokenUsageImporter {
         }
         defer { sqlite3_finalize(statement) }
 
-        sqlite3_bind_int64(statement, 1, interval.start.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 2, interval.end.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 3, max(afterLogRowID, 0))
+        sqlite3_bind_int64(statement, 1, contextFloorLogRowID)
+        sqlite3_bind_int64(statement, 2, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 3, interval.end.timeIntervalSince1970Int)
 
         var samples: [ImportedCodexTokenUsageSample] = []
         var contextsByConversationID: [String: CodexLogTokenContextTracker] = [:]
-        var maxLogRowID = max(afterLogRowID, 0)
+        var maxLogRowID = max(max(afterLogRowID, 0), latestLogRowID)
         var lastImportedEventAt: Date?
 
         rowLoop:
@@ -511,6 +526,44 @@ struct CodexLogTokenUsageImporter {
             maxLogRowID: maxLogRowID,
             lastImportedEventAt: lastImportedEventAt
         )
+    }
+
+    private func incrementalContextFloorLogRowID(afterLogRowID: Int64, latestLogRowID: Int64) -> Int64 {
+        let normalizedAfterLogRowID = max(afterLogRowID, 0)
+        guard normalizedAfterLogRowID > 0 else {
+            return max(latestLogRowID - incrementalContextLookbackRowCount, 0)
+        }
+
+        return max(normalizedAfterLogRowID - incrementalContextLookbackRowCount, 0)
+    }
+
+    private static func maxLogRowID(
+        in database: OpaquePointer,
+        startTimestamp: Int64,
+        endTimestamp: Int64
+    ) throws -> Int64 {
+        let sql = """
+        SELECT COALESCE(MAX(id), 0)
+        FROM logs
+        WHERE ts >= ? AND ts < ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.statementPreparationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, startTimestamp)
+        sqlite3_bind_int64(statement, 2, endTimestamp)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return 0
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+        }
     }
 
     private static func sample(

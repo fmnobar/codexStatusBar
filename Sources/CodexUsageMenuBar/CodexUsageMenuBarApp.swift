@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         liveTokenCaptureCoordinator = CodexLiveTokenCaptureCoordinator(
-            database: historyDatabase,
+            database: UsageHistoryDatabaseWorker.applicationSupportStoreWithInMemoryFallback(),
             onCapture: { [weak viewModel] state in
                 guard state.hasSuccessfulCheck else {
                     return
