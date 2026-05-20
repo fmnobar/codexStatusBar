@@ -4,7 +4,14 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Review live token payload audit sample | Conditional follow-up only if a future live `thread/tokenUsage/updated` payload is captured in Settings Data; otherwise the local log/session capture path remains the evidence-backed live token source. |
+| -- | None | No ready implementation items remain after the local token-capture path landed. Run a backlog/product review before adding the next feature slice. |
+
+## Conditional Watchlist
+
+- Review live token payload audit sample
+  - A bounded probe on May 19, 2026 generated local Codex token activity and was captured through the log-based token importer, but app-server diagnostics still showed `0` `thread/tokenUsage/updated` notifications and no `live-token-payload-audit.json`.
+  - Keep this blocked until Settings Data or `~/Library/Application Support/CodexStatusBar/live-token-payload-audit.json` shows a real sanitized payload.
+  - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
 
@@ -234,7 +241,5 @@
 
 ## Next Candidates
 
-- Review live token payload audit sample
-  - Use the new Data settings readout/export after a live token event arrives.
-  - If useful fields are present, plan `Record live token context fields directly`.
-  - If no payload arrives, keep this item conditional and run a broader backlog/product review instead of assuming the app-server path will produce a sample.
+- Backlog/product review
+  - Choose the next user-facing feature or maintenance priority now that the current token capture, dashboard, diagnostics, performance, update, and packaging backlog is complete.
