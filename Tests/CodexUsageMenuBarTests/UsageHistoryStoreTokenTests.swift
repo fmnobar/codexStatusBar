@@ -2016,6 +2016,167 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(samples.contains { $0.threadID.contains("private") || $0.turnID.contains("private") })
     }
 
+    func testCodexLogLiveCaptureImportsOnlyNewRowsAndCarriesEarlierContext() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:00:00Z")
+        let contextBody = """
+        conversation.id=conversation cwd="/Users/example/Projects/live-app" model=gpt-5.5 reasoning_effort=xhigh source=cli approval_policy=never
+        """
+        let oldTokenBody = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=100 output_token_count=5 cached_token_count=80 reasoning_token_count=1 tool_token_count=105 event.timestamp=2026-05-17T12:01:00.000Z conversation.id=conversation
+        """
+        let newTokenBody = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=200 output_token_count=10 cached_token_count=160 reasoning_token_count=2 tool_token_count=210 event.timestamp=2026-05-17T12:02:00.000Z conversation.id=conversation
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (timestamp, contextBody),
+                (date("2026-05-17T12:01:00Z"), oldTokenBody),
+                (date("2026-05-17T12:02:00Z"), newTokenBody),
+            ]
+        )
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTokenHistory(
+            into: store,
+            afterLogRowID: 2,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let samples = try store.tokenUsageSamples()
+
+        XCTAssertEqual(result.importResult, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(result.maxLogRowID, 3)
+        XCTAssertEqual(result.lastImportedEventAt, date("2026-05-17T12:02:00Z"))
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.model, "gpt-5.5")
+        XCTAssertEqual(samples.first?.projectPath, "/Users/example/Projects/live-app")
+        XCTAssertEqual(samples.first?.effort, "xhigh")
+        XCTAssertEqual(samples.first?.source, "cli")
+        XCTAssertEqual(try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" }, ["approval_policy=never", "source_kind=cli"])
+    }
+
+    func testLiveTokenCaptureStateRecordsSuccessAndNoNewEvents() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:00:00Z")
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=100 output_token_count=5 cached_token_count=80 reasoning_token_count=1 tool_token_count=105 event.timestamp=2026-05-17T12:00:00.000Z conversation.id=conversation model=gpt-5.5
+        """
+        try createCodexLogsDatabase(at: databaseURL, rows: [(timestamp, body)])
+
+        let firstState = store.captureLiveCodexLogTokenHistory(
+            at: timestamp,
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL
+        )
+        let secondState = store.captureLiveCodexLogTokenHistory(
+            at: date("2026-05-17T12:01:00Z"),
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL
+        )
+
+        XCTAssertEqual(firstState.status, .imported)
+        XCTAssertEqual(firstState.result.insertedCount, 1)
+        XCTAssertEqual(firstState.lastLogRowID, 1)
+        XCTAssertEqual(secondState.status, .noNewEvents)
+        XCTAssertEqual(secondState.lastLogRowID, 1)
+        XCTAssertEqual(try store.codexLiveTokenCaptureState().status, .noNewEvents)
+    }
+
+    func testLiveTokenCaptureStateRecordsFailureForMissingLogDatabase() async throws {
+        let store = try makeStore()
+        let missingURL = try makeTemporaryDirectory().appendingPathComponent("missing.sqlite")
+
+        let state = store.captureLiveCodexLogTokenHistory(
+            at: date("2026-05-17T12:00:00Z"),
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: missingURL
+        )
+
+        XCTAssertEqual(state.status, .failed)
+        XCTAssertNotNil(state.lastErrorText)
+        XCTAssertEqual(try store.codexLiveTokenCaptureState().status, .failed)
+    }
+
+    func testWorkerTodayTokenTotalsRequireSuccessfulLiveCapture() async throws {
+        let store = try makeStore()
+        let timestamp = date("2026-05-17T12:00:00Z")
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread",
+                turnID: "turn",
+                lastInput: 100,
+                lastCached: 80,
+                lastOutput: 5,
+                lastReasoning: 1,
+                lastTotal: 105,
+                totalInput: 100,
+                totalCached: 80,
+                totalOutput: 5,
+                totalReasoning: 1,
+                totalTotal: 105
+            ),
+            at: timestamp
+        )
+        let worker = UsageHistoryDatabaseWorker(
+            store: store,
+            recentTokenHistoryImporter: { _, date, _, _ in
+                CodexLiveTokenCaptureState(lastCheckedAt: date, status: .failed, lastErrorText: "missing")
+            }
+        )
+
+        let totals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+
+        XCTAssertNil(totals)
+    }
+
+    func testWorkerTodayTokenTotalsReturnAfterSuccessfulNoNewEventsCheck() async throws {
+        let store = try makeStore()
+        let timestamp = date("2026-05-17T12:00:00Z")
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread",
+                turnID: "turn",
+                lastInput: 100,
+                lastCached: 80,
+                lastOutput: 5,
+                lastReasoning: 1,
+                lastTotal: 105,
+                totalInput: 100,
+                totalCached: 80,
+                totalOutput: 5,
+                totalReasoning: 1,
+                totalTotal: 105
+            ),
+            at: timestamp
+        )
+        let worker = UsageHistoryDatabaseWorker(
+            store: store,
+            recentTokenHistoryImporter: { _, date, _, _ in
+                CodexLiveTokenCaptureState(lastCheckedAt: date, status: .noNewEvents)
+            }
+        )
+
+        let totals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+
+        XCTAssertEqual(
+            totals,
+            TokenCategoryTotals(
+                inputTokens: 100,
+                cachedInputTokens: 80,
+                outputTokens: 5,
+                reasoningOutputTokens: 1,
+                totalTokens: 105
+            )
+        )
+    }
+
     func testCodexLogTokenImporterExtractsDottedContextAndSafeDimensions() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
@@ -2338,11 +2499,16 @@ extension UsageHistoryStoreTests {
             store: store,
             now: { timestamp },
             calendar: calendar,
-            recentTokenHistoryImporter: { store, date, calendar in
-                store.importRecentTokenHistoryIfAvailable(
+            recentTokenHistoryImporter: { store, date, calendar, _ in
+                let result = store.importRecentTokenHistoryIfAvailable(
                     containing: date,
                     calendar: calendar,
                     logsDatabaseURL: databaseURL
+                )
+                return CodexLiveTokenCaptureState(
+                    lastCheckedAt: date,
+                    status: result.insertedCount > 0 ? .imported : .noNewEvents,
+                    result: result
                 )
             }
         )

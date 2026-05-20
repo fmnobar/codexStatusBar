@@ -571,6 +571,34 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testSettingsViewModelShowsLocalTokenCaptureState() async throws {
+        let (store, _) = try makeTemporaryStore()
+        try store.recordCodexLiveTokenCaptureState(
+            CodexLiveTokenCaptureState(
+                lastCheckedAt: date("2026-05-17T12:00:00Z"),
+                lastImportedEventAt: date("2026-05-17T11:59:00Z"),
+                lastLogRowID: 42,
+                status: .imported,
+                result: TokenUsageImportResult(
+                    insertedCount: 2,
+                    duplicateCount: 3,
+                    repairedModelCount: 1,
+                    repairedContextCount: 1,
+                    repairedDimensionCount: 1
+                )
+            )
+        )
+        let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(viewModel.localTokenCaptureState.status, .imported)
+        XCTAssertEqual(viewModel.localTokenCaptureState.lastLogRowID, 42)
+        XCTAssertEqual(viewModel.localTokenCaptureResultText, "2 imported, 3 duplicate, 3 repaired")
+        XCTAssertEqual(viewModel.localTokenCaptureLastErrorText, "None")
+    }
+
+    @MainActor
     func testSettingsViewModelLoadsRenamesAndResetsProjectNames() async throws {
         let (store, _) = try makeTemporaryStore()
         _ = try store.importTokenUsageSamples([

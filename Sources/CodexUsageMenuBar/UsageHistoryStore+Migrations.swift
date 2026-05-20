@@ -169,6 +169,23 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_live_token_capture_state (
+                source_key TEXT PRIMARY KEY,
+                last_checked_at INTEGER,
+                last_imported_event_at INTEGER,
+                last_log_row_id INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                inserted_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                repaired_model_count INTEGER NOT NULL DEFAULT 0,
+                repaired_context_count INTEGER NOT NULL DEFAULT 0,
+                repaired_dimension_count INTEGER NOT NULL DEFAULT 0,
+                last_error_text TEXT
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -215,6 +232,7 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_dimensions_sample ON token_usage_dimensions(thread_id, turn_id, total_total_tokens)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_dimensions_key_value_seen ON token_usage_dimensions(dimension_key, dimension_value, seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_dimension_catalog_key_seen ON token_dimension_catalog(dimension_key, last_seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_live_token_capture_state_checked ON codex_live_token_capture_state(last_checked_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
         try cleanupTokenContextValuesIfNeeded()

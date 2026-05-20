@@ -450,6 +450,14 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
     }
 
+    func refreshTodayTokenTotalsIfDisplayed() {
+        guard menuBarDisplayOptions.showsTokens else {
+            return
+        }
+
+        refreshTodayTokenTotals()
+    }
+
     private func loadTodayTokenTotals() async {
         let currentNow = now()
         todayTokenTotals = await tokenUsageRecorder.todayTokenCategoryTotals(

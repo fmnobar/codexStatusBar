@@ -39,6 +39,7 @@ extension UsageHistoryStore {
             try execute("DELETE FROM token_effort_catalog")
             try execute("DELETE FROM token_source_catalog")
             try execute("DELETE FROM token_dimension_catalog")
+            try execute("DELETE FROM codex_live_token_capture_state")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -216,6 +217,7 @@ extension UsageHistoryStore {
             try execute("DELETE FROM token_effort_catalog")
             try execute("DELETE FROM token_source_catalog")
             try execute("DELETE FROM token_dimension_catalog")
+            try execute("DELETE FROM codex_live_token_capture_state")
             try execute(
                 """
                 INSERT INTO usage_samples (

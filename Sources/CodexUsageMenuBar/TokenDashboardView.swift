@@ -238,9 +238,17 @@ final class TokenDashboardViewModel: ObservableObject {
     convenience init(
         store: UsageHistoryStore,
         now: @escaping () -> Date = Date.init,
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        recentTokenHistoryImporter: @escaping UsageHistoryDatabaseWorker.RecentTokenHistoryImporter = { _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
     ) {
-        self.init(database: UsageHistoryDatabaseWorker(store: store), now: now, calendar: calendar)
+        self.init(
+            database: UsageHistoryDatabaseWorker(
+                store: store,
+                recentTokenHistoryImporter: recentTokenHistoryImporter
+            ),
+            now: now,
+            calendar: calendar
+        )
     }
 
     deinit {

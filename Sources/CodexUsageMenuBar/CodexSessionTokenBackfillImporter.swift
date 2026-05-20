@@ -39,6 +39,93 @@ struct TokenUsageImportResult: Equatable, Sendable {
     }
 
     static let empty = TokenUsageImportResult(insertedCount: 0, duplicateCount: 0)
+
+    var changedCount: Int {
+        insertedCount + repairedModelCount + repairedContextCount + repairedDimensionCount
+    }
+}
+
+enum CodexLiveTokenCaptureStatus: String, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case imported
+    case noNewEvents = "no_new_events"
+    case duplicateOnly = "duplicate_only"
+    case repaired
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            "Not checked yet"
+        case .imported:
+            "Imported new tokens"
+        case .noNewEvents:
+            "Checked, no new token events"
+        case .duplicateOnly:
+            "Checked, duplicates only"
+        case .repaired:
+            "Checked, repaired context"
+        case .failed:
+            "Capture failed"
+        }
+    }
+
+    var isSuccessfulCheck: Bool {
+        switch self {
+        case .imported, .noNewEvents, .duplicateOnly, .repaired:
+            true
+        case .neverChecked, .failed:
+            false
+        }
+    }
+}
+
+struct CodexLiveTokenCaptureState: Equatable, Sendable {
+    static let codexLogSourceKey = "codex-log"
+
+    let sourceKey: String
+    let lastCheckedAt: Date?
+    let lastImportedEventAt: Date?
+    let lastLogRowID: Int64
+    let status: CodexLiveTokenCaptureStatus
+    let result: TokenUsageImportResult
+    let lastErrorText: String?
+
+    init(
+        sourceKey: String = Self.codexLogSourceKey,
+        lastCheckedAt: Date? = nil,
+        lastImportedEventAt: Date? = nil,
+        lastLogRowID: Int64 = 0,
+        status: CodexLiveTokenCaptureStatus = .neverChecked,
+        result: TokenUsageImportResult = .empty,
+        lastErrorText: String? = nil
+    ) {
+        self.sourceKey = sourceKey
+        self.lastCheckedAt = lastCheckedAt
+        self.lastImportedEventAt = lastImportedEventAt
+        self.lastLogRowID = max(lastLogRowID, 0)
+        self.status = status
+        self.result = result
+        self.lastErrorText = lastErrorText
+    }
+
+    var hasSuccessfulCheck: Bool {
+        status.isSuccessfulCheck && lastCheckedAt != nil && lastErrorText == nil
+    }
+
+    func hasSuccessfulCheck(containing date: Date, calendar: Calendar) -> Bool {
+        guard let lastCheckedAt, hasSuccessfulCheck else {
+            return false
+        }
+
+        return calendar.isDate(lastCheckedAt, inSameDayAs: date)
+    }
+}
+
+struct CodexLiveTokenCaptureRunResult: Equatable, Sendable {
+    let importResult: TokenUsageImportResult
+    let maxLogRowID: Int64
+    let lastImportedEventAt: Date?
 }
 
 struct CodexSessionTokenBackfillRequest: Equatable, Sendable {
@@ -302,6 +389,130 @@ struct CodexLogTokenUsageImporter {
         return try store.importTokenUsageSamples(samples)
     }
 
+    func importTokenHistory(
+        into store: UsageHistoryStore,
+        afterLogRowID: Int64,
+        containing date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) throws -> CodexLiveTokenCaptureRunResult {
+        guard FileManager.default.fileExists(atPath: logsDatabaseURL.path) else {
+            throw UsageHistoryStoreError.fileOperationFailed("Codex log database not found.")
+        }
+        guard let interval = calendar.dateInterval(of: .day, for: date) else {
+            throw UsageHistoryStoreError.fileOperationFailed("Current day could not be resolved.")
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(logsDatabaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            throw UsageHistoryStoreError.fileOperationFailed("Codex log database could not be opened.")
+        }
+        defer { sqlite3_close(database) }
+
+        let sql = """
+        SELECT id, ts, feedback_log_body
+        FROM logs
+        WHERE ts >= ? AND ts < ?
+            AND (
+                (
+                    (feedback_log_body LIKE '%conversation.id=%' OR feedback_log_body LIKE '%thread_id=%')
+                    AND (
+                        feedback_log_body LIKE '%cwd=%'
+                        OR feedback_log_body LIKE '%model=%'
+                        OR feedback_log_body LIKE '%slug=%'
+                        OR feedback_log_body LIKE '%reasoning_effort=%'
+                        OR feedback_log_body LIKE '%approval_policy=%'
+                        OR feedback_log_body LIKE '%sandbox_type=%'
+                        OR feedback_log_body LIKE '%sandbox_policy.type=%'
+                        OR feedback_log_body LIKE '%permission_profile=%'
+                        OR feedback_log_body LIKE '%truncation_policy=%'
+                        OR feedback_log_body LIKE '%originator=%'
+                        OR feedback_log_body LIKE '%cli_version=%'
+                        OR feedback_log_body LIKE '%app.version=%'
+                        OR feedback_log_body LIKE '%model_provider=%'
+                        OR feedback_log_body LIKE '%usage_mode=%'
+                        OR feedback_log_body LIKE '%speed_mode=%'
+                        OR feedback_log_body LIKE '%mode=%'
+                    )
+                )
+                OR (
+                    id > ?
+                    AND feedback_log_body LIKE '%event.name="codex.sse_event"%'
+                    AND feedback_log_body LIKE '%event.kind=response.completed%'
+                )
+            )
+        ORDER BY ts ASC, id ASC
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.statementPreparationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, interval.end.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 3, max(afterLogRowID, 0))
+
+        var samples: [ImportedCodexTokenUsageSample] = []
+        var contextsByConversationID: [String: CodexLogTokenContextTracker] = [:]
+        var maxLogRowID = max(afterLogRowID, 0)
+        var lastImportedEventAt: Date?
+
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let logRowID = sqlite3_column_int64(statement, 0)
+                maxLogRowID = max(maxLogRowID, logRowID)
+                guard let bodyPointer = sqlite3_column_text(statement, 2) else {
+                    continue
+                }
+
+                let body = String(cString: bodyPointer)
+                let metadata = CodexLogMetadataExtractor(body: body)
+                if let conversationID = metadata.conversationID, metadata.hasCarriableMetadata {
+                    var tracker = contextsByConversationID[conversationID] ?? CodexLogTokenContextTracker(sessionID: conversationID)
+                    tracker.apply(metadata)
+                    contextsByConversationID[conversationID] = tracker
+                }
+
+                guard logRowID > afterLogRowID,
+                      metadata.isResponseCompleted,
+                      let sample = Self.sample(
+                          logID: logRowID,
+                          fallbackTimestamp: sqlite3_column_int64(statement, 1),
+                          metadata: metadata,
+                          carriedContext: metadata.conversationID.flatMap { contextsByConversationID[$0] }
+                      )
+                else {
+                    continue
+                }
+
+                samples.append(sample)
+                if let existing = lastImportedEventAt {
+                    lastImportedEventAt = max(existing, sample.receivedAt)
+                } else {
+                    lastImportedEventAt = sample.receivedAt
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+
+        let importResult = try store.importTokenUsageSamples(samples)
+        return CodexLiveTokenCaptureRunResult(
+            importResult: importResult,
+            maxLogRowID: maxLogRowID,
+            lastImportedEventAt: lastImportedEventAt
+        )
+    }
+
     private static func sample(
         logID _: Int64,
         fallbackTimestamp: Int64,
@@ -327,12 +538,21 @@ struct CodexLogTokenUsageImporter {
             metadata.value(for: "model"),
         ])
         let model = metadata.model ?? carriedContext?.model
+        let carriedDimensions = carriedContext?.dimensionsList ?? []
+        let explicitMetadataDimensions = metadata.explicitDimensions
+        let hasExplicitSourceKind = metadata.source != nil
+            || carriedContext?.source != nil
+            || explicitMetadataDimensions.contains { $0.key == .sourceKind }
+            || carriedDimensions.contains { $0.key == .sourceKind && $0.value != "codex-log" }
+        let metadataDimensions = hasExplicitSourceKind
+            ? explicitMetadataDimensions
+            : metadata.dimensions
         let context = TokenUsageContext(
             sessionID: conversationID,
             projectPath: metadata.projectPath ?? carriedContext?.projectPath,
             effort: metadata.effort ?? carriedContext?.effort,
             source: metadata.source ?? carriedContext?.source ?? "codex-log",
-            dimensions: (carriedContext?.dimensionsList ?? []) + metadata.dimensions
+            dimensions: carriedDimensions + metadataDimensions
         )
         let eventID = [
             timestampText ?? "\(fallbackTimestamp)",
@@ -447,7 +667,7 @@ private struct CodexLogMetadataExtractor {
             || !explicitDimensions.isEmpty
     }
 
-    private func dimensions(includeProvenanceDefault: Bool) -> [TokenUsageDimension] {
+    func dimensions(includeProvenanceDefault: Bool) -> [TokenUsageDimension] {
         TokenUsageDimension.unique(
             [
                 TokenUsageDimension(.originator, firstContextValue(for: [

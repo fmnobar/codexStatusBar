@@ -4,8 +4,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Join live token events with latest safe turn context | The installed app is connected to its managed app-server and receives status notifications, but a real Codex CLI token-generating probe did not produce any `thread/tokenUsage/updated` notification on that connection; design an evidence-backed live capture path that joins local token events with the latest safe session/turn context without relying on cross-process app-server broadcasts. |
-| 2 | Review live token payload audit sample | If a future live token notification is captured in Settings Data, review/export the sanitized sample and decide whether to record live context fields directly or keep the joined-context strategy. |
+| 1 | Review live token payload audit sample | Conditional follow-up only if a future live `thread/tokenUsage/updated` payload is captured in Settings Data; otherwise the local log/session capture path remains the evidence-backed live token source. |
 
 ## Done
 
@@ -228,14 +227,14 @@
   - Made audit persistence report success or failure without blocking token notification handling.
   - Surfaced the diagnostic state in Data settings with a separate clear action while keeping raw payload values out of diagnostics.
 
+- Join live token events with latest safe turn context
+  - Added app-owned local token capture from bounded Codex log events so token totals do not depend on cross-process app-server token notifications.
+  - Added cursor/health state for local token capture and surfaced metadata-only diagnostics in Data settings.
+  - Reused existing safe log/session context extraction and token import dedupe/repair paths so live capture can update token totals without inferring hidden modes or storing prompt/tool/auth content.
+
 ## Next Candidates
 
 - Review live token payload audit sample
   - Use the new Data settings readout/export after a live token event arrives.
   - If useful fields are present, plan `Record live token context fields directly`.
-  - If useful fields are absent, plan `Join live token events with latest safe turn context`.
-
-- Join live token events with latest safe turn context
-  - Use the observable capture diagnostics as evidence: the status app can connect to app-server but does not receive token notifications from a separate Codex CLI probe.
-  - Build a local live capture path from safe token-event sources plus recent safe turn/session context.
-  - Keep token totals honest: do not show stale values as live data when the capture source is disconnected or missing.
+  - If no payload arrives, keep this item conditional and run a broader backlog/product review instead of assuming the app-server path will produce a sample.

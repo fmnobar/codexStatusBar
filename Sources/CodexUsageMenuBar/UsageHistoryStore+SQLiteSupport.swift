@@ -111,6 +111,10 @@ extension UsageHistoryStore {
         }
     }
 
+    func bindOptionalDate(_ value: Date?, to index: Int32, in statement: OpaquePointer) {
+        bindOptionalInt(value?.timeIntervalSince1970Int, to: index, in: statement)
+    }
+
     func normalizedModelName(_ value: String?) -> String? {
         CodexModelIdentifier.normalized(value)
     }
@@ -156,6 +160,10 @@ extension UsageHistoryStore {
         }
 
         return sqlite3_column_int64(statement, index)
+    }
+
+    func optionalColumnDate(_ statement: OpaquePointer, index: Int32) -> Date? {
+        optionalColumnInt(statement, index: index).map { Date(timeIntervalSince1970: TimeInterval($0)) }
     }
 
     func optionalColumnDouble(_ statement: OpaquePointer, index: Int32) -> Double? {

@@ -70,6 +70,73 @@ extension UsageHistoryStore {
             calendar: calendar
         )) ?? .empty
     }
+
+    @discardableResult
+    func captureLiveCodexLogTokenHistory(
+        at date: Date,
+        calendar: Calendar = .autoupdatingCurrent,
+        minimumInterval: TimeInterval = 30,
+        force: Bool = false,
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()
+    ) -> CodexLiveTokenCaptureState {
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: logsDatabaseURL)
+        let sourceKey = CodexLiveTokenCaptureState.codexLogSourceKey
+        let existingState = (try? codexLiveTokenCaptureState(sourceKey: sourceKey))
+            ?? CodexLiveTokenCaptureState(sourceKey: sourceKey)
+
+        if !force,
+           let lastCheckedAt = existingState.lastCheckedAt,
+           date.timeIntervalSince(lastCheckedAt) < minimumInterval
+        {
+            return existingState
+        }
+
+        do {
+            let runResult = try importer.importTokenHistory(
+                into: self,
+                afterLogRowID: existingState.lastLogRowID,
+                containing: date,
+                calendar: calendar
+            )
+            let status = Self.liveTokenCaptureStatus(for: runResult.importResult)
+            let state = CodexLiveTokenCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedEventAt: runResult.lastImportedEventAt ?? existingState.lastImportedEventAt,
+                lastLogRowID: runResult.maxLogRowID,
+                status: status,
+                result: runResult.importResult,
+                lastErrorText: nil
+            )
+            try recordCodexLiveTokenCaptureState(state)
+            return state
+        } catch {
+            let state = CodexLiveTokenCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedEventAt: existingState.lastImportedEventAt,
+                lastLogRowID: existingState.lastLogRowID,
+                status: .failed,
+                result: .empty,
+                lastErrorText: error.localizedDescription
+            )
+            try? recordCodexLiveTokenCaptureState(state)
+            return state
+        }
+    }
+
+    private static func liveTokenCaptureStatus(for result: TokenUsageImportResult) -> CodexLiveTokenCaptureStatus {
+        if result.insertedCount > 0 {
+            return .imported
+        }
+        if result.repairedModelCount > 0 || result.repairedContextCount > 0 || result.repairedDimensionCount > 0 {
+            return .repaired
+        }
+        if result.duplicateCount > 0 {
+            return .duplicateOnly
+        }
+        return .noNewEvents
+    }
 }
 
 enum UsageHistoryStoreError: LocalizedError {

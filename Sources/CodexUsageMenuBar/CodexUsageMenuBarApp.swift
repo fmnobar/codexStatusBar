@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
+    private var liveTokenCaptureCoordinator: CodexLiveTokenCaptureCoordinator?
 
     override init() {
         AppFreshnessRuntime.captureLaunchFingerprint()
@@ -74,5 +75,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await updateMonitor.checkIfNeeded()
         }
+
+        liveTokenCaptureCoordinator = CodexLiveTokenCaptureCoordinator(
+            database: historyDatabase,
+            onCapture: { [weak viewModel] state in
+                guard state.hasSuccessfulCheck else {
+                    return
+                }
+
+                viewModel?.refreshTodayTokenTotalsIfDisplayed()
+            }
+        )
+        liveTokenCaptureCoordinator?.start()
+    }
+}
+
+@MainActor
+final class CodexLiveTokenCaptureCoordinator {
+    private let database: UsageHistoryDatabaseWorking
+    private let interval: TimeInterval
+    private let now: () -> Date
+    private let onCapture: (CodexLiveTokenCaptureState) -> Void
+    private var task: Task<Void, Never>?
+
+    init(
+        database: UsageHistoryDatabaseWorking,
+        interval: TimeInterval = 30,
+        now: @escaping () -> Date = Date.init,
+        onCapture: @escaping (CodexLiveTokenCaptureState) -> Void = { _ in }
+    ) {
+        self.database = database
+        self.interval = interval
+        self.now = now
+        self.onCapture = onCapture
+    }
+
+    deinit {
+        task?.cancel()
+    }
+
+    func start() {
+        guard task == nil else {
+            return
+        }
+
+        task = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            await self.capture(force: true)
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(self.interval * 1_000_000_000))
+                } catch {
+                    return
+                }
+
+                await self.capture(force: false)
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+
+    private func capture(force: Bool) async {
+        let state = await database.captureLiveTokenHistoryIfNeeded(
+            at: now(),
+            calendar: .autoupdatingCurrent,
+            force: force
+        )
+        onCapture(state)
     }
 }

@@ -97,8 +97,8 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 final class UsageHistoryViewModel: ObservableObject {
     typealias RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.RecentTokenHistoryImporter
 
-    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar in
-        store.importRecentTokenHistoryIfAvailable(containing: date, calendar: calendar)
+    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
+        store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
     }
 
     @Published var selectedRange: UsageHistoryRange = .month {
@@ -210,7 +210,7 @@ final class UsageHistoryViewModel: ObservableObject {
         chartSemantics: UsageHistoryChartSemantics = .independentSignals,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
-        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = { _, _, _ in }
+        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = { _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
     ) {
         self.init(
             database: UsageHistoryDatabaseWorker(

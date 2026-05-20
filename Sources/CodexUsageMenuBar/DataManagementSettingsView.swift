@@ -43,6 +43,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var projectEntries: [TokenProjectCatalogEntry] = []
     @Published private(set) var tokenPayloadAudit: CodexTokenUsagePayloadAudit?
     @Published private(set) var tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics
+    @Published private(set) var localTokenCaptureState = CodexLiveTokenCaptureState()
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -137,6 +138,31 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditDiagnostics.lastErrorText
     }
 
+    var localTokenCaptureLastCheckedText: String {
+        guard let lastCheckedAt = localTokenCaptureState.lastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var localTokenCaptureLastEventText: String {
+        guard let lastImportedEventAt = localTokenCaptureState.lastImportedEventAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: lastImportedEventAt)
+    }
+
+    var localTokenCaptureResultText: String {
+        let result = localTokenCaptureState.result
+        return "\(result.insertedCount) imported, \(result.duplicateCount) duplicate, \(result.repairedModelCount + result.repairedContextCount + result.repairedDimensionCount) repaired"
+    }
+
+    var localTokenCaptureLastErrorText: String {
+        localTokenCaptureState.lastErrorText ?? "None"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -158,9 +184,14 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
     }
 
+    func refreshLocalTokenCaptureState() async {
+        localTokenCaptureState = await database.liveTokenCaptureState()
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
+        await refreshLocalTokenCaptureState()
     }
 
     func revealDatabaseInFinder() {
@@ -607,6 +638,53 @@ struct DataManagementSettingsView: View {
                 Text(viewModel.tokenPayloadAuditDiagnostics.interpretationText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Local token capture")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Source")
+                        Text(viewModel.localTokenCaptureState.sourceKey)
+                            .monospaced()
+                    }
+                    GridRow {
+                        Text("Status")
+                        Text(viewModel.localTokenCaptureState.status.displayText)
+                    }
+                    GridRow {
+                        Text("Last checked")
+                        Text(viewModel.localTokenCaptureLastCheckedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last token event")
+                        Text(viewModel.localTokenCaptureLastEventText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last log row")
+                        Text("\(viewModel.localTokenCaptureState.lastLogRowID)")
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last result")
+                        Text(viewModel.localTokenCaptureResultText)
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.localTokenCaptureLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
             }
 
             HStack {

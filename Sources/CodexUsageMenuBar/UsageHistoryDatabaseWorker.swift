@@ -52,6 +52,8 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals?
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
+    func captureLiveTokenHistoryIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexLiveTokenCaptureState
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
@@ -69,10 +71,10 @@ protocol UsageHistoryDatabaseWorking: Sendable {
 
 actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
-    typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar) -> Void
+    typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexLiveTokenCaptureState
 
-    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar in
-        store.importRecentTokenHistoryIfAvailable(containing: date, calendar: calendar)
+    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
+        store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
     }
 
     private let storeFactory: StoreFactory
@@ -140,7 +142,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) -> TokenCategoryTotals? {
         do {
             let store = try store()
-            importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar)
+            let captureState = importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar)
+            guard captureState.hasSuccessfulCheck(containing: date, calendar: calendar) else {
+                return nil
+            }
             return try store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)
         } catch {
             return nil
@@ -150,10 +155,31 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     func todayTotalTokens(at date: Date, calendar: Calendar) -> Int64? {
         do {
             let store = try store()
-            importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar)
+            let captureState = importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar)
+            guard captureState.hasSuccessfulCheck(containing: date, calendar: calendar) else {
+                return nil
+            }
             return try store.tokenTotalForDay(containing: date, calendar: calendar)
         } catch {
             return nil
+        }
+    }
+
+    func captureLiveTokenHistoryIfNeeded(at date: Date, calendar: Calendar, force: Bool = false) -> CodexLiveTokenCaptureState {
+        do {
+            let store = try store()
+            return importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar, force: force)
+        } catch {
+            return CodexLiveTokenCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func liveTokenCaptureState() -> CodexLiveTokenCaptureState {
+        do {
+            let store = try store()
+            return try store.codexLiveTokenCaptureState()
+        } catch {
+            return CodexLiveTokenCaptureState(status: .failed, lastErrorText: error.localizedDescription)
         }
     }
 
@@ -180,7 +206,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             )
         case .tokens:
             points = []
-            importRecentTokenHistoryIfNeeded(store: store, at: request.now, calendar: request.calendar)
+            _ = importRecentTokenHistoryIfNeeded(store: store, at: request.now, calendar: request.calendar)
             tokenComponentBucketPoints = try store.tokenComponentBucketPoints(
                 range: request.range,
                 periodStart: request.periodStart,
@@ -206,6 +232,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         let store = try store()
+        _ = importRecentTokenHistoryIfNeeded(store: store, at: Date(), calendar: .autoupdatingCurrent)
         let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
             periodStart: request.periodStart,
             periodEnd: request.periodEnd
@@ -284,15 +311,22 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         return store
     }
 
-    private func importRecentTokenHistoryIfNeeded(store: UsageHistoryStore, at date: Date, calendar: Calendar) {
+    private func importRecentTokenHistoryIfNeeded(
+        store: UsageHistoryStore,
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexLiveTokenCaptureState {
         if let lastRecentTokenImportAt,
-           date.timeIntervalSince(lastRecentTokenImportAt) < 60,
-           calendar.isDate(lastRecentTokenImportAt, inSameDayAs: date)
+           date.timeIntervalSince(lastRecentTokenImportAt) < 30,
+           calendar.isDate(lastRecentTokenImportAt, inSameDayAs: date),
+           !force
         {
-            return
+            return (try? store.codexLiveTokenCaptureState()) ?? CodexLiveTokenCaptureState()
         }
 
-        recentTokenHistoryImporter(store, date, calendar)
+        let state = recentTokenHistoryImporter(store, date, calendar, force)
         lastRecentTokenImportAt = date
+        return state
     }
 }

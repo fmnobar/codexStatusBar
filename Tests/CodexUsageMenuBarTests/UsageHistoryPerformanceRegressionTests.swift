@@ -189,7 +189,7 @@ extension UsageHistoryStoreTests {
         let fixture = try makePerformanceFixture()
         let worker = UsageHistoryDatabaseWorker(
             store: fixture.store,
-            recentTokenHistoryImporter: { _, _, _ in }
+            recentTokenHistoryImporter: { _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
         )
         let month = UsageHistoryRange.month.period(containing: fixture.now, calendar: calendar)
 
