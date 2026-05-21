@@ -36,7 +36,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         configureStatusItem()
         bindViewModel()
         updateStatusItemTitle(viewModel.menuBarPercentText)
-        updateStatusItemToolTip(viewModel.menuBarToolTipText)
     }
 
     private func configurePopover() {
@@ -72,6 +71,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .noImage
         button.image = nil
+        StatusItemToolTipPolicy.apply(to: button)
         button.appearsDisabled = false
     }
 
@@ -83,12 +83,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             }
             .store(in: &cancellables)
 
-        viewModel.$menuBarToolTipText
-            .receive(on: RunLoop.main)
-            .sink { [weak self] text in
-                self?.updateStatusItemToolTip(text)
-            }
-            .store(in: &cancellables)
     }
 
     private func updateStatusItemTitle(_ text: String) {
@@ -114,10 +108,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.cell?.lineBreakMode = .byTruncatingTail
         statusItem.length = StatusItemTitleLayout.length(for: visibleText, font: font)
         StatusItemVisibility.forceVisible(statusItem)
-    }
-
-    private func updateStatusItemToolTip(_ text: String?) {
-        statusItem.button?.toolTip = text
     }
 
     @objc

@@ -61,6 +61,22 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertTrue(statusItem.isVisible)
     }
 
+    @MainActor
+    func testStatusItemTooltipPolicyClearsHoverTooltip() {
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        defer {
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
+
+        statusItem.button?.toolTip = "Detailed status text"
+
+        if let button = statusItem.button {
+            StatusItemToolTipPolicy.apply(to: button)
+        }
+
+        XCTAssertNil(statusItem.button?.toolTip)
+    }
+
     func testMenuBarDisplayOptionsStoreDefaultsToLimitOnly() {
         let suiteName = "MenuBarStatusFormatterTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

@@ -36,6 +36,13 @@ enum StatusItemVisibility {
     }
 }
 
+@MainActor
+enum StatusItemToolTipPolicy {
+    static func apply(to button: NSStatusBarButton) {
+        button.toolTip = nil
+    }
+}
+
 enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
     case fiveHour
     case sevenDay
