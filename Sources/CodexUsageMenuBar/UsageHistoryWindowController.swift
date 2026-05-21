@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+enum MenuBarApplicationLifecycle {
+    static let shouldTerminateAfterLastWindowClosed = false
+}
+
 @MainActor
 final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
     private let database: UsageHistoryDatabaseWorking
@@ -26,6 +30,7 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
         )
         window.title = "Codex Usage History"
         window.minSize = NSSize(width: 700, height: 520)
+        window.isReleasedWhenClosed = false
         window.delegate = self
         window.setFrameAutosaveName("CodexUsageHistoryWindow")
         window.contentViewController = NSHostingController(rootView: UsageHistoryView(database: database))

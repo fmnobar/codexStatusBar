@@ -3,6 +3,10 @@ import SQLite3
 import XCTest
 
 extension UsageHistoryStoreTests {
+    func testMenuBarAppDoesNotTerminateAfterClosingAuxiliaryWindow() async {
+        XCTAssertFalse(MenuBarApplicationLifecycle.shouldTerminateAfterLastWindowClosed)
+    }
+
     func testHistoryWindowFrameClampsOffscreenSavedFrame() async {
         let visibleFrame = CGRect(x: 0, y: 0, width: 1000, height: 700)
         let restoredFrame = CGRect(x: -320, y: -80, width: 880, height: 640)

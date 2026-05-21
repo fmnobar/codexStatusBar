@@ -88,6 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         liveTokenCaptureCoordinator?.start()
     }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        MenuBarApplicationLifecycle.shouldTerminateAfterLastWindowClosed
+    }
 }
 
 @MainActor
