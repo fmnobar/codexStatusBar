@@ -1445,7 +1445,9 @@ struct TokenDashboardView: View {
                     GridRow {
                         attributionHeader("Dimension", column: .dimension, width: modelColumnWidth, alignment: .leading)
                         attributionHeader("Attributed", column: .attributed, width: primaryNumberColumnWidth, alignment: .trailing)
+                        hiddenTableColumn(width: percentColumnWidth)
                         attributionHeader("Missing", column: .missing, width: numberColumnWidth, alignment: .trailing)
+                        hiddenTableColumn(width: numberColumnWidth)
                         attributionHeader("%", column: .percent, width: outputColumnWidth, alignment: .trailing)
                         attributionHeader("Values", column: .values, width: reasoningColumnWidth, alignment: .trailing)
                     }
@@ -1453,7 +1455,7 @@ struct TokenDashboardView: View {
                     .foregroundStyle(.secondary)
 
                     Divider()
-                        .gridCellColumns(5)
+                        .gridCellColumns(7)
 
                     ForEach(viewModel.sortedAttributionCoverageRows) { row in
                         GridRow {
@@ -1465,9 +1467,13 @@ struct TokenDashboardView: View {
                             Text(viewModel.formattedTokenValue(row.attributedTokenCount))
                                 .frame(width: primaryNumberColumnWidth, alignment: .trailing)
 
+                            hiddenTableColumn(width: percentColumnWidth)
+
                             Text(viewModel.formattedTokenValue(row.missingTokenCount))
                                 .foregroundStyle(.secondary)
                                 .frame(width: numberColumnWidth, alignment: .trailing)
+
+                            hiddenTableColumn(width: numberColumnWidth)
 
                             Text(viewModel.formattedPercent(row.attributedPercent))
                                 .frame(width: outputColumnWidth, alignment: .trailing)
@@ -1514,6 +1520,12 @@ struct TokenDashboardView: View {
             viewModel.sortAttributionCoverageRows(by: column)
         }
         .frame(width: width, alignment: alignment)
+    }
+
+    private func hiddenTableColumn(width: CGFloat) -> some View {
+        Color.clear
+            .frame(width: width, height: 1)
+            .accessibilityHidden(true)
     }
 
     private func width(for component: TokenHistoryComponent) -> CGFloat {
