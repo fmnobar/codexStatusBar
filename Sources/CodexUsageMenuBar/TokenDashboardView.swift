@@ -177,6 +177,47 @@ struct TokenAttributionCoverageRow: Identifiable, Equatable {
     }
 }
 
+enum TokenDashboardBreakdownSortColumn: Equatable {
+    case title
+    case total
+    case percent
+    case input
+    case cached
+    case output
+    case reasoning
+
+    var defaultAscending: Bool {
+        switch self {
+        case .title:
+            return true
+        case .total, .percent, .input, .cached, .output, .reasoning:
+            return false
+        }
+    }
+}
+
+enum TokenDashboardAttributionSortColumn: Equatable {
+    case dimension
+    case attributed
+    case missing
+    case percent
+    case values
+
+    var defaultAscending: Bool {
+        switch self {
+        case .dimension:
+            return true
+        case .attributed, .missing, .percent, .values:
+            return false
+        }
+    }
+}
+
+struct TokenDashboardSortState<Column: Equatable>: Equatable {
+    let column: Column
+    let ascending: Bool
+}
+
 struct TokenDashboardEmptyState: Equatable {
     let title: String
     let message: String
@@ -204,6 +245,7 @@ final class TokenDashboardViewModel: ObservableObject {
             }
 
             selectedSeriesIDs = []
+            breakdownSortState = nil
             scheduleReload()
         }
     }
@@ -216,6 +258,8 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var selectedSeriesIDs: Set<String> = []
     @Published private(set) var historyBounds: UsageHistoryBounds?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var breakdownSortState: TokenDashboardSortState<TokenDashboardBreakdownSortColumn>?
+    @Published private(set) var attributionSortState: TokenDashboardSortState<TokenDashboardAttributionSortColumn>?
 
     private let database: UsageHistoryDatabaseWorking
     private let now: () -> Date
@@ -368,12 +412,30 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     var breakdownRows: [TokenDashboardBreakdownRow] {
+        sortedBreakdownRows(unsortedBreakdownRows)
+    }
+
+    private var unsortedBreakdownRows: [TokenDashboardBreakdownRow] {
         let grouped = Dictionary(grouping: points, by: \.seriesID)
         return series.compactMap { series in
             let totals = componentTotals(from: grouped[series.id] ?? [])
             let row = TokenDashboardBreakdownRow(series: series, totalsByComponent: totals)
             return row.totalTokens > 0 ? row : nil
         }
+    }
+
+    var breakdownTotalForPercent: Int64 {
+        if let aggregate = unsortedBreakdownRows.first(where: { $0.series.id == TokenDashboardSeries.aggregateID }) {
+            return aggregate.totalTokens
+        }
+
+        return unsortedBreakdownRows.reduce(Int64(0)) { partial, row in
+            row.series.kind == .unattributed ? partial : partial + row.totalTokens
+        }
+    }
+
+    var sortedAttributionCoverageRows: [TokenAttributionCoverageRow] {
+        sortedAttributionCoverageRows(attributionCoverageRows)
     }
 
     var emptyState: TokenDashboardEmptyState {
@@ -453,10 +515,10 @@ final class TokenDashboardViewModel: ObservableObject {
             ].joined(separator: ",")
         }
 
-        if !attributionCoverageRows.isEmpty {
+        if !sortedAttributionCoverageRows.isEmpty {
             rows.append("")
             rows.append("coverage_dimension,dimension_title,attributed_tokens,missing_tokens,total_tokens,attributed_percent,distinct_values,dimension_key")
-            rows += attributionCoverageRows.map { row in
+            rows += sortedAttributionCoverageRows.map { row in
                 [
                     row.id,
                     Self.csvEscaped(row.title),
@@ -657,6 +719,30 @@ final class TokenDashboardViewModel: ObservableObject {
         value.formatted(.percent.precision(.fractionLength(0)))
     }
 
+    func breakdownPercentOfTotal(for row: TokenDashboardBreakdownRow) -> Double {
+        guard breakdownTotalForPercent > 0 else {
+            return 0
+        }
+
+        return Double(row.totalTokens) / Double(breakdownTotalForPercent)
+    }
+
+    func sortBreakdownRows(by column: TokenDashboardBreakdownSortColumn) {
+        breakdownSortState = nextSortState(current: breakdownSortState, column: column)
+    }
+
+    func sortAttributionCoverageRows(by column: TokenDashboardAttributionSortColumn) {
+        attributionSortState = nextSortState(current: attributionSortState, column: column)
+    }
+
+    func breakdownSortIndicator(for column: TokenDashboardBreakdownSortColumn) -> String? {
+        sortIndicator(for: breakdownSortState, column: column)
+    }
+
+    func attributionSortIndicator(for column: TokenDashboardAttributionSortColumn) -> String? {
+        sortIndicator(for: attributionSortState, column: column)
+    }
+
     func color(for component: TokenHistoryComponent?) -> Color {
         switch component {
         case .input:
@@ -725,6 +811,114 @@ final class TokenDashboardViewModel: ObservableObject {
         } else {
             selectedSeriesIDs = retained
         }
+    }
+
+    private func nextSortState(
+        current: TokenDashboardSortState<TokenDashboardBreakdownSortColumn>?,
+        column: TokenDashboardBreakdownSortColumn
+    ) -> TokenDashboardSortState<TokenDashboardBreakdownSortColumn> {
+        if let current, current.column == column {
+            return TokenDashboardSortState(column: column, ascending: !current.ascending)
+        }
+
+        return TokenDashboardSortState(column: column, ascending: column.defaultAscending)
+    }
+
+    private func nextSortState(
+        current: TokenDashboardSortState<TokenDashboardAttributionSortColumn>?,
+        column: TokenDashboardAttributionSortColumn
+    ) -> TokenDashboardSortState<TokenDashboardAttributionSortColumn> {
+        if let current, current.column == column {
+            return TokenDashboardSortState(column: column, ascending: !current.ascending)
+        }
+
+        return TokenDashboardSortState(column: column, ascending: column.defaultAscending)
+    }
+
+    private func sortIndicator<Column: Equatable>(
+        for state: TokenDashboardSortState<Column>?,
+        column: Column
+    ) -> String? {
+        guard let state, state.column == column else {
+            return nil
+        }
+
+        return state.ascending ? "chevron.up" : "chevron.down"
+    }
+
+    private func sortedBreakdownRows(_ rows: [TokenDashboardBreakdownRow]) -> [TokenDashboardBreakdownRow] {
+        guard let sortState = breakdownSortState else {
+            return rows
+        }
+
+        return rows.sorted { lhs, rhs in
+            let comparison: ComparisonResult
+            switch sortState.column {
+            case .title:
+                comparison = lhs.series.name.localizedStandardCompare(rhs.series.name)
+            case .total:
+                comparison = compare(lhs.totalTokens, rhs.totalTokens)
+            case .percent:
+                comparison = compare(breakdownPercentOfTotal(for: lhs), breakdownPercentOfTotal(for: rhs))
+            case .input:
+                comparison = compare(lhs.totalsByComponent[.input] ?? 0, rhs.totalsByComponent[.input] ?? 0)
+            case .cached:
+                comparison = compare(lhs.totalsByComponent[.cached] ?? 0, rhs.totalsByComponent[.cached] ?? 0)
+            case .output:
+                comparison = compare(lhs.totalsByComponent[.output] ?? 0, rhs.totalsByComponent[.output] ?? 0)
+            case .reasoning:
+                comparison = compare(lhs.totalsByComponent[.reasoning] ?? 0, rhs.totalsByComponent[.reasoning] ?? 0)
+            }
+
+            return orderedBefore(lhsID: lhs.id, rhsID: rhs.id, comparison: comparison, ascending: sortState.ascending)
+        }
+    }
+
+    private func sortedAttributionCoverageRows(_ rows: [TokenAttributionCoverageRow]) -> [TokenAttributionCoverageRow] {
+        guard let sortState = attributionSortState else {
+            return rows
+        }
+
+        return rows.sorted { lhs, rhs in
+            let comparison: ComparisonResult
+            switch sortState.column {
+            case .dimension:
+                comparison = lhs.title.localizedStandardCompare(rhs.title)
+            case .attributed:
+                comparison = compare(lhs.attributedTokenCount, rhs.attributedTokenCount)
+            case .missing:
+                comparison = compare(lhs.missingTokenCount, rhs.missingTokenCount)
+            case .percent:
+                comparison = compare(lhs.attributedPercent, rhs.attributedPercent)
+            case .values:
+                comparison = compare(lhs.distinctValueCount, rhs.distinctValueCount)
+            }
+
+            return orderedBefore(lhsID: lhs.id, rhsID: rhs.id, comparison: comparison, ascending: sortState.ascending)
+        }
+    }
+
+    private func orderedBefore(
+        lhsID: String,
+        rhsID: String,
+        comparison: ComparisonResult,
+        ascending: Bool
+    ) -> Bool {
+        if comparison == .orderedSame {
+            return lhsID.localizedStandardCompare(rhsID) == .orderedAscending
+        }
+
+        return ascending ? comparison == .orderedAscending : comparison == .orderedDescending
+    }
+
+    private func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
+        if lhs < rhs {
+            return .orderedAscending
+        }
+        if lhs > rhs {
+            return .orderedDescending
+        }
+        return .orderedSame
     }
 
     private func periodForQuery() -> UsageHistoryPeriod {
@@ -936,13 +1130,39 @@ private struct TokenDashboardComponentPointAccumulator {
     var tokenCount: Int64 = 0
 }
 
+private struct TokenDashboardSortableHeader: View {
+    let title: String
+    let indicatorSystemName: String?
+    let alignment: Alignment
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text(title)
+                    .lineLimit(1)
+
+                if let indicatorSystemName {
+                    Image(systemName: indicatorSystemName)
+                        .font(.system(size: 8, weight: .bold))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: alignment)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Sort by \(title)")
+    }
+}
+
 struct TokenDashboardView: View {
     @StateObject private var viewModel: TokenDashboardViewModel
     private let modelColumnWidth: CGFloat = 118
-    private let primaryNumberColumnWidth: CGFloat = 88
-    private let numberColumnWidth: CGFloat = 84
-    private let outputColumnWidth: CGFloat = 76
-    private let reasoningColumnWidth: CGFloat = 88
+    private let primaryNumberColumnWidth: CGFloat = 82
+    private let percentColumnWidth: CGFloat = 54
+    private let numberColumnWidth: CGFloat = 78
+    private let outputColumnWidth: CGFloat = 70
+    private let reasoningColumnWidth: CGFloat = 86
 
     init(database: UsageHistoryDatabaseWorking) {
         _viewModel = StateObject(wrappedValue: TokenDashboardViewModel(database: database))
@@ -966,7 +1186,7 @@ struct TokenDashboardView: View {
                     .layoutPriority(1)
 
                 modelBreakdown
-                    .frame(width: 606)
+                    .frame(width: 680)
                     .layoutPriority(2)
             }
         }
@@ -1161,24 +1381,19 @@ struct TokenDashboardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 7) {
                 GridRow {
-                    Text(viewModel.breakdownColumnTitle)
-                        .frame(width: modelColumnWidth, alignment: .leading)
-                    Text("Total")
-                        .frame(width: primaryNumberColumnWidth, alignment: .trailing)
-                    Text("In")
-                        .frame(width: numberColumnWidth, alignment: .trailing)
-                    Text("Cache")
-                        .frame(width: numberColumnWidth, alignment: .trailing)
-                    Text("Out")
-                        .frame(width: outputColumnWidth, alignment: .trailing)
-                    Text("Reasoning")
-                        .frame(width: reasoningColumnWidth, alignment: .trailing)
+                    breakdownHeader(viewModel.breakdownColumnTitle, column: .title, width: modelColumnWidth, alignment: .leading)
+                    breakdownHeader("Total", column: .total, width: primaryNumberColumnWidth, alignment: .trailing)
+                    breakdownHeader("%", column: .percent, width: percentColumnWidth, alignment: .trailing)
+                    breakdownHeader("In", column: .input, width: numberColumnWidth, alignment: .trailing)
+                    breakdownHeader("Cache", column: .cached, width: numberColumnWidth, alignment: .trailing)
+                    breakdownHeader("Out", column: .output, width: outputColumnWidth, alignment: .trailing)
+                    breakdownHeader("Reasoning", column: .reasoning, width: reasoningColumnWidth, alignment: .trailing)
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
                 Divider()
-                    .gridCellColumns(6)
+                    .gridCellColumns(7)
 
                 ForEach(viewModel.breakdownRows) { row in
                     GridRow {
@@ -1202,6 +1417,10 @@ struct TokenDashboardView: View {
                             .fontWeight(.semibold)
                             .frame(width: primaryNumberColumnWidth, alignment: .trailing)
 
+                        Text(viewModel.formattedPercent(viewModel.breakdownPercentOfTotal(for: row)))
+                            .foregroundStyle(.secondary)
+                            .frame(width: percentColumnWidth, alignment: .trailing)
+
                         ForEach(TokenHistoryComponent.allCases) { component in
                             Text(viewModel.formattedTokenValue(row.totalsByComponent[component] ?? 0))
                                 .foregroundStyle(.secondary)
@@ -1217,32 +1436,26 @@ struct TokenDashboardView: View {
 
     private var attributionCoverage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Attribution")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            if viewModel.attributionCoverageRows.isEmpty {
+            if viewModel.sortedAttributionCoverageRows.isEmpty {
                 Text("No attribution data")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 6) {
                     GridRow {
-                        Text("Dimension")
-                            .frame(width: modelColumnWidth, alignment: .leading)
-                        Text("Attributed")
-                            .frame(width: primaryNumberColumnWidth, alignment: .trailing)
-                        Text("Missing")
-                            .frame(width: numberColumnWidth, alignment: .trailing)
-                        Text("%")
-                            .frame(width: outputColumnWidth, alignment: .trailing)
-                        Text("Values")
-                            .frame(width: reasoningColumnWidth, alignment: .trailing)
+                        attributionHeader("Dimension", column: .dimension, width: modelColumnWidth, alignment: .leading)
+                        attributionHeader("Attributed", column: .attributed, width: primaryNumberColumnWidth, alignment: .trailing)
+                        attributionHeader("Missing", column: .missing, width: numberColumnWidth, alignment: .trailing)
+                        attributionHeader("%", column: .percent, width: outputColumnWidth, alignment: .trailing)
+                        attributionHeader("Values", column: .values, width: reasoningColumnWidth, alignment: .trailing)
                     }
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                    ForEach(viewModel.attributionCoverageRows) { row in
+                    Divider()
+                        .gridCellColumns(5)
+
+                    ForEach(viewModel.sortedAttributionCoverageRows) { row in
                         GridRow {
                             Text(row.title)
                                 .lineLimit(1)
@@ -1269,6 +1482,38 @@ struct TokenDashboardView: View {
                 }
             }
         }
+    }
+
+    private func breakdownHeader(
+        _ title: String,
+        column: TokenDashboardBreakdownSortColumn,
+        width: CGFloat,
+        alignment: Alignment
+    ) -> some View {
+        TokenDashboardSortableHeader(
+            title: title,
+            indicatorSystemName: viewModel.breakdownSortIndicator(for: column),
+            alignment: alignment
+        ) {
+            viewModel.sortBreakdownRows(by: column)
+        }
+        .frame(width: width, alignment: alignment)
+    }
+
+    private func attributionHeader(
+        _ title: String,
+        column: TokenDashboardAttributionSortColumn,
+        width: CGFloat,
+        alignment: Alignment
+    ) -> some View {
+        TokenDashboardSortableHeader(
+            title: title,
+            indicatorSystemName: viewModel.attributionSortIndicator(for: column),
+            alignment: alignment
+        ) {
+            viewModel.sortAttributionCoverageRows(by: column)
+        }
+        .frame(width: width, alignment: alignment)
     }
 
     private func width(for component: TokenHistoryComponent) -> CGFloat {

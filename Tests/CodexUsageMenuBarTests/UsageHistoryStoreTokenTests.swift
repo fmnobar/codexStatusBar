@@ -1740,11 +1740,31 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(coverageRowsByID["dimension:approval_policy"]?.distinctValueCount, 2)
         XCTAssertEqual(coverageRowsByID["dimension:is_subagent"]?.distinctValueCount, 2)
 
+        viewModel.sortAttributionCoverageRows(by: .dimension)
+        XCTAssertEqual(viewModel.sortedAttributionCoverageRows.first?.title, "Approval policy")
+
+        viewModel.sortAttributionCoverageRows(by: .dimension)
+        XCTAssertEqual(viewModel.sortedAttributionCoverageRows.first?.title, "Subagent")
+
         viewModel.selectedBreakdownDimension = .effort
         await viewModel.reload()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Effort")
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
+        XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), ["tokens_all", "effort:high", "effort:medium"])
+        XCTAssertEqual(
+            viewModel.breakdownPercentOfTotal(for: try XCTUnwrap(viewModel.breakdownRows.first { $0.series.id == "effort:high" })),
+            165.0 / 215.0,
+            accuracy: 0.0001
+        )
+
+        viewModel.sortBreakdownRows(by: .total)
+        XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), ["tokens_all", "effort:high", "effort:medium"])
+
+        viewModel.sortBreakdownRows(by: .total)
+        XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), ["effort:medium", "effort:high", "tokens_all"])
+
+        viewModel.sortBreakdownRows(by: .title)
         XCTAssertEqual(viewModel.breakdownRows.map(\.series.id), ["tokens_all", "effort:high", "effort:medium"])
 
         viewModel.selectSeries("effort:high")
