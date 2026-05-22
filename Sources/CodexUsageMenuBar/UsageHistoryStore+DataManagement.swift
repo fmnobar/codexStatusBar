@@ -40,6 +40,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM token_source_catalog")
             try execute("DELETE FROM token_dimension_catalog")
             try execute("DELETE FROM codex_live_token_capture_state")
+            try execute("DELETE FROM codex_turn_performance_events")
+            try execute("DELETE FROM codex_turn_performance_capture_state")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -204,6 +206,14 @@ extension UsageHistoryStore {
             column: "display_name",
             schema: "imported_usage_history"
         )
+        let importedHasTurnPerformanceEvents = try tableExists(
+            table: "codex_turn_performance_events",
+            schema: "imported_usage_history"
+        )
+        let importedHasTurnPerformanceCaptureState = try tableExists(
+            table: "codex_turn_performance_capture_state",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -218,6 +228,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM token_source_catalog")
             try execute("DELETE FROM token_dimension_catalog")
             try execute("DELETE FROM codex_live_token_capture_state")
+            try execute("DELETE FROM codex_turn_performance_events")
+            try execute("DELETE FROM codex_turn_performance_capture_state")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -294,6 +306,36 @@ extension UsageHistoryStore {
                     )
                     SELECT file_path, file_size, modified_at, imported_at, status, \(importedContextVersionExpression)
                     FROM imported_usage_history.codex_session_token_imports
+                    """
+                )
+            }
+            if importedHasTurnPerformanceEvents {
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO codex_turn_performance_events (
+                        source_key, source_row_id, target, event_timestamp, event_name, event_kind,
+                        duration_ms, success, error_summary, thread_id, turn_id, model, session_id,
+                        project_path, project_name, effort, source, originator, app_version,
+                        terminal_type, transport, wire_api, api_path, recorded_at
+                    )
+                    SELECT source_key, source_row_id, target, event_timestamp, event_name, event_kind,
+                        duration_ms, success, error_summary, thread_id, turn_id, model, session_id,
+                        project_path, project_name, effort, source, originator, app_version,
+                        terminal_type, transport, wire_api, api_path, recorded_at
+                    FROM imported_usage_history.codex_turn_performance_events
+                    """
+                )
+            }
+            if importedHasTurnPerformanceCaptureState {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_turn_performance_capture_state (
+                        source_key, last_checked_at, last_imported_event_at, last_log_row_id,
+                        status, inserted_count, duplicate_count, last_error_text
+                    )
+                    SELECT source_key, last_checked_at, last_imported_event_at, last_log_row_id,
+                        status, inserted_count, duplicate_count, last_error_text
+                    FROM imported_usage_history.codex_turn_performance_capture_state
                     """
                 )
             }

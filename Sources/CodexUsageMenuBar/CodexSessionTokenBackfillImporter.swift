@@ -128,6 +128,189 @@ struct CodexLiveTokenCaptureRunResult: Equatable, Sendable {
     let lastImportedEventAt: Date?
 }
 
+enum CodexTurnPerformanceCaptureStatus: String, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case imported
+    case noNewEvents = "no_new_events"
+    case duplicateOnly = "duplicate_only"
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            "Not checked yet"
+        case .imported:
+            "Imported new events"
+        case .noNewEvents:
+            "Checked, no new events"
+        case .duplicateOnly:
+            "Checked, duplicates only"
+        case .failed:
+            "Capture failed"
+        }
+    }
+}
+
+struct CodexTurnPerformanceCaptureState: Equatable, Sendable {
+    static let codexOtelLogSourceKey = "codex-otel-logs"
+
+    let sourceKey: String
+    let lastCheckedAt: Date?
+    let lastImportedEventAt: Date?
+    let lastLogRowID: Int64
+    let status: CodexTurnPerformanceCaptureStatus
+    let insertedCount: Int
+    let duplicateCount: Int
+    let lastErrorText: String?
+
+    init(
+        sourceKey: String = Self.codexOtelLogSourceKey,
+        lastCheckedAt: Date? = nil,
+        lastImportedEventAt: Date? = nil,
+        lastLogRowID: Int64 = 0,
+        status: CodexTurnPerformanceCaptureStatus = .neverChecked,
+        insertedCount: Int = 0,
+        duplicateCount: Int = 0,
+        lastErrorText: String? = nil
+    ) {
+        self.sourceKey = sourceKey
+        self.lastCheckedAt = lastCheckedAt
+        self.lastImportedEventAt = lastImportedEventAt
+        self.lastLogRowID = max(lastLogRowID, 0)
+        self.status = status
+        self.insertedCount = insertedCount
+        self.duplicateCount = duplicateCount
+        self.lastErrorText = lastErrorText
+    }
+}
+
+struct CodexTurnPerformanceImportResult: Equatable, Sendable {
+    let insertedCount: Int
+    let duplicateCount: Int
+
+    static let empty = CodexTurnPerformanceImportResult(insertedCount: 0, duplicateCount: 0)
+}
+
+struct CodexTurnPerformanceCaptureRunResult: Equatable, Sendable {
+    let importResult: CodexTurnPerformanceImportResult
+    let maxLogRowID: Int64
+    let lastImportedEventAt: Date?
+}
+
+struct CodexTurnPerformanceEvent: Equatable, Sendable {
+    let sourceKey: String
+    let sourceRowID: Int64
+    let target: String
+    let eventTimestamp: Date
+    let eventName: String?
+    let eventKind: String?
+    let durationMilliseconds: Int64?
+    let success: Bool?
+    let errorSummary: String?
+    let threadID: String?
+    let turnID: String?
+    let model: String?
+    let sessionID: String?
+    let projectPath: String?
+    let projectName: String?
+    let effort: String?
+    let source: String?
+    let originator: String?
+    let appVersion: String?
+    let terminalType: String?
+    let transport: String?
+    let wireAPI: String?
+    let apiPath: String?
+    let recordedAt: Date
+
+    init(
+        sourceKey: String,
+        sourceRowID: Int64,
+        target: String,
+        eventTimestamp: Date,
+        eventName: String?,
+        eventKind: String?,
+        durationMilliseconds: Int64?,
+        success: Bool?,
+        errorSummary: String?,
+        threadID: String?,
+        turnID: String?,
+        model: String?,
+        sessionID: String?,
+        projectPath: String?,
+        effort: String?,
+        source: String?,
+        originator: String?,
+        appVersion: String?,
+        terminalType: String?,
+        transport: String?,
+        wireAPI: String?,
+        apiPath: String?,
+        recordedAt: Date = Date()
+    ) {
+        self.sourceKey = sourceKey
+        self.sourceRowID = max(sourceRowID, 0)
+        self.target = CodexTokenContextNormalizer.normalizedIdentifier(target) ?? "unknown"
+        self.eventTimestamp = eventTimestamp
+        self.eventName = CodexTokenContextNormalizer.normalizedDimensionValue(eventName)
+        self.eventKind = CodexTokenContextNormalizer.normalizedDimensionValue(eventKind)
+        self.durationMilliseconds = durationMilliseconds.map { max($0, 0) }
+        self.success = success
+        self.errorSummary = CodexTokenContextNormalizer.normalizedIdentifier(errorSummary)
+        self.threadID = CodexTokenContextNormalizer.normalizedIdentifier(threadID)
+        self.turnID = CodexTokenContextNormalizer.normalizedIdentifier(turnID)
+        self.model = CodexModelIdentifier.normalized(model)
+        self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
+        self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
+        self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
+        self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
+        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+        self.originator = CodexTokenContextNormalizer.normalizedIdentifier(originator)
+        self.appVersion = CodexTokenContextNormalizer.normalizedIdentifier(appVersion)
+        self.terminalType = CodexTokenContextNormalizer.normalizedIdentifier(terminalType)
+        self.transport = CodexTokenContextNormalizer.normalizedIdentifier(transport)
+        self.wireAPI = CodexTokenContextNormalizer.normalizedIdentifier(wireAPI)
+        self.apiPath = Self.normalizedAPIPath(apiPath)
+        self.recordedAt = recordedAt
+    }
+
+    var hasSafePayload: Bool {
+        eventName != nil
+            || eventKind != nil
+            || durationMilliseconds != nil
+            || success != nil
+            || errorSummary != nil
+            || threadID != nil
+            || turnID != nil
+            || model != nil
+            || projectPath != nil
+            || effort != nil
+            || source != nil
+            || originator != nil
+            || appVersion != nil
+            || terminalType != nil
+            || transport != nil
+            || wireAPI != nil
+            || apiPath != nil
+    }
+
+    private static func normalizedAPIPath(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.count <= 120 else {
+            return nil
+        }
+
+        let allowedCharacters = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-/"
+        )
+        guard trimmedValue.unicodeScalars.allSatisfy({ allowedCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return trimmedValue
+    }
+}
+
 struct CodexSessionTokenBackfillRequest: Equatable, Sendable {
     enum Mode: String, Equatable, Sendable {
         case recent
@@ -640,6 +823,399 @@ struct CodexLogTokenUsageImporter {
         )
 
         return ImportedCodexTokenUsageSample(notification: notification, receivedAt: receivedAt, context: context)
+    }
+}
+
+struct CodexOtelTurnPerformanceImporter {
+    let logsDatabaseURL: URL
+
+    init(logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()) {
+        self.logsDatabaseURL = logsDatabaseURL
+    }
+
+    func importTurnPerformanceEvents(
+        into store: UsageHistoryStore,
+        afterLogRowID: Int64,
+        containing date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) throws -> CodexTurnPerformanceCaptureRunResult {
+        guard FileManager.default.fileExists(atPath: logsDatabaseURL.path) else {
+            throw UsageHistoryStoreError.fileOperationFailed("Codex log database not found.")
+        }
+        guard let interval = calendar.dateInterval(of: .day, for: date) else {
+            throw UsageHistoryStoreError.fileOperationFailed("Current day could not be resolved.")
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(logsDatabaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            throw UsageHistoryStoreError.fileOperationFailed("Codex log database could not be opened.")
+        }
+        defer { sqlite3_close(database) }
+
+        let latestLogRowID = try Self.maxLogRowID(
+            in: database,
+            startTimestamp: interval.start.timeIntervalSince1970Int,
+            endTimestamp: interval.end.timeIntervalSince1970Int
+        )
+
+        let sql = """
+        SELECT id, ts, target, feedback_log_body
+        FROM logs
+        WHERE id > ?
+            AND ts >= ? AND ts < ?
+            AND target IN (
+                'codex_otel.trace_safe',
+                'codex_otel.log_only',
+                'codex_api::endpoint::responses_websocket',
+                'codex_api::sse::responses'
+            )
+            AND (
+                feedback_log_body LIKE '%event.name=%'
+                OR feedback_log_body LIKE '%duration_ms=%'
+                OR feedback_log_body LIKE '%duration_ms":%'
+                OR feedback_log_body LIKE '%success=%'
+                OR feedback_log_body LIKE '%transport=%'
+                OR feedback_log_body LIKE '%wire_api=%'
+                OR feedback_log_body LIKE '%api.path=%'
+                OR feedback_log_body LIKE '%codex.turn.reasoning_effort=%'
+                OR feedback_log_body LIKE '%reasoning_effort=%'
+                OR feedback_log_body LIKE '%model=%'
+                OR feedback_log_body LIKE '%slug=%'
+                OR feedback_log_body LIKE '%cwd=%'
+            )
+        ORDER BY id ASC
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.statementPreparationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, max(afterLogRowID, 0))
+        sqlite3_bind_int64(statement, 2, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 3, interval.end.timeIntervalSince1970Int)
+
+        var events: [CodexTurnPerformanceEvent] = []
+        var maxLogRowID = max(max(afterLogRowID, 0), latestLogRowID)
+        var lastImportedEventAt: Date?
+
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let logRowID = sqlite3_column_int64(statement, 0)
+                maxLogRowID = max(maxLogRowID, logRowID)
+                guard let targetPointer = sqlite3_column_text(statement, 2),
+                      let bodyPointer = sqlite3_column_text(statement, 3)
+                else {
+                    continue
+                }
+
+                let target = String(cString: targetPointer)
+                let body = String(cString: bodyPointer)
+                let metadata = CodexOtelMetadataExtractor(
+                    sourceKey: CodexTurnPerformanceCaptureState.codexOtelLogSourceKey,
+                    sourceRowID: logRowID,
+                    target: target,
+                    fallbackTimestamp: sqlite3_column_int64(statement, 1),
+                    body: body
+                )
+                guard let event = metadata.event(), event.hasSafePayload else {
+                    continue
+                }
+
+                events.append(event)
+                if let existing = lastImportedEventAt {
+                    lastImportedEventAt = max(existing, event.eventTimestamp)
+                } else {
+                    lastImportedEventAt = event.eventTimestamp
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+
+        let importResult = try store.importTurnPerformanceEvents(events)
+        return CodexTurnPerformanceCaptureRunResult(
+            importResult: importResult,
+            maxLogRowID: maxLogRowID,
+            lastImportedEventAt: lastImportedEventAt
+        )
+    }
+
+    private static func maxLogRowID(
+        in database: OpaquePointer,
+        startTimestamp: Int64,
+        endTimestamp: Int64
+    ) throws -> Int64 {
+        let sql = """
+        SELECT COALESCE(MAX(id), 0)
+        FROM logs
+        WHERE ts >= ? AND ts < ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.statementPreparationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, startTimestamp)
+        sqlite3_bind_int64(statement, 2, endTimestamp)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return 0
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+    }
+}
+
+private struct CodexOtelMetadataExtractor {
+    let sourceKey: String
+    let sourceRowID: Int64
+    let target: String
+    let fallbackTimestamp: Int64
+    let body: String
+
+    func event() -> CodexTurnPerformanceEvent? {
+        let metadata = CodexLogMetadataExtractor(body: body)
+        let eventTimestamp = firstTimestamp(for: [
+            "event.timestamp",
+            "timestamp",
+            "time",
+        ]) ?? Date(timeIntervalSince1970: TimeInterval(fallbackTimestamp))
+        let eventName = firstValue(for: [
+            "event.name",
+            "name",
+        ])
+        let eventKind = firstValue(for: [
+            "event.kind",
+            "kind",
+            "codex.event.kind",
+        ])
+        let threadID = metadata.conversationID ?? normalizedIdentifier(firstValue(for: [
+            "thread_id",
+            "thread.id",
+            "threadId",
+            "conversation_id",
+        ]))
+        let turnID = normalizedIdentifier(firstValue(for: [
+            "turn.id",
+            "turn_id",
+            "turnId",
+            "codex.turn.id",
+        ]))
+
+        return CodexTurnPerformanceEvent(
+            sourceKey: sourceKey,
+            sourceRowID: sourceRowID,
+            target: target,
+            eventTimestamp: eventTimestamp,
+            eventName: eventName,
+            eventKind: eventKind,
+            durationMilliseconds: firstDurationMilliseconds(for: [
+                "duration_ms",
+                "duration.milliseconds",
+                "duration_millis",
+                "duration",
+            ]),
+            success: firstBool(for: [
+                "success",
+                "ok",
+                "succeeded",
+            ]),
+            errorSummary: errorSummary,
+            threadID: threadID,
+            turnID: turnID,
+            model: metadata.model,
+            sessionID: threadID,
+            projectPath: metadata.projectPath,
+            effort: metadata.effort,
+            source: metadata.source,
+            originator: firstIdentifier(for: [
+                "originator",
+                "codex.originator",
+                "codex.session.originator",
+            ]),
+            appVersion: firstIdentifier(for: [
+                "app.version",
+                "app_version",
+                "cli_version",
+                "codex.cli_version",
+            ]),
+            terminalType: firstIdentifier(for: [
+                "terminal.type",
+                "terminal_type",
+            ]),
+            transport: firstIdentifier(for: [
+                "transport",
+                "codex.transport",
+            ]),
+            wireAPI: firstIdentifier(for: [
+                "wire_api",
+                "wire.api",
+            ]),
+            apiPath: firstValue(for: [
+                "api.path",
+                "api_path",
+                "path",
+            ])
+        )
+    }
+
+    private var errorSummary: String? {
+        guard let value = firstRawValue(for: [
+            "error.summary",
+            "error.kind",
+            "error.code",
+            "error.message",
+        ]) else {
+            return nil
+        }
+
+        let lowercased = value.lowercased()
+        if lowercased.contains("timeout") {
+            return "timeout"
+        }
+        if lowercased.contains("disconnect") || lowercased.contains("connection") {
+            return "connection"
+        }
+        if lowercased.contains("rate") || lowercased.contains("limit") {
+            return "rate_limit"
+        }
+        if lowercased.contains("cancel") {
+            return "cancelled"
+        }
+
+        return normalizedIdentifier(value) ?? "error"
+    }
+
+    private func firstTimestamp(for keys: [String]) -> Date? {
+        for key in keys {
+            if let timestamp = value(for: key).flatMap(CodexSessionTokenBackfillImporter.parseTimestamp) {
+                return timestamp
+            }
+        }
+
+        return nil
+    }
+
+    private func firstIdentifier(for keys: [String]) -> String? {
+        normalizedIdentifier(firstValue(for: keys))
+    }
+
+    private func normalizedIdentifier(_ value: String?) -> String? {
+        CodexTokenContextNormalizer.normalizedIdentifier(value)
+    }
+
+    private func firstDurationMilliseconds(for keys: [String]) -> Int64? {
+        for key in keys {
+            guard let value = value(for: key) else {
+                continue
+            }
+            if let intValue = Int64(value) {
+                return intValue
+            }
+            if let doubleValue = Double(value) {
+                return Int64((doubleValue * 1000).rounded())
+            }
+        }
+
+        return nil
+    }
+
+    private func firstBool(for keys: [String]) -> Bool? {
+        for key in keys {
+            guard let value = value(for: key)?.lowercased() else {
+                continue
+            }
+            if ["true", "yes", "1", "ok", "success"].contains(value) {
+                return true
+            }
+            if ["false", "no", "0", "failed", "error"].contains(value) {
+                return false
+            }
+        }
+
+        if let status = firstValue(for: ["status", "otel.status_code"])?.lowercased() {
+            if ["ok", "success", "unset"].contains(status) {
+                return true
+            }
+            if ["error", "failed"].contains(status) {
+                return false
+            }
+        }
+
+        return nil
+    }
+
+    private func firstValue(for keys: [String]) -> String? {
+        for key in keys {
+            if let value = value(for: key) {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private func value(for key: String) -> String? {
+        rawValue(for: key, rejectSensitiveValues: true)
+    }
+
+    private func firstRawValue(for keys: [String]) -> String? {
+        for key in keys {
+            if let value = rawValue(for: key, rejectSensitiveValues: false) {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private func rawValue(for key: String, rejectSensitiveValues: Bool) -> String? {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?<![A-Za-z0-9_.-])[\"']?\(escapedKey)[\"']?\\s*[:=]\\s*(?:\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'|([^\\s,;\\}\\]\\)]+))"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let range = NSRange(body.startIndex..<body.endIndex, in: body)
+        guard let match = regex.firstMatch(in: body, range: range) else {
+            return nil
+        }
+
+        for index in 1..<match.numberOfRanges {
+            guard match.range(at: index).location != NSNotFound,
+                  let valueRange = Range(match.range(at: index), in: body)
+            else {
+                continue
+            }
+
+            let value = String(body[valueRange])
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            guard !value.isEmpty,
+                  !rejectSensitiveValues
+                    || (!value.lowercased().contains("user.email")
+                        && !value.lowercased().contains("user.account_id")
+                        && !value.lowercased().contains("authorization"))
+            else {
+                return nil
+            }
+            return value
+        }
+
+        return nil
     }
 }
 

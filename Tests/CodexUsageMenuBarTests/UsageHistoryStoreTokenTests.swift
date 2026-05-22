@@ -2655,4 +2655,111 @@ extension UsageHistoryStoreTests {
         ])
     }
 
+    func testCodexOtelTurnPerformanceImporterCapturesSafeMetadataOnly() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed "duration_ms":1234 success=true event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation turn.id=turn-a model=gpt-5.5 slug=gpt-5.5 codex.turn.reasoning_effort=xhigh cwd="/Users/example/Projects/otel app" source=desktop originator=vscode app.version=1.2.3 terminal.type=apple-terminal transport=websocket wire_api=responses api.path=/v1/responses user.email=private@example.com user.account_id=acct_123 prompt="do not store this" request_body="secret"
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rowsWithTargets: [(timestamp, "codex_otel.trace_safe", body)]
+        )
+        let importer = CodexOtelTurnPerformanceImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTurnPerformanceEvents(
+            into: store,
+            afterLogRowID: 0,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let event = try XCTUnwrap(store.turnPerformanceEvents().first)
+
+        XCTAssertEqual(result.importResult, CodexTurnPerformanceImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(result.maxLogRowID, 1)
+        XCTAssertEqual(event.target, "codex_otel.trace_safe")
+        XCTAssertEqual(event.eventName, "codex.sse_event")
+        XCTAssertEqual(event.eventKind, "response.completed")
+        XCTAssertEqual(event.durationMilliseconds, 1_234)
+        XCTAssertEqual(event.success, true)
+        XCTAssertEqual(event.threadID, "conversation")
+        XCTAssertEqual(event.turnID, "turn-a")
+        XCTAssertEqual(event.model, "gpt-5.5")
+        XCTAssertEqual(event.sessionID, "conversation")
+        XCTAssertEqual(event.projectPath, "/Users/example/Projects/otel app")
+        XCTAssertEqual(event.projectName, "otel app")
+        XCTAssertEqual(event.effort, "xhigh")
+        XCTAssertEqual(event.source, "desktop")
+        XCTAssertEqual(event.originator, "vscode")
+        XCTAssertEqual(event.appVersion, "1.2.3")
+        XCTAssertEqual(event.terminalType, "apple-terminal")
+        XCTAssertEqual(event.transport, "websocket")
+        XCTAssertEqual(event.wireAPI, "responses")
+        XCTAssertEqual(event.apiPath, "/v1/responses")
+        XCTAssertFalse(String(describing: event).contains("private@example.com"))
+        XCTAssertFalse(String(describing: event).contains("acct_123"))
+        XCTAssertFalse(String(describing: event).contains("secret"))
+    }
+
+    func testCodexOtelTurnPerformanceImporterMapsUnsafeErrorToSafeSummary() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name=codex.websocket_event event.kind=response.failed duration_ms=20 success=false event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation error.message="stream disconnected for user.email=private@example.com" model=gpt-5.5 cwd=/Users/example/Projects/otel
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rowsWithTargets: [(timestamp, "codex_api::endpoint::responses_websocket", body)]
+        )
+        let importer = CodexOtelTurnPerformanceImporter(logsDatabaseURL: databaseURL)
+
+        _ = try importer.importTurnPerformanceEvents(
+            into: store,
+            afterLogRowID: 0,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let event = try XCTUnwrap(store.turnPerformanceEvents().first)
+
+        XCTAssertEqual(event.success, false)
+        XCTAssertEqual(event.errorSummary, "connection")
+        XCTAssertFalse(String(describing: event).contains("private@example.com"))
+    }
+
+    func testCodexOtelTurnPerformanceCaptureIsIncrementalAndRecordsState() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name=codex.sse_event event.kind=response.completed duration_ms=100 success=true event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation model=gpt-5.5
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rowsWithTargets: [(timestamp, "codex_api::sse::responses", body)]
+        )
+
+        let firstState = store.captureCodexOtelTurnPerformance(
+            at: timestamp,
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL
+        )
+        let secondState = store.captureCodexOtelTurnPerformance(
+            at: timestamp.addingTimeInterval(10),
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL
+        )
+
+        XCTAssertEqual(firstState.status, .imported)
+        XCTAssertEqual(firstState.insertedCount, 1)
+        XCTAssertEqual(firstState.lastLogRowID, 1)
+        XCTAssertEqual(secondState.status, .noNewEvents)
+        XCTAssertEqual(secondState.lastLogRowID, 1)
+        XCTAssertEqual(try store.turnPerformanceEvents().count, 1)
+        XCTAssertEqual(try store.codexTurnPerformanceCaptureState().status, .noNewEvents)
+    }
+
 }

@@ -186,6 +186,51 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_turn_performance_events (
+                source_key TEXT NOT NULL,
+                source_row_id INTEGER NOT NULL,
+                target TEXT NOT NULL,
+                event_timestamp INTEGER NOT NULL,
+                event_name TEXT,
+                event_kind TEXT,
+                duration_ms INTEGER,
+                success INTEGER,
+                error_summary TEXT,
+                thread_id TEXT,
+                turn_id TEXT,
+                model TEXT,
+                session_id TEXT,
+                project_path TEXT,
+                project_name TEXT,
+                effort TEXT,
+                source TEXT,
+                originator TEXT,
+                app_version TEXT,
+                terminal_type TEXT,
+                transport TEXT,
+                wire_api TEXT,
+                api_path TEXT,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (source_key, source_row_id)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_turn_performance_capture_state (
+                source_key TEXT PRIMARY KEY,
+                last_checked_at INTEGER,
+                last_imported_event_at INTEGER,
+                last_log_row_id INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                inserted_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                last_error_text TEXT
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -233,6 +278,14 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_dimensions_key_value_seen ON token_usage_dimensions(dimension_key, dimension_value, seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_dimension_catalog_key_seen ON token_dimension_catalog(dimension_key, last_seen_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_live_token_capture_state_checked ON codex_live_token_capture_state(last_checked_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_timestamp ON codex_turn_performance_events(event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_model_timestamp ON codex_turn_performance_events(model, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_project_timestamp ON codex_turn_performance_events(project_path, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_effort_timestamp ON codex_turn_performance_events(effort, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_kind_timestamp ON codex_turn_performance_events(event_kind, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_transport_timestamp ON codex_turn_performance_events(transport, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_success_timestamp ON codex_turn_performance_events(success, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_capture_state_checked ON codex_turn_performance_capture_state(last_checked_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
         try cleanupTokenContextValuesIfNeeded()

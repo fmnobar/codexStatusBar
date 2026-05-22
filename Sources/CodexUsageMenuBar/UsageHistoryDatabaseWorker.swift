@@ -54,6 +54,8 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
     func captureLiveTokenHistoryIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexLiveTokenCaptureState
     func liveTokenCaptureState() async -> CodexLiveTokenCaptureState
+    func captureTurnPerformanceIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexTurnPerformanceCaptureState
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
@@ -72,31 +74,42 @@ protocol UsageHistoryDatabaseWorking: Sendable {
 actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
     typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexLiveTokenCaptureState
+    typealias TurnPerformanceImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexTurnPerformanceCaptureState
 
     static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
         store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
     }
 
+    static let liveTurnPerformanceImporter: TurnPerformanceImporter = { store, date, calendar, force in
+        store.captureCodexOtelTurnPerformance(at: date, calendar: calendar, force: force)
+    }
+
     private let storeFactory: StoreFactory
     private let recentTokenHistoryImporter: RecentTokenHistoryImporter
+    private let turnPerformanceImporter: TurnPerformanceImporter
     private var cachedStore: UsageHistoryStore?
     private var lastRecentTokenImportAt: Date?
+    private var lastTurnPerformanceImportAt: Date?
 
     init(
         store: UsageHistoryStore,
-        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter
+        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter,
+        turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter
     ) {
         self.storeFactory = { store }
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
+        self.turnPerformanceImporter = turnPerformanceImporter
         self.cachedStore = store
     }
 
     init(
         storeFactory: @escaping StoreFactory,
-        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter
+        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter,
+        turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter
     ) {
         self.storeFactory = storeFactory
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
+        self.turnPerformanceImporter = turnPerformanceImporter
     }
 
     static func applicationSupportStore() -> UsageHistoryDatabaseWorker {
@@ -183,6 +196,28 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         }
     }
 
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexTurnPerformanceCaptureState {
+        do {
+            let store = try store()
+            return importTurnPerformanceIfNeeded(store: store, at: date, calendar: calendar, force: force)
+        } catch {
+            return CodexTurnPerformanceCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func turnPerformanceCaptureState() -> CodexTurnPerformanceCaptureState {
+        do {
+            let store = try store()
+            return try store.codexTurnPerformanceCaptureState()
+        } catch {
+            return CodexTurnPerformanceCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) throws -> UsageHistoryLoadResult {
         let store = try store()
         let points: [UsageHistoryPoint]
@@ -231,6 +266,9 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         let store = try store()
+        if isApplicationSupportStore(store) {
+            _ = importTurnPerformanceIfNeeded(store: store, at: Date(), calendar: .autoupdatingCurrent)
+        }
         let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
             periodStart: request.periodStart,
             periodEnd: request.periodEnd
@@ -326,5 +364,32 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         let state = recentTokenHistoryImporter(store, date, calendar, force)
         lastRecentTokenImportAt = date
         return state
+    }
+
+    private func importTurnPerformanceIfNeeded(
+        store: UsageHistoryStore,
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexTurnPerformanceCaptureState {
+        if let lastTurnPerformanceImportAt,
+           date.timeIntervalSince(lastTurnPerformanceImportAt) < 30,
+           calendar.isDate(lastTurnPerformanceImportAt, inSameDayAs: date),
+           !force
+        {
+            return (try? store.codexTurnPerformanceCaptureState()) ?? CodexTurnPerformanceCaptureState()
+        }
+
+        let state = turnPerformanceImporter(store, date, calendar, force)
+        lastTurnPerformanceImportAt = date
+        return state
+    }
+
+    private func isApplicationSupportStore(_ store: UsageHistoryStore) -> Bool {
+        guard let path = store.databaseURL?.standardizedFileURL.path else {
+            return false
+        }
+
+        return path.contains("/Library/Application Support/CodexStatusBar/")
     }
 }

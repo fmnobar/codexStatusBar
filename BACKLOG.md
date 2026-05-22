@@ -4,7 +4,11 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| -- | None | No ready implementation items remain after the local token-capture path landed. Run a backlog/product review before adding the next feature slice. |
+| 1 | Capture session task timing metadata | Import safe `task_started` / `task_complete` JSONL metadata such as duration, time-to-first-token, model context window, and collaboration mode kind. |
+| 2 | Import Codex thread catalog metadata from `state_5.sqlite` | Read safe thread-level metadata such as source, model, effort, project cwd, sandbox/approval mode, memory mode, CLI version, git branch/SHA/origin, subagent role, and tokens used. |
+| 3 | Catalog Codex model capabilities | Import non-usage model metadata from `models_cache.json`, including context windows, supported reasoning levels, speed tiers, supported tools, and truncation policy. |
+| 4 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
+| 5 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
 
 ## Conditional Watchlist
 
@@ -12,6 +16,39 @@
   - A bounded probe on May 19, 2026 generated local Codex token activity and was captured through the log-based token importer, but app-server diagnostics still showed `0` `thread/tokenUsage/updated` notifications and no `live-token-payload-audit.json`.
   - Keep this blocked until Settings Data or `~/Library/Application Support/CodexStatusBar/live-token-payload-audit.json` shows a real sanitized payload.
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
+
+## Planned
+
+- Capture session task timing metadata
+  - New source: session JSONL `event_msg` payloads such as `task_started` and `task_complete`.
+  - Capture `started_at`, `completed_at`, `duration_ms`, `time_to_first_token_ms`, `turn_id`, `model_context_window`, and `collaboration_mode_kind`.
+  - Join to existing safe `session_meta` / `turn_context` state for model, effort, project, source, runtime policy, and thread identity.
+  - Keep the importer metadata-only; exclude message text, last-agent-message text, tool payloads, summaries, instructions, and user content.
+  - Verification: importer tests for timing records, idempotent re-import, partial/malformed lines, and dashboard-ready period queries.
+
+- Import Codex thread catalog metadata from `state_5.sqlite`
+  - New source: `~/.codex/state_5.sqlite`, especially `threads`, `thread_spawn_edges`, and `thread_dynamic_tools`.
+  - Capture safe thread catalog fields: thread id, rollout path pointer, created/updated timestamps, source, model provider, cwd/project, sandbox policy, approval mode, tokens used, git SHA/branch/origin, CLI version, memory mode, model, reasoning effort, thread source, subagent role/nickname, and dynamic tool names/namespaces.
+  - Do not store thread title, first user message, preview, or any content-bearing fields.
+  - Use this as attribution repair and enrichment for token/performance data when logs/session files do not carry enough context.
+  - Verification: schema-drift tolerant reader tests, unsafe-field exclusion tests, and catalog rebuild tests.
+
+- Catalog Codex model capabilities
+  - New source: `~/.codex/models_cache.json`.
+  - Capture model slug/display name, context window, max context window, effective context window percent, supported reasoning levels, default reasoning level, supported tools, speed tiers, truncation policy, input modalities, and visibility.
+  - Treat this as model metadata, not usage telemetry.
+  - Use it to annotate dashboards, validate model labels, and explain why certain reasoning/speed options appear.
+  - Verification: cache parser tests with missing/unknown fields and UI formatter tests for model capability display.
+
+- Add turn performance and reliability analytics
+  - Use the captured OTEL/session timing data to add a dashboard for duration, time-to-first-token, transport, success/error, and retry/disconnect rates.
+  - Break down by model, effort, project, source, and transport without changing token totals.
+  - Candidate views: slowest projects, model latency comparison, effort versus latency, websocket/SSE reliability, and recent error timeline.
+
+- Add model/project efficiency insights
+  - Combine token categories, turn duration, model capability metadata, project metadata, and effort.
+  - Candidate views: tokens per minute, reasoning tokens per successful turn, cache reuse by project, context-window pressure, cost-shape by model/effort, and project-level throughput trends.
+  - Keep this analytics-focused and avoid inferring hidden `/fast` or normal modes unless Codex exposes explicit mode metadata.
 
 ## Done
 
@@ -171,6 +208,12 @@
   - Added a realistic file-backed SQLite fixture for usage and token history hot paths.
   - Added query-plan regression checks for bounded History, token History, Token Dashboard, and catalog series queries.
   - Added conservative reload and hover timing guards for History snapshots, Token Dashboard snapshots, and hover lookup.
+
+- Capture safe OTEL turn performance telemetry
+  - Added incremental metadata-only capture from `~/.codex/logs_2.sqlite` for safe OTEL/log/API targets.
+  - Stored event name/kind, timestamp, duration, success/error summary, local thread/turn identifiers, model, effort, project, source, transport, wire API, API path, app version, terminal type, and originator where explicitly present.
+  - Added SQLite event/cursor tables and Settings Data diagnostics without changing token totals, History charts, menu-bar text, or dashboard semantics.
+  - Kept extraction allowlist-only and excluded `user.email`, `user.account_id`, prompt/message/tool payloads, raw request bodies, auth values, and arbitrary unknown fields.
 
 - Add lightweight update notifications
   - Added shared app-session GitHub Release update checks outside the Settings window.

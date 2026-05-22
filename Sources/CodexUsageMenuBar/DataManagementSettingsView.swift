@@ -44,6 +44,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var tokenPayloadAudit: CodexTokenUsagePayloadAudit?
     @Published private(set) var tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics
     @Published private(set) var localTokenCaptureState = CodexLiveTokenCaptureState()
+    @Published private(set) var turnPerformanceCaptureState = CodexTurnPerformanceCaptureState()
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -163,6 +164,30 @@ final class DataManagementSettingsViewModel: ObservableObject {
         localTokenCaptureState.lastErrorText ?? "None"
     }
 
+    var turnPerformanceCaptureLastCheckedText: String {
+        guard let lastCheckedAt = turnPerformanceCaptureState.lastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var turnPerformanceCaptureLastEventText: String {
+        guard let lastImportedEventAt = turnPerformanceCaptureState.lastImportedEventAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: lastImportedEventAt)
+    }
+
+    var turnPerformanceCaptureResultText: String {
+        "\(turnPerformanceCaptureState.insertedCount) imported, \(turnPerformanceCaptureState.duplicateCount) duplicate"
+    }
+
+    var turnPerformanceCaptureLastErrorText: String {
+        turnPerformanceCaptureState.lastErrorText ?? "None"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -188,10 +213,19 @@ final class DataManagementSettingsViewModel: ObservableObject {
         localTokenCaptureState = await database.liveTokenCaptureState()
     }
 
+    func refreshTurnPerformanceCaptureState() async {
+        turnPerformanceCaptureState = await database.captureTurnPerformanceIfNeeded(
+            at: Date(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
         await refreshLocalTokenCaptureState()
+        await refreshTurnPerformanceCaptureState()
     }
 
     func revealDatabaseInFinder() {
@@ -680,6 +714,53 @@ struct DataManagementSettingsView: View {
                     GridRow {
                         Text("Last error")
                         Text(viewModel.localTokenCaptureLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Turn performance capture")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Source")
+                        Text(viewModel.turnPerformanceCaptureState.sourceKey)
+                            .monospaced()
+                    }
+                    GridRow {
+                        Text("Status")
+                        Text(viewModel.turnPerformanceCaptureState.status.displayText)
+                    }
+                    GridRow {
+                        Text("Last checked")
+                        Text(viewModel.turnPerformanceCaptureLastCheckedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last event")
+                        Text(viewModel.turnPerformanceCaptureLastEventText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last log row")
+                        Text("\(viewModel.turnPerformanceCaptureState.lastLogRowID)")
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last result")
+                        Text(viewModel.turnPerformanceCaptureResultText)
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.turnPerformanceCaptureLastErrorText)
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }

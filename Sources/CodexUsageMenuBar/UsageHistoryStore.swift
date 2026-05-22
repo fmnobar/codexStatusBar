@@ -137,6 +137,72 @@ extension UsageHistoryStore {
         }
         return .noNewEvents
     }
+
+    @discardableResult
+    func captureCodexOtelTurnPerformance(
+        at date: Date,
+        calendar: Calendar = .autoupdatingCurrent,
+        minimumInterval: TimeInterval = 30,
+        force: Bool = false,
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()
+    ) -> CodexTurnPerformanceCaptureState {
+        let importer = CodexOtelTurnPerformanceImporter(logsDatabaseURL: logsDatabaseURL)
+        let sourceKey = CodexTurnPerformanceCaptureState.codexOtelLogSourceKey
+        let existingState = (try? codexTurnPerformanceCaptureState(sourceKey: sourceKey))
+            ?? CodexTurnPerformanceCaptureState(sourceKey: sourceKey)
+
+        if !force,
+           let lastCheckedAt = existingState.lastCheckedAt,
+           date.timeIntervalSince(lastCheckedAt) < minimumInterval
+        {
+            return existingState
+        }
+
+        do {
+            let runResult = try importer.importTurnPerformanceEvents(
+                into: self,
+                afterLogRowID: existingState.lastLogRowID,
+                containing: date,
+                calendar: calendar
+            )
+            let status = Self.turnPerformanceCaptureStatus(for: runResult.importResult)
+            let state = CodexTurnPerformanceCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedEventAt: runResult.lastImportedEventAt ?? existingState.lastImportedEventAt,
+                lastLogRowID: runResult.maxLogRowID,
+                status: status,
+                insertedCount: runResult.importResult.insertedCount,
+                duplicateCount: runResult.importResult.duplicateCount,
+                lastErrorText: nil
+            )
+            try recordCodexTurnPerformanceCaptureState(state)
+            return state
+        } catch {
+            let state = CodexTurnPerformanceCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedEventAt: existingState.lastImportedEventAt,
+                lastLogRowID: existingState.lastLogRowID,
+                status: .failed,
+                lastErrorText: error.localizedDescription
+            )
+            try? recordCodexTurnPerformanceCaptureState(state)
+            return state
+        }
+    }
+
+    private static func turnPerformanceCaptureStatus(
+        for result: CodexTurnPerformanceImportResult
+    ) -> CodexTurnPerformanceCaptureStatus {
+        if result.insertedCount > 0 {
+            return .imported
+        }
+        if result.duplicateCount > 0 {
+            return .duplicateOnly
+        }
+        return .noNewEvents
+    }
 }
 
 enum UsageHistoryStoreError: LocalizedError {

@@ -66,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             _ = try? await historyDatabase.databaseInfo()
+            _ = await historyDatabase.captureTurnPerformanceIfNeeded(
+                at: Date(),
+                calendar: .autoupdatingCurrent,
+                force: true
+            )
         }
 
         Task {

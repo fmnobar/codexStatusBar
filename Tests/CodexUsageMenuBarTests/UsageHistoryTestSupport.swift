@@ -321,6 +321,13 @@ extension UsageHistoryStoreTests {
     }
 
     func createCodexLogsDatabase(at databaseURL: URL, rows: [(Date, String)]) throws {
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rowsWithTargets: rows.map { ($0.0, "codex_otel.trace_safe", $0.1) }
+        )
+    }
+
+    func createCodexLogsDatabase(at databaseURL: URL, rowsWithTargets rows: [(Date, String, String)]) throws {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
         guard let database else {
@@ -336,6 +343,7 @@ extension UsageHistoryStoreTests {
             CREATE TABLE logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts INTEGER NOT NULL,
+                target TEXT NOT NULL,
                 feedback_log_body TEXT
             );
             """,
@@ -350,11 +358,12 @@ extension UsageHistoryStoreTests {
             return
         }
 
-        for (timestamp, body) in rows {
+        for (timestamp, target, body) in rows {
+            let escapedTarget = target.replacingOccurrences(of: "'", with: "''")
             let escapedBody = body.replacingOccurrences(of: "'", with: "''")
             let sql = """
-            INSERT INTO logs (ts, feedback_log_body)
-            VALUES (\(Int64(timestamp.timeIntervalSince1970)), '\(escapedBody)');
+            INSERT INTO logs (ts, target, feedback_log_body)
+            VALUES (\(Int64(timestamp.timeIntervalSince1970)), '\(escapedTarget)', '\(escapedBody)');
             """
             let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
             if result != SQLITE_OK {
