@@ -306,6 +306,7 @@ extension UsageHistoryStore {
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_bucket_timestamp ON usage_samples(window, bucket_id, timestamp DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_timestamp ON usage_samples(timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_sample_timestamp ON usage_rollups(granularity, window, sample_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_rollups_window_bucket_sample_timestamp ON usage_rollups(window, bucket_id, sample_timestamp DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_token_usage_samples_received_at ON token_usage_samples(received_at)")

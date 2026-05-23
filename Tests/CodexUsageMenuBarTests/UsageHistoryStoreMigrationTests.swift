@@ -47,6 +47,7 @@ extension UsageHistoryStoreTests {
                 .contains("display_name")
         )
         XCTAssertTrue(indexes.contains("idx_usage_samples_window_bucket_timestamp"))
+        XCTAssertTrue(indexes.contains("idx_usage_samples_timestamp"))
         XCTAssertTrue(indexes.contains("idx_usage_rollups_window_bucket_sample_timestamp"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_model_received_at"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_project_received_at"))
