@@ -1,5 +1,9 @@
 # Backlog
 
+## Delivery Rule
+
+- After every app or source update, run `./install.sh` and verify the installed app is relaunched from `/Users/farzadmahmoodinobar/Applications/CodexStatusBar.app` before calling the work complete.
+
 ## Remaining Work
 
 | Priority | Item | Scope |
