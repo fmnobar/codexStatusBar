@@ -106,6 +106,59 @@ extension UsageHistoryStore {
         return samples
     }
 
+    func performanceDashboardEfficiencyTokenSamples(
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [PerformanceDashboardEfficiencyTokenSample] {
+        let statement = try prepare(
+            """
+            SELECT received_at, model, project_path, project_name, effort, source,
+                model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens
+            FROM token_usage_samples
+            WHERE received_at >= ?
+              AND received_at < ?
+              AND (
+                \(Self.observedTokenComponentsPredicate)
+              )
+            ORDER BY received_at ASC, thread_id ASC, turn_id ASC, total_total_tokens ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        var samples: [PerformanceDashboardEfficiencyTokenSample] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                samples.append(
+                    PerformanceDashboardEfficiencyTokenSample(
+                        eventTimestamp: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0))),
+                        model: optionalColumnText(statement, index: 1),
+                        projectPath: optionalColumnText(statement, index: 2),
+                        projectName: optionalColumnText(statement, index: 3),
+                        effort: optionalColumnText(statement, index: 4),
+                        source: optionalColumnText(statement, index: 5),
+                        modelContextWindow: optionalColumnInt(statement, index: 6),
+                        inputTokens: max(sqlite3_column_int64(statement, 7), 0),
+                        cachedInputTokens: max(sqlite3_column_int64(statement, 8), 0),
+                        outputTokens: max(sqlite3_column_int64(statement, 9), 0),
+                        reasoningOutputTokens: max(sqlite3_column_int64(statement, 10), 0)
+                    )
+                )
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+
+        return samples
+    }
+
     func performanceDashboardBounds() throws -> UsageHistoryBounds? {
         let statement = try prepare(
             """
@@ -117,6 +170,10 @@ extension UsageHistoryStore {
                 UNION ALL
                 SELECT event_timestamp AS timestamp
                 FROM codex_turn_performance_events
+                UNION ALL
+                SELECT received_at AS timestamp
+                FROM token_usage_samples
+                WHERE \(Self.observedTokenComponentsPredicate)
             )
             """
         )

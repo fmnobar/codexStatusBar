@@ -33,6 +33,24 @@ enum PerformanceDashboardBreakdownDimension: String, CaseIterable, Identifiable,
     }
 }
 
+enum PerformanceDashboardMode: String, CaseIterable, Identifiable, Equatable {
+    case performance
+    case efficiency
+
+    var id: String {
+        rawValue
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .performance:
+            return "Performance"
+        case .efficiency:
+            return "Efficiency"
+        }
+    }
+}
+
 enum PerformanceDashboardSeriesKind: String, Equatable {
     case aggregate
     case model
@@ -102,6 +120,24 @@ struct PerformanceDashboardReliabilitySample: Equatable {
     let transport: String?
     let wireAPI: String?
     let apiPath: String?
+}
+
+struct PerformanceDashboardEfficiencyTokenSample: Equatable {
+    let eventTimestamp: Date
+    let model: String?
+    let projectPath: String?
+    let projectName: String?
+    let effort: String?
+    let source: String?
+    let modelContextWindow: Int64?
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+
+    var totalTokens: Int64 {
+        inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens
+    }
 }
 
 struct PerformanceDashboardDurationPoint: Identifiable, Equatable {
@@ -261,6 +297,200 @@ struct PerformanceDashboardBreakdownRow: Identifiable, Equatable {
     }
 }
 
+struct PerformanceDashboardEfficiencyPoint: Identifiable, Equatable {
+    let id: String
+    let bucketStart: Date
+    let bucketEnd: Date
+    let series: PerformanceDashboardSeries
+    let turnCount: Int
+    let completedTurnCount: Int
+    let durationValues: [Int64]
+    let firstTokenValues: [Int64]
+    let durationTotalMilliseconds: Int64
+    let eventCount: Int
+    let successCount: Int
+    let failureCount: Int
+    let unknownCount: Int
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let contextPressureValues: [Double]
+
+    init(
+        bucketStart: Date,
+        bucketEnd: Date,
+        series: PerformanceDashboardSeries,
+        turnCount: Int,
+        completedTurnCount: Int,
+        durationValues: [Int64],
+        firstTokenValues: [Int64],
+        durationTotalMilliseconds: Int64,
+        eventCount: Int,
+        successCount: Int,
+        failureCount: Int,
+        unknownCount: Int,
+        inputTokens: Int64,
+        cachedInputTokens: Int64,
+        outputTokens: Int64,
+        reasoningOutputTokens: Int64,
+        contextPressureValues: [Double]
+    ) {
+        self.bucketStart = bucketStart
+        self.bucketEnd = bucketEnd
+        self.series = series
+        self.turnCount = max(turnCount, 0)
+        self.completedTurnCount = max(completedTurnCount, 0)
+        self.durationValues = durationValues
+        self.firstTokenValues = firstTokenValues
+        self.durationTotalMilliseconds = max(durationTotalMilliseconds, 0)
+        self.eventCount = max(eventCount, 0)
+        self.successCount = max(successCount, 0)
+        self.failureCount = max(failureCount, 0)
+        self.unknownCount = max(unknownCount, 0)
+        self.inputTokens = max(inputTokens, 0)
+        self.cachedInputTokens = max(cachedInputTokens, 0)
+        self.outputTokens = max(outputTokens, 0)
+        self.reasoningOutputTokens = max(reasoningOutputTokens, 0)
+        self.contextPressureValues = contextPressureValues
+        id = "\(Int(bucketStart.timeIntervalSince1970))-\(series.id)"
+    }
+
+    var totalTokens: Int64 {
+        inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens
+    }
+
+    var tokensPerMinute: Double? {
+        ratePerMinute(for: totalTokens)
+    }
+
+    var outputTokensPerMinute: Double? {
+        ratePerMinute(for: outputTokens)
+    }
+
+    var medianDurationMilliseconds: Double? {
+        PerformanceDashboardStatistics.median(durationValues)
+    }
+
+    var medianFirstTokenMilliseconds: Double? {
+        PerformanceDashboardStatistics.median(firstTokenValues)
+    }
+
+    var cacheShare: Double {
+        guard totalTokens > 0 else {
+            return 0
+        }
+        return Double(cachedInputTokens) / Double(totalTokens)
+    }
+
+    var reasoningShare: Double {
+        guard totalTokens > 0 else {
+            return 0
+        }
+        return Double(reasoningOutputTokens) / Double(totalTokens)
+    }
+
+    var knownEventCount: Int {
+        successCount + failureCount
+    }
+
+    var failurePercent: Double {
+        guard knownEventCount > 0 else {
+            return 0
+        }
+        return Double(failureCount) / Double(knownEventCount)
+    }
+
+    var contextPressure: Double? {
+        contextPressureValues.max()
+    }
+
+    private func ratePerMinute(for tokens: Int64) -> Double? {
+        guard tokens > 0, durationTotalMilliseconds > 0 else {
+            return nil
+        }
+        return Double(tokens) / (Double(durationTotalMilliseconds) / 60_000)
+    }
+}
+
+struct PerformanceDashboardEfficiencyRow: Identifiable, Equatable {
+    let series: PerformanceDashboardSeries
+    let turnCount: Int
+    let completedTurnCount: Int
+    let durationValues: [Int64]
+    let firstTokenValues: [Int64]
+    let durationTotalMilliseconds: Int64
+    let eventCount: Int
+    let successCount: Int
+    let failureCount: Int
+    let unknownCount: Int
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let contextPressureValues: [Double]
+
+    var id: String {
+        series.id
+    }
+
+    var totalTokens: Int64 {
+        inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens
+    }
+
+    var tokensPerMinute: Double? {
+        ratePerMinute(for: totalTokens)
+    }
+
+    var outputTokensPerMinute: Double? {
+        ratePerMinute(for: outputTokens)
+    }
+
+    var medianDurationMilliseconds: Double? {
+        PerformanceDashboardStatistics.median(durationValues)
+    }
+
+    var medianFirstTokenMilliseconds: Double? {
+        PerformanceDashboardStatistics.median(firstTokenValues)
+    }
+
+    var cacheShare: Double {
+        guard totalTokens > 0 else {
+            return 0
+        }
+        return Double(cachedInputTokens) / Double(totalTokens)
+    }
+
+    var reasoningShare: Double {
+        guard totalTokens > 0 else {
+            return 0
+        }
+        return Double(reasoningOutputTokens) / Double(totalTokens)
+    }
+
+    var knownEventCount: Int {
+        successCount + failureCount
+    }
+
+    var failurePercent: Double {
+        guard knownEventCount > 0 else {
+            return 0
+        }
+        return Double(failureCount) / Double(knownEventCount)
+    }
+
+    var contextPressure: Double? {
+        contextPressureValues.max()
+    }
+
+    private func ratePerMinute(for tokens: Int64) -> Double? {
+        guard tokens > 0, durationTotalMilliseconds > 0 else {
+            return nil
+        }
+        return Double(tokens) / (Double(durationTotalMilliseconds) / 60_000)
+    }
+}
+
 struct PerformanceDashboardSummaryTile: Identifiable, Equatable {
     let id: String
     let title: String
@@ -277,6 +507,8 @@ struct PerformanceDashboardLoadRequest: Equatable {
 struct PerformanceDashboardLoadResult: Equatable {
     let timingSamples: [PerformanceDashboardTimingSample]
     let reliabilitySamples: [PerformanceDashboardReliabilitySample]
+    let efficiencyTokenSamples: [PerformanceDashboardEfficiencyTokenSample]
+    let modelCapabilities: [CodexModelCapability]
     let historyBounds: UsageHistoryBounds?
 }
 
@@ -295,6 +527,29 @@ enum PerformanceDashboardBreakdownSortColumn: Equatable {
         case .title, .failurePercent:
             return true
         case .turns, .medianDuration, .p95Duration, .medianFirstToken, .events, .topError:
+            return false
+        }
+    }
+}
+
+enum PerformanceDashboardEfficiencySortColumn: Equatable {
+    case title
+    case turns
+    case tokens
+    case tokensPerMinute
+    case outputTokensPerMinute
+    case cacheShare
+    case reasoningShare
+    case medianDuration
+    case failurePercent
+    case contextPressure
+
+    var defaultAscending: Bool {
+        switch self {
+        case .title, .failurePercent:
+            return true
+        case .turns, .tokens, .tokensPerMinute, .outputTokensPerMinute, .cacheShare,
+             .reasoningShare, .medianDuration, .contextPressure:
             return false
         }
     }
@@ -340,6 +595,24 @@ enum PerformanceDashboardStatistics {
 
 @MainActor
 final class PerformanceDashboardViewModel: ObservableObject {
+    @Published var selectedMode: PerformanceDashboardMode = .performance {
+        didSet {
+            guard selectedMode != oldValue else {
+                return
+            }
+
+            if selectedMode == .efficiency,
+               !availableBreakdownDimensions.contains(selectedBreakdownDimension)
+            {
+                selectedBreakdownDimension = .model
+            }
+            selectedSeriesIDs = []
+            breakdownSortState = nil
+            efficiencySortState = nil
+            rebuildPresentation()
+        }
+    }
+
     @Published var selectedRange: UsageHistoryRange = .month {
         didSet {
             guard selectedRange != oldValue else {
@@ -367,14 +640,19 @@ final class PerformanceDashboardViewModel: ObservableObject {
     @Published private(set) var selectedPeriodStart: Date
     @Published private(set) var timingSamples: [PerformanceDashboardTimingSample] = []
     @Published private(set) var reliabilitySamples: [PerformanceDashboardReliabilitySample] = []
+    @Published private(set) var efficiencyTokenSamples: [PerformanceDashboardEfficiencyTokenSample] = []
+    @Published private(set) var modelCapabilities: [CodexModelCapability] = []
     @Published private(set) var durationPoints: [PerformanceDashboardDurationPoint] = []
     @Published private(set) var reliabilityPoints: [PerformanceDashboardReliabilityPoint] = []
     @Published private(set) var breakdownRows: [PerformanceDashboardBreakdownRow] = []
+    @Published private(set) var efficiencyPoints: [PerformanceDashboardEfficiencyPoint] = []
+    @Published private(set) var efficiencyRows: [PerformanceDashboardEfficiencyRow] = []
     @Published private(set) var series: [PerformanceDashboardSeries] = []
     @Published private(set) var selectedSeriesIDs: Set<String> = []
     @Published private(set) var historyBounds: UsageHistoryBounds?
     @Published private(set) var errorMessage: String?
     @Published private(set) var breakdownSortState: PerformanceDashboardSortState<PerformanceDashboardBreakdownSortColumn>?
+    @Published private(set) var efficiencySortState: PerformanceDashboardSortState<PerformanceDashboardEfficiencySortColumn>?
 
     private let database: UsageHistoryDatabaseWorking
     private let now: () -> Date
@@ -455,15 +733,36 @@ final class PerformanceDashboardViewModel: ObservableObject {
     }
 
     var hasAnyData: Bool {
-        !timingSamples.isEmpty || !reliabilitySamples.isEmpty
+        switch selectedMode {
+        case .performance:
+            return !timingSamples.isEmpty || !reliabilitySamples.isEmpty
+        case .efficiency:
+            return !efficiencyTokenSamples.isEmpty || !timingSamples.isEmpty || !reliabilitySamples.isEmpty
+        }
     }
 
     var hasVisibleData: Bool {
-        visibleSummaryRow.turnCount > 0 || visibleSummaryRow.eventCount > 0
+        switch selectedMode {
+        case .performance:
+            return visibleSummaryRow.turnCount > 0 || visibleSummaryRow.eventCount > 0
+        case .efficiency:
+            return visibleEfficiencySummaryRow.totalTokens > 0
+                || visibleEfficiencySummaryRow.turnCount > 0
+                || visibleEfficiencySummaryRow.eventCount > 0
+        }
     }
 
     var selectedSeries: [PerformanceDashboardSeries] {
         series.filter { selectedSeriesIDs.contains($0.id) }
+    }
+
+    var availableBreakdownDimensions: [PerformanceDashboardBreakdownDimension] {
+        switch selectedMode {
+        case .performance:
+            return PerformanceDashboardBreakdownDimension.allCases
+        case .efficiency:
+            return [.model, .project, .effort, .source]
+        }
     }
 
     var visibleDurationPoints: [PerformanceDashboardDurationPoint] {
@@ -497,11 +796,32 @@ final class PerformanceDashboardViewModel: ObservableObject {
         sortedRows(breakdownRows)
     }
 
+    var sortedEfficiencyRows: [PerformanceDashboardEfficiencyRow] {
+        sortedRows(efficiencyRows)
+    }
+
     var visibleSummaryRow: PerformanceDashboardBreakdownRow {
         combinedRow(from: selectedSourceRows)
     }
 
+    var visibleEfficiencyPoints: [PerformanceDashboardEfficiencyPoint] {
+        combinedEfficiencyPoints(from: selectedSourceEfficiencyPoints)
+    }
+
+    var visibleEfficiencySummaryRow: PerformanceDashboardEfficiencyRow {
+        combinedEfficiencyRow(from: selectedSourceEfficiencyRows)
+    }
+
     var summaryTiles: [PerformanceDashboardSummaryTile] {
+        switch selectedMode {
+        case .performance:
+            return performanceSummaryTiles
+        case .efficiency:
+            return efficiencySummaryTiles
+        }
+    }
+
+    var performanceSummaryTiles: [PerformanceDashboardSummaryTile] {
         let row = visibleSummaryRow
         return [
             PerformanceDashboardSummaryTile(
@@ -537,17 +857,62 @@ final class PerformanceDashboardViewModel: ObservableObject {
         ]
     }
 
+    var efficiencySummaryTiles: [PerformanceDashboardSummaryTile] {
+        let row = visibleEfficiencySummaryRow
+        return [
+            PerformanceDashboardSummaryTile(
+                id: "total_tokens",
+                title: "Total tokens",
+                value: formattedTokenCount(row.totalTokens),
+                tint: .secondary
+            ),
+            PerformanceDashboardSummaryTile(
+                id: "tokens_per_minute",
+                title: "Tokens/min",
+                value: formattedRate(row.tokensPerMinute),
+                tint: .blue
+            ),
+            PerformanceDashboardSummaryTile(
+                id: "output_per_minute",
+                title: "Output/min",
+                value: formattedRate(row.outputTokensPerMinute),
+                tint: .orange
+            ),
+            PerformanceDashboardSummaryTile(
+                id: "cache_share",
+                title: "Cache %",
+                value: formattedPercent(row.cacheShare),
+                tint: .green
+            ),
+            PerformanceDashboardSummaryTile(
+                id: "reasoning_share",
+                title: "Reasoning %",
+                value: formattedPercent(row.reasoningShare),
+                tint: .purple
+            ),
+        ]
+    }
+
     var emptyState: PerformanceDashboardEmptyState {
         if !hasAnyData {
-            return PerformanceDashboardEmptyState(
-                title: "No performance data yet",
-                message: "Use Codex or refresh diagnostics to capture local turn timing and reliability data.",
-                systemImage: "speedometer"
-            )
+            switch selectedMode {
+            case .performance:
+                return PerformanceDashboardEmptyState(
+                    title: "No performance data yet",
+                    message: "Use Codex or refresh diagnostics to capture local turn timing and reliability data.",
+                    systemImage: "speedometer"
+                )
+            case .efficiency:
+                return PerformanceDashboardEmptyState(
+                    title: "No efficiency data yet",
+                    message: "Use Codex or refresh diagnostics to capture local token, timing, and reliability data.",
+                    systemImage: "chart.xyaxis.line"
+                )
+            }
         }
 
         return PerformanceDashboardEmptyState(
-            title: "No data for this selection",
+            title: selectedMode == .performance ? "No data for this selection" : "No efficiency data for this selection",
             message: "Choose a different period or breakdown row.",
             systemImage: "line.3.horizontal.decrease.circle"
         )
@@ -567,6 +932,13 @@ final class PerformanceDashboardViewModel: ObservableObject {
         return 0...Self.countAxisUpperBound(for: maximum)
     }
 
+    var efficiencyYDomain: ClosedRange<Double> {
+        let maximum = visibleEfficiencyPoints
+            .compactMap(\.tokensPerMinute)
+            .max() ?? 0
+        return 0...Self.countAxisUpperBound(for: maximum)
+    }
+
     var chartDomainStart: Date {
         selectedPeriod.start.addingTimeInterval(-chartDomainBucketPadding)
     }
@@ -581,13 +953,22 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
     var exportFilename: String {
         [
-            "codex-performance-dashboard",
+            selectedMode == .performance ? "codex-performance-dashboard" : "codex-efficiency-dashboard",
             selectedRange.rawValue,
             periodFilenameToken,
         ].joined(separator: "-") + ".csv"
     }
 
     var csvText: String {
+        switch selectedMode {
+        case .performance:
+            return performanceCSVText
+        case .efficiency:
+            return efficiencyCSVText
+        }
+    }
+
+    private var performanceCSVText: String {
         var rows = [
             "section,range,period_start,period_end,bucket_start,bucket_end,breakdown_dimension,series_id,series_name,series_kind,context_id,project_path,turn_count,completed_turns,incomplete_turns,median_duration_ms,p95_duration_ms,median_first_token_ms,p95_first_token_ms,event_count,success_count,failure_count,unknown_count,failure_percent,top_error"
         ]
@@ -683,6 +1064,84 @@ final class PerformanceDashboardViewModel: ObservableObject {
         return rows.joined(separator: "\n") + "\n"
     }
 
+    private var efficiencyCSVText: String {
+        var rows = [
+            "section,range,period_start,period_end,bucket_start,bucket_end,breakdown_dimension,series_id,series_name,series_kind,context_id,project_path,turn_count,completed_turns,total_tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,tokens_per_minute,output_tokens_per_minute,cache_share,reasoning_share,median_duration_ms,median_first_token_ms,event_count,success_count,failure_count,unknown_count,failure_percent,context_pressure"
+        ]
+        let formatter = ISO8601DateFormatter()
+
+        rows += selectedSourceEfficiencyPoints.sortedByDashboardDisplayOrder().map { point in
+            [
+                "efficiency_bucket",
+                selectedRange.rawValue,
+                formatter.string(from: selectedPeriod.start),
+                formatter.string(from: selectedPeriod.end),
+                formatter.string(from: point.bucketStart),
+                formatter.string(from: point.bucketEnd),
+                selectedBreakdownDimension.rawValue,
+                Self.csvEscaped(point.series.id),
+                Self.csvEscaped(point.series.name),
+                point.series.kind.rawValue,
+                Self.csvEscaped(point.series.contextID),
+                Self.csvEscaped(point.series.projectPath ?? ""),
+                "\(point.turnCount)",
+                "\(point.completedTurnCount)",
+                "\(point.totalTokens)",
+                "\(point.inputTokens)",
+                "\(point.cachedInputTokens)",
+                "\(point.outputTokens)",
+                "\(point.reasoningOutputTokens)",
+                Self.csvNumber(point.tokensPerMinute),
+                Self.csvNumber(point.outputTokensPerMinute),
+                String(format: "%.4f", point.cacheShare),
+                String(format: "%.4f", point.reasoningShare),
+                Self.csvNumber(point.medianDurationMilliseconds),
+                Self.csvNumber(point.medianFirstTokenMilliseconds),
+                "\(point.eventCount)",
+                "\(point.successCount)",
+                "\(point.failureCount)",
+                "\(point.unknownCount)",
+                String(format: "%.4f", point.failurePercent),
+                Self.csvNumber(point.contextPressure),
+            ].joined(separator: ",")
+        }
+
+        rows.append("")
+        rows.append("section,breakdown_dimension,series_id,series_name,series_kind,context_id,project_path,turn_count,completed_turns,total_tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,tokens_per_minute,output_tokens_per_minute,cache_share,reasoning_share,median_duration_ms,median_first_token_ms,event_count,success_count,failure_count,unknown_count,failure_percent,context_pressure")
+        rows += sortedRows(selectedSourceEfficiencyRows).map { row in
+            [
+                "efficiency_breakdown_row",
+                selectedBreakdownDimension.rawValue,
+                Self.csvEscaped(row.series.id),
+                Self.csvEscaped(row.series.name),
+                row.series.kind.rawValue,
+                Self.csvEscaped(row.series.contextID),
+                Self.csvEscaped(row.series.projectPath ?? ""),
+                "\(row.turnCount)",
+                "\(row.completedTurnCount)",
+                "\(row.totalTokens)",
+                "\(row.inputTokens)",
+                "\(row.cachedInputTokens)",
+                "\(row.outputTokens)",
+                "\(row.reasoningOutputTokens)",
+                Self.csvNumber(row.tokensPerMinute),
+                Self.csvNumber(row.outputTokensPerMinute),
+                String(format: "%.4f", row.cacheShare),
+                String(format: "%.4f", row.reasoningShare),
+                Self.csvNumber(row.medianDurationMilliseconds),
+                Self.csvNumber(row.medianFirstTokenMilliseconds),
+                "\(row.eventCount)",
+                "\(row.successCount)",
+                "\(row.failureCount)",
+                "\(row.unknownCount)",
+                String(format: "%.4f", row.failurePercent),
+                Self.csvNumber(row.contextPressure),
+            ].joined(separator: ",")
+        }
+
+        return rows.joined(separator: "\n") + "\n"
+    }
+
     var breakdownColumnTitle: String {
         selectedBreakdownDimension.displayTitle
     }
@@ -732,6 +1191,24 @@ final class PerformanceDashboardViewModel: ObservableObject {
         return breakdownRows.filter { selectedSeriesIDs.contains($0.series.id) }
     }
 
+    private var selectedSourceEfficiencyPoints: [PerformanceDashboardEfficiencyPoint] {
+        if selectedSeriesIDs.contains(PerformanceDashboardSeries.aggregateID) {
+            return efficiencyPoints.filter { $0.series.id == PerformanceDashboardSeries.aggregateID }
+        }
+
+        return efficiencyPoints.filter { selectedSeriesIDs.contains($0.series.id) }
+    }
+
+    private var selectedSourceEfficiencyRows: [PerformanceDashboardEfficiencyRow] {
+        if selectedSeriesIDs.contains(PerformanceDashboardSeries.aggregateID),
+           let aggregate = efficiencyRows.first(where: { $0.series.id == PerformanceDashboardSeries.aggregateID })
+        {
+            return [aggregate]
+        }
+
+        return efficiencyRows.filter { selectedSeriesIDs.contains($0.series.id) }
+    }
+
     @discardableResult
     func reload() async -> Bool {
         reloadTask?.cancel()
@@ -768,6 +1245,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
             timingSamples = result.timingSamples
             reliabilitySamples = result.reliabilitySamples
+            efficiencyTokenSamples = result.efficiencyTokenSamples
+            modelCapabilities = result.modelCapabilities
             historyBounds = result.historyBounds
             rebuildPresentation()
             errorMessage = nil
@@ -779,9 +1258,13 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
             timingSamples = []
             reliabilitySamples = []
+            efficiencyTokenSamples = []
+            modelCapabilities = []
             durationPoints = []
             reliabilityPoints = []
             breakdownRows = []
+            efficiencyPoints = []
+            efficiencyRows = []
             series = []
             selectedSeriesIDs = []
             historyBounds = nil
@@ -791,17 +1274,45 @@ final class PerformanceDashboardViewModel: ObservableObject {
     }
 
     private func rebuildPresentation() {
-        let presentation = PerformanceDashboardPresentationBuilder.build(
-            timingSamples: timingSamples,
-            reliabilitySamples: reliabilitySamples,
-            breakdownDimension: selectedBreakdownDimension,
-            range: selectedRange,
-            calendar: calendar
-        )
-        durationPoints = presentation.durationPoints
-        reliabilityPoints = presentation.reliabilityPoints
-        breakdownRows = presentation.breakdownRows
-        series = presentation.series
+        if selectedMode == .efficiency,
+           !availableBreakdownDimensions.contains(selectedBreakdownDimension)
+        {
+            selectedBreakdownDimension = .model
+            return
+        }
+
+        switch selectedMode {
+        case .performance:
+            let presentation = PerformanceDashboardPresentationBuilder.build(
+                timingSamples: timingSamples,
+                reliabilitySamples: reliabilitySamples,
+                breakdownDimension: selectedBreakdownDimension,
+                range: selectedRange,
+                calendar: calendar
+            )
+            durationPoints = presentation.durationPoints
+            reliabilityPoints = presentation.reliabilityPoints
+            breakdownRows = presentation.breakdownRows
+            efficiencyPoints = []
+            efficiencyRows = []
+            series = presentation.series
+        case .efficiency:
+            let presentation = PerformanceDashboardPresentationBuilder.buildEfficiency(
+                tokenSamples: efficiencyTokenSamples,
+                timingSamples: timingSamples,
+                reliabilitySamples: reliabilitySamples,
+                modelCapabilities: modelCapabilities,
+                breakdownDimension: selectedBreakdownDimension,
+                range: selectedRange,
+                calendar: calendar
+            )
+            durationPoints = []
+            reliabilityPoints = []
+            breakdownRows = []
+            efficiencyPoints = presentation.points
+            efficiencyRows = presentation.rows
+            series = presentation.series
+        }
         reconcileSelection()
     }
 
@@ -892,6 +1403,10 @@ final class PerformanceDashboardViewModel: ObservableObject {
         chartXPosition(forBucketStart: point.bucketStart)
     }
 
+    func chartXPosition(for point: PerformanceDashboardEfficiencyPoint) -> Date {
+        chartXPosition(forBucketStart: point.bucketStart)
+    }
+
     func chartXAxisLabel(for date: Date) -> String {
         let bucketStart = UsageHistoryRange.bucketStart(
             for: date.addingTimeInterval(-chartDomainBucketPadding / 2),
@@ -913,8 +1428,28 @@ final class PerformanceDashboardViewModel: ObservableObject {
         value.formatted(.percent.precision(.fractionLength(0)))
     }
 
+    func formattedOptionalPercent(_ value: Double?) -> String {
+        guard let value else {
+            return "—"
+        }
+
+        return formattedPercent(value)
+    }
+
     func formattedInteger(_ value: Int) -> String {
         Self.integerFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    func formattedTokenCount(_ value: Int64) -> String {
+        Self.compactNumber(Double(value))
+    }
+
+    func formattedRate(_ value: Double?) -> String {
+        guard let value else {
+            return "—"
+        }
+
+        return Self.compactNumber(value)
     }
 
     func formattedCountAxisValue(_ value: Double) -> String {
@@ -946,12 +1481,24 @@ final class PerformanceDashboardViewModel: ObservableObject {
         breakdownSortState = nextSortState(current: breakdownSortState, column: column)
     }
 
+    func sortEfficiencyRows(by column: PerformanceDashboardEfficiencySortColumn) {
+        efficiencySortState = nextSortState(current: efficiencySortState, column: column)
+    }
+
     func breakdownSortIndicator(for column: PerformanceDashboardBreakdownSortColumn) -> String? {
         guard let breakdownSortState, breakdownSortState.column == column else {
             return nil
         }
 
         return breakdownSortState.ascending ? "chevron.up" : "chevron.down"
+    }
+
+    func efficiencySortIndicator(for column: PerformanceDashboardEfficiencySortColumn) -> String? {
+        guard let efficiencySortState, efficiencySortState.column == column else {
+            return nil
+        }
+
+        return efficiencySortState.ascending ? "chevron.up" : "chevron.down"
     }
 
     private func reconcileSelection() {
@@ -969,6 +1516,17 @@ final class PerformanceDashboardViewModel: ObservableObject {
         current: PerformanceDashboardSortState<PerformanceDashboardBreakdownSortColumn>?,
         column: PerformanceDashboardBreakdownSortColumn
     ) -> PerformanceDashboardSortState<PerformanceDashboardBreakdownSortColumn> {
+        if let current, current.column == column {
+            return PerformanceDashboardSortState(column: column, ascending: !current.ascending)
+        }
+
+        return PerformanceDashboardSortState(column: column, ascending: column.defaultAscending)
+    }
+
+    private func nextSortState(
+        current: PerformanceDashboardSortState<PerformanceDashboardEfficiencySortColumn>?,
+        column: PerformanceDashboardEfficiencySortColumn
+    ) -> PerformanceDashboardSortState<PerformanceDashboardEfficiencySortColumn> {
         if let current, current.column == column {
             return PerformanceDashboardSortState(column: column, ascending: !current.ascending)
         }
@@ -1007,6 +1565,45 @@ final class PerformanceDashboardViewModel: ObservableObject {
                 rhsID: rhs.id,
                 comparison: comparison,
                 ascending: breakdownSortState.ascending
+            )
+        }
+    }
+
+    private func sortedRows(_ rows: [PerformanceDashboardEfficiencyRow]) -> [PerformanceDashboardEfficiencyRow] {
+        guard let efficiencySortState else {
+            return rows
+        }
+
+        return rows.sorted { lhs, rhs in
+            let comparison: ComparisonResult
+            switch efficiencySortState.column {
+            case .title:
+                comparison = lhs.series.name.localizedStandardCompare(rhs.series.name)
+            case .turns:
+                comparison = compare(lhs.turnCount, rhs.turnCount)
+            case .tokens:
+                comparison = compare(lhs.totalTokens, rhs.totalTokens)
+            case .tokensPerMinute:
+                comparison = compareOptional(lhs.tokensPerMinute, rhs.tokensPerMinute)
+            case .outputTokensPerMinute:
+                comparison = compareOptional(lhs.outputTokensPerMinute, rhs.outputTokensPerMinute)
+            case .cacheShare:
+                comparison = compare(lhs.cacheShare, rhs.cacheShare)
+            case .reasoningShare:
+                comparison = compare(lhs.reasoningShare, rhs.reasoningShare)
+            case .medianDuration:
+                comparison = compareOptional(lhs.medianDurationMilliseconds, rhs.medianDurationMilliseconds)
+            case .failurePercent:
+                comparison = compare(lhs.failurePercent, rhs.failurePercent)
+            case .contextPressure:
+                comparison = compareOptional(lhs.contextPressure, rhs.contextPressure)
+            }
+
+            return orderedBefore(
+                lhsID: lhs.id,
+                rhsID: rhs.id,
+                comparison: comparison,
+                ascending: efficiencySortState.ascending
             )
         }
     }
@@ -1185,6 +1782,39 @@ final class PerformanceDashboardViewModel: ObservableObject {
             unknownCount: unknownCount,
             errorCounts: errorCounts
         )
+    }
+
+    private func combinedEfficiencyPoints(
+        from points: [PerformanceDashboardEfficiencyPoint]
+    ) -> [PerformanceDashboardEfficiencyPoint] {
+        var accumulators = [Date: PerformanceDashboardEfficiencyAccumulator]()
+        for point in points {
+            var accumulator = accumulators[point.bucketStart] ?? PerformanceDashboardEfficiencyAccumulator(
+                bucketStart: point.bucketStart,
+                bucketEnd: point.bucketEnd,
+                series: .visible
+            )
+            accumulator.add(point)
+            accumulators[point.bucketStart] = accumulator
+        }
+
+        return accumulators.values
+            .map(\.point)
+            .sortedByDashboardDisplayOrder()
+    }
+
+    private func combinedEfficiencyRow(
+        from rows: [PerformanceDashboardEfficiencyRow]
+    ) -> PerformanceDashboardEfficiencyRow {
+        var accumulator = PerformanceDashboardEfficiencyAccumulator(
+            bucketStart: selectedPeriod.start,
+            bucketEnd: selectedPeriod.end,
+            series: .visible
+        )
+        for row in rows {
+            accumulator.add(row)
+        }
+        return accumulator.row
     }
 
     static func periodTitle(
@@ -1395,6 +2025,12 @@ struct PerformanceDashboardPresentation {
     let series: [PerformanceDashboardSeries]
 }
 
+struct PerformanceDashboardEfficiencyPresentation {
+    let points: [PerformanceDashboardEfficiencyPoint]
+    let rows: [PerformanceDashboardEfficiencyRow]
+    let series: [PerformanceDashboardSeries]
+}
+
 enum PerformanceDashboardPresentationBuilder {
     static func build(
         timingSamples: [PerformanceDashboardTimingSample],
@@ -1476,6 +2112,109 @@ enum PerformanceDashboardPresentationBuilder {
         )
     }
 
+    static func buildEfficiency(
+        tokenSamples: [PerformanceDashboardEfficiencyTokenSample],
+        timingSamples: [PerformanceDashboardTimingSample],
+        reliabilitySamples: [PerformanceDashboardReliabilitySample],
+        modelCapabilities: [CodexModelCapability],
+        breakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        calendar: Calendar
+    ) -> PerformanceDashboardEfficiencyPresentation {
+        var bucketAccumulators = [PerformanceDashboardBucketSeriesKey: PerformanceDashboardEfficiencyAccumulator]()
+        var rowAccumulators = [String: PerformanceDashboardEfficiencyAccumulator]()
+        let capabilityContextWindows = Dictionary(
+            uniqueKeysWithValues: modelCapabilities.map { capability in
+                (capability.slug, capability.maxContextWindow ?? capability.contextWindow)
+            }.compactMap { slug, contextWindow in
+                contextWindow.map { (slug, $0) }
+            }
+        )
+
+        func add(to series: PerformanceDashboardSeries, at date: Date, update: (inout PerformanceDashboardEfficiencyAccumulator) -> Void) {
+            let bucketStart = UsageHistoryRange.bucketStart(
+                for: date,
+                component: range.chartBucketComponent,
+                calendar: calendar
+            )
+            let bucketEnd = calendar.date(byAdding: range.chartBucketComponent, value: 1, to: bucketStart)
+                ?? bucketStart
+            let key = PerformanceDashboardBucketSeriesKey(bucketStart: bucketStart, seriesID: series.id)
+            var bucketAccumulator = bucketAccumulators[key] ?? PerformanceDashboardEfficiencyAccumulator(
+                bucketStart: bucketStart,
+                bucketEnd: bucketEnd,
+                series: series
+            )
+            update(&bucketAccumulator)
+            bucketAccumulators[key] = bucketAccumulator
+
+            var rowAccumulator = rowAccumulators[series.id] ?? PerformanceDashboardEfficiencyAccumulator(
+                bucketStart: date,
+                bucketEnd: date,
+                series: series
+            )
+            update(&rowAccumulator)
+            rowAccumulators[series.id] = rowAccumulator
+        }
+
+        for sample in tokenSamples where sample.totalTokens > 0 {
+            for series in [
+                PerformanceDashboardSeries.aggregate,
+                seriesIdentity(for: sample, breakdownDimension: breakdownDimension),
+            ] {
+                add(to: series, at: sample.eventTimestamp) { accumulator in
+                    accumulator.add(
+                        sample,
+                        contextWindow: contextWindow(
+                            for: sample,
+                            capabilityContextWindows: capabilityContextWindows
+                        )
+                    )
+                }
+            }
+        }
+
+        for sample in timingSamples {
+            for series in [
+                PerformanceDashboardSeries.aggregate,
+                seriesIdentity(for: sample, breakdownDimension: breakdownDimension),
+            ] {
+                add(to: series, at: sample.eventTimestamp) { accumulator in
+                    accumulator.add(sample)
+                }
+            }
+        }
+
+        for sample in reliabilitySamples {
+            for series in [
+                PerformanceDashboardSeries.aggregate,
+                seriesIdentity(for: sample, breakdownDimension: breakdownDimension),
+            ] {
+                add(to: series, at: sample.eventTimestamp) { accumulator in
+                    accumulator.add(sample)
+                }
+            }
+        }
+
+        let rows = rowAccumulators.values
+            .map(\.row)
+            .filter { row in
+                row.totalTokens > 0 || row.turnCount > 0 || row.eventCount > 0
+            }
+            .sortedByDashboardSeriesOrder()
+
+        return PerformanceDashboardEfficiencyPresentation(
+            points: bucketAccumulators.values
+                .map(\.point)
+                .filter { point in
+                    point.totalTokens > 0 || point.turnCount > 0 || point.eventCount > 0
+                }
+                .sortedByDashboardDisplayOrder(),
+            rows: rows,
+            series: rows.map(\.series)
+        )
+    }
+
     private static func seriesIdentity(
         for sample: PerformanceDashboardTimingSample,
         breakdownDimension: PerformanceDashboardBreakdownDimension
@@ -1514,6 +2253,41 @@ enum PerformanceDashboardPresentationBuilder {
         case .wireAPI:
             return contextSeries(value: sample.wireAPI, kind: .wireAPI, prefix: "wire-api")
         }
+    }
+
+    private static func seriesIdentity(
+        for sample: PerformanceDashboardEfficiencyTokenSample,
+        breakdownDimension: PerformanceDashboardBreakdownDimension
+    ) -> PerformanceDashboardSeries {
+        switch breakdownDimension {
+        case .model:
+            return contextSeries(value: sample.model, kind: .model, prefix: "model")
+        case .effort:
+            return contextSeries(value: sample.effort, kind: .effort, prefix: "effort")
+        case .project:
+            return projectSeries(path: sample.projectPath, name: sample.projectName)
+        case .source:
+            return contextSeries(value: sample.source, kind: .source, prefix: "source")
+        case .transport, .wireAPI:
+            return .unattributed
+        }
+    }
+
+    private static func contextWindow(
+        for sample: PerformanceDashboardEfficiencyTokenSample,
+        capabilityContextWindows: [String: Int64]
+    ) -> Int64? {
+        if let model = CodexModelIdentifier.normalized(sample.model),
+           let contextWindow = capabilityContextWindows[model],
+           contextWindow > 0
+        {
+            return contextWindow
+        }
+
+        guard let contextWindow = sample.modelContextWindow, contextWindow > 0 else {
+            return nil
+        }
+        return contextWindow
     }
 
     private static func contextSeries(
@@ -1685,6 +2459,139 @@ private struct PerformanceDashboardRowAccumulator {
     }
 }
 
+private struct PerformanceDashboardEfficiencyAccumulator {
+    let bucketStart: Date
+    let bucketEnd: Date
+    let series: PerformanceDashboardSeries
+    var turnCount = 0
+    var completedTurnCount = 0
+    var durationValues: [Int64] = []
+    var firstTokenValues: [Int64] = []
+    var durationTotalMilliseconds: Int64 = 0
+    var eventCount = 0
+    var successCount = 0
+    var failureCount = 0
+    var unknownCount = 0
+    var inputTokens: Int64 = 0
+    var cachedInputTokens: Int64 = 0
+    var outputTokens: Int64 = 0
+    var reasoningOutputTokens: Int64 = 0
+    var contextPressureValues: [Double] = []
+
+    mutating func add(_ sample: PerformanceDashboardEfficiencyTokenSample, contextWindow: Int64?) {
+        inputTokens += sample.inputTokens
+        cachedInputTokens += sample.cachedInputTokens
+        outputTokens += sample.outputTokens
+        reasoningOutputTokens += sample.reasoningOutputTokens
+
+        if let contextWindow, contextWindow > 0 {
+            contextPressureValues.append(Double(sample.totalTokens) / Double(contextWindow))
+        }
+    }
+
+    mutating func add(_ sample: PerformanceDashboardTimingSample) {
+        turnCount += 1
+        if sample.isCompleted {
+            completedTurnCount += 1
+        }
+        if let durationMilliseconds = sample.durationMilliseconds {
+            durationValues.append(durationMilliseconds)
+            durationTotalMilliseconds += max(durationMilliseconds, 0)
+        }
+        if let timeToFirstTokenMilliseconds = sample.timeToFirstTokenMilliseconds {
+            firstTokenValues.append(timeToFirstTokenMilliseconds)
+        }
+    }
+
+    mutating func add(_ sample: PerformanceDashboardReliabilitySample) {
+        eventCount += 1
+        switch sample.success {
+        case true:
+            successCount += 1
+        case false:
+            failureCount += 1
+        case nil:
+            unknownCount += 1
+        }
+    }
+
+    mutating func add(_ point: PerformanceDashboardEfficiencyPoint) {
+        turnCount += point.turnCount
+        completedTurnCount += point.completedTurnCount
+        durationValues += point.durationValues
+        firstTokenValues += point.firstTokenValues
+        durationTotalMilliseconds += point.durationTotalMilliseconds
+        eventCount += point.eventCount
+        successCount += point.successCount
+        failureCount += point.failureCount
+        unknownCount += point.unknownCount
+        inputTokens += point.inputTokens
+        cachedInputTokens += point.cachedInputTokens
+        outputTokens += point.outputTokens
+        reasoningOutputTokens += point.reasoningOutputTokens
+        contextPressureValues += point.contextPressureValues
+    }
+
+    mutating func add(_ row: PerformanceDashboardEfficiencyRow) {
+        turnCount += row.turnCount
+        completedTurnCount += row.completedTurnCount
+        durationValues += row.durationValues
+        firstTokenValues += row.firstTokenValues
+        durationTotalMilliseconds += row.durationTotalMilliseconds
+        eventCount += row.eventCount
+        successCount += row.successCount
+        failureCount += row.failureCount
+        unknownCount += row.unknownCount
+        inputTokens += row.inputTokens
+        cachedInputTokens += row.cachedInputTokens
+        outputTokens += row.outputTokens
+        reasoningOutputTokens += row.reasoningOutputTokens
+        contextPressureValues += row.contextPressureValues
+    }
+
+    var point: PerformanceDashboardEfficiencyPoint {
+        PerformanceDashboardEfficiencyPoint(
+            bucketStart: bucketStart,
+            bucketEnd: bucketEnd,
+            series: series,
+            turnCount: turnCount,
+            completedTurnCount: completedTurnCount,
+            durationValues: durationValues,
+            firstTokenValues: firstTokenValues,
+            durationTotalMilliseconds: durationTotalMilliseconds,
+            eventCount: eventCount,
+            successCount: successCount,
+            failureCount: failureCount,
+            unknownCount: unknownCount,
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            contextPressureValues: contextPressureValues
+        )
+    }
+
+    var row: PerformanceDashboardEfficiencyRow {
+        PerformanceDashboardEfficiencyRow(
+            series: series,
+            turnCount: turnCount,
+            completedTurnCount: completedTurnCount,
+            durationValues: durationValues,
+            firstTokenValues: firstTokenValues,
+            durationTotalMilliseconds: durationTotalMilliseconds,
+            eventCount: eventCount,
+            successCount: successCount,
+            failureCount: failureCount,
+            unknownCount: unknownCount,
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            contextPressureValues: contextPressureValues
+        )
+    }
+}
+
 private extension PerformanceDashboardSeries {
     static let aggregate = PerformanceDashboardSeries(
         id: PerformanceDashboardSeries.aggregateID,
@@ -1730,6 +2637,17 @@ private extension Array where Element == PerformanceDashboardReliabilityPoint {
     }
 }
 
+private extension Array where Element == PerformanceDashboardEfficiencyPoint {
+    func sortedByDashboardDisplayOrder() -> [PerformanceDashboardEfficiencyPoint] {
+        sorted { lhs, rhs in
+            if lhs.bucketStart != rhs.bucketStart {
+                return lhs.bucketStart < rhs.bucketStart
+            }
+            return lhs.series.id.localizedStandardCompare(rhs.series.id) == .orderedAscending
+        }
+    }
+}
+
 private extension Array where Element == PerformanceDashboardBreakdownRow {
     func sortedByDashboardSeriesOrder() -> [PerformanceDashboardBreakdownRow] {
         sorted { lhs, rhs in
@@ -1750,6 +2668,32 @@ private extension Array where Element == PerformanceDashboardBreakdownRow {
             }
             if lhs.eventCount != rhs.eventCount {
                 return lhs.eventCount > rhs.eventCount
+            }
+            return lhs.series.name.localizedStandardCompare(rhs.series.name) == .orderedAscending
+        }
+    }
+}
+
+private extension Array where Element == PerformanceDashboardEfficiencyRow {
+    func sortedByDashboardSeriesOrder() -> [PerformanceDashboardEfficiencyRow] {
+        sorted { lhs, rhs in
+            if lhs.series.kind == .aggregate, rhs.series.kind != .aggregate {
+                return true
+            }
+            if lhs.series.kind != .aggregate, rhs.series.kind == .aggregate {
+                return false
+            }
+            if lhs.series.kind != .unattributed, rhs.series.kind == .unattributed {
+                return true
+            }
+            if lhs.series.kind == .unattributed, rhs.series.kind != .unattributed {
+                return false
+            }
+            if lhs.totalTokens != rhs.totalTokens {
+                return lhs.totalTokens > rhs.totalTokens
+            }
+            if lhs.turnCount != rhs.turnCount {
+                return lhs.turnCount > rhs.turnCount
             }
             return lhs.series.name.localizedStandardCompare(rhs.series.name) == .orderedAscending
         }
@@ -1784,8 +2728,17 @@ struct PerformanceDashboardView: View {
             .pickerStyle(.segmented)
             .frame(width: 360)
 
+            Picker("View", selection: $viewModel.selectedMode) {
+                ForEach(PerformanceDashboardMode.allCases) { mode in
+                    Text(mode.displayTitle).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 230)
+
             Picker("Breakdown", selection: $viewModel.selectedBreakdownDimension) {
-                ForEach(PerformanceDashboardBreakdownDimension.allCases) { dimension in
+                ForEach(viewModel.availableBreakdownDimensions) { dimension in
                     Text(dimension.displayTitle).tag(dimension)
                 }
             }
@@ -1868,11 +2821,19 @@ struct PerformanceDashboardView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
             HStack(alignment: .top, spacing: 18) {
-                charts
-                    .frame(minWidth: 540)
+                if viewModel.selectedMode == .performance {
+                    charts
+                        .frame(minWidth: 540)
 
-                breakdownTable
-                    .frame(minWidth: 520, maxWidth: 720)
+                    breakdownTable
+                        .frame(minWidth: 520, maxWidth: 720)
+                } else {
+                    efficiencyCharts
+                        .frame(minWidth: 540)
+
+                    efficiencyTable
+                        .frame(minWidth: 620, maxWidth: 820)
+                }
             }
         }
     }
@@ -2006,6 +2967,59 @@ struct PerformanceDashboardView: View {
         }
     }
 
+    private var efficiencyCharts: some View {
+        VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 14) {
+                    chartLegend(color: .blue, title: "Tokens/min")
+                    Spacer()
+                }
+
+                Chart {
+                    ForEach(viewModel.visibleEfficiencyPoints) { point in
+                        if let tokensPerMinute = point.tokensPerMinute {
+                            BarMark(
+                                x: .value("Time", viewModel.chartXPosition(for: point)),
+                                y: .value("Tokens/min", tokensPerMinute)
+                            )
+                            .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+                .chartYScale(domain: viewModel.efficiencyYDomain)
+                .chartXAxis {
+                    AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(.secondary.opacity(0.35))
+                        AxisTick()
+                            .foregroundStyle(.secondary.opacity(0.45))
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(viewModel.chartXAxisLabel(for: date))
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .trailing) { value in
+                        AxisGridLine()
+                            .foregroundStyle(.secondary.opacity(0.35))
+                        AxisValueLabel {
+                            if let doubleValue = value.as(Double.self) {
+                                Text(viewModel.formattedCountAxisValue(doubleValue))
+                            }
+                        }
+                    }
+                }
+                .frame(minHeight: 520)
+            }
+            .padding(16)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
     private var breakdownTable: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -2099,6 +3113,110 @@ struct PerformanceDashboardView: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: column == .title || column == .topError ? .leading : .trailing)
+    }
+
+    private var efficiencyTable: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Breakdown")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 15, verticalSpacing: 10) {
+                GridRow {
+                    sortableEfficiencyHeader(viewModel.breakdownColumnTitle, column: .title)
+                        .frame(minWidth: 145, alignment: .leading)
+                    sortableEfficiencyHeader("Turns", column: .turns)
+                    sortableEfficiencyHeader("Tokens", column: .tokens)
+                    sortableEfficiencyHeader("Tok/min", column: .tokensPerMinute)
+                    sortableEfficiencyHeader("Out/min", column: .outputTokensPerMinute)
+                    sortableEfficiencyHeader("Cache %", column: .cacheShare)
+                    sortableEfficiencyHeader("Reason %", column: .reasoningShare)
+                    sortableEfficiencyHeader("Median", column: .medianDuration)
+                    sortableEfficiencyHeader("Fail %", column: .failurePercent)
+                    sortableEfficiencyHeader("Context %", column: .contextPressure)
+                }
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+                Divider()
+                    .gridCellColumns(10)
+
+                ForEach(viewModel.sortedEfficiencyRows) { row in
+                    GridRow {
+                        Button {
+                            viewModel.selectSeries(row.series.id)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: viewModel.isSelected(row.series) ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(viewModel.isSelected(row.series) ? .primary : .secondary)
+                                    .frame(width: 14)
+
+                                Text(viewModel.compactSeriesTitle(row.series.name))
+                                    .lineLimit(1)
+                                    .help(row.series.projectPath ?? row.series.name)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minWidth: 145, alignment: .leading)
+
+                        Text(viewModel.formattedInteger(row.turnCount))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedTokenCount(row.totalTokens))
+                            .fontWeight(row.series.kind == .aggregate ? .semibold : .regular)
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedRate(row.tokensPerMinute))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedRate(row.outputTokensPerMinute))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedPercent(row.cacheShare))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedPercent(row.reasoningShare))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedDuration(row.medianDurationMilliseconds))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedPercent(row.failurePercent))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Text(viewModel.formattedOptionalPercent(row.contextPressure))
+                            .monospacedDigit()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func sortableEfficiencyHeader(
+        _ title: String,
+        column: PerformanceDashboardEfficiencySortColumn
+    ) -> some View {
+        Button {
+            viewModel.sortEfficiencyRows(by: column)
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                if let imageName = viewModel.efficiencySortIndicator(for: column) {
+                    Image(systemName: imageName)
+                        .font(.caption2.weight(.semibold))
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: column == .title ? .leading : .trailing)
     }
 }
 

@@ -6,9 +6,7 @@
 
 ## Remaining Work
 
-| Priority | Item | Scope |
-| --- | --- | --- |
-| 1 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
+No remaining prioritized implementation items. Revisit after a product/backlog review.
 
 ## Conditional Watchlist
 
@@ -16,13 +14,6 @@
   - A bounded probe on May 19, 2026 generated local Codex token activity and was captured through the log-based token importer, but app-server diagnostics still showed `0` `thread/tokenUsage/updated` notifications and no `live-token-payload-audit.json`.
   - Keep this blocked until Settings Data or `~/Library/Application Support/CodexStatusBar/live-token-payload-audit.json` shows a real sanitized payload.
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
-
-## Planned
-
-- Add model/project efficiency insights
-  - Combine token categories, turn duration, model capability metadata, project metadata, and effort.
-  - Candidate views: tokens per minute, reasoning tokens per successful turn, cache reuse by project, context-window pressure, cost-shape by model/effort, and project-level throughput trends.
-  - Keep this analytics-focused and avoid inferring hidden `/fast` or normal modes unless Codex exposes explicit mode metadata.
 
 ## Done
 
@@ -280,7 +271,11 @@
   - Used captured session task timing and OTEL performance rows to show turn count, median/p95 duration, median first token, event counts, failure rate, transport, and wire API behavior.
   - Added model, effort, project, source, transport, and wire API breakdowns plus CSV export without changing token totals, History charts, or telemetry schema.
 
+- Add model/project efficiency insights
+  - Added an Efficiency view inside the existing Performance Dashboard while keeping Performance as the default view.
+  - Combined captured token categories, turn timing, reliability events, and model capability context windows into tokens/min, output/min, cache share, reasoning share, failure rate, and context pressure.
+  - Added model, project, effort, and source breakdown rows with row selection, summary tiles, bucketed charting, and CSV export without changing telemetry capture, token totals, or History charts.
+
 ## Next Candidates
 
-- Add model/project efficiency insights
-  - Combine token categories, turn duration, model capability metadata, project metadata, and effort to compare throughput, cache reuse, context-window pressure, and cost shape.
+No next candidates. Do a product/backlog review before planning more implementation work.

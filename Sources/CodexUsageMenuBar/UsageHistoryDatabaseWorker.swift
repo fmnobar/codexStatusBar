@@ -417,6 +417,11 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
                 periodStart: request.periodStart,
                 periodEnd: request.periodEnd
             ),
+            efficiencyTokenSamples: try store.performanceDashboardEfficiencyTokenSamples(
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            modelCapabilities: try store.codexModelCapabilities(),
             historyBounds: try store.performanceDashboardBounds()
         )
     }

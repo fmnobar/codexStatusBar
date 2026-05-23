@@ -2877,6 +2877,93 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.visibleSummaryRow.failurePercent, 0.5, accuracy: 0.0001)
     }
 
+    func testPerformanceDashboardEfficiencyAggregatesTokensTimingReliabilityAndContext() async throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let tokenSamples = try store.performanceDashboardEfficiencyTokenSamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let timingSamples = try store.performanceDashboardTimingSamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let reliabilitySamples = try store.performanceDashboardReliabilitySamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let presentation = PerformanceDashboardPresentationBuilder.buildEfficiency(
+            tokenSamples: tokenSamples,
+            timingSamples: timingSamples,
+            reliabilitySamples: reliabilitySamples,
+            modelCapabilities: try store.codexModelCapabilities(),
+            breakdownDimension: .model,
+            range: .month,
+            calendar: calendar
+        )
+        let rowsByID = Dictionary(uniqueKeysWithValues: presentation.rows.map { ($0.id, $0) })
+        let aggregate = try XCTUnwrap(rowsByID[PerformanceDashboardSeries.aggregateID])
+        let model = try XCTUnwrap(rowsByID["model:gpt-5.5"])
+
+        XCTAssertEqual(tokenSamples.count, 3)
+        XCTAssertEqual(aggregate.totalTokens, 16_000)
+        XCTAssertEqual(aggregate.inputTokens, 6_500)
+        XCTAssertEqual(aggregate.cachedInputTokens, 7_250)
+        XCTAssertEqual(aggregate.outputTokens, 1_700)
+        XCTAssertEqual(aggregate.reasoningOutputTokens, 550)
+        XCTAssertEqual(aggregate.turnCount, 4)
+        XCTAssertEqual(aggregate.failurePercent, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(aggregate.tokensPerMinute), 73_846.153, accuracy: 0.01)
+        XCTAssertEqual(aggregate.cacheShare, 0.453125, accuracy: 0.0001)
+        XCTAssertEqual(model.totalTokens, 10_000)
+        XCTAssertEqual(try XCTUnwrap(model.tokensPerMinute), 150_000, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(model.outputTokensPerMinute), 10_500, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(model.contextPressure), 0.1, accuracy: 0.0001)
+        XCTAssertEqual(try store.performanceDashboardBounds()?.earliest, date("2026-05-02T10:00:00Z"))
+    }
+
+    @MainActor
+    func testPerformanceDashboardEfficiencyModeFiltersAndExportsVisibleRows() async throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+
+        let viewModel = PerformanceDashboardViewModel(
+            store: store,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedMode, .performance)
+        viewModel.selectedMode = .efficiency
+
+        XCTAssertEqual(viewModel.selectedMode, .efficiency)
+        XCTAssertEqual(viewModel.selectedRange, .month)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
+        XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
+        XCTAssertEqual(viewModel.availableBreakdownDimensions, [.model, .project, .effort, .source])
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "16.0k")
+        XCTAssertEqual(viewModel.exportFilename, "codex-efficiency-dashboard-month-2026-05.csv")
+        XCTAssertTrue(viewModel.csvText.contains("efficiency_bucket,month"))
+        XCTAssertTrue(viewModel.csvText.contains("efficiency_breakdown_row,model,performance_all,All,aggregate,all,,4,3,16000"))
+
+        viewModel.selectSeries("model:gpt-5.5")
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["model:gpt-5.5"])
+        XCTAssertEqual(viewModel.visibleEfficiencySummaryRow.totalTokens, 10_000)
+        XCTAssertEqual(try XCTUnwrap(viewModel.visibleEfficiencySummaryRow.tokensPerMinute), 150_000, accuracy: 0.01)
+        XCTAssertTrue(viewModel.csvText.contains("efficiency_breakdown_row,model,model:gpt-5.5,gpt-5.5,model,gpt-5.5,,2,2,10000"))
+        XCTAssertFalse(viewModel.csvText.contains("model:gpt-5.4"))
+
+        viewModel.selectedBreakdownDimension = .transport
+
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
+        XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
+    }
+
     private func seedPerformanceDashboardFixture(in store: UsageHistoryStore) throws {
         try store.importSessionTaskTimingEvents([
             try XCTUnwrap(CodexSessionTaskTimingEvent(
@@ -3014,6 +3101,106 @@ extension UsageHistoryStoreTests {
                 recordedAt: date("2026-05-03T11:00:02Z")
             ),
         ])
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "token-a",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 4_000,
+                    lastCached: 5_000,
+                    lastOutput: 700,
+                    lastReasoning: 300,
+                    lastTotal: 10_000,
+                    totalInput: 4_000,
+                    totalCached: 5_000,
+                    totalOutput: 700,
+                    totalReasoning: 300,
+                    totalTotal: 10_000,
+                    contextWindow: 80_000
+                ),
+                receivedAt: date("2026-05-02T10:00:03Z"),
+                context: TokenUsageContext(
+                    projectPath: "/Users/example/Projects/codex_codex",
+                    effort: "high",
+                    source: "cli"
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "token-b",
+                    turnID: "turn-a",
+                    model: "gpt-5.4",
+                    lastInput: 2_000,
+                    lastCached: 2_000,
+                    lastOutput: 800,
+                    lastReasoning: 200,
+                    lastTotal: 5_000,
+                    totalInput: 2_000,
+                    totalCached: 2_000,
+                    totalOutput: 800,
+                    totalReasoning: 200,
+                    totalTotal: 5_000
+                ),
+                receivedAt: date("2026-05-03T11:00:03Z"),
+                context: TokenUsageContext(
+                    projectPath: "/Users/example/Other/perf",
+                    effort: "low",
+                    source: "vscode"
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "token-c",
+                    turnID: "turn-a",
+                    model: nil,
+                    lastInput: 500,
+                    lastCached: 250,
+                    lastOutput: 200,
+                    lastReasoning: 50,
+                    lastTotal: 1_000,
+                    totalInput: 500,
+                    totalCached: 250,
+                    totalOutput: 200,
+                    totalReasoning: 50,
+                    totalTotal: 1_000
+                ),
+                receivedAt: date("2026-05-04T12:00:03Z")
+            ),
+        ])
+
+        try store.importCodexModelCapabilities(
+            CodexModelCapabilitiesImportBatch(
+                models: [
+                    try XCTUnwrap(CodexModelCapability(
+                        slug: "gpt-5.5",
+                        displayName: "GPT-5.5",
+                        visibility: "public",
+                        supportedInAPI: true,
+                        priority: 1,
+                        contextWindow: 100_000,
+                        maxContextWindow: 100_000,
+                        effectiveContextWindowPercent: 100,
+                        defaultReasoningLevel: "high",
+                        supportsReasoningSummaries: true,
+                        defaultReasoningSummary: "auto",
+                        supportsVerbosity: true,
+                        defaultVerbosity: "medium",
+                        shellType: "default",
+                        applyPatchToolType: "apply_patch",
+                        webSearchToolType: "web_search",
+                        supportsParallelToolCalls: true,
+                        supportsImageDetailOriginal: true,
+                        supportsSearchTool: true,
+                        truncationPolicyMode: "auto",
+                        truncationPolicyLimit: nil
+                    )),
+                ],
+                cacheFetchedAt: date("2026-05-02T09:00:00Z"),
+                clientVersion: "1.0.0"
+            )
+        )
     }
 
 }
