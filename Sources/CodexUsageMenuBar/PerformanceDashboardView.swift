@@ -1672,13 +1672,13 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private func chartXAxisLabelBucketStarts() -> [Date] {
         switch selectedRange {
         case .day:
-            return bucketStarts(step: 4, component: .hour)
+            return bucketStarts(step: 6, component: .hour)
         case .week:
             return bucketStarts(step: 1, component: .day)
         case .month:
-            return bucketStarts(step: 5, component: .day)
+            return bucketStarts(step: 7, component: .day)
         case .year:
-            return bucketStarts(step: 1, component: .month)
+            return bucketStarts(step: 2, component: .month)
         }
     }
 
@@ -2700,6 +2700,43 @@ private extension Array where Element == PerformanceDashboardEfficiencyRow {
     }
 }
 
+private enum PerformanceDashboardLayout {
+    static let outerPadding: CGFloat = 14
+    static let sectionSpacing: CGFloat = 12
+    static let bodySpacing: CGFloat = 14
+    static let summaryHeight: CGFloat = 70
+    static let tableWidth: CGFloat = 760
+    static let tableHeaderHeight: CGFloat = 22
+    static let tableRowHeight: CGFloat = 25
+    static let tableGridSpacing: CGFloat = 12
+    static let tablePanelPadding: CGFloat = 14
+    static let chartPanelPadding: CGFloat = 12
+    static let chartPanelChromeHeight: CGFloat = 52
+    static let minimumChartWidth: CGFloat = 420
+    static let minimumDashboardWidth: CGFloat = 1280
+    static let minimumDashboardHeight: CGFloat = 680
+
+    enum PerformanceTable {
+        static let label: CGFloat = 156
+        static let turns: CGFloat = 56
+        static let duration: CGFloat = 74
+        static let first: CGFloat = 64
+        static let events: CGFloat = 58
+        static let percent: CGFloat = 58
+        static let error: CGFloat = 132
+    }
+
+    enum EfficiencyTable {
+        static let label: CGFloat = 138
+        static let turns: CGFloat = 52
+        static let tokens: CGFloat = 72
+        static let rate: CGFloat = 76
+        static let percent: CGFloat = 70
+        static let duration: CGFloat = 70
+        static let context: CGFloat = 78
+    }
+}
+
 struct PerformanceDashboardView: View {
     @StateObject private var viewModel: PerformanceDashboardViewModel
 
@@ -2708,25 +2745,34 @@ struct PerformanceDashboardView: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: PerformanceDashboardLayout.sectionSpacing) {
             header
+                .layoutPriority(2)
             summaryTiles
+                .frame(height: PerformanceDashboardLayout.summaryHeight)
+                .layoutPriority(1)
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .layoutPriority(0)
         }
-        .padding(16)
-        .frame(minWidth: 1120, minHeight: 640)
+        .padding(PerformanceDashboardLayout.outerPadding)
+        .frame(
+            minWidth: PerformanceDashboardLayout.minimumDashboardWidth,
+            minHeight: PerformanceDashboardLayout.minimumDashboardHeight,
+            alignment: .top
+        )
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var header: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 12) {
             Picker("Range", selection: $viewModel.selectedRange) {
                 ForEach(UsageHistoryRange.allCases) { range in
                     Text(range.displayTitle).tag(range)
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 360)
+            .frame(width: 310)
 
             Picker("View", selection: $viewModel.selectedMode) {
                 ForEach(PerformanceDashboardMode.allCases) { mode in
@@ -2735,7 +2781,7 @@ struct PerformanceDashboardView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 230)
+            .frame(width: 210)
 
             Picker("Breakdown", selection: $viewModel.selectedBreakdownDimension) {
                 ForEach(viewModel.availableBreakdownDimensions) { dimension in
@@ -2743,7 +2789,7 @@ struct PerformanceDashboardView: View {
                 }
             }
             .labelsHidden()
-            .frame(width: 240)
+            .frame(width: 190)
 
             Spacer()
 
@@ -2759,42 +2805,45 @@ struct PerformanceDashboardView: View {
                 onNext: viewModel.goToNextPeriod,
                 onCurrent: viewModel.jumpToCurrentPeriod
             )
-
-            Spacer()
+            .frame(width: 220)
 
             Button {
                 viewModel.exportCSV()
             } label: {
                 Image(systemName: "square.and.arrow.up")
-                    .frame(width: 26, height: 26)
+                    .frame(width: 22, height: 22)
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
             .help("Export CSV")
         }
+        .frame(height: 32)
     }
 
     private var summaryTiles: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             ForEach(viewModel.summaryTiles) { tile in
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Circle()
                             .fill(viewModel.color(for: tile))
-                            .frame(width: 9, height: 9)
+                            .frame(width: 8, height: 8)
 
                         Text(tile.title)
-                            .font(.callout)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
 
                     Text(tile.value)
-                        .font(.system(size: 21, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
+                .padding(12)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
@@ -2820,139 +2869,162 @@ struct PerformanceDashboardView: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
-            HStack(alignment: .top, spacing: 18) {
+            HStack(alignment: .top, spacing: PerformanceDashboardLayout.bodySpacing) {
                 if viewModel.selectedMode == .performance {
                     charts
-                        .frame(minWidth: 540)
+                        .frame(minWidth: PerformanceDashboardLayout.minimumChartWidth, maxWidth: .infinity, maxHeight: .infinity)
 
                     breakdownTable
-                        .frame(minWidth: 520, maxWidth: 720)
+                        .frame(width: PerformanceDashboardLayout.tableWidth)
+                        .frame(maxHeight: .infinity)
                 } else {
                     efficiencyCharts
-                        .frame(minWidth: 540)
+                        .frame(minWidth: PerformanceDashboardLayout.minimumChartWidth, maxWidth: .infinity, maxHeight: .infinity)
 
                     efficiencyTable
-                        .frame(minWidth: 620, maxWidth: 820)
+                        .frame(width: PerformanceDashboardLayout.tableWidth)
+                        .frame(maxHeight: .infinity)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 
     private var charts: some View {
-        VStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 14) {
-                    chartLegend(color: .blue, title: "Median")
-                    chartLegend(color: .orange, title: "P95")
-                    Spacer()
-                }
+        GeometryReader { proxy in
+            let availableHeight = max(proxy.size.height, 0)
+            let availableChartHeight = max(
+                220,
+                availableHeight
+                    - PerformanceDashboardLayout.bodySpacing
+                    - PerformanceDashboardLayout.chartPanelChromeHeight * 2
+            )
+            let durationHeight = max(130, min(240, availableChartHeight * 0.58))
+            let reliabilityHeight = max(110, availableChartHeight - durationHeight)
 
-                Chart {
-                    ForEach(viewModel.visibleDurationPoints) { point in
-                        if let median = point.medianDurationMilliseconds {
-                            LineMark(
-                                x: .value("Time", viewModel.chartXPosition(for: point)),
-                                y: .value("Median", median),
-                                series: .value("Metric", "Median")
-                            )
-                            .foregroundStyle(.blue)
-                            .interpolationMethod(.monotone)
-                            .symbol(Circle())
-                        }
-
-                        if let p95 = point.p95DurationMilliseconds {
-                            LineMark(
-                                x: .value("Time", viewModel.chartXPosition(for: point)),
-                                y: .value("P95", p95),
-                                series: .value("Metric", "P95")
-                            )
-                            .foregroundStyle(.orange)
-                            .interpolationMethod(.monotone)
-                            .symbol(Circle())
-                        }
-                    }
-                }
-                .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
-                .chartYScale(domain: viewModel.durationYDomain)
-                .chartXAxis {
-                    AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                            .foregroundStyle(.secondary.opacity(0.35))
-                        AxisTick()
-                            .foregroundStyle(.secondary.opacity(0.45))
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                Text(viewModel.chartXAxisLabel(for: date))
-                            }
-                        }
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .trailing) { value in
-                        AxisGridLine()
-                            .foregroundStyle(.secondary.opacity(0.35))
-                        AxisValueLabel {
-                            if let doubleValue = value.as(Double.self) {
-                                Text(viewModel.formattedDurationAxisValue(doubleValue))
-                            }
-                        }
-                    }
-                }
-                .frame(minHeight: 280)
+            VStack(spacing: PerformanceDashboardLayout.bodySpacing) {
+                durationChartPanel(chartHeight: durationHeight)
+                reliabilityChartPanel(chartHeight: reliabilityHeight)
             }
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 14) {
-                    chartLegend(color: .green, title: "Success")
-                    chartLegend(color: .red, title: "Failure")
-                    Spacer()
-                }
-
-                Chart {
-                    ForEach(viewModel.reliabilityChartPoints) { point in
-                        BarMark(
-                            x: .value("Time", viewModel.chartXPosition(for: point)),
-                            y: .value("Events", point.count),
-                            stacking: .standard
-                        )
-                        .foregroundStyle(viewModel.color(for: point.status))
-                    }
-                }
-                .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
-                .chartYScale(domain: viewModel.reliabilityYDomain)
-                .chartXAxis {
-                    AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                            .foregroundStyle(.secondary.opacity(0.35))
-                        AxisTick()
-                            .foregroundStyle(.secondary.opacity(0.45))
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                Text(viewModel.chartXAxisLabel(for: date))
-                            }
-                        }
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .trailing) { value in
-                        AxisGridLine()
-                            .foregroundStyle(.secondary.opacity(0.35))
-                        AxisValueLabel {
-                            if let doubleValue = value.as(Double.self) {
-                                Text(viewModel.formattedCountAxisValue(doubleValue))
-                            }
-                        }
-                    }
-                }
-                .frame(height: 210)
-            }
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    private func durationChartPanel(chartHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                chartLegend(color: .blue, title: "Median")
+                chartLegend(color: .orange, title: "P95")
+                Spacer()
+            }
+
+            Chart {
+                ForEach(viewModel.visibleDurationPoints) { point in
+                    if let median = point.medianDurationMilliseconds {
+                        LineMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value("Median", median),
+                            series: .value("Metric", "Median")
+                        )
+                        .foregroundStyle(.blue)
+                        .interpolationMethod(.monotone)
+                        .symbol(Circle())
+                    }
+
+                    if let p95 = point.p95DurationMilliseconds {
+                        LineMark(
+                            x: .value("Time", viewModel.chartXPosition(for: point)),
+                            y: .value("P95", p95),
+                            series: .value("Metric", "P95")
+                        )
+                        .foregroundStyle(.orange)
+                        .interpolationMethod(.monotone)
+                        .symbol(Circle())
+                    }
+                }
+            }
+            .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+            .chartYScale(domain: viewModel.durationYDomain)
+            .chartXAxis {
+                AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        .foregroundStyle(.secondary.opacity(0.35))
+                    AxisTick()
+                        .foregroundStyle(.secondary.opacity(0.45))
+                    AxisValueLabel {
+                        if let date = value.as(Date.self) {
+                            Text(viewModel.chartXAxisLabel(for: date))
+                        }
+                    }
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .trailing) { value in
+                    AxisGridLine()
+                        .foregroundStyle(.secondary.opacity(0.35))
+                    AxisValueLabel {
+                        if let doubleValue = value.as(Double.self) {
+                            Text(viewModel.formattedDurationAxisValue(doubleValue))
+                        }
+                    }
+                }
+            }
+            .frame(height: chartHeight)
+        }
+        .padding(PerformanceDashboardLayout.chartPanelPadding)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func reliabilityChartPanel(chartHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                chartLegend(color: .green, title: "Success")
+                chartLegend(color: .red, title: "Failure")
+                Spacer()
+            }
+
+            Chart {
+                ForEach(viewModel.reliabilityChartPoints) { point in
+                    BarMark(
+                        x: .value("Time", viewModel.chartXPosition(for: point)),
+                        y: .value("Events", point.count),
+                        stacking: .standard
+                    )
+                    .foregroundStyle(viewModel.color(for: point.status))
+                }
+            }
+            .chartXScale(domain: viewModel.chartDomainStart...viewModel.chartDomainEnd)
+            .chartYScale(domain: viewModel.reliabilityYDomain)
+            .chartXAxis {
+                AxisMarks(values: viewModel.chartXAxisLabelValues) { value in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        .foregroundStyle(.secondary.opacity(0.35))
+                    AxisTick()
+                        .foregroundStyle(.secondary.opacity(0.45))
+                    AxisValueLabel {
+                        if let date = value.as(Date.self) {
+                            Text(viewModel.chartXAxisLabel(for: date))
+                        }
+                    }
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .trailing) { value in
+                    AxisGridLine()
+                        .foregroundStyle(.secondary.opacity(0.35))
+                    AxisValueLabel {
+                        if let doubleValue = value.as(Double.self) {
+                            Text(viewModel.formattedCountAxisValue(doubleValue))
+                        }
+                    }
+                }
+            }
+            .frame(height: chartHeight)
+        }
+        .padding(PerformanceDashboardLayout.chartPanelPadding)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func chartLegend(color: Color, title: String) -> some View {
@@ -2968,8 +3040,16 @@ struct PerformanceDashboardView: View {
     }
 
     private var efficiencyCharts: some View {
-        VStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 10) {
+        GeometryReader { proxy in
+            VStack(spacing: PerformanceDashboardLayout.bodySpacing) {
+                efficiencyChartPanel(chartHeight: max(320, proxy.size.height - PerformanceDashboardLayout.chartPanelPadding * 2 - 28))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    private func efficiencyChartPanel(chartHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 14) {
                     chartLegend(color: .blue, title: "Tokens/min")
                     Spacer()
@@ -3012,99 +3092,80 @@ struct PerformanceDashboardView: View {
                         }
                     }
                 }
-                .frame(minHeight: 520)
-            }
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(height: chartHeight)
         }
-    }
-
-    private var breakdownTable: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Breakdown")
-                    .font(.title3.weight(.semibold))
-                Spacer()
-            }
-
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
-                GridRow {
-                    sortableHeader(viewModel.breakdownColumnTitle, column: .title)
-                        .frame(minWidth: 150, alignment: .leading)
-                    sortableHeader("Turns", column: .turns)
-                    sortableHeader("Median", column: .medianDuration)
-                    sortableHeader("P95", column: .p95Duration)
-                    sortableHeader("First", column: .medianFirstToken)
-                    sortableHeader("Events", column: .events)
-                    sortableHeader("Fail %", column: .failurePercent)
-                    sortableHeader("Top error", column: .topError)
-                        .frame(minWidth: 110, alignment: .leading)
-                }
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-                Divider()
-                    .gridCellColumns(8)
-
-                ForEach(viewModel.sortedBreakdownRows) { row in
-                    GridRow {
-                        Button {
-                            viewModel.selectSeries(row.series.id)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: viewModel.isSelected(row.series) ? "checkmark.square.fill" : "square")
-                                    .foregroundStyle(viewModel.isSelected(row.series) ? .primary : .secondary)
-                                    .frame(width: 14)
-
-                                Text(viewModel.compactSeriesTitle(row.series.name))
-                                    .lineLimit(1)
-                                    .help(row.series.projectPath ?? row.series.name)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .frame(minWidth: 150, alignment: .leading)
-
-                        Text(viewModel.formattedInteger(row.turnCount))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedDuration(row.medianDurationMilliseconds))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedDuration(row.p95DurationMilliseconds))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedDuration(row.medianFirstTokenMilliseconds))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedInteger(row.eventCount))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedPercent(row.failurePercent))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(row.topErrorSummary ?? "—")
-                            .foregroundStyle(row.topErrorSummary == nil ? .secondary : .primary)
-                            .lineLimit(1)
-                            .help(row.topErrorSummary ?? "")
-                            .frame(minWidth: 110, alignment: .leading)
-                    }
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(16)
+        .padding(PerformanceDashboardLayout.chartPanelPadding)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private func sortableHeader(_ title: String, column: PerformanceDashboardBreakdownSortColumn) -> some View {
+    private var breakdownTable: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Breakdown")
+                    .font(.headline)
+                Spacer()
+            }
+
+            ScrollView([.horizontal, .vertical]) {
+                Grid(alignment: .leading, horizontalSpacing: PerformanceDashboardLayout.tableGridSpacing, verticalSpacing: 8) {
+                    GridRow {
+                        sortableHeader(viewModel.breakdownColumnTitle, column: .title, width: PerformanceDashboardLayout.PerformanceTable.label, alignment: .leading)
+                        sortableHeader("Turns", column: .turns, width: PerformanceDashboardLayout.PerformanceTable.turns)
+                        sortableHeader("Median", column: .medianDuration, width: PerformanceDashboardLayout.PerformanceTable.duration)
+                        sortableHeader("P95", column: .p95Duration, width: PerformanceDashboardLayout.PerformanceTable.duration)
+                        sortableHeader("First", column: .medianFirstToken, width: PerformanceDashboardLayout.PerformanceTable.first)
+                        sortableHeader("Events", column: .events, width: PerformanceDashboardLayout.PerformanceTable.events)
+                        sortableHeader("Fail %", column: .failurePercent, width: PerformanceDashboardLayout.PerformanceTable.percent)
+                        sortableHeader("Top error", column: .topError, width: PerformanceDashboardLayout.PerformanceTable.error, alignment: .leading)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(height: PerformanceDashboardLayout.tableHeaderHeight)
+
+                    Divider()
+                        .gridCellColumns(8)
+
+                    ForEach(viewModel.sortedBreakdownRows) { row in
+                        GridRow {
+                            seriesButton(row.series)
+                                .frame(width: PerformanceDashboardLayout.PerformanceTable.label, alignment: .leading)
+
+                            numericCell(viewModel.formattedInteger(row.turnCount), width: PerformanceDashboardLayout.PerformanceTable.turns)
+                            numericCell(viewModel.formattedDuration(row.medianDurationMilliseconds), width: PerformanceDashboardLayout.PerformanceTable.duration)
+                            numericCell(viewModel.formattedDuration(row.p95DurationMilliseconds), width: PerformanceDashboardLayout.PerformanceTable.duration)
+                            numericCell(viewModel.formattedDuration(row.medianFirstTokenMilliseconds), width: PerformanceDashboardLayout.PerformanceTable.first)
+                            numericCell(viewModel.formattedInteger(row.eventCount), width: PerformanceDashboardLayout.PerformanceTable.events)
+                            numericCell(viewModel.formattedPercent(row.failurePercent), width: PerformanceDashboardLayout.PerformanceTable.percent)
+                            Text(row.topErrorSummary ?? "—")
+                                .foregroundStyle(row.topErrorSummary == nil ? .secondary : .primary)
+                                .lineLimit(1)
+                                .help(row.topErrorSummary ?? "")
+                                .frame(width: PerformanceDashboardLayout.PerformanceTable.error, alignment: .leading)
+                        }
+                        .frame(height: PerformanceDashboardLayout.tableRowHeight)
+                    }
+                }
+                .padding(.trailing, 4)
+            }
+        }
+        .padding(PerformanceDashboardLayout.tablePanelPadding)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func sortableHeader(
+        _ title: String,
+        column: PerformanceDashboardBreakdownSortColumn,
+        width: CGFloat,
+        alignment: Alignment = .trailing
+    ) -> some View {
         Button {
             viewModel.sortBreakdownRows(by: column)
         } label: {
             HStack(spacing: 4) {
                 Text(title)
+                    .lineLimit(1)
                 if let imageName = viewModel.breakdownSortIndicator(for: column) {
                     Image(systemName: imageName)
                         .font(.caption2.weight(.semibold))
@@ -3112,103 +3173,76 @@ struct PerformanceDashboardView: View {
             }
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: column == .title || column == .topError ? .leading : .trailing)
+        .frame(width: width, alignment: alignment)
     }
 
     private var efficiencyTable: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Breakdown")
-                    .font(.title3.weight(.semibold))
+                    .font(.headline)
                 Spacer()
             }
 
-            Grid(alignment: .leading, horizontalSpacing: 15, verticalSpacing: 10) {
-                GridRow {
-                    sortableEfficiencyHeader(viewModel.breakdownColumnTitle, column: .title)
-                        .frame(minWidth: 145, alignment: .leading)
-                    sortableEfficiencyHeader("Turns", column: .turns)
-                    sortableEfficiencyHeader("Tokens", column: .tokens)
-                    sortableEfficiencyHeader("Tok/min", column: .tokensPerMinute)
-                    sortableEfficiencyHeader("Out/min", column: .outputTokensPerMinute)
-                    sortableEfficiencyHeader("Cache %", column: .cacheShare)
-                    sortableEfficiencyHeader("Reason %", column: .reasoningShare)
-                    sortableEfficiencyHeader("Median", column: .medianDuration)
-                    sortableEfficiencyHeader("Fail %", column: .failurePercent)
-                    sortableEfficiencyHeader("Context %", column: .contextPressure)
-                }
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-                Divider()
-                    .gridCellColumns(10)
-
-                ForEach(viewModel.sortedEfficiencyRows) { row in
+            ScrollView([.horizontal, .vertical]) {
+                Grid(alignment: .leading, horizontalSpacing: PerformanceDashboardLayout.tableGridSpacing, verticalSpacing: 8) {
                     GridRow {
-                        Button {
-                            viewModel.selectSeries(row.series.id)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: viewModel.isSelected(row.series) ? "checkmark.square.fill" : "square")
-                                    .foregroundStyle(viewModel.isSelected(row.series) ? .primary : .secondary)
-                                    .frame(width: 14)
+                        sortableEfficiencyHeader(viewModel.breakdownColumnTitle, column: .title, width: PerformanceDashboardLayout.EfficiencyTable.label, alignment: .leading)
+                        sortableEfficiencyHeader("Turns", column: .turns, width: PerformanceDashboardLayout.EfficiencyTable.turns)
+                        sortableEfficiencyHeader("Tokens", column: .tokens, width: PerformanceDashboardLayout.EfficiencyTable.tokens)
+                        sortableEfficiencyHeader("Tok/min", column: .tokensPerMinute, width: PerformanceDashboardLayout.EfficiencyTable.rate)
+                        sortableEfficiencyHeader("Out/min", column: .outputTokensPerMinute, width: PerformanceDashboardLayout.EfficiencyTable.rate)
+                        sortableEfficiencyHeader("Cache %", column: .cacheShare, width: PerformanceDashboardLayout.EfficiencyTable.percent)
+                        sortableEfficiencyHeader("Reason %", column: .reasoningShare, width: PerformanceDashboardLayout.EfficiencyTable.percent)
+                        sortableEfficiencyHeader("Median", column: .medianDuration, width: PerformanceDashboardLayout.EfficiencyTable.duration)
+                        sortableEfficiencyHeader("Fail %", column: .failurePercent, width: PerformanceDashboardLayout.EfficiencyTable.percent)
+                        sortableEfficiencyHeader("Context %", column: .contextPressure, width: PerformanceDashboardLayout.EfficiencyTable.context)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(height: PerformanceDashboardLayout.tableHeaderHeight)
 
-                                Text(viewModel.compactSeriesTitle(row.series.name))
-                                    .lineLimit(1)
-                                    .help(row.series.projectPath ?? row.series.name)
-                            }
+                    Divider()
+                        .gridCellColumns(10)
+
+                    ForEach(viewModel.sortedEfficiencyRows) { row in
+                        GridRow {
+                            seriesButton(row.series)
+                                .frame(width: PerformanceDashboardLayout.EfficiencyTable.label, alignment: .leading)
+
+                            numericCell(viewModel.formattedInteger(row.turnCount), width: PerformanceDashboardLayout.EfficiencyTable.turns)
+                            numericCell(viewModel.formattedTokenCount(row.totalTokens), width: PerformanceDashboardLayout.EfficiencyTable.tokens, isEmphasized: row.series.kind == .aggregate)
+                            numericCell(viewModel.formattedRate(row.tokensPerMinute), width: PerformanceDashboardLayout.EfficiencyTable.rate)
+                            numericCell(viewModel.formattedRate(row.outputTokensPerMinute), width: PerformanceDashboardLayout.EfficiencyTable.rate)
+                            numericCell(viewModel.formattedPercent(row.cacheShare), width: PerformanceDashboardLayout.EfficiencyTable.percent)
+                            numericCell(viewModel.formattedPercent(row.reasoningShare), width: PerformanceDashboardLayout.EfficiencyTable.percent)
+                            numericCell(viewModel.formattedDuration(row.medianDurationMilliseconds), width: PerformanceDashboardLayout.EfficiencyTable.duration)
+                            numericCell(viewModel.formattedPercent(row.failurePercent), width: PerformanceDashboardLayout.EfficiencyTable.percent)
+                            numericCell(viewModel.formattedOptionalPercent(row.contextPressure), width: PerformanceDashboardLayout.EfficiencyTable.context)
                         }
-                        .buttonStyle(.plain)
-                        .frame(minWidth: 145, alignment: .leading)
-
-                        Text(viewModel.formattedInteger(row.turnCount))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedTokenCount(row.totalTokens))
-                            .fontWeight(row.series.kind == .aggregate ? .semibold : .regular)
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedRate(row.tokensPerMinute))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedRate(row.outputTokensPerMinute))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedPercent(row.cacheShare))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedPercent(row.reasoningShare))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedDuration(row.medianDurationMilliseconds))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedPercent(row.failurePercent))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Text(viewModel.formattedOptionalPercent(row.contextPressure))
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        .frame(height: PerformanceDashboardLayout.tableRowHeight)
                     }
                 }
+                .padding(.trailing, 4)
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(16)
+        .padding(PerformanceDashboardLayout.tablePanelPadding)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func sortableEfficiencyHeader(
         _ title: String,
-        column: PerformanceDashboardEfficiencySortColumn
+        column: PerformanceDashboardEfficiencySortColumn,
+        width: CGFloat,
+        alignment: Alignment = .trailing
     ) -> some View {
         Button {
             viewModel.sortEfficiencyRows(by: column)
         } label: {
             HStack(spacing: 4) {
                 Text(title)
+                    .lineLimit(1)
                 if let imageName = viewModel.efficiencySortIndicator(for: column) {
                     Image(systemName: imageName)
                         .font(.caption2.weight(.semibold))
@@ -3216,7 +3250,32 @@ struct PerformanceDashboardView: View {
             }
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: column == .title ? .leading : .trailing)
+        .frame(width: width, alignment: alignment)
+    }
+
+    private func seriesButton(_ series: PerformanceDashboardSeries) -> some View {
+        Button {
+            viewModel.selectSeries(series.id)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: viewModel.isSelected(series) ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(viewModel.isSelected(series) ? .primary : .secondary)
+                    .frame(width: 14)
+
+                Text(viewModel.compactSeriesTitle(series.name))
+                    .lineLimit(1)
+                    .help(series.projectPath ?? series.name)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func numericCell(_ value: String, width: CGFloat, isEmphasized: Bool = false) -> some View {
+        Text(value)
+            .fontWeight(isEmphasized ? .semibold : .regular)
+            .monospacedDigit()
+            .lineLimit(1)
+            .frame(width: width, alignment: .trailing)
     }
 }
 

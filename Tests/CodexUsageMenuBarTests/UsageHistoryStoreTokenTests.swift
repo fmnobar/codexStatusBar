@@ -2875,6 +2875,17 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.summaryTiles.first?.value, "0")
         XCTAssertEqual(viewModel.visibleSummaryRow.eventCount, 2)
         XCTAssertEqual(viewModel.visibleSummaryRow.failurePercent, 0.5, accuracy: 0.0001)
+
+        viewModel.selectedBreakdownDimension = .model
+        viewModel.sortBreakdownRows(by: .turns)
+
+        XCTAssertEqual(viewModel.breakdownSortIndicator(for: .turns), "chevron.down")
+        XCTAssertEqual(viewModel.sortedBreakdownRows.first?.series.id, PerformanceDashboardSeries.aggregateID)
+
+        viewModel.sortBreakdownRows(by: .turns)
+
+        XCTAssertEqual(viewModel.breakdownSortIndicator(for: .turns), "chevron.up")
+        XCTAssertEqual(viewModel.sortedBreakdownRows.last?.series.id, PerformanceDashboardSeries.aggregateID)
     }
 
     func testPerformanceDashboardEfficiencyAggregatesTokensTimingReliabilityAndContext() async throws {
@@ -2962,6 +2973,16 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
         XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
+
+        viewModel.sortEfficiencyRows(by: .tokens)
+
+        XCTAssertEqual(viewModel.efficiencySortIndicator(for: .tokens), "chevron.down")
+        XCTAssertEqual(viewModel.sortedEfficiencyRows.first?.series.id, PerformanceDashboardSeries.aggregateID)
+
+        viewModel.sortEfficiencyRows(by: .tokens)
+
+        XCTAssertEqual(viewModel.efficiencySortIndicator(for: .tokens), "chevron.up")
+        XCTAssertEqual(viewModel.sortedEfficiencyRows.last?.series.id, PerformanceDashboardSeries.aggregateID)
     }
 
     private func seedPerformanceDashboardFixture(in store: UsageHistoryStore) throws {

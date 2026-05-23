@@ -17,6 +17,12 @@ No remaining prioritized implementation items. Revisit after a product/backlog r
 
 ## Done
 
+- Polish Performance Dashboard layout and tables
+  - Reworked the Performance Dashboard shell so header controls, summary tiles, charts, and tables stay visible at launch.
+  - Gave Performance and Efficiency the same stable dashboard geometry while keeping Performance as the default.
+  - Replaced free-expanding metric grids with fixed-column, internally scrollable tables so row labels and numeric columns remain readable.
+  - Added bounded chart panel sizing to prevent chart clipping at the default window size.
+
 - Usage history by time and model
   - Added local SQLite history recording for sampled usage percentages.
   - Added rolling day, week, month, and year chart views.

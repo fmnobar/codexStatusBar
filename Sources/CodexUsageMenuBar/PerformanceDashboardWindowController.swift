@@ -19,13 +19,13 @@ final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1360, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Codex Performance Dashboard"
-        window.minSize = NSSize(width: 1120, height: 560)
+        window.minSize = NSSize(width: 1280, height: 680)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.setFrameAutosaveName("CodexPerformanceDashboardWindow")
