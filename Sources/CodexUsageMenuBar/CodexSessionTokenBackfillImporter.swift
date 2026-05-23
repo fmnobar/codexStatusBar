@@ -1789,6 +1789,21 @@ private struct CodexOtelMetadataExtractor {
 
 private struct CodexLogMetadataExtractor {
     let body: String
+    private let bodyValues: [String: String]
+    private let contextValues: [String: String]
+
+    init(body: String) {
+        self.body = body
+        let bodyValues = CodexLogMetadataExtractor.keyValuePairs(in: body)
+        self.bodyValues = bodyValues
+
+        let contextBody = CodexLogMetadataExtractor.contextLookupBody(for: body)
+        if contextBody == body {
+            self.contextValues = bodyValues
+        } else {
+            self.contextValues = CodexLogMetadataExtractor.keyValuePairs(in: contextBody)
+        }
+    }
 
     var isResponseCompleted: Bool {
         body.contains("event.kind=response.completed")
@@ -1949,15 +1964,11 @@ private struct CodexLogMetadataExtractor {
     }
 
     func value(for key: String) -> String? {
-        value(for: key, in: body)
+        bodyValues[key]
     }
 
     private func contextValue(for key: String) -> String? {
-        value(for: key, in: contextLookupBody)
-    }
-
-    private func value(for key: String, in searchBody: String) -> String? {
-        CodexLogMetadataExtractor.safeEqualsValue(for: key, in: searchBody)
+        contextValues[key]
     }
 
     private func firstValue(for keys: [String]) -> String? {
@@ -1980,8 +1991,8 @@ private struct CodexLogMetadataExtractor {
         return nil
     }
 
-    private var contextLookupBody: String {
-        guard !isResponseCompleted,
+    private static func contextLookupBody(for body: String) -> String {
+        guard !body.contains("event.kind=response.completed"),
               let eventNameRange = body.range(of: " event.name=") ?? body.range(of: "event.name=")
         else {
             return body
@@ -1990,61 +2001,77 @@ private struct CodexLogMetadataExtractor {
         return String(body[..<eventNameRange.lowerBound])
     }
 
-    private static func safeEqualsValue(for key: String, in searchBody: String) -> String? {
-        var searchStart = searchBody.startIndex
-        while let keyRange = searchBody.range(of: key, range: searchStart..<searchBody.endIndex) {
-            defer { searchStart = keyRange.upperBound }
+    private static func keyValuePairs(in searchBody: String) -> [String: String] {
+        var values: [String: String] = [:]
+        var cursor = searchBody.startIndex
 
-            if keyRange.lowerBound > searchBody.startIndex {
-                let previousIndex = searchBody.index(before: keyRange.lowerBound)
+        while cursor < searchBody.endIndex {
+            guard isIdentifierCharacter(searchBody[cursor]) else {
+                cursor = searchBody.index(after: cursor)
+                continue
+            }
+
+            if cursor > searchBody.startIndex {
+                let previousIndex = searchBody.index(before: cursor)
                 guard !isIdentifierCharacter(searchBody[previousIndex]) else {
+                    cursor = searchBody.index(after: cursor)
                     continue
                 }
             }
 
-            var cursor = keyRange.upperBound
-            while cursor < searchBody.endIndex, searchBody[cursor].isWhitespace {
-                cursor = searchBody.index(after: cursor)
+            let keyStart = cursor
+            var keyEnd = cursor
+            while keyEnd < searchBody.endIndex, isIdentifierCharacter(searchBody[keyEnd]) {
+                keyEnd = searchBody.index(after: keyEnd)
             }
-            guard cursor < searchBody.endIndex, searchBody[cursor] == "=" else {
+            var valueCursor = keyEnd
+            while valueCursor < searchBody.endIndex, searchBody[valueCursor].isWhitespace {
+                valueCursor = searchBody.index(after: valueCursor)
+            }
+            guard valueCursor < searchBody.endIndex, searchBody[valueCursor] == "=" else {
+                cursor = keyEnd
                 continue
             }
-            cursor = searchBody.index(after: cursor)
+            valueCursor = searchBody.index(after: valueCursor)
 
-            while cursor < searchBody.endIndex, searchBody[cursor].isWhitespace {
-                cursor = searchBody.index(after: cursor)
+            while valueCursor < searchBody.endIndex, searchBody[valueCursor].isWhitespace {
+                valueCursor = searchBody.index(after: valueCursor)
             }
-            guard cursor < searchBody.endIndex else {
+            guard valueCursor < searchBody.endIndex else {
+                cursor = keyEnd
                 continue
             }
 
             let valueStart: String.Index
             let valueEnd: String.Index
-            if searchBody[cursor] == "\"" || searchBody[cursor] == "'" {
-                let quote = searchBody[cursor]
-                valueStart = searchBody.index(after: cursor)
+            if searchBody[valueCursor] == "\"" || searchBody[valueCursor] == "'" {
+                let quote = searchBody[valueCursor]
+                valueStart = searchBody.index(after: valueCursor)
                 var end = valueStart
                 while end < searchBody.endIndex, searchBody[end] != quote, !searchBody[end].isNewline {
                     end = searchBody.index(after: end)
                 }
                 valueEnd = end
+                cursor = end < searchBody.endIndex ? searchBody.index(after: end) : end
             } else {
-                valueStart = cursor
-                var end = cursor
+                valueStart = valueCursor
+                var end = valueCursor
                 while end < searchBody.endIndex, !isUnquotedValueTerminator(searchBody[end]) {
                     end = searchBody.index(after: end)
                 }
                 valueEnd = end
+                cursor = end
             }
 
+            let key = String(searchBody[keyStart..<keyEnd])
             let value = String(searchBody[valueStart..<valueEnd])
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
             if !value.isEmpty {
-                return value
+                values[key, default: value] = values[key] ?? value
             }
         }
 
-        return nil
+        return values
     }
 
     private static func isIdentifierCharacter(_ character: Character) -> Bool {
