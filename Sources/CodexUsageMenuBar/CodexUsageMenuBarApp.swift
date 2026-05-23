@@ -76,6 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 calendar: .autoupdatingCurrent,
                 force: true
             )
+            _ = await historyDatabase.captureThreadCatalogIfNeeded(
+                at: Date(),
+                calendar: .autoupdatingCurrent,
+                force: true
+            )
         }
 
         Task {

@@ -284,6 +284,80 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_thread_catalog (
+                thread_id TEXT PRIMARY KEY,
+                rollout_path TEXT,
+                created_at INTEGER,
+                updated_at INTEGER,
+                source TEXT,
+                model_provider TEXT,
+                project_path TEXT,
+                project_name TEXT,
+                sandbox_policy TEXT,
+                approval_mode TEXT,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                cli_version TEXT,
+                agent_nickname TEXT,
+                agent_role TEXT,
+                agent_path TEXT,
+                memory_mode TEXT,
+                model TEXT,
+                reasoning_effort TEXT,
+                thread_source TEXT,
+                recorded_at INTEGER NOT NULL
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_thread_spawn_edges (
+                parent_thread_id TEXT NOT NULL,
+                child_thread_id TEXT NOT NULL PRIMARY KEY,
+                status TEXT,
+                recorded_at INTEGER NOT NULL
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_thread_dynamic_tools (
+                thread_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                namespace TEXT,
+                defer_loading INTEGER NOT NULL DEFAULT 0,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (thread_id, position)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_thread_catalog_capture_state (
+                source_key TEXT PRIMARY KEY,
+                last_checked_at INTEGER,
+                last_imported_thread_updated_at INTEGER,
+                status TEXT NOT NULL,
+                threads_inserted_count INTEGER NOT NULL DEFAULT 0,
+                threads_updated_count INTEGER NOT NULL DEFAULT 0,
+                spawn_edges_inserted_count INTEGER NOT NULL DEFAULT 0,
+                spawn_edges_updated_count INTEGER NOT NULL DEFAULT 0,
+                dynamic_tools_inserted_count INTEGER NOT NULL DEFAULT 0,
+                dynamic_tools_updated_count INTEGER NOT NULL DEFAULT 0,
+                stale_rows_deleted_count INTEGER NOT NULL DEFAULT 0,
+                source_path TEXT,
+                last_error_text TEXT
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -350,6 +424,19 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_duration ON codex_session_task_timing_events(duration_ms)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_import_files_status ON codex_session_task_timing_import_files(status, imported_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_capture_state_checked ON codex_session_task_timing_capture_state(last_checked_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_updated ON codex_thread_catalog(updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_created ON codex_thread_catalog(created_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_project_updated ON codex_thread_catalog(project_path, updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_model_updated ON codex_thread_catalog(model, updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_effort_updated ON codex_thread_catalog(reasoning_effort, updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_source_updated ON codex_thread_catalog(source, updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_git_branch_updated ON codex_thread_catalog(git_branch, updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_agent_role_updated ON codex_thread_catalog(agent_role, updated_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_spawn_edges_parent ON codex_thread_spawn_edges(parent_thread_id, status)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_spawn_edges_child ON codex_thread_spawn_edges(child_thread_id)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_dynamic_tools_namespace_name ON codex_thread_dynamic_tools(namespace, name)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_dynamic_tools_thread ON codex_thread_dynamic_tools(thread_id)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_capture_state_checked ON codex_thread_catalog_capture_state(last_checked_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
         try cleanupTokenContextValuesIfNeeded()

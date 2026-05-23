@@ -268,6 +268,603 @@ struct CodexSessionTaskTimingCaptureState: Equatable, Sendable {
     }
 }
 
+enum CodexThreadCatalogCaptureStatus: String, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case imported
+    case updated
+    case noNewEvents = "no_new_events"
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            "Not checked yet"
+        case .imported:
+            "Imported thread metadata"
+        case .updated:
+            "Checked, updated metadata"
+        case .noNewEvents:
+            "Checked, no new metadata"
+        case .failed:
+            "Capture failed"
+        }
+    }
+}
+
+struct CodexThreadCatalogCaptureState: Equatable, Sendable {
+    static let stateSQLiteSourceKey = "codex-state-thread-catalog"
+
+    let sourceKey: String
+    let lastCheckedAt: Date?
+    let lastImportedThreadUpdatedAt: Date?
+    let status: CodexThreadCatalogCaptureStatus
+    let threadsInsertedCount: Int
+    let threadsUpdatedCount: Int
+    let spawnEdgesInsertedCount: Int
+    let spawnEdgesUpdatedCount: Int
+    let dynamicToolsInsertedCount: Int
+    let dynamicToolsUpdatedCount: Int
+    let staleRowsDeletedCount: Int
+    let sourcePath: String?
+    let lastErrorText: String?
+
+    init(
+        sourceKey: String = Self.stateSQLiteSourceKey,
+        lastCheckedAt: Date? = nil,
+        lastImportedThreadUpdatedAt: Date? = nil,
+        status: CodexThreadCatalogCaptureStatus = .neverChecked,
+        threadsInsertedCount: Int = 0,
+        threadsUpdatedCount: Int = 0,
+        spawnEdgesInsertedCount: Int = 0,
+        spawnEdgesUpdatedCount: Int = 0,
+        dynamicToolsInsertedCount: Int = 0,
+        dynamicToolsUpdatedCount: Int = 0,
+        staleRowsDeletedCount: Int = 0,
+        sourcePath: String? = nil,
+        lastErrorText: String? = nil
+    ) {
+        self.sourceKey = sourceKey
+        self.lastCheckedAt = lastCheckedAt
+        self.lastImportedThreadUpdatedAt = lastImportedThreadUpdatedAt
+        self.status = status
+        self.threadsInsertedCount = max(threadsInsertedCount, 0)
+        self.threadsUpdatedCount = max(threadsUpdatedCount, 0)
+        self.spawnEdgesInsertedCount = max(spawnEdgesInsertedCount, 0)
+        self.spawnEdgesUpdatedCount = max(spawnEdgesUpdatedCount, 0)
+        self.dynamicToolsInsertedCount = max(dynamicToolsInsertedCount, 0)
+        self.dynamicToolsUpdatedCount = max(dynamicToolsUpdatedCount, 0)
+        self.staleRowsDeletedCount = max(staleRowsDeletedCount, 0)
+        self.sourcePath = Self.normalizedPathPointer(sourcePath)
+        self.lastErrorText = lastErrorText
+    }
+
+    var changedRowCount: Int {
+        threadsInsertedCount
+            + threadsUpdatedCount
+            + spawnEdgesInsertedCount
+            + spawnEdgesUpdatedCount
+            + dynamicToolsInsertedCount
+            + dynamicToolsUpdatedCount
+            + staleRowsDeletedCount
+    }
+
+    static func normalizedPathPointer(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.count <= 1_024 else {
+            return nil
+        }
+        guard trimmedValue.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+        return trimmedValue
+    }
+}
+
+struct CodexThreadCatalogImportResult: Equatable, Sendable {
+    let threadsInsertedCount: Int
+    let threadsUpdatedCount: Int
+    let spawnEdgesInsertedCount: Int
+    let spawnEdgesUpdatedCount: Int
+    let dynamicToolsInsertedCount: Int
+    let dynamicToolsUpdatedCount: Int
+    let staleRowsDeletedCount: Int
+    let latestThreadUpdatedAt: Date?
+
+    static let empty = CodexThreadCatalogImportResult(
+        threadsInsertedCount: 0,
+        threadsUpdatedCount: 0,
+        spawnEdgesInsertedCount: 0,
+        spawnEdgesUpdatedCount: 0,
+        dynamicToolsInsertedCount: 0,
+        dynamicToolsUpdatedCount: 0,
+        staleRowsDeletedCount: 0,
+        latestThreadUpdatedAt: nil
+    )
+
+    var changedRowCount: Int {
+        threadsInsertedCount
+            + threadsUpdatedCount
+            + spawnEdgesInsertedCount
+            + spawnEdgesUpdatedCount
+            + dynamicToolsInsertedCount
+            + dynamicToolsUpdatedCount
+            + staleRowsDeletedCount
+    }
+}
+
+struct CodexThreadCatalogImportBatch: Equatable, Sendable {
+    let threads: [CodexThreadCatalogThread]
+    let spawnEdges: [CodexThreadSpawnEdge]
+    let dynamicTools: [CodexThreadDynamicTool]
+    let pruneThreads: Bool
+    let pruneSpawnEdges: Bool
+    let pruneDynamicTools: Bool
+}
+
+struct CodexThreadCatalogThread: Equatable, Sendable {
+    let threadID: String
+    let rolloutPath: String?
+    let createdAt: Date?
+    let updatedAt: Date?
+    let source: String?
+    let modelProvider: String?
+    let projectPath: String?
+    let projectName: String?
+    let sandboxPolicy: String?
+    let approvalMode: String?
+    let tokensUsed: Int64
+    let hasUserEvent: Bool
+    let archived: Bool
+    let archivedAt: Date?
+    let gitSHA: String?
+    let gitBranch: String?
+    let gitOriginURL: String?
+    let cliVersion: String?
+    let agentNickname: String?
+    let agentRole: String?
+    let agentPath: String?
+    let memoryMode: String?
+    let model: String?
+    let reasoningEffort: String?
+    let threadSource: String?
+
+    init?(
+        threadID: String?,
+        rolloutPath: String?,
+        createdAt: Date?,
+        updatedAt: Date?,
+        source: String?,
+        modelProvider: String?,
+        cwd: String?,
+        sandboxPolicy: String?,
+        approvalMode: String?,
+        tokensUsed: Int64,
+        hasUserEvent: Bool,
+        archived: Bool,
+        archivedAt: Date?,
+        gitSHA: String?,
+        gitBranch: String?,
+        gitOriginURL: String?,
+        cliVersion: String?,
+        agentNickname: String?,
+        agentRole: String?,
+        agentPath: String?,
+        memoryMode: String?,
+        model: String?,
+        reasoningEffort: String?,
+        threadSource: String?
+    ) {
+        guard let threadID = CodexTokenContextNormalizer.normalizedIdentifier(threadID) else {
+            return nil
+        }
+
+        self.threadID = threadID
+        self.rolloutPath = CodexThreadCatalogCaptureState.normalizedPathPointer(rolloutPath)
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+        self.modelProvider = CodexTokenContextNormalizer.normalizedIdentifier(modelProvider)
+        self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(cwd)
+        self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
+        self.sandboxPolicy = Self.normalizedSandboxPolicy(sandboxPolicy)
+        self.approvalMode = CodexTokenContextNormalizer.normalizedIdentifier(approvalMode)
+        self.tokensUsed = max(tokensUsed, 0)
+        self.hasUserEvent = hasUserEvent
+        self.archived = archived
+        self.archivedAt = archivedAt
+        self.gitSHA = Self.normalizedSHA(gitSHA)
+        self.gitBranch = CodexTokenContextNormalizer.normalizedDimensionValue(gitBranch)
+        self.gitOriginURL = Self.normalizedMetadataText(gitOriginURL, maximumLength: 512)
+        self.cliVersion = CodexTokenContextNormalizer.normalizedIdentifier(cliVersion)
+        self.agentNickname = CodexTokenContextNormalizer.normalizedDimensionValue(agentNickname)
+        self.agentRole = CodexTokenContextNormalizer.normalizedIdentifier(agentRole)
+        self.agentPath = CodexThreadCatalogCaptureState.normalizedPathPointer(agentPath)
+        self.memoryMode = CodexTokenContextNormalizer.normalizedIdentifier(memoryMode)
+        self.model = CodexModelIdentifier.normalized(model)
+        self.reasoningEffort = CodexTokenContextNormalizer.normalizedIdentifier(reasoningEffort)
+        self.threadSource = CodexTokenContextNormalizer.normalizedIdentifier(threadSource)
+    }
+
+    private static func normalizedSandboxPolicy(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !trimmedValue.isEmpty else {
+            return nil
+        }
+
+        if let data = trimmedValue.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data),
+           let dictionary = object as? [String: Any],
+           let type = dictionary["type"] as? String
+        {
+            return CodexTokenContextNormalizer.normalizedIdentifier(type)
+        }
+
+        return CodexTokenContextNormalizer.normalizedIdentifier(trimmedValue)
+    }
+
+    private static func normalizedSHA(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.count <= 64 else {
+            return nil
+        }
+        let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        guard trimmedValue.unicodeScalars.allSatisfy({ allowedCharacters.contains($0) }) else {
+            return nil
+        }
+        return trimmedValue
+    }
+
+    private static func normalizedMetadataText(_ value: String?, maximumLength: Int) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.count <= maximumLength else {
+            return nil
+        }
+        guard trimmedValue.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+        return trimmedValue
+    }
+}
+
+struct CodexThreadSpawnEdge: Equatable, Sendable {
+    let parentThreadID: String
+    let childThreadID: String
+    let status: String?
+
+    init?(parentThreadID: String?, childThreadID: String?, status: String?) {
+        guard let parentThreadID = CodexTokenContextNormalizer.normalizedIdentifier(parentThreadID),
+              let childThreadID = CodexTokenContextNormalizer.normalizedIdentifier(childThreadID)
+        else {
+            return nil
+        }
+
+        self.parentThreadID = parentThreadID
+        self.childThreadID = childThreadID
+        self.status = CodexTokenContextNormalizer.normalizedIdentifier(status)
+    }
+}
+
+struct CodexThreadDynamicTool: Equatable, Sendable {
+    let threadID: String
+    let position: Int64
+    let name: String
+    let namespace: String?
+    let deferLoading: Bool
+
+    init?(threadID: String?, position: Int64, name: String?, namespace: String?, deferLoading: Bool) {
+        guard let threadID = CodexTokenContextNormalizer.normalizedIdentifier(threadID),
+              let name = CodexTokenContextNormalizer.normalizedDimensionValue(name)
+        else {
+            return nil
+        }
+
+        self.threadID = threadID
+        self.position = max(position, 0)
+        self.name = name
+        self.namespace = CodexTokenContextNormalizer.normalizedIdentifier(namespace)
+        self.deferLoading = deferLoading
+    }
+}
+
+struct CodexThreadCatalogImporter {
+    let stateDatabaseURL: URL
+    let fileManager: FileManager
+
+    init(
+        stateDatabaseURL: URL = Self.defaultStateDatabaseURL(),
+        fileManager: FileManager = .default
+    ) {
+        self.stateDatabaseURL = stateDatabaseURL
+        self.fileManager = fileManager
+    }
+
+    static func defaultStateDatabaseURL(fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("state_5.sqlite")
+    }
+
+    func importThreadCatalog(into store: UsageHistoryStore) throws -> CodexThreadCatalogImportResult {
+        guard fileManager.fileExists(atPath: stateDatabaseURL.path) else {
+            throw UsageHistoryStoreError.fileOperationFailed("Codex state database not found.")
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(stateDatabaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            throw UsageHistoryStoreError.fileOperationFailed("Codex state database could not be opened.")
+        }
+        defer { sqlite3_close(database) }
+
+        guard try Self.tableExists("threads", in: database) else {
+            throw UsageHistoryStoreError.fileOperationFailed("Codex state database has no threads table.")
+        }
+
+        let threads = try Self.readThreads(from: database)
+        let spawnEdges = (try? Self.readSpawnEdges(from: database)) ?? []
+        let dynamicTools = (try? Self.readDynamicTools(from: database)) ?? []
+        let batch = CodexThreadCatalogImportBatch(
+            threads: threads,
+            spawnEdges: spawnEdges,
+            dynamicTools: dynamicTools,
+            pruneThreads: true,
+            pruneSpawnEdges: try Self.tableExists("thread_spawn_edges", in: database),
+            pruneDynamicTools: try Self.tableExists("thread_dynamic_tools", in: database)
+        )
+        return try store.importCodexThreadCatalog(batch)
+    }
+
+    private static func readThreads(from database: OpaquePointer) throws -> [CodexThreadCatalogThread] {
+        let columns = try tableColumns("threads", in: database)
+        let createdExpression = timestampExpression(millisecondsColumn: "created_at_ms", secondsColumn: "created_at", columns: columns)
+        let updatedExpression = timestampExpression(millisecondsColumn: "updated_at_ms", secondsColumn: "updated_at", columns: columns)
+        let sql = """
+        SELECT \(columnExpression("id", columns: columns)),
+            \(columnExpression("rollout_path", columns: columns)),
+            \(createdExpression),
+            \(updatedExpression),
+            \(columnExpression("source", columns: columns)),
+            \(columnExpression("model_provider", columns: columns)),
+            \(columnExpression("cwd", columns: columns)),
+            \(columnExpression("sandbox_policy", columns: columns)),
+            \(columnExpression("approval_mode", columns: columns)),
+            \(columnExpression("tokens_used", columns: columns, fallback: "0")),
+            \(columnExpression("has_user_event", columns: columns, fallback: "0")),
+            \(columnExpression("archived", columns: columns, fallback: "0")),
+            \(timestampExpression(millisecondsColumn: nil, secondsColumn: "archived_at", columns: columns)),
+            \(columnExpression("git_sha", columns: columns)),
+            \(columnExpression("git_branch", columns: columns)),
+            \(columnExpression("git_origin_url", columns: columns)),
+            \(columnExpression("cli_version", columns: columns)),
+            \(columnExpression("agent_nickname", columns: columns)),
+            \(columnExpression("agent_role", columns: columns)),
+            \(columnExpression("agent_path", columns: columns)),
+            \(columnExpression("memory_mode", columns: columns)),
+            \(columnExpression("model", columns: columns)),
+            \(columnExpression("reasoning_effort", columns: columns)),
+            \(columnExpression("thread_source", columns: columns))
+        FROM threads
+        ORDER BY \(updatedExpression) ASC, \(columnExpression("id", columns: columns)) ASC
+        """
+        let statement = try prepare(sql, in: database)
+        defer { sqlite3_finalize(statement) }
+
+        var threads: [CodexThreadCatalogThread] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let thread = CodexThreadCatalogThread(
+                    threadID: optionalText(statement, 0),
+                    rolloutPath: optionalText(statement, 1),
+                    createdAt: optionalDate(statement, 2),
+                    updatedAt: optionalDate(statement, 3),
+                    source: optionalText(statement, 4),
+                    modelProvider: optionalText(statement, 5),
+                    cwd: optionalText(statement, 6),
+                    sandboxPolicy: optionalText(statement, 7),
+                    approvalMode: optionalText(statement, 8),
+                    tokensUsed: sqlite3_column_int64(statement, 9),
+                    hasUserEvent: sqlite3_column_int(statement, 10) != 0,
+                    archived: sqlite3_column_int(statement, 11) != 0,
+                    archivedAt: optionalDate(statement, 12),
+                    gitSHA: optionalText(statement, 13),
+                    gitBranch: optionalText(statement, 14),
+                    gitOriginURL: optionalText(statement, 15),
+                    cliVersion: optionalText(statement, 16),
+                    agentNickname: optionalText(statement, 17),
+                    agentRole: optionalText(statement, 18),
+                    agentPath: optionalText(statement, 19),
+                    memoryMode: optionalText(statement, 20),
+                    model: optionalText(statement, 21),
+                    reasoningEffort: optionalText(statement, 22),
+                    threadSource: optionalText(statement, 23)
+                ) {
+                    threads.append(thread)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+        return threads
+    }
+
+    private static func readSpawnEdges(from database: OpaquePointer) throws -> [CodexThreadSpawnEdge] {
+        guard try tableExists("thread_spawn_edges", in: database) else {
+            return []
+        }
+        let columns = try tableColumns("thread_spawn_edges", in: database)
+        let sql = """
+        SELECT \(columnExpression("parent_thread_id", columns: columns)),
+            \(columnExpression("child_thread_id", columns: columns)),
+            \(columnExpression("status", columns: columns))
+        FROM thread_spawn_edges
+        ORDER BY \(columnExpression("parent_thread_id", columns: columns)),
+            \(columnExpression("child_thread_id", columns: columns))
+        """
+        let statement = try prepare(sql, in: database)
+        defer { sqlite3_finalize(statement) }
+
+        var edges: [CodexThreadSpawnEdge] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let edge = CodexThreadSpawnEdge(
+                    parentThreadID: optionalText(statement, 0),
+                    childThreadID: optionalText(statement, 1),
+                    status: optionalText(statement, 2)
+                ) {
+                    edges.append(edge)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+        return edges
+    }
+
+    private static func readDynamicTools(from database: OpaquePointer) throws -> [CodexThreadDynamicTool] {
+        guard try tableExists("thread_dynamic_tools", in: database) else {
+            return []
+        }
+        let columns = try tableColumns("thread_dynamic_tools", in: database)
+        let sql = """
+        SELECT \(columnExpression("thread_id", columns: columns)),
+            \(columnExpression("position", columns: columns, fallback: "0")),
+            \(columnExpression("name", columns: columns)),
+            \(columnExpression("namespace", columns: columns)),
+            \(columnExpression("defer_loading", columns: columns, fallback: "0"))
+        FROM thread_dynamic_tools
+        ORDER BY \(columnExpression("thread_id", columns: columns)),
+            \(columnExpression("position", columns: columns, fallback: "0"))
+        """
+        let statement = try prepare(sql, in: database)
+        defer { sqlite3_finalize(statement) }
+
+        var tools: [CodexThreadDynamicTool] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let tool = CodexThreadDynamicTool(
+                    threadID: optionalText(statement, 0),
+                    position: sqlite3_column_int64(statement, 1),
+                    name: optionalText(statement, 2),
+                    namespace: optionalText(statement, 3),
+                    deferLoading: sqlite3_column_int(statement, 4) != 0
+                ) {
+                    tools.append(tool)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+        return tools
+    }
+
+    private static func timestampExpression(
+        millisecondsColumn: String?,
+        secondsColumn: String?,
+        columns: Set<String>
+    ) -> String {
+        let millisecondExpression = millisecondsColumn.flatMap { columns.contains($0) ? "(\($0) / 1000)" : nil }
+        let secondExpression = secondsColumn.flatMap { columns.contains($0) ? $0 : nil }
+        switch (millisecondExpression, secondExpression) {
+        case let (milliseconds?, seconds?):
+            return "COALESCE(\(milliseconds), \(seconds))"
+        case let (milliseconds?, nil):
+            return milliseconds
+        case let (nil, seconds?):
+            return seconds
+        case (nil, nil):
+            return "NULL"
+        }
+    }
+
+    private static func columnExpression(
+        _ column: String,
+        columns: Set<String>,
+        fallback: String = "NULL"
+    ) -> String {
+        columns.contains(column) ? column : fallback
+    }
+
+    private static func tableColumns(_ table: String, in database: OpaquePointer) throws -> Set<String> {
+        let statement = try prepare("PRAGMA table_info(\(table))", in: database)
+        defer { sqlite3_finalize(statement) }
+
+        var columns = Set<String>()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let text = sqlite3_column_text(statement, 1) {
+                    columns.insert(String(cString: text))
+                }
+            case SQLITE_DONE:
+                return columns
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+    }
+
+    private static func tableExists(_ table: String, in database: OpaquePointer) throws -> Bool {
+        let statement = try prepare(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            in: database
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, table, -1, SQLITE_TRANSIENT)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0) != 0
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+    }
+
+    private static func prepare(_ sql: String, in database: OpaquePointer) throws -> OpaquePointer {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw UsageHistoryStoreError.statementPreparationFailed(String(cString: sqlite3_errmsg(database)))
+        }
+        return statement
+    }
+
+    private static func optionalText(_ statement: OpaquePointer, _ index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let text = sqlite3_column_text(statement, index)
+        else {
+            return nil
+        }
+        return String(cString: text)
+    }
+
+    private static func optionalDate(_ statement: OpaquePointer, _ index: Int32) -> Date? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
+            return nil
+        }
+        let timestamp = sqlite3_column_int64(statement, index)
+        guard timestamp > 0 else {
+            return nil
+        }
+        return Date(timeIntervalSince1970: TimeInterval(timestamp))
+    }
+}
+
 enum CodexSessionTaskTimingImportFileStatus: String, Sendable {
     case imported
     case failed

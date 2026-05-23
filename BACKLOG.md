@@ -8,10 +8,9 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Import Codex thread catalog metadata from `state_5.sqlite` | Read safe thread-level metadata such as source, model, effort, project cwd, sandbox/approval mode, memory mode, CLI version, git branch/SHA/origin, subagent role, and tokens used. |
-| 2 | Catalog Codex model capabilities | Import non-usage model metadata from `models_cache.json`, including context windows, supported reasoning levels, speed tiers, supported tools, and truncation policy. |
-| 3 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
-| 4 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
+| 1 | Catalog Codex model capabilities | Import non-usage model metadata from `models_cache.json`, including context windows, supported reasoning levels, speed tiers, supported tools, and truncation policy. |
+| 2 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
+| 3 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
 
 ## Conditional Watchlist
 
@@ -21,13 +20,6 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Planned
-
-- Import Codex thread catalog metadata from `state_5.sqlite`
-  - New source: `~/.codex/state_5.sqlite`, especially `threads`, `thread_spawn_edges`, and `thread_dynamic_tools`.
-  - Capture safe thread catalog fields: thread id, rollout path pointer, created/updated timestamps, source, model provider, cwd/project, sandbox policy, approval mode, tokens used, git SHA/branch/origin, CLI version, memory mode, model, reasoning effort, thread source, subagent role/nickname, and dynamic tool names/namespaces.
-  - Do not store thread title, first user message, preview, or any content-bearing fields.
-  - Use this as attribution repair and enrichment for token/performance data when logs/session files do not carry enough context.
-  - Verification: schema-drift tolerant reader tests, unsafe-field exclusion tests, and catalog rebuild tests.
 
 - Catalog Codex model capabilities
   - New source: `~/.codex/models_cache.json`.
@@ -284,7 +276,14 @@
   - Added cursor/health state for local token capture and surfaced metadata-only diagnostics in Data settings.
   - Reused existing safe log/session context extraction and token import dedupe/repair paths so live capture can update token totals without inferring hidden modes or storing prompt/tool/auth content.
 
+- Import Codex thread catalog metadata from `state_5.sqlite`
+  - Added metadata-only capture from `~/.codex/state_5.sqlite` for `threads`, `thread_spawn_edges`, and `thread_dynamic_tools`.
+  - Stored safe thread catalog fields such as rollout path pointer, created/updated timestamps, source, model provider, cwd/project, sandbox/approval type, tokens used, archive state, git SHA/branch/origin, CLI version, agent nickname/role/path, memory mode, model, reasoning effort, and thread source.
+  - Stored spawn edge identities and dynamic tool name/namespace/defer-loading identity only.
+  - Excluded thread title, first user message, preview, dynamic tool descriptions, input schemas, prompts, and content-bearing fields.
+  - Added SQLite catalog/capture-state tables, backup/import, clear-history handling, launch capture, and Data settings diagnostics.
+
 ## Next Candidates
 
-- Backlog/product review
-  - Choose the next user-facing feature or maintenance priority now that the current token capture, dashboard, diagnostics, performance, update, and packaging backlog is complete.
+- Catalog Codex model capabilities
+  - Import non-usage model metadata from `~/.codex/models_cache.json`, then use it to annotate dashboards and explain model capability differences.

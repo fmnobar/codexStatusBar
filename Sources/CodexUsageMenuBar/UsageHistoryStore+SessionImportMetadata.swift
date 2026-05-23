@@ -715,4 +715,563 @@ extension UsageHistoryStore {
             }
         }
     }
+
+    func codexThreadCatalogCaptureState(
+        sourceKey: String = CodexThreadCatalogCaptureState.stateSQLiteSourceKey
+    ) throws -> CodexThreadCatalogCaptureState {
+        let statement = try prepare(
+            """
+            SELECT source_key, last_checked_at, last_imported_thread_updated_at, status,
+                threads_inserted_count, threads_updated_count,
+                spawn_edges_inserted_count, spawn_edges_updated_count,
+                dynamic_tools_inserted_count, dynamic_tools_updated_count,
+                stale_rows_deleted_count, source_path, last_error_text
+            FROM codex_thread_catalog_capture_state
+            WHERE source_key = ?
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(sourceKey, to: 1, in: statement)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            let status = CodexThreadCatalogCaptureStatus(rawValue: columnText(statement, index: 3)) ?? .neverChecked
+            return CodexThreadCatalogCaptureState(
+                sourceKey: columnText(statement, index: 0),
+                lastCheckedAt: optionalColumnDate(statement, index: 1),
+                lastImportedThreadUpdatedAt: optionalColumnDate(statement, index: 2),
+                status: status,
+                threadsInsertedCount: Int(sqlite3_column_int64(statement, 4)),
+                threadsUpdatedCount: Int(sqlite3_column_int64(statement, 5)),
+                spawnEdgesInsertedCount: Int(sqlite3_column_int64(statement, 6)),
+                spawnEdgesUpdatedCount: Int(sqlite3_column_int64(statement, 7)),
+                dynamicToolsInsertedCount: Int(sqlite3_column_int64(statement, 8)),
+                dynamicToolsUpdatedCount: Int(sqlite3_column_int64(statement, 9)),
+                staleRowsDeletedCount: Int(sqlite3_column_int64(statement, 10)),
+                sourcePath: optionalColumnText(statement, index: 11),
+                lastErrorText: optionalColumnText(statement, index: 12)
+            )
+        case SQLITE_DONE:
+            return CodexThreadCatalogCaptureState(sourceKey: sourceKey)
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    func recordCodexThreadCatalogCaptureState(_ state: CodexThreadCatalogCaptureState) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO codex_thread_catalog_capture_state (
+                source_key, last_checked_at, last_imported_thread_updated_at, status,
+                threads_inserted_count, threads_updated_count,
+                spawn_edges_inserted_count, spawn_edges_updated_count,
+                dynamic_tools_inserted_count, dynamic_tools_updated_count,
+                stale_rows_deleted_count, source_path, last_error_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                last_checked_at = excluded.last_checked_at,
+                last_imported_thread_updated_at = COALESCE(
+                    excluded.last_imported_thread_updated_at,
+                    codex_thread_catalog_capture_state.last_imported_thread_updated_at
+                ),
+                status = excluded.status,
+                threads_inserted_count = excluded.threads_inserted_count,
+                threads_updated_count = excluded.threads_updated_count,
+                spawn_edges_inserted_count = excluded.spawn_edges_inserted_count,
+                spawn_edges_updated_count = excluded.spawn_edges_updated_count,
+                dynamic_tools_inserted_count = excluded.dynamic_tools_inserted_count,
+                dynamic_tools_updated_count = excluded.dynamic_tools_updated_count,
+                stale_rows_deleted_count = excluded.stale_rows_deleted_count,
+                source_path = excluded.source_path,
+                last_error_text = excluded.last_error_text
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(state.sourceKey, to: 1, in: statement)
+        bindOptionalDate(state.lastCheckedAt, to: 2, in: statement)
+        bindOptionalDate(state.lastImportedThreadUpdatedAt, to: 3, in: statement)
+        bindText(state.status.rawValue, to: 4, in: statement)
+        sqlite3_bind_int64(statement, 5, Int64(state.threadsInsertedCount))
+        sqlite3_bind_int64(statement, 6, Int64(state.threadsUpdatedCount))
+        sqlite3_bind_int64(statement, 7, Int64(state.spawnEdgesInsertedCount))
+        sqlite3_bind_int64(statement, 8, Int64(state.spawnEdgesUpdatedCount))
+        sqlite3_bind_int64(statement, 9, Int64(state.dynamicToolsInsertedCount))
+        sqlite3_bind_int64(statement, 10, Int64(state.dynamicToolsUpdatedCount))
+        sqlite3_bind_int64(statement, 11, Int64(state.staleRowsDeletedCount))
+        bindOptionalText(state.sourcePath, to: 12, in: statement)
+        bindOptionalText(state.lastErrorText, to: 13, in: statement)
+
+        try step(statement)
+    }
+
+    func importCodexThreadCatalog(_ batch: CodexThreadCatalogImportBatch) throws -> CodexThreadCatalogImportResult {
+        var threadsInsertedCount = 0
+        var threadsUpdatedCount = 0
+        var spawnEdgesInsertedCount = 0
+        var spawnEdgesUpdatedCount = 0
+        var dynamicToolsInsertedCount = 0
+        var dynamicToolsUpdatedCount = 0
+        var staleRowsDeletedCount = 0
+        let recordedAt = Date()
+
+        try transaction {
+            if batch.pruneThreads {
+                try resetThreadCatalogTempTable(name: "codex_imported_thread_ids", columns: "thread_id TEXT PRIMARY KEY")
+            }
+            if batch.pruneSpawnEdges {
+                try resetThreadCatalogTempTable(name: "codex_imported_spawn_edges", columns: "child_thread_id TEXT PRIMARY KEY")
+            }
+            if batch.pruneDynamicTools {
+                try resetThreadCatalogTempTable(
+                    name: "codex_imported_dynamic_tools",
+                    columns: "thread_id TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(thread_id, position)"
+                )
+            }
+
+            for thread in batch.threads {
+                try insertThreadCatalogTempID(thread.threadID, table: "codex_imported_thread_ids", column: "thread_id")
+                switch try upsertCodexThreadCatalogThread(thread, recordedAt: recordedAt) {
+                case .inserted:
+                    threadsInsertedCount += 1
+                case .updated:
+                    threadsUpdatedCount += 1
+                case .duplicate:
+                    break
+                }
+            }
+
+            for edge in batch.spawnEdges {
+                try insertThreadCatalogTempID(edge.childThreadID, table: "codex_imported_spawn_edges", column: "child_thread_id")
+                switch try upsertCodexThreadSpawnEdge(edge, recordedAt: recordedAt) {
+                case .inserted:
+                    spawnEdgesInsertedCount += 1
+                case .updated:
+                    spawnEdgesUpdatedCount += 1
+                case .duplicate:
+                    break
+                }
+            }
+
+            for tool in batch.dynamicTools {
+                try insertDynamicToolTempID(tool)
+                switch try upsertCodexThreadDynamicTool(tool, recordedAt: recordedAt) {
+                case .inserted:
+                    dynamicToolsInsertedCount += 1
+                case .updated:
+                    dynamicToolsUpdatedCount += 1
+                case .duplicate:
+                    break
+                }
+            }
+
+            if batch.pruneDynamicTools {
+                try execute(
+                    """
+                    DELETE FROM codex_thread_dynamic_tools
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM codex_imported_dynamic_tools imported
+                        WHERE imported.thread_id = codex_thread_dynamic_tools.thread_id
+                            AND imported.position = codex_thread_dynamic_tools.position
+                    )
+                    """
+                )
+                staleRowsDeletedCount += Int(sqlite3_changes(database))
+            }
+            if batch.pruneSpawnEdges {
+                try execute(
+                    """
+                    DELETE FROM codex_thread_spawn_edges
+                    WHERE child_thread_id NOT IN (SELECT child_thread_id FROM codex_imported_spawn_edges)
+                    """
+                )
+                staleRowsDeletedCount += Int(sqlite3_changes(database))
+            }
+            if batch.pruneThreads {
+                try execute(
+                    """
+                    DELETE FROM codex_thread_catalog
+                    WHERE thread_id NOT IN (SELECT thread_id FROM codex_imported_thread_ids)
+                    """
+                )
+                staleRowsDeletedCount += Int(sqlite3_changes(database))
+            }
+        }
+
+        return CodexThreadCatalogImportResult(
+            threadsInsertedCount: threadsInsertedCount,
+            threadsUpdatedCount: threadsUpdatedCount,
+            spawnEdgesInsertedCount: spawnEdgesInsertedCount,
+            spawnEdgesUpdatedCount: spawnEdgesUpdatedCount,
+            dynamicToolsInsertedCount: dynamicToolsInsertedCount,
+            dynamicToolsUpdatedCount: dynamicToolsUpdatedCount,
+            staleRowsDeletedCount: staleRowsDeletedCount,
+            latestThreadUpdatedAt: batch.threads.compactMap(\.updatedAt).max()
+        )
+    }
+
+    func codexThreadCatalogThreads() throws -> [CodexThreadCatalogThread] {
+        let statement = try prepare(
+            """
+            SELECT thread_id, rollout_path, created_at, updated_at, source, model_provider,
+                project_path, sandbox_policy, approval_mode, tokens_used, has_user_event,
+                archived, archived_at, git_sha, git_branch, git_origin_url, cli_version,
+                agent_nickname, agent_role, agent_path, memory_mode, model, reasoning_effort,
+                thread_source
+            FROM codex_thread_catalog
+            ORDER BY updated_at, thread_id
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var threads: [CodexThreadCatalogThread] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let thread = CodexThreadCatalogThread(
+                    threadID: optionalColumnText(statement, index: 0),
+                    rolloutPath: optionalColumnText(statement, index: 1),
+                    createdAt: optionalColumnDate(statement, index: 2),
+                    updatedAt: optionalColumnDate(statement, index: 3),
+                    source: optionalColumnText(statement, index: 4),
+                    modelProvider: optionalColumnText(statement, index: 5),
+                    cwd: optionalColumnText(statement, index: 6),
+                    sandboxPolicy: optionalColumnText(statement, index: 7),
+                    approvalMode: optionalColumnText(statement, index: 8),
+                    tokensUsed: sqlite3_column_int64(statement, 9),
+                    hasUserEvent: sqlite3_column_int(statement, 10) != 0,
+                    archived: sqlite3_column_int(statement, 11) != 0,
+                    archivedAt: optionalColumnDate(statement, index: 12),
+                    gitSHA: optionalColumnText(statement, index: 13),
+                    gitBranch: optionalColumnText(statement, index: 14),
+                    gitOriginURL: optionalColumnText(statement, index: 15),
+                    cliVersion: optionalColumnText(statement, index: 16),
+                    agentNickname: optionalColumnText(statement, index: 17),
+                    agentRole: optionalColumnText(statement, index: 18),
+                    agentPath: optionalColumnText(statement, index: 19),
+                    memoryMode: optionalColumnText(statement, index: 20),
+                    model: optionalColumnText(statement, index: 21),
+                    reasoningEffort: optionalColumnText(statement, index: 22),
+                    threadSource: optionalColumnText(statement, index: 23)
+                ) {
+                    threads.append(thread)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+        return threads
+    }
+
+    func codexThreadSpawnEdges() throws -> [CodexThreadSpawnEdge] {
+        let statement = try prepare(
+            """
+            SELECT parent_thread_id, child_thread_id, status
+            FROM codex_thread_spawn_edges
+            ORDER BY parent_thread_id, child_thread_id
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var edges: [CodexThreadSpawnEdge] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let edge = CodexThreadSpawnEdge(
+                    parentThreadID: optionalColumnText(statement, index: 0),
+                    childThreadID: optionalColumnText(statement, index: 1),
+                    status: optionalColumnText(statement, index: 2)
+                ) {
+                    edges.append(edge)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+        return edges
+    }
+
+    func codexThreadDynamicTools() throws -> [CodexThreadDynamicTool] {
+        let statement = try prepare(
+            """
+            SELECT thread_id, position, name, namespace, defer_loading
+            FROM codex_thread_dynamic_tools
+            ORDER BY thread_id, position
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var tools: [CodexThreadDynamicTool] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let tool = CodexThreadDynamicTool(
+                    threadID: optionalColumnText(statement, index: 0),
+                    position: sqlite3_column_int64(statement, 1),
+                    name: optionalColumnText(statement, index: 2),
+                    namespace: optionalColumnText(statement, index: 3),
+                    deferLoading: sqlite3_column_int(statement, 4) != 0
+                ) {
+                    tools.append(tool)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+        return tools
+    }
+
+    private enum ThreadCatalogUpsertResult {
+        case inserted
+        case updated
+        case duplicate
+    }
+
+    private func resetThreadCatalogTempTable(name: String, columns: String) throws {
+        try execute("DROP TABLE IF EXISTS \(name)")
+        try execute("CREATE TEMP TABLE \(name) (\(columns))")
+    }
+
+    private func insertThreadCatalogTempID(_ id: String, table: String, column: String) throws {
+        let statement = try prepare("INSERT OR IGNORE INTO \(table) (\(column)) VALUES (?)")
+        defer { sqlite3_finalize(statement) }
+
+        bindText(id, to: 1, in: statement)
+        try step(statement)
+    }
+
+    private func insertDynamicToolTempID(_ tool: CodexThreadDynamicTool) throws {
+        let statement = try prepare(
+            "INSERT OR IGNORE INTO codex_imported_dynamic_tools (thread_id, position) VALUES (?, ?)"
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(tool.threadID, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, tool.position)
+        try step(statement)
+    }
+
+    private func upsertCodexThreadCatalogThread(
+        _ thread: CodexThreadCatalogThread,
+        recordedAt: Date
+    ) throws -> ThreadCatalogUpsertResult {
+        let existed = try codexThreadCatalogThreadExists(thread.threadID)
+        let statement = try prepare(
+            """
+            INSERT INTO codex_thread_catalog (
+                thread_id, rollout_path, created_at, updated_at, source, model_provider,
+                project_path, project_name, sandbox_policy, approval_mode, tokens_used,
+                has_user_event, archived, archived_at, git_sha, git_branch, git_origin_url,
+                cli_version, agent_nickname, agent_role, agent_path, memory_mode, model,
+                reasoning_effort, thread_source, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET
+                rollout_path = excluded.rollout_path,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                source = excluded.source,
+                model_provider = excluded.model_provider,
+                project_path = excluded.project_path,
+                project_name = excluded.project_name,
+                sandbox_policy = excluded.sandbox_policy,
+                approval_mode = excluded.approval_mode,
+                tokens_used = excluded.tokens_used,
+                has_user_event = excluded.has_user_event,
+                archived = excluded.archived,
+                archived_at = excluded.archived_at,
+                git_sha = excluded.git_sha,
+                git_branch = excluded.git_branch,
+                git_origin_url = excluded.git_origin_url,
+                cli_version = excluded.cli_version,
+                agent_nickname = excluded.agent_nickname,
+                agent_role = excluded.agent_role,
+                agent_path = excluded.agent_path,
+                memory_mode = excluded.memory_mode,
+                model = excluded.model,
+                reasoning_effort = excluded.reasoning_effort,
+                thread_source = excluded.thread_source,
+                recorded_at = excluded.recorded_at
+            WHERE codex_thread_catalog.rollout_path IS NOT excluded.rollout_path
+                OR codex_thread_catalog.created_at IS NOT excluded.created_at
+                OR codex_thread_catalog.updated_at IS NOT excluded.updated_at
+                OR codex_thread_catalog.source IS NOT excluded.source
+                OR codex_thread_catalog.model_provider IS NOT excluded.model_provider
+                OR codex_thread_catalog.project_path IS NOT excluded.project_path
+                OR codex_thread_catalog.project_name IS NOT excluded.project_name
+                OR codex_thread_catalog.sandbox_policy IS NOT excluded.sandbox_policy
+                OR codex_thread_catalog.approval_mode IS NOT excluded.approval_mode
+                OR codex_thread_catalog.tokens_used IS NOT excluded.tokens_used
+                OR codex_thread_catalog.has_user_event IS NOT excluded.has_user_event
+                OR codex_thread_catalog.archived IS NOT excluded.archived
+                OR codex_thread_catalog.archived_at IS NOT excluded.archived_at
+                OR codex_thread_catalog.git_sha IS NOT excluded.git_sha
+                OR codex_thread_catalog.git_branch IS NOT excluded.git_branch
+                OR codex_thread_catalog.git_origin_url IS NOT excluded.git_origin_url
+                OR codex_thread_catalog.cli_version IS NOT excluded.cli_version
+                OR codex_thread_catalog.agent_nickname IS NOT excluded.agent_nickname
+                OR codex_thread_catalog.agent_role IS NOT excluded.agent_role
+                OR codex_thread_catalog.agent_path IS NOT excluded.agent_path
+                OR codex_thread_catalog.memory_mode IS NOT excluded.memory_mode
+                OR codex_thread_catalog.model IS NOT excluded.model
+                OR codex_thread_catalog.reasoning_effort IS NOT excluded.reasoning_effort
+                OR codex_thread_catalog.thread_source IS NOT excluded.thread_source
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(thread.threadID, to: 1, in: statement)
+        bindOptionalText(thread.rolloutPath, to: 2, in: statement)
+        bindOptionalDate(thread.createdAt, to: 3, in: statement)
+        bindOptionalDate(thread.updatedAt, to: 4, in: statement)
+        bindOptionalText(thread.source, to: 5, in: statement)
+        bindOptionalText(thread.modelProvider, to: 6, in: statement)
+        bindOptionalText(thread.projectPath, to: 7, in: statement)
+        bindOptionalText(thread.projectName, to: 8, in: statement)
+        bindOptionalText(thread.sandboxPolicy, to: 9, in: statement)
+        bindOptionalText(thread.approvalMode, to: 10, in: statement)
+        sqlite3_bind_int64(statement, 11, thread.tokensUsed)
+        sqlite3_bind_int64(statement, 12, thread.hasUserEvent ? 1 : 0)
+        sqlite3_bind_int64(statement, 13, thread.archived ? 1 : 0)
+        bindOptionalDate(thread.archivedAt, to: 14, in: statement)
+        bindOptionalText(thread.gitSHA, to: 15, in: statement)
+        bindOptionalText(thread.gitBranch, to: 16, in: statement)
+        bindOptionalText(thread.gitOriginURL, to: 17, in: statement)
+        bindOptionalText(thread.cliVersion, to: 18, in: statement)
+        bindOptionalText(thread.agentNickname, to: 19, in: statement)
+        bindOptionalText(thread.agentRole, to: 20, in: statement)
+        bindOptionalText(thread.agentPath, to: 21, in: statement)
+        bindOptionalText(thread.memoryMode, to: 22, in: statement)
+        bindOptionalText(thread.model, to: 23, in: statement)
+        bindOptionalText(thread.reasoningEffort, to: 24, in: statement)
+        bindOptionalText(thread.threadSource, to: 25, in: statement)
+        bindOptionalDate(recordedAt, to: 26, in: statement)
+
+        try step(statement)
+        guard sqlite3_changes(database) > 0 else {
+            return .duplicate
+        }
+        return existed ? .updated : .inserted
+    }
+
+    private func upsertCodexThreadSpawnEdge(
+        _ edge: CodexThreadSpawnEdge,
+        recordedAt: Date
+    ) throws -> ThreadCatalogUpsertResult {
+        let existed = try codexThreadSpawnEdgeExists(edge.childThreadID)
+        let statement = try prepare(
+            """
+            INSERT INTO codex_thread_spawn_edges (
+                parent_thread_id, child_thread_id, status, recorded_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(child_thread_id) DO UPDATE SET
+                parent_thread_id = excluded.parent_thread_id,
+                status = excluded.status,
+                recorded_at = excluded.recorded_at
+            WHERE codex_thread_spawn_edges.parent_thread_id IS NOT excluded.parent_thread_id
+                OR codex_thread_spawn_edges.status IS NOT excluded.status
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(edge.parentThreadID, to: 1, in: statement)
+        bindText(edge.childThreadID, to: 2, in: statement)
+        bindOptionalText(edge.status, to: 3, in: statement)
+        bindOptionalDate(recordedAt, to: 4, in: statement)
+
+        try step(statement)
+        guard sqlite3_changes(database) > 0 else {
+            return .duplicate
+        }
+        return existed ? .updated : .inserted
+    }
+
+    private func upsertCodexThreadDynamicTool(
+        _ tool: CodexThreadDynamicTool,
+        recordedAt: Date
+    ) throws -> ThreadCatalogUpsertResult {
+        let existed = try codexThreadDynamicToolExists(threadID: tool.threadID, position: tool.position)
+        let statement = try prepare(
+            """
+            INSERT INTO codex_thread_dynamic_tools (
+                thread_id, position, name, namespace, defer_loading, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(thread_id, position) DO UPDATE SET
+                name = excluded.name,
+                namespace = excluded.namespace,
+                defer_loading = excluded.defer_loading,
+                recorded_at = excluded.recorded_at
+            WHERE codex_thread_dynamic_tools.name IS NOT excluded.name
+                OR codex_thread_dynamic_tools.namespace IS NOT excluded.namespace
+                OR codex_thread_dynamic_tools.defer_loading IS NOT excluded.defer_loading
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(tool.threadID, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, tool.position)
+        bindText(tool.name, to: 3, in: statement)
+        bindOptionalText(tool.namespace, to: 4, in: statement)
+        sqlite3_bind_int64(statement, 5, tool.deferLoading ? 1 : 0)
+        bindOptionalDate(recordedAt, to: 6, in: statement)
+
+        try step(statement)
+        guard sqlite3_changes(database) > 0 else {
+            return .duplicate
+        }
+        return existed ? .updated : .inserted
+    }
+
+    private func codexThreadCatalogThreadExists(_ threadID: String) throws -> Bool {
+        try rowExists("SELECT 1 FROM codex_thread_catalog WHERE thread_id = ? LIMIT 1", bindings: [threadID])
+    }
+
+    private func codexThreadSpawnEdgeExists(_ childThreadID: String) throws -> Bool {
+        try rowExists("SELECT 1 FROM codex_thread_spawn_edges WHERE child_thread_id = ? LIMIT 1", bindings: [childThreadID])
+    }
+
+    private func codexThreadDynamicToolExists(threadID: String, position: Int64) throws -> Bool {
+        let statement = try prepare(
+            "SELECT 1 FROM codex_thread_dynamic_tools WHERE thread_id = ? AND position = ? LIMIT 1"
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(threadID, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, position)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return true
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func rowExists(_ sql: String, bindings: [String]) throws -> Bool {
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+
+        for (offset, binding) in bindings.enumerated() {
+            bindText(binding, to: Int32(offset + 1), in: statement)
+        }
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return true
+        case SQLITE_DONE:
+            return false
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
 }

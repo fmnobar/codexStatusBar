@@ -58,6 +58,8 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState
     func captureSessionTaskTimingIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexSessionTaskTimingCaptureState
     func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState
+    func captureThreadCatalogIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexThreadCatalogCaptureState
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
@@ -78,6 +80,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexLiveTokenCaptureState
     typealias TurnPerformanceImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexTurnPerformanceCaptureState
     typealias SessionTaskTimingImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexSessionTaskTimingCaptureState
+    typealias ThreadCatalogImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexThreadCatalogCaptureState
 
     static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
         store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
@@ -91,25 +94,33 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         store.captureCodexSessionTaskTiming(at: date, calendar: calendar, force: force)
     }
 
+    static let liveThreadCatalogImporter: ThreadCatalogImporter = { store, date, _, force in
+        store.captureCodexThreadCatalog(at: date, force: force)
+    }
+
     private let storeFactory: StoreFactory
     private let recentTokenHistoryImporter: RecentTokenHistoryImporter
     private let turnPerformanceImporter: TurnPerformanceImporter
     private let sessionTaskTimingImporter: SessionTaskTimingImporter
+    private let threadCatalogImporter: ThreadCatalogImporter
     private var cachedStore: UsageHistoryStore?
     private var lastRecentTokenImportAt: Date?
     private var lastTurnPerformanceImportAt: Date?
     private var lastSessionTaskTimingImportAt: Date?
+    private var lastThreadCatalogImportAt: Date?
 
     init(
         store: UsageHistoryStore,
         recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter,
         turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter,
-        sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter
+        sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter,
+        threadCatalogImporter: @escaping ThreadCatalogImporter = UsageHistoryDatabaseWorker.liveThreadCatalogImporter
     ) {
         self.storeFactory = { store }
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
         self.turnPerformanceImporter = turnPerformanceImporter
         self.sessionTaskTimingImporter = sessionTaskTimingImporter
+        self.threadCatalogImporter = threadCatalogImporter
         self.cachedStore = store
     }
 
@@ -117,12 +128,14 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         storeFactory: @escaping StoreFactory,
         recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter,
         turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter,
-        sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter
+        sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter,
+        threadCatalogImporter: @escaping ThreadCatalogImporter = UsageHistoryDatabaseWorker.liveThreadCatalogImporter
     ) {
         self.storeFactory = storeFactory
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
         self.turnPerformanceImporter = turnPerformanceImporter
         self.sessionTaskTimingImporter = sessionTaskTimingImporter
+        self.threadCatalogImporter = threadCatalogImporter
     }
 
     static func applicationSupportStore() -> UsageHistoryDatabaseWorker {
@@ -250,6 +263,28 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             return try store.codexSessionTaskTimingCaptureState()
         } catch {
             return CodexSessionTaskTimingCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexThreadCatalogCaptureState {
+        do {
+            let store = try store()
+            return importThreadCatalogIfNeeded(store: store, at: date, calendar: calendar, force: force)
+        } catch {
+            return CodexThreadCatalogCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func threadCatalogCaptureState() -> CodexThreadCatalogCaptureState {
+        do {
+            let store = try store()
+            return try store.codexThreadCatalogCaptureState()
+        } catch {
+            return CodexThreadCatalogCaptureState(status: .failed, lastErrorText: error.localizedDescription)
         }
     }
 
@@ -436,6 +471,25 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
         let state = sessionTaskTimingImporter(store, date, calendar, force)
         lastSessionTaskTimingImportAt = date
+        return state
+    }
+
+    private func importThreadCatalogIfNeeded(
+        store: UsageHistoryStore,
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexThreadCatalogCaptureState {
+        if let lastThreadCatalogImportAt,
+           date.timeIntervalSince(lastThreadCatalogImportAt) < 30,
+           calendar.isDate(lastThreadCatalogImportAt, inSameDayAs: date),
+           !force
+        {
+            return (try? store.codexThreadCatalogCaptureState()) ?? CodexThreadCatalogCaptureState()
+        }
+
+        let state = threadCatalogImporter(store, date, calendar, force)
+        lastThreadCatalogImportAt = date
         return state
     }
 

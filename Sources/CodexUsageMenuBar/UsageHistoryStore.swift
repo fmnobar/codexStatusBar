@@ -276,6 +276,77 @@ extension UsageHistoryStore {
         }
         return .noNewEvents
     }
+
+    @discardableResult
+    func captureCodexThreadCatalog(
+        at date: Date,
+        minimumInterval: TimeInterval = 30,
+        force: Bool = false,
+        importer: CodexThreadCatalogImporter = CodexThreadCatalogImporter()
+    ) -> CodexThreadCatalogCaptureState {
+        let sourceKey = CodexThreadCatalogCaptureState.stateSQLiteSourceKey
+        let existingState = (try? codexThreadCatalogCaptureState(sourceKey: sourceKey))
+            ?? CodexThreadCatalogCaptureState(sourceKey: sourceKey)
+
+        if !force,
+           let lastCheckedAt = existingState.lastCheckedAt,
+           date.timeIntervalSince(lastCheckedAt) < minimumInterval
+        {
+            return existingState
+        }
+
+        do {
+            let result = try importer.importThreadCatalog(into: self)
+            let status = Self.threadCatalogCaptureStatus(for: result)
+            let state = CodexThreadCatalogCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedThreadUpdatedAt: result.latestThreadUpdatedAt ?? existingState.lastImportedThreadUpdatedAt,
+                status: status,
+                threadsInsertedCount: result.threadsInsertedCount,
+                threadsUpdatedCount: result.threadsUpdatedCount,
+                spawnEdgesInsertedCount: result.spawnEdgesInsertedCount,
+                spawnEdgesUpdatedCount: result.spawnEdgesUpdatedCount,
+                dynamicToolsInsertedCount: result.dynamicToolsInsertedCount,
+                dynamicToolsUpdatedCount: result.dynamicToolsUpdatedCount,
+                staleRowsDeletedCount: result.staleRowsDeletedCount,
+                sourcePath: importer.stateDatabaseURL.path,
+                lastErrorText: nil
+            )
+            try recordCodexThreadCatalogCaptureState(state)
+            return state
+        } catch {
+            let state = CodexThreadCatalogCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedThreadUpdatedAt: existingState.lastImportedThreadUpdatedAt,
+                status: .failed,
+                sourcePath: importer.stateDatabaseURL.path,
+                lastErrorText: error.localizedDescription
+            )
+            try? recordCodexThreadCatalogCaptureState(state)
+            return state
+        }
+    }
+
+    private static func threadCatalogCaptureStatus(
+        for result: CodexThreadCatalogImportResult
+    ) -> CodexThreadCatalogCaptureStatus {
+        if result.threadsInsertedCount > 0
+            || result.spawnEdgesInsertedCount > 0
+            || result.dynamicToolsInsertedCount > 0
+        {
+            return .imported
+        }
+        if result.threadsUpdatedCount > 0
+            || result.spawnEdgesUpdatedCount > 0
+            || result.dynamicToolsUpdatedCount > 0
+            || result.staleRowsDeletedCount > 0
+        {
+            return .updated
+        }
+        return .noNewEvents
+    }
 }
 
 enum UsageHistoryStoreError: LocalizedError {

@@ -46,6 +46,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var localTokenCaptureState = CodexLiveTokenCaptureState()
     @Published private(set) var turnPerformanceCaptureState = CodexTurnPerformanceCaptureState()
     @Published private(set) var sessionTaskTimingCaptureState = CodexSessionTaskTimingCaptureState()
+    @Published private(set) var threadCatalogCaptureState = CodexThreadCatalogCaptureState()
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -97,6 +98,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
             },
             sessionTaskTimingImporter: { store, _, _, _ in
                 (try? store.codexSessionTaskTimingCaptureState()) ?? CodexSessionTaskTimingCaptureState()
+            },
+            threadCatalogImporter: { store, _, _, _ in
+                (try? store.codexThreadCatalogCaptureState()) ?? CodexThreadCatalogCaptureState()
             }
         )
         self.init(
@@ -226,6 +230,34 @@ final class DataManagementSettingsViewModel: ObservableObject {
         sessionTaskTimingCaptureState.lastErrorText ?? "None"
     }
 
+    var threadCatalogCaptureLastCheckedText: String {
+        guard let lastCheckedAt = threadCatalogCaptureState.lastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var threadCatalogCaptureLatestThreadText: String {
+        guard let lastImportedThreadUpdatedAt = threadCatalogCaptureState.lastImportedThreadUpdatedAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: lastImportedThreadUpdatedAt)
+    }
+
+    var threadCatalogCaptureThreadsText: String {
+        "\(threadCatalogCaptureState.threadsInsertedCount) imported, \(threadCatalogCaptureState.threadsUpdatedCount) updated"
+    }
+
+    var threadCatalogCaptureRelationshipsText: String {
+        "\(threadCatalogCaptureState.spawnEdgesInsertedCount + threadCatalogCaptureState.dynamicToolsInsertedCount) imported, \(threadCatalogCaptureState.spawnEdgesUpdatedCount + threadCatalogCaptureState.dynamicToolsUpdatedCount) updated, \(threadCatalogCaptureState.staleRowsDeletedCount) stale"
+    }
+
+    var threadCatalogCaptureLastErrorText: String {
+        threadCatalogCaptureState.lastErrorText ?? "None"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -267,12 +299,21 @@ final class DataManagementSettingsViewModel: ObservableObject {
         )
     }
 
+    func refreshThreadCatalogCaptureState() async {
+        threadCatalogCaptureState = await database.captureThreadCatalogIfNeeded(
+            at: Date(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
         await refreshLocalTokenCaptureState()
         await refreshTurnPerformanceCaptureState()
         await refreshSessionTaskTimingCaptureState()
+        await refreshThreadCatalogCaptureState()
     }
 
     func revealDatabaseInFinder() {
@@ -855,6 +896,53 @@ struct DataManagementSettingsView: View {
                     GridRow {
                         Text("Last error")
                         Text(viewModel.sessionTaskTimingCaptureLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Thread catalog")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Source")
+                        Text(viewModel.threadCatalogCaptureState.sourcePath ?? viewModel.threadCatalogCaptureState.sourceKey)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    GridRow {
+                        Text("Status")
+                        Text(viewModel.threadCatalogCaptureState.status.displayText)
+                    }
+                    GridRow {
+                        Text("Last checked")
+                        Text(viewModel.threadCatalogCaptureLastCheckedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Latest thread")
+                        Text(viewModel.threadCatalogCaptureLatestThreadText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Threads")
+                        Text(viewModel.threadCatalogCaptureThreadsText)
+                    }
+                    GridRow {
+                        Text("Edges/tools")
+                        Text(viewModel.threadCatalogCaptureRelationshipsText)
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.threadCatalogCaptureLastErrorText)
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }

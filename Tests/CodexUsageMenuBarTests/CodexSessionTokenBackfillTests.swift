@@ -1047,4 +1047,162 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testThreadCatalogImporterReadsSafeMetadataOnly() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let sourceURL = try makeTemporaryDirectory().appendingPathComponent("state_5.sqlite")
+        try createThreadCatalogSourceDatabase(
+            at: sourceURL,
+            sql: """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT NOT NULL,
+                sandbox_policy TEXT NOT NULL,
+                approval_mode TEXT NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                cli_version TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                agent_nickname TEXT,
+                agent_role TEXT,
+                memory_mode TEXT NOT NULL DEFAULT 'enabled',
+                model TEXT,
+                reasoning_effort TEXT,
+                agent_path TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                thread_source TEXT,
+                preview TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT NOT NULL,
+                child_thread_id TEXT NOT NULL PRIMARY KEY,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE thread_dynamic_tools (
+                thread_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                input_schema TEXT NOT NULL,
+                defer_loading INTEGER NOT NULL DEFAULT 0,
+                namespace TEXT,
+                PRIMARY KEY (thread_id, position)
+            );
+            INSERT INTO threads (
+                id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
+                sandbox_policy, approval_mode, tokens_used, has_user_event, archived,
+                archived_at, git_sha, git_branch, git_origin_url, cli_version,
+                first_user_message, agent_nickname, agent_role, memory_mode, model,
+                reasoning_effort, agent_path, created_at_ms, updated_at_ms, thread_source, preview
+            ) VALUES (
+                'thread-1', '/Users/example/.codex/sessions/rollout.jsonl', 1770000000, 1770000010,
+                'vscode', 'openai', '/Users/example/Projects/app', 'Secret title',
+                '{"type":"workspace-write","writable_roots":["/Users/example/Projects/app"]}',
+                'on-request', 12345, 1, 0, NULL, 'abcdef123456', 'main',
+                'git@github.com:example/app.git', '0.42.0', 'do not store this message',
+                'helper', 'reviewer', 'enabled', 'gpt-5.6-future', 'xhigh',
+                '/Users/example/.codex/agents/reviewer.md', 1770000000123, 1770000010456, 'cli',
+                'Secret preview'
+            );
+            INSERT INTO threads (
+                id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
+                sandbox_policy, approval_mode, tokens_used
+            ) VALUES (
+                'thread-2', '/Users/example/.codex/sessions/child.jsonl', 1770000020, 1770000030,
+                'cli', 'openai', '/Users/example/Projects/app', 'Child title',
+                '{"type":"read-only"}', 'never', 1
+            );
+            INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
+            VALUES ('thread-1', 'thread-2', 'completed');
+            INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema, defer_loading, namespace)
+            VALUES ('thread-1', 0, 'list_pull_requests', 'secret tool description', '{"secret":true}', 1, 'github');
+            """
+        )
+        let importer = CodexThreadCatalogImporter(stateDatabaseURL: sourceURL)
+
+        let result = try importer.importThreadCatalog(into: store)
+
+        XCTAssertEqual(result.threadsInsertedCount, 2)
+        XCTAssertEqual(result.spawnEdgesInsertedCount, 1)
+        XCTAssertEqual(result.dynamicToolsInsertedCount, 1)
+        let threads = try store.codexThreadCatalogThreads()
+        let firstThread = try XCTUnwrap(threads.first { $0.threadID == "thread-1" })
+        XCTAssertEqual(firstThread.projectPath, "/Users/example/Projects/app")
+        XCTAssertEqual(firstThread.projectName, "app")
+        XCTAssertEqual(firstThread.sandboxPolicy, "workspace-write")
+        XCTAssertEqual(firstThread.approvalMode, "on-request")
+        XCTAssertEqual(firstThread.model, "gpt-5.6-future")
+        XCTAssertEqual(firstThread.reasoningEffort, "xhigh")
+        XCTAssertEqual(firstThread.threadSource, "cli")
+        XCTAssertEqual(firstThread.tokensUsed, 12345)
+        XCTAssertEqual(firstThread.createdAt, Date(timeIntervalSince1970: 1_770_000_000))
+        XCTAssertEqual(firstThread.updatedAt, Date(timeIntervalSince1970: 1_770_000_010))
+        XCTAssertEqual(try store.codexThreadSpawnEdges().first?.status, "completed")
+        XCTAssertEqual(try store.codexThreadDynamicTools().first?.namespace, "github")
+        XCTAssertEqual(try store.codexThreadDynamicTools().first?.deferLoading, true)
+        let threadColumns = try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('codex_thread_catalog')")
+        let toolColumns = try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('codex_thread_dynamic_tools')")
+        XCTAssertFalse(threadColumns.contains("title"))
+        XCTAssertFalse(threadColumns.contains("first_user_message"))
+        XCTAssertFalse(threadColumns.contains("preview"))
+        XCTAssertFalse(toolColumns.contains("description"))
+        XCTAssertFalse(toolColumns.contains("input_schema"))
+    }
+
+    func testThreadCatalogImporterHandlesSchemaDriftAndIsIdempotent() async throws {
+        let store = try makeStore()
+        let sourceURL = try makeTemporaryDirectory().appendingPathComponent("state_5.sqlite")
+        try createThreadCatalogSourceDatabase(
+            at: sourceURL,
+            sql: """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO threads (id, created_at, updated_at)
+            VALUES ('thread-minimal', 1770000100, 1770000200);
+            """
+        )
+        let importer = CodexThreadCatalogImporter(stateDatabaseURL: sourceURL)
+
+        let firstResult = try importer.importThreadCatalog(into: store)
+        let secondResult = try importer.importThreadCatalog(into: store)
+
+        XCTAssertEqual(firstResult.threadsInsertedCount, 1)
+        XCTAssertEqual(secondResult.changedRowCount, 0)
+        let thread = try XCTUnwrap(try store.codexThreadCatalogThreads().first)
+        XCTAssertEqual(thread.threadID, "thread-minimal")
+        XCTAssertNil(thread.projectPath)
+        XCTAssertEqual(thread.updatedAt, Date(timeIntervalSince1970: 1_770_000_200))
+    }
+
+    private func createThreadCatalogSourceDatabase(at databaseURL: URL, sql: String) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected source database to open")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        if result != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail(message)
+        }
+    }
 }

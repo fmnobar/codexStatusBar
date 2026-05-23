@@ -26,9 +26,50 @@ extension UsageHistoryStoreTests {
         try store.recordCodexSessionTaskTimingCaptureState(
             CodexSessionTaskTimingCaptureState(lastCheckedAt: date("2026-04-14T20:00:04Z"), status: .imported, insertedCount: 1)
         )
+        try store.importCodexThreadCatalog(
+            CodexThreadCatalogImportBatch(
+                threads: [
+                    CodexThreadCatalogThread(
+                        threadID: "thread-clear",
+                        rolloutPath: "/tmp/rollout.jsonl",
+                        createdAt: date("2026-04-14T20:00:00Z"),
+                        updatedAt: date("2026-04-14T20:00:04Z"),
+                        source: "cli",
+                        modelProvider: "openai",
+                        cwd: "/Users/example/Projects/clear",
+                        sandboxPolicy: "danger-full-access",
+                        approvalMode: "never",
+                        tokensUsed: 10,
+                        hasUserEvent: true,
+                        archived: false,
+                        archivedAt: nil,
+                        gitSHA: nil,
+                        gitBranch: "main",
+                        gitOriginURL: nil,
+                        cliVersion: "0.42.0",
+                        agentNickname: nil,
+                        agentRole: nil,
+                        agentPath: nil,
+                        memoryMode: "enabled",
+                        model: "gpt-5.5",
+                        reasoningEffort: "high",
+                        threadSource: "cli"
+                    )!,
+                ],
+                spawnEdges: [],
+                dynamicTools: [],
+                pruneThreads: true,
+                pruneSpawnEdges: true,
+                pruneDynamicTools: true
+            )
+        )
+        try store.recordCodexThreadCatalogCaptureState(
+            CodexThreadCatalogCaptureState(lastCheckedAt: date("2026-04-14T20:00:05Z"), status: .imported, threadsInsertedCount: 1)
+        )
         XCTAssertTrue(try store.hasAnyHistory())
         XCTAssertEqual(try store.codexSessionTokenImportFileRecords().count, 1)
         XCTAssertEqual(try store.sessionTaskTimingEvents().count, 1)
+        XCTAssertEqual(try store.codexThreadCatalogThreads().count, 1)
 
         try store.clearHistory()
 
@@ -37,6 +78,8 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(try store.sessionTaskTimingEvents().isEmpty)
         XCTAssertNil(try store.codexSessionTaskTimingImportFileRecord(path: timingMetadata.path))
         XCTAssertEqual(try store.codexSessionTaskTimingCaptureState().status, .neverChecked)
+        XCTAssertTrue(try store.codexThreadCatalogThreads().isEmpty)
+        XCTAssertEqual(try store.codexThreadCatalogCaptureState().status, .neverChecked)
         XCTAssertFalse(try store.hasAnyHistory())
     }
 
@@ -177,6 +220,58 @@ extension UsageHistoryStoreTests {
                 insertedCount: 1
             )
         )
+        try sourceStore.importCodexThreadCatalog(
+            CodexThreadCatalogImportBatch(
+                threads: [
+                    CodexThreadCatalogThread(
+                        threadID: "thread-backup",
+                        rolloutPath: "/tmp/rollout-backup.jsonl",
+                        createdAt: date("2026-04-14T20:09:00Z"),
+                        updatedAt: date("2026-04-14T20:12:00Z"),
+                        source: "cli",
+                        modelProvider: "openai",
+                        cwd: "/Users/example/Projects/backup-project",
+                        sandboxPolicy: "{\"type\":\"workspace-write\"}",
+                        approvalMode: "on-request",
+                        tokensUsed: 500,
+                        hasUserEvent: true,
+                        archived: false,
+                        archivedAt: nil,
+                        gitSHA: "abcdef",
+                        gitBranch: "main",
+                        gitOriginURL: "git@github.com:example/backup.git",
+                        cliVersion: "0.42.0",
+                        agentNickname: "helper",
+                        agentRole: "default",
+                        agentPath: "/tmp/agent.md",
+                        memoryMode: "enabled",
+                        model: "gpt-5.5",
+                        reasoningEffort: "high",
+                        threadSource: "cli"
+                    )!,
+                ],
+                spawnEdges: [
+                    CodexThreadSpawnEdge(parentThreadID: "thread-backup", childThreadID: "thread-child", status: "running")!,
+                ],
+                dynamicTools: [
+                    CodexThreadDynamicTool(threadID: "thread-backup", position: 0, name: "list_prs", namespace: "github", deferLoading: true)!,
+                ],
+                pruneThreads: true,
+                pruneSpawnEdges: true,
+                pruneDynamicTools: true
+            )
+        )
+        try sourceStore.recordCodexThreadCatalogCaptureState(
+            CodexThreadCatalogCaptureState(
+                lastCheckedAt: date("2026-04-14T20:12:05Z"),
+                lastImportedThreadUpdatedAt: date("2026-04-14T20:12:00Z"),
+                status: .imported,
+                threadsInsertedCount: 1,
+                spawnEdgesInsertedCount: 1,
+                dynamicToolsInsertedCount: 1,
+                sourcePath: "/Users/example/.codex/state_5.sqlite"
+            )
+        )
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
 
         try sourceStore.exportBackup(to: backupURL)
@@ -201,6 +296,13 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(timingEvent.timeToFirstTokenMilliseconds, 700)
         XCTAssertEqual(timingEvent.projectName, "backup-project")
         XCTAssertEqual(try destinationStore.codexSessionTaskTimingCaptureState().status, .imported)
+        let thread = try XCTUnwrap(try destinationStore.codexThreadCatalogThreads().first)
+        XCTAssertEqual(thread.threadID, "thread-backup")
+        XCTAssertEqual(thread.projectName, "backup-project")
+        XCTAssertEqual(thread.sandboxPolicy, "workspace-write")
+        XCTAssertEqual(try destinationStore.codexThreadSpawnEdges().first?.status, "running")
+        XCTAssertEqual(try destinationStore.codexThreadDynamicTools().first?.namespace, "github")
+        XCTAssertEqual(try destinationStore.codexThreadCatalogCaptureState().status, .imported)
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
@@ -675,6 +777,34 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.sessionTaskTimingCaptureFilesText, "2 scanned, 3 skipped")
         XCTAssertEqual(viewModel.sessionTaskTimingCaptureResultText, "1 imported, 2 updated, 4 duplicate, 1 failed lines")
         XCTAssertEqual(viewModel.sessionTaskTimingCaptureLastErrorText, "None")
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsThreadCatalogCaptureState() async throws {
+        let (store, _) = try makeTemporaryStore()
+        try store.recordCodexThreadCatalogCaptureState(
+            CodexThreadCatalogCaptureState(
+                lastCheckedAt: date("2026-05-17T11:58:00Z"),
+                lastImportedThreadUpdatedAt: date("2026-05-17T11:57:00Z"),
+                status: .updated,
+                threadsInsertedCount: 1,
+                threadsUpdatedCount: 2,
+                spawnEdgesInsertedCount: 3,
+                spawnEdgesUpdatedCount: 4,
+                dynamicToolsInsertedCount: 5,
+                dynamicToolsUpdatedCount: 6,
+                staleRowsDeletedCount: 7,
+                sourcePath: "/Users/example/.codex/state_5.sqlite"
+            )
+        )
+        let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(viewModel.threadCatalogCaptureState.status, .updated)
+        XCTAssertEqual(viewModel.threadCatalogCaptureThreadsText, "1 imported, 2 updated")
+        XCTAssertEqual(viewModel.threadCatalogCaptureRelationshipsText, "8 imported, 10 updated, 7 stale")
+        XCTAssertEqual(viewModel.threadCatalogCaptureLastErrorText, "None")
     }
 
     @MainActor

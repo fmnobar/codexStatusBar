@@ -45,6 +45,10 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_task_timing_events")
             try execute("DELETE FROM codex_session_task_timing_import_files")
             try execute("DELETE FROM codex_session_task_timing_capture_state")
+            try execute("DELETE FROM codex_thread_catalog")
+            try execute("DELETE FROM codex_thread_spawn_edges")
+            try execute("DELETE FROM codex_thread_dynamic_tools")
+            try execute("DELETE FROM codex_thread_catalog_capture_state")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -229,6 +233,22 @@ extension UsageHistoryStore {
             table: "codex_session_task_timing_capture_state",
             schema: "imported_usage_history"
         )
+        let importedHasThreadCatalog = try tableExists(
+            table: "codex_thread_catalog",
+            schema: "imported_usage_history"
+        )
+        let importedHasThreadSpawnEdges = try tableExists(
+            table: "codex_thread_spawn_edges",
+            schema: "imported_usage_history"
+        )
+        let importedHasThreadDynamicTools = try tableExists(
+            table: "codex_thread_dynamic_tools",
+            schema: "imported_usage_history"
+        )
+        let importedHasThreadCatalogCaptureState = try tableExists(
+            table: "codex_thread_catalog_capture_state",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -248,6 +268,10 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_task_timing_events")
             try execute("DELETE FROM codex_session_task_timing_import_files")
             try execute("DELETE FROM codex_session_task_timing_capture_state")
+            try execute("DELETE FROM codex_thread_catalog")
+            try execute("DELETE FROM codex_thread_spawn_edges")
+            try execute("DELETE FROM codex_thread_dynamic_tools")
+            try execute("DELETE FROM codex_thread_catalog_capture_state")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -399,6 +423,68 @@ extension UsageHistoryStore {
                         inserted_count, updated_count, duplicate_count, failed_lines_skipped,
                         last_error_text
                     FROM imported_usage_history.codex_session_task_timing_capture_state
+                    """
+                )
+            }
+            if importedHasThreadCatalog {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_thread_catalog (
+                        thread_id, rollout_path, created_at, updated_at, source,
+                        model_provider, project_path, project_name, sandbox_policy,
+                        approval_mode, tokens_used, has_user_event, archived,
+                        archived_at, git_sha, git_branch, git_origin_url, cli_version,
+                        agent_nickname, agent_role, agent_path, memory_mode, model,
+                        reasoning_effort, thread_source, recorded_at
+                    )
+                    SELECT thread_id, rollout_path, created_at, updated_at, source,
+                        model_provider, project_path, project_name, sandbox_policy,
+                        approval_mode, tokens_used, has_user_event, archived,
+                        archived_at, git_sha, git_branch, git_origin_url, cli_version,
+                        agent_nickname, agent_role, agent_path, memory_mode, model,
+                        reasoning_effort, thread_source, recorded_at
+                    FROM imported_usage_history.codex_thread_catalog
+                    """
+                )
+            }
+            if importedHasThreadSpawnEdges {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_thread_spawn_edges (
+                        parent_thread_id, child_thread_id, status, recorded_at
+                    )
+                    SELECT parent_thread_id, child_thread_id, status, recorded_at
+                    FROM imported_usage_history.codex_thread_spawn_edges
+                    """
+                )
+            }
+            if importedHasThreadDynamicTools {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_thread_dynamic_tools (
+                        thread_id, position, name, namespace, defer_loading, recorded_at
+                    )
+                    SELECT thread_id, position, name, namespace, defer_loading, recorded_at
+                    FROM imported_usage_history.codex_thread_dynamic_tools
+                    """
+                )
+            }
+            if importedHasThreadCatalogCaptureState {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_thread_catalog_capture_state (
+                        source_key, last_checked_at, last_imported_thread_updated_at,
+                        status, threads_inserted_count, threads_updated_count,
+                        spawn_edges_inserted_count, spawn_edges_updated_count,
+                        dynamic_tools_inserted_count, dynamic_tools_updated_count,
+                        stale_rows_deleted_count, source_path, last_error_text
+                    )
+                    SELECT source_key, last_checked_at, last_imported_thread_updated_at,
+                        status, threads_inserted_count, threads_updated_count,
+                        spawn_edges_inserted_count, spawn_edges_updated_count,
+                        dynamic_tools_inserted_count, dynamic_tools_updated_count,
+                        stale_rows_deleted_count, source_path, last_error_text
+                    FROM imported_usage_history.codex_thread_catalog_capture_state
                     """
                 )
             }
