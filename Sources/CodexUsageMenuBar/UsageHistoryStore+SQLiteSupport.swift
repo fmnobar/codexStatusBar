@@ -111,6 +111,14 @@ extension UsageHistoryStore {
         }
     }
 
+    func bindOptionalBool(_ value: Bool?, to index: Int32, in statement: OpaquePointer) {
+        if let value {
+            sqlite3_bind_int64(statement, index, value ? 1 : 0)
+        } else {
+            sqlite3_bind_null(statement, index)
+        }
+    }
+
     func bindOptionalDate(_ value: Date?, to index: Int32, in statement: OpaquePointer) {
         bindOptionalInt(value?.timeIntervalSince1970Int, to: index, in: statement)
     }
@@ -160,6 +168,14 @@ extension UsageHistoryStore {
         }
 
         return sqlite3_column_int64(statement, index)
+    }
+
+    func optionalColumnBool(_ statement: OpaquePointer, index: Int32) -> Bool? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
+            return nil
+        }
+
+        return sqlite3_column_int(statement, index) != 0
     }
 
     func optionalColumnDate(_ statement: OpaquePointer, index: Int32) -> Date? {

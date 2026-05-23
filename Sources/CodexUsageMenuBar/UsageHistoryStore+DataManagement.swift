@@ -49,6 +49,13 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_thread_spawn_edges")
             try execute("DELETE FROM codex_thread_dynamic_tools")
             try execute("DELETE FROM codex_thread_catalog_capture_state")
+            try execute("DELETE FROM codex_model_capability_reasoning_levels")
+            try execute("DELETE FROM codex_model_capability_service_tiers")
+            try execute("DELETE FROM codex_model_capability_speed_tiers")
+            try execute("DELETE FROM codex_model_capability_input_modalities")
+            try execute("DELETE FROM codex_model_capability_tools")
+            try execute("DELETE FROM codex_model_capabilities")
+            try execute("DELETE FROM codex_model_capabilities_capture_state")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -249,6 +256,34 @@ extension UsageHistoryStore {
             table: "codex_thread_catalog_capture_state",
             schema: "imported_usage_history"
         )
+        let importedHasModelCapabilities = try tableExists(
+            table: "codex_model_capabilities",
+            schema: "imported_usage_history"
+        )
+        let importedHasModelCapabilityReasoningLevels = try tableExists(
+            table: "codex_model_capability_reasoning_levels",
+            schema: "imported_usage_history"
+        )
+        let importedHasModelCapabilityServiceTiers = try tableExists(
+            table: "codex_model_capability_service_tiers",
+            schema: "imported_usage_history"
+        )
+        let importedHasModelCapabilitySpeedTiers = try tableExists(
+            table: "codex_model_capability_speed_tiers",
+            schema: "imported_usage_history"
+        )
+        let importedHasModelCapabilityInputModalities = try tableExists(
+            table: "codex_model_capability_input_modalities",
+            schema: "imported_usage_history"
+        )
+        let importedHasModelCapabilityTools = try tableExists(
+            table: "codex_model_capability_tools",
+            schema: "imported_usage_history"
+        )
+        let importedHasModelCapabilitiesCaptureState = try tableExists(
+            table: "codex_model_capabilities_capture_state",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -272,6 +307,13 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_thread_spawn_edges")
             try execute("DELETE FROM codex_thread_dynamic_tools")
             try execute("DELETE FROM codex_thread_catalog_capture_state")
+            try execute("DELETE FROM codex_model_capability_reasoning_levels")
+            try execute("DELETE FROM codex_model_capability_service_tiers")
+            try execute("DELETE FROM codex_model_capability_speed_tiers")
+            try execute("DELETE FROM codex_model_capability_input_modalities")
+            try execute("DELETE FROM codex_model_capability_tools")
+            try execute("DELETE FROM codex_model_capabilities")
+            try execute("DELETE FROM codex_model_capabilities_capture_state")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -488,6 +530,103 @@ extension UsageHistoryStore {
                     """
                 )
             }
+            if importedHasModelCapabilities {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capabilities (
+                        slug, display_name, visibility, supported_in_api, priority,
+                        context_window, max_context_window, effective_context_window_percent,
+                        default_reasoning_level, supports_reasoning_summaries,
+                        default_reasoning_summary, supports_verbosity, default_verbosity,
+                        shell_type, apply_patch_tool_type, web_search_tool_type,
+                        supports_parallel_tool_calls, supports_image_detail_original,
+                        supports_search_tool, truncation_policy_mode, truncation_policy_limit,
+                        recorded_at
+                    )
+                    SELECT slug, display_name, visibility, supported_in_api, priority,
+                        context_window, max_context_window, effective_context_window_percent,
+                        default_reasoning_level, supports_reasoning_summaries,
+                        default_reasoning_summary, supports_verbosity, default_verbosity,
+                        shell_type, apply_patch_tool_type, web_search_tool_type,
+                        supports_parallel_tool_calls, supports_image_detail_original,
+                        supports_search_tool, truncation_policy_mode, truncation_policy_limit,
+                        recorded_at
+                    FROM imported_usage_history.codex_model_capabilities
+                    """
+                )
+            }
+            if importedHasModelCapabilityReasoningLevels {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capability_reasoning_levels (
+                        model_slug, position, effort
+                    )
+                    SELECT model_slug, position, effort
+                    FROM imported_usage_history.codex_model_capability_reasoning_levels
+                    """
+                )
+            }
+            if importedHasModelCapabilityServiceTiers {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capability_service_tiers (
+                        model_slug, position, tier_id, tier_name
+                    )
+                    SELECT model_slug, position, tier_id, tier_name
+                    FROM imported_usage_history.codex_model_capability_service_tiers
+                    """
+                )
+            }
+            if importedHasModelCapabilitySpeedTiers {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capability_speed_tiers (
+                        model_slug, position, tier_id
+                    )
+                    SELECT model_slug, position, tier_id
+                    FROM imported_usage_history.codex_model_capability_speed_tiers
+                    """
+                )
+            }
+            if importedHasModelCapabilityInputModalities {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capability_input_modalities (
+                        model_slug, position, modality
+                    )
+                    SELECT model_slug, position, modality
+                    FROM imported_usage_history.codex_model_capability_input_modalities
+                    """
+                )
+            }
+            if importedHasModelCapabilityTools {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capability_tools (
+                        model_slug, position, tool_kind, tool_value
+                    )
+                    SELECT model_slug, position, tool_kind, tool_value
+                    FROM imported_usage_history.codex_model_capability_tools
+                    """
+                )
+            }
+            if importedHasModelCapabilitiesCaptureState {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_model_capabilities_capture_state (
+                        source_key, last_checked_at, cache_fetched_at, status,
+                        models_inserted_count, models_updated_count,
+                        child_rows_inserted_count, stale_rows_deleted_count,
+                        client_version, source_path, last_error_text
+                    )
+                    SELECT source_key, last_checked_at, cache_fetched_at, status,
+                        models_inserted_count, models_updated_count,
+                        child_rows_inserted_count, stale_rows_deleted_count,
+                        client_version, source_path, last_error_text
+                    FROM imported_usage_history.codex_model_capabilities_capture_state
+                    """
+                )
+            }
         }
 
         _ = try cleanupTokenModelLabels()
@@ -624,6 +763,24 @@ extension UsageHistoryStore {
                     total_input_tokens, total_cached_input_tokens, total_output_tokens,
                     total_reasoning_output_tokens, total_total_tokens, observed_total_tokens
                 FROM token_usage_samples
+                LIMIT 1
+                """,
+                database: backupDatabase
+            )
+        }
+
+        if try backupTableExists("codex_model_capabilities", database: backupDatabase) {
+            try validateBackupQuery(
+                """
+                SELECT slug, display_name, visibility, supported_in_api, priority,
+                    context_window, max_context_window, effective_context_window_percent,
+                    default_reasoning_level, supports_reasoning_summaries,
+                    default_reasoning_summary, supports_verbosity, default_verbosity,
+                    shell_type, apply_patch_tool_type, web_search_tool_type,
+                    supports_parallel_tool_calls, supports_image_detail_original,
+                    supports_search_tool, truncation_policy_mode, truncation_policy_limit,
+                    recorded_at
+                FROM codex_model_capabilities
                 LIMIT 1
                 """,
                 database: backupDatabase

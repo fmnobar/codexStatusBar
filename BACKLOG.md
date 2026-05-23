@@ -8,9 +8,8 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Catalog Codex model capabilities | Import non-usage model metadata from `models_cache.json`, including context windows, supported reasoning levels, speed tiers, supported tools, and truncation policy. |
-| 2 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
-| 3 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
+| 1 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
+| 2 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
 
 ## Conditional Watchlist
 
@@ -20,13 +19,6 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Planned
-
-- Catalog Codex model capabilities
-  - New source: `~/.codex/models_cache.json`.
-  - Capture model slug/display name, context window, max context window, effective context window percent, supported reasoning levels, default reasoning level, supported tools, speed tiers, truncation policy, input modalities, and visibility.
-  - Treat this as model metadata, not usage telemetry.
-  - Use it to annotate dashboards, validate model labels, and explain why certain reasoning/speed options appear.
-  - Verification: cache parser tests with missing/unknown fields and UI formatter tests for model capability display.
 
 - Add turn performance and reliability analytics
   - Use the captured OTEL/session timing data to add a dashboard for duration, time-to-first-token, transport, success/error, and retry/disconnect rates.
@@ -283,7 +275,16 @@
   - Excluded thread title, first user message, preview, dynamic tool descriptions, input schemas, prompts, and content-bearing fields.
   - Added SQLite catalog/capture-state tables, backup/import, clear-history handling, launch capture, and Data settings diagnostics.
 
+- Catalog Codex model capabilities
+  - Added metadata-only capture from `~/.codex/models_cache.json`.
+  - Stored safe model capability fields such as slug/display name, visibility, API support, priority, context windows, default/supported reasoning levels, reasoning summary and verbosity support, input modalities, supported tool identities, speed tiers, service tiers, and truncation policy.
+  - Excluded instruction templates, model messages, availability NUX, migration markdown, descriptions, and arbitrary unknown text.
+  - Added SQLite capability/capture-state tables, backup/import, clear-history handling, launch capture, and Data settings diagnostics without changing token totals, History charts, or model-selection behavior.
+
 ## Next Candidates
 
-- Catalog Codex model capabilities
-  - Import non-usage model metadata from `~/.codex/models_cache.json`, then use it to annotate dashboards and explain model capability differences.
+- Add turn performance and reliability analytics
+  - Use captured OTEL/session timing data to show latency, time-to-first-token, success/error rates, transport behavior, and model/project/effort comparisons.
+
+- Add model/project efficiency insights
+  - Combine token categories, turn duration, model capability metadata, project metadata, and effort to compare throughput, cache reuse, context-window pressure, and cost shape.

@@ -81,6 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 calendar: .autoupdatingCurrent,
                 force: true
             )
+            _ = await historyDatabase.captureModelCapabilitiesIfNeeded(
+                at: Date(),
+                calendar: .autoupdatingCurrent,
+                force: true
+            )
         }
 
         Task {

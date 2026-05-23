@@ -47,6 +47,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var turnPerformanceCaptureState = CodexTurnPerformanceCaptureState()
     @Published private(set) var sessionTaskTimingCaptureState = CodexSessionTaskTimingCaptureState()
     @Published private(set) var threadCatalogCaptureState = CodexThreadCatalogCaptureState()
+    @Published private(set) var modelCapabilitiesCaptureState = CodexModelCapabilitiesCaptureState()
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -101,6 +102,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
             },
             threadCatalogImporter: { store, _, _, _ in
                 (try? store.codexThreadCatalogCaptureState()) ?? CodexThreadCatalogCaptureState()
+            },
+            modelCapabilitiesImporter: { store, _, _, _ in
+                (try? store.codexModelCapabilitiesCaptureState()) ?? CodexModelCapabilitiesCaptureState()
             }
         )
         self.init(
@@ -258,6 +262,38 @@ final class DataManagementSettingsViewModel: ObservableObject {
         threadCatalogCaptureState.lastErrorText ?? "None"
     }
 
+    var modelCapabilitiesCaptureLastCheckedText: String {
+        guard let lastCheckedAt = modelCapabilitiesCaptureState.lastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var modelCapabilitiesCaptureFetchedText: String {
+        guard let cacheFetchedAt = modelCapabilitiesCaptureState.cacheFetchedAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: cacheFetchedAt)
+    }
+
+    var modelCapabilitiesCaptureModelsText: String {
+        "\(modelCapabilitiesCaptureState.modelsInsertedCount) imported, \(modelCapabilitiesCaptureState.modelsUpdatedCount) updated"
+    }
+
+    var modelCapabilitiesCaptureDetailsText: String {
+        "\(modelCapabilitiesCaptureState.childRowsInsertedCount) details imported, \(modelCapabilitiesCaptureState.staleRowsDeletedCount) stale"
+    }
+
+    var modelCapabilitiesCaptureClientVersionText: String {
+        modelCapabilitiesCaptureState.clientVersion ?? "--"
+    }
+
+    var modelCapabilitiesCaptureLastErrorText: String {
+        modelCapabilitiesCaptureState.lastErrorText ?? "None"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -307,6 +343,14 @@ final class DataManagementSettingsViewModel: ObservableObject {
         )
     }
 
+    func refreshModelCapabilitiesCaptureState() async {
+        modelCapabilitiesCaptureState = await database.captureModelCapabilitiesIfNeeded(
+            at: Date(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
@@ -314,6 +358,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         await refreshTurnPerformanceCaptureState()
         await refreshSessionTaskTimingCaptureState()
         await refreshThreadCatalogCaptureState()
+        await refreshModelCapabilitiesCaptureState()
     }
 
     func revealDatabaseInFinder() {
@@ -943,6 +988,58 @@ struct DataManagementSettingsView: View {
                     GridRow {
                         Text("Last error")
                         Text(viewModel.threadCatalogCaptureLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Model capabilities")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Source")
+                        Text(viewModel.modelCapabilitiesCaptureState.sourcePath ?? viewModel.modelCapabilitiesCaptureState.sourceKey)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    GridRow {
+                        Text("Status")
+                        Text(viewModel.modelCapabilitiesCaptureState.status.displayText)
+                    }
+                    GridRow {
+                        Text("Last checked")
+                        Text(viewModel.modelCapabilitiesCaptureLastCheckedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Cache fetched")
+                        Text(viewModel.modelCapabilitiesCaptureFetchedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Client")
+                        Text(viewModel.modelCapabilitiesCaptureClientVersionText)
+                            .monospaced()
+                    }
+                    GridRow {
+                        Text("Models")
+                        Text(viewModel.modelCapabilitiesCaptureModelsText)
+                    }
+                    GridRow {
+                        Text("Details")
+                        Text(viewModel.modelCapabilitiesCaptureDetailsText)
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.modelCapabilitiesCaptureLastErrorText)
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }

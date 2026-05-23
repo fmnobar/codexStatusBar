@@ -347,6 +347,88 @@ extension UsageHistoryStore {
         }
         return .noNewEvents
     }
+
+    @discardableResult
+    func captureCodexModelCapabilities(
+        at date: Date,
+        minimumInterval: TimeInterval = 30,
+        force: Bool = false,
+        importer: CodexModelCapabilitiesImporter = CodexModelCapabilitiesImporter()
+    ) -> CodexModelCapabilitiesCaptureState {
+        let sourceKey = CodexModelCapabilitiesCaptureState.modelsCacheSourceKey
+        let existingState = (try? codexModelCapabilitiesCaptureState(sourceKey: sourceKey))
+            ?? CodexModelCapabilitiesCaptureState(sourceKey: sourceKey)
+
+        if !force,
+           let lastCheckedAt = existingState.lastCheckedAt,
+           date.timeIntervalSince(lastCheckedAt) < minimumInterval
+        {
+            return existingState
+        }
+
+        do {
+            let result = try importer.importModelCapabilities(into: self)
+            let state = CodexModelCapabilitiesCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                cacheFetchedAt: result.cacheFetchedAt ?? existingState.cacheFetchedAt,
+                status: Self.modelCapabilitiesCaptureStatus(for: result),
+                modelsInsertedCount: result.modelsInsertedCount,
+                modelsUpdatedCount: result.modelsUpdatedCount,
+                childRowsInsertedCount: result.childRowsInsertedCount,
+                staleRowsDeletedCount: result.staleRowsDeletedCount,
+                clientVersion: result.clientVersion ?? existingState.clientVersion,
+                sourcePath: importer.modelsCacheURL.path,
+                lastErrorText: nil
+            )
+            try recordCodexModelCapabilitiesCaptureState(state)
+            return state
+        } catch let error as CodexModelCapabilitiesImporterError {
+            let status: CodexModelCapabilitiesCaptureStatus = switch error {
+            case .sourceUnavailable:
+                .noSource
+            case .malformedJSON:
+                .malformed
+            case .noModels:
+                .noModels
+            }
+            let state = CodexModelCapabilitiesCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                cacheFetchedAt: existingState.cacheFetchedAt,
+                status: status,
+                clientVersion: existingState.clientVersion,
+                sourcePath: importer.modelsCacheURL.path,
+                lastErrorText: error.localizedDescription
+            )
+            try? recordCodexModelCapabilitiesCaptureState(state)
+            return state
+        } catch {
+            let state = CodexModelCapabilitiesCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                cacheFetchedAt: existingState.cacheFetchedAt,
+                status: .failed,
+                clientVersion: existingState.clientVersion,
+                sourcePath: importer.modelsCacheURL.path,
+                lastErrorText: error.localizedDescription
+            )
+            try? recordCodexModelCapabilitiesCaptureState(state)
+            return state
+        }
+    }
+
+    private static func modelCapabilitiesCaptureStatus(
+        for result: CodexModelCapabilitiesImportResult
+    ) -> CodexModelCapabilitiesCaptureStatus {
+        if result.modelsInsertedCount > 0 || result.childRowsInsertedCount > 0 {
+            return .imported
+        }
+        if result.modelsUpdatedCount > 0 || result.staleRowsDeletedCount > 0 {
+            return .updated
+        }
+        return .noNewEvents
+    }
 }
 
 enum UsageHistoryStoreError: LocalizedError {

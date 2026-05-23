@@ -358,6 +358,103 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capabilities (
+                slug TEXT PRIMARY KEY,
+                display_name TEXT,
+                visibility TEXT,
+                supported_in_api INTEGER,
+                priority INTEGER,
+                context_window INTEGER,
+                max_context_window INTEGER,
+                effective_context_window_percent INTEGER,
+                default_reasoning_level TEXT,
+                supports_reasoning_summaries INTEGER,
+                default_reasoning_summary TEXT,
+                supports_verbosity INTEGER,
+                default_verbosity TEXT,
+                shell_type TEXT,
+                apply_patch_tool_type TEXT,
+                web_search_tool_type TEXT,
+                supports_parallel_tool_calls INTEGER,
+                supports_image_detail_original INTEGER,
+                supports_search_tool INTEGER,
+                truncation_policy_mode TEXT,
+                truncation_policy_limit INTEGER,
+                recorded_at INTEGER NOT NULL
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capability_reasoning_levels (
+                model_slug TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                effort TEXT NOT NULL,
+                PRIMARY KEY (model_slug, position)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capability_service_tiers (
+                model_slug TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                tier_id TEXT NOT NULL,
+                tier_name TEXT,
+                PRIMARY KEY (model_slug, position)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capability_speed_tiers (
+                model_slug TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                tier_id TEXT NOT NULL,
+                PRIMARY KEY (model_slug, position)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capability_input_modalities (
+                model_slug TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                modality TEXT NOT NULL,
+                PRIMARY KEY (model_slug, position)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capability_tools (
+                model_slug TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                tool_kind TEXT NOT NULL,
+                tool_value TEXT NOT NULL,
+                PRIMARY KEY (model_slug, position)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_model_capabilities_capture_state (
+                source_key TEXT PRIMARY KEY,
+                last_checked_at INTEGER,
+                cache_fetched_at INTEGER,
+                status TEXT NOT NULL,
+                models_inserted_count INTEGER NOT NULL DEFAULT 0,
+                models_updated_count INTEGER NOT NULL DEFAULT 0,
+                child_rows_inserted_count INTEGER NOT NULL DEFAULT 0,
+                stale_rows_deleted_count INTEGER NOT NULL DEFAULT 0,
+                client_version TEXT,
+                source_path TEXT,
+                last_error_text TEXT
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -437,6 +534,16 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_dynamic_tools_namespace_name ON codex_thread_dynamic_tools(namespace, name)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_dynamic_tools_thread ON codex_thread_dynamic_tools(thread_id)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_thread_catalog_capture_state_checked ON codex_thread_catalog_capture_state(last_checked_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capabilities_priority ON codex_model_capabilities(priority, slug)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capabilities_visibility ON codex_model_capabilities(visibility, priority)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capabilities_context ON codex_model_capabilities(context_window, max_context_window)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capabilities_default_reasoning ON codex_model_capabilities(default_reasoning_level)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capability_reasoning_effort ON codex_model_capability_reasoning_levels(effort, model_slug)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capability_service_tier_id ON codex_model_capability_service_tiers(tier_id, model_slug)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capability_speed_tier_id ON codex_model_capability_speed_tiers(tier_id, model_slug)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capability_input_modality ON codex_model_capability_input_modalities(modality, model_slug)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capability_tool_kind_value ON codex_model_capability_tools(tool_kind, tool_value)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_model_capabilities_capture_state_checked ON codex_model_capabilities_capture_state(last_checked_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
         try cleanupTokenContextValuesIfNeeded()

@@ -1032,6 +1032,570 @@ extension UsageHistoryStore {
         return tools
     }
 
+    func codexModelCapabilitiesCaptureState(
+        sourceKey: String = CodexModelCapabilitiesCaptureState.modelsCacheSourceKey
+    ) throws -> CodexModelCapabilitiesCaptureState {
+        let statement = try prepare(
+            """
+            SELECT source_key, last_checked_at, cache_fetched_at, status,
+                models_inserted_count, models_updated_count,
+                child_rows_inserted_count, stale_rows_deleted_count,
+                client_version, source_path, last_error_text
+            FROM codex_model_capabilities_capture_state
+            WHERE source_key = ?
+            LIMIT 1
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(sourceKey, to: 1, in: statement)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return CodexModelCapabilitiesCaptureState(
+                sourceKey: columnText(statement, index: 0),
+                lastCheckedAt: optionalColumnDate(statement, index: 1),
+                cacheFetchedAt: optionalColumnDate(statement, index: 2),
+                status: CodexModelCapabilitiesCaptureStatus(rawValue: columnText(statement, index: 3)) ?? .neverChecked,
+                modelsInsertedCount: Int(sqlite3_column_int64(statement, 4)),
+                modelsUpdatedCount: Int(sqlite3_column_int64(statement, 5)),
+                childRowsInsertedCount: Int(sqlite3_column_int64(statement, 6)),
+                staleRowsDeletedCount: Int(sqlite3_column_int64(statement, 7)),
+                clientVersion: optionalColumnText(statement, index: 8),
+                sourcePath: optionalColumnText(statement, index: 9),
+                lastErrorText: optionalColumnText(statement, index: 10)
+            )
+        case SQLITE_DONE:
+            return CodexModelCapabilitiesCaptureState(sourceKey: sourceKey)
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    func recordCodexModelCapabilitiesCaptureState(_ state: CodexModelCapabilitiesCaptureState) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO codex_model_capabilities_capture_state (
+                source_key, last_checked_at, cache_fetched_at, status,
+                models_inserted_count, models_updated_count, child_rows_inserted_count,
+                stale_rows_deleted_count, client_version, source_path, last_error_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                last_checked_at = excluded.last_checked_at,
+                cache_fetched_at = COALESCE(excluded.cache_fetched_at, codex_model_capabilities_capture_state.cache_fetched_at),
+                status = excluded.status,
+                models_inserted_count = excluded.models_inserted_count,
+                models_updated_count = excluded.models_updated_count,
+                child_rows_inserted_count = excluded.child_rows_inserted_count,
+                stale_rows_deleted_count = excluded.stale_rows_deleted_count,
+                client_version = COALESCE(excluded.client_version, codex_model_capabilities_capture_state.client_version),
+                source_path = excluded.source_path,
+                last_error_text = excluded.last_error_text
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(state.sourceKey, to: 1, in: statement)
+        bindOptionalDate(state.lastCheckedAt, to: 2, in: statement)
+        bindOptionalDate(state.cacheFetchedAt, to: 3, in: statement)
+        bindText(state.status.rawValue, to: 4, in: statement)
+        sqlite3_bind_int64(statement, 5, Int64(state.modelsInsertedCount))
+        sqlite3_bind_int64(statement, 6, Int64(state.modelsUpdatedCount))
+        sqlite3_bind_int64(statement, 7, Int64(state.childRowsInsertedCount))
+        sqlite3_bind_int64(statement, 8, Int64(state.staleRowsDeletedCount))
+        bindOptionalText(state.clientVersion, to: 9, in: statement)
+        bindOptionalText(state.sourcePath, to: 10, in: statement)
+        bindOptionalText(state.lastErrorText, to: 11, in: statement)
+
+        try step(statement)
+    }
+
+    func importCodexModelCapabilities(_ batch: CodexModelCapabilitiesImportBatch) throws -> CodexModelCapabilitiesImportResult {
+        var modelsInsertedCount = 0
+        var modelsUpdatedCount = 0
+        var childRowsInsertedCount = 0
+        var staleRowsDeletedCount = 0
+        let recordedAt = Date()
+
+        try transaction {
+            try resetThreadCatalogTempTable(name: "codex_imported_model_capabilities", columns: "slug TEXT PRIMARY KEY")
+            try resetThreadCatalogTempTable(
+                name: "codex_imported_model_reasoning_levels",
+                columns: "model_slug TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(model_slug, position)"
+            )
+            try resetThreadCatalogTempTable(
+                name: "codex_imported_model_service_tiers",
+                columns: "model_slug TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(model_slug, position)"
+            )
+            try resetThreadCatalogTempTable(
+                name: "codex_imported_model_speed_tiers",
+                columns: "model_slug TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(model_slug, position)"
+            )
+            try resetThreadCatalogTempTable(
+                name: "codex_imported_model_input_modalities",
+                columns: "model_slug TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(model_slug, position)"
+            )
+            try resetThreadCatalogTempTable(
+                name: "codex_imported_model_tools",
+                columns: "model_slug TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(model_slug, position)"
+            )
+
+            for model in batch.models {
+                try insertThreadCatalogTempID(model.slug, table: "codex_imported_model_capabilities", column: "slug")
+                switch try upsertCodexModelCapability(model, recordedAt: recordedAt) {
+                case .inserted:
+                    modelsInsertedCount += 1
+                case .updated:
+                    modelsUpdatedCount += 1
+                case .duplicate:
+                    break
+                }
+
+                for level in model.reasoningLevels {
+                    childRowsInsertedCount += try insertModelCapabilityChildTempAndRow(
+                        modelSlug: model.slug,
+                        position: level.position,
+                        tempTable: "codex_imported_model_reasoning_levels",
+                        insertSQL: """
+                        INSERT INTO codex_model_capability_reasoning_levels (
+                            model_slug, position, effort
+                        ) VALUES (?, ?, ?)
+                        ON CONFLICT(model_slug, position) DO UPDATE SET
+                            effort = excluded.effort
+                        WHERE codex_model_capability_reasoning_levels.effort IS NOT excluded.effort
+                        """,
+                        bind: { statement in
+                            bindText(level.effort, to: 3, in: statement)
+                        }
+                    )
+                }
+                for tier in model.serviceTiers {
+                    childRowsInsertedCount += try insertModelCapabilityChildTempAndRow(
+                        modelSlug: model.slug,
+                        position: tier.position,
+                        tempTable: "codex_imported_model_service_tiers",
+                        insertSQL: """
+                        INSERT INTO codex_model_capability_service_tiers (
+                            model_slug, position, tier_id, tier_name
+                        ) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(model_slug, position) DO UPDATE SET
+                            tier_id = excluded.tier_id,
+                            tier_name = excluded.tier_name
+                        WHERE codex_model_capability_service_tiers.tier_id IS NOT excluded.tier_id
+                            OR codex_model_capability_service_tiers.tier_name IS NOT excluded.tier_name
+                        """,
+                        bind: { statement in
+                            bindText(tier.tierID, to: 3, in: statement)
+                            bindOptionalText(tier.tierName, to: 4, in: statement)
+                        }
+                    )
+                }
+                for tier in model.speedTiers {
+                    childRowsInsertedCount += try insertModelCapabilityChildTempAndRow(
+                        modelSlug: model.slug,
+                        position: tier.position,
+                        tempTable: "codex_imported_model_speed_tiers",
+                        insertSQL: """
+                        INSERT INTO codex_model_capability_speed_tiers (
+                            model_slug, position, tier_id
+                        ) VALUES (?, ?, ?)
+                        ON CONFLICT(model_slug, position) DO UPDATE SET
+                            tier_id = excluded.tier_id
+                        WHERE codex_model_capability_speed_tiers.tier_id IS NOT excluded.tier_id
+                        """,
+                        bind: { statement in
+                            bindText(tier.tierID, to: 3, in: statement)
+                        }
+                    )
+                }
+                for modality in model.inputModalities {
+                    childRowsInsertedCount += try insertModelCapabilityChildTempAndRow(
+                        modelSlug: model.slug,
+                        position: modality.position,
+                        tempTable: "codex_imported_model_input_modalities",
+                        insertSQL: """
+                        INSERT INTO codex_model_capability_input_modalities (
+                            model_slug, position, modality
+                        ) VALUES (?, ?, ?)
+                        ON CONFLICT(model_slug, position) DO UPDATE SET
+                            modality = excluded.modality
+                        WHERE codex_model_capability_input_modalities.modality IS NOT excluded.modality
+                        """,
+                        bind: { statement in
+                            bindText(modality.modality, to: 3, in: statement)
+                        }
+                    )
+                }
+                for tool in model.toolIdentifiers {
+                    childRowsInsertedCount += try insertModelCapabilityChildTempAndRow(
+                        modelSlug: model.slug,
+                        position: tool.position,
+                        tempTable: "codex_imported_model_tools",
+                        insertSQL: """
+                        INSERT INTO codex_model_capability_tools (
+                            model_slug, position, tool_kind, tool_value
+                        ) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(model_slug, position) DO UPDATE SET
+                            tool_kind = excluded.tool_kind,
+                            tool_value = excluded.tool_value
+                        WHERE codex_model_capability_tools.tool_kind IS NOT excluded.tool_kind
+                            OR codex_model_capability_tools.tool_value IS NOT excluded.tool_value
+                        """,
+                        bind: { statement in
+                            bindText(tool.toolKind, to: 3, in: statement)
+                            bindText(tool.toolValue, to: 4, in: statement)
+                        }
+                    )
+                }
+            }
+
+            staleRowsDeletedCount += try pruneModelCapabilityChildRows(
+                table: "codex_model_capability_reasoning_levels",
+                tempTable: "codex_imported_model_reasoning_levels"
+            )
+            staleRowsDeletedCount += try pruneModelCapabilityChildRows(
+                table: "codex_model_capability_service_tiers",
+                tempTable: "codex_imported_model_service_tiers"
+            )
+            staleRowsDeletedCount += try pruneModelCapabilityChildRows(
+                table: "codex_model_capability_speed_tiers",
+                tempTable: "codex_imported_model_speed_tiers"
+            )
+            staleRowsDeletedCount += try pruneModelCapabilityChildRows(
+                table: "codex_model_capability_input_modalities",
+                tempTable: "codex_imported_model_input_modalities"
+            )
+            staleRowsDeletedCount += try pruneModelCapabilityChildRows(
+                table: "codex_model_capability_tools",
+                tempTable: "codex_imported_model_tools"
+            )
+            try execute(
+                """
+                DELETE FROM codex_model_capabilities
+                WHERE slug NOT IN (SELECT slug FROM codex_imported_model_capabilities)
+                """
+            )
+            staleRowsDeletedCount += Int(sqlite3_changes(database))
+        }
+
+        return CodexModelCapabilitiesImportResult(
+            modelsInsertedCount: modelsInsertedCount,
+            modelsUpdatedCount: modelsUpdatedCount,
+            childRowsInsertedCount: childRowsInsertedCount,
+            staleRowsDeletedCount: staleRowsDeletedCount,
+            cacheFetchedAt: batch.cacheFetchedAt,
+            clientVersion: batch.clientVersion
+        )
+    }
+
+    func codexModelCapabilities() throws -> [CodexModelCapability] {
+        let statement = try prepare(
+            """
+            SELECT slug, display_name, visibility, supported_in_api, priority,
+                context_window, max_context_window, effective_context_window_percent,
+                default_reasoning_level, supports_reasoning_summaries,
+                default_reasoning_summary, supports_verbosity, default_verbosity,
+                shell_type, apply_patch_tool_type, web_search_tool_type,
+                supports_parallel_tool_calls, supports_image_detail_original,
+                supports_search_tool, truncation_policy_mode, truncation_policy_limit
+            FROM codex_model_capabilities
+            ORDER BY priority, slug
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var models: [CodexModelCapability] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let slug = columnText(statement, index: 0)
+                if let model = CodexModelCapability(
+                    slug: slug,
+                    displayName: optionalColumnText(statement, index: 1),
+                    visibility: optionalColumnText(statement, index: 2),
+                    supportedInAPI: optionalColumnBool(statement, index: 3),
+                    priority: optionalColumnInt(statement, index: 4),
+                    contextWindow: optionalColumnInt(statement, index: 5),
+                    maxContextWindow: optionalColumnInt(statement, index: 6),
+                    effectiveContextWindowPercent: optionalColumnInt(statement, index: 7),
+                    defaultReasoningLevel: optionalColumnText(statement, index: 8),
+                    supportsReasoningSummaries: optionalColumnBool(statement, index: 9),
+                    defaultReasoningSummary: optionalColumnText(statement, index: 10),
+                    supportsVerbosity: optionalColumnBool(statement, index: 11),
+                    defaultVerbosity: optionalColumnText(statement, index: 12),
+                    shellType: optionalColumnText(statement, index: 13),
+                    applyPatchToolType: optionalColumnText(statement, index: 14),
+                    webSearchToolType: optionalColumnText(statement, index: 15),
+                    supportsParallelToolCalls: optionalColumnBool(statement, index: 16),
+                    supportsImageDetailOriginal: optionalColumnBool(statement, index: 17),
+                    supportsSearchTool: optionalColumnBool(statement, index: 18),
+                    truncationPolicyMode: optionalColumnText(statement, index: 19),
+                    truncationPolicyLimit: optionalColumnInt(statement, index: 20),
+                    reasoningLevels: try codexModelCapabilityReasoningLevels(modelSlug: slug),
+                    serviceTiers: try codexModelCapabilityServiceTiers(modelSlug: slug),
+                    speedTiers: try codexModelCapabilitySpeedTiers(modelSlug: slug),
+                    inputModalities: try codexModelCapabilityInputModalities(modelSlug: slug),
+                    toolIdentifiers: try codexModelCapabilityTools(modelSlug: slug)
+                ) {
+                    models.append(model)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+        return models
+    }
+
+    private enum ModelCapabilityUpsertResult {
+        case inserted
+        case updated
+        case duplicate
+    }
+
+    private func upsertCodexModelCapability(
+        _ model: CodexModelCapability,
+        recordedAt: Date
+    ) throws -> ModelCapabilityUpsertResult {
+        let existed = try rowExists("SELECT 1 FROM codex_model_capabilities WHERE slug = ? LIMIT 1", bindings: [model.slug])
+        let statement = try prepare(
+            """
+            INSERT INTO codex_model_capabilities (
+                slug, display_name, visibility, supported_in_api, priority,
+                context_window, max_context_window, effective_context_window_percent,
+                default_reasoning_level, supports_reasoning_summaries,
+                default_reasoning_summary, supports_verbosity, default_verbosity,
+                shell_type, apply_patch_tool_type, web_search_tool_type,
+                supports_parallel_tool_calls, supports_image_detail_original,
+                supports_search_tool, truncation_policy_mode, truncation_policy_limit,
+                recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+                display_name = excluded.display_name,
+                visibility = excluded.visibility,
+                supported_in_api = excluded.supported_in_api,
+                priority = excluded.priority,
+                context_window = excluded.context_window,
+                max_context_window = excluded.max_context_window,
+                effective_context_window_percent = excluded.effective_context_window_percent,
+                default_reasoning_level = excluded.default_reasoning_level,
+                supports_reasoning_summaries = excluded.supports_reasoning_summaries,
+                default_reasoning_summary = excluded.default_reasoning_summary,
+                supports_verbosity = excluded.supports_verbosity,
+                default_verbosity = excluded.default_verbosity,
+                shell_type = excluded.shell_type,
+                apply_patch_tool_type = excluded.apply_patch_tool_type,
+                web_search_tool_type = excluded.web_search_tool_type,
+                supports_parallel_tool_calls = excluded.supports_parallel_tool_calls,
+                supports_image_detail_original = excluded.supports_image_detail_original,
+                supports_search_tool = excluded.supports_search_tool,
+                truncation_policy_mode = excluded.truncation_policy_mode,
+                truncation_policy_limit = excluded.truncation_policy_limit,
+                recorded_at = excluded.recorded_at
+            WHERE codex_model_capabilities.display_name IS NOT excluded.display_name
+                OR codex_model_capabilities.visibility IS NOT excluded.visibility
+                OR codex_model_capabilities.supported_in_api IS NOT excluded.supported_in_api
+                OR codex_model_capabilities.priority IS NOT excluded.priority
+                OR codex_model_capabilities.context_window IS NOT excluded.context_window
+                OR codex_model_capabilities.max_context_window IS NOT excluded.max_context_window
+                OR codex_model_capabilities.effective_context_window_percent IS NOT excluded.effective_context_window_percent
+                OR codex_model_capabilities.default_reasoning_level IS NOT excluded.default_reasoning_level
+                OR codex_model_capabilities.supports_reasoning_summaries IS NOT excluded.supports_reasoning_summaries
+                OR codex_model_capabilities.default_reasoning_summary IS NOT excluded.default_reasoning_summary
+                OR codex_model_capabilities.supports_verbosity IS NOT excluded.supports_verbosity
+                OR codex_model_capabilities.default_verbosity IS NOT excluded.default_verbosity
+                OR codex_model_capabilities.shell_type IS NOT excluded.shell_type
+                OR codex_model_capabilities.apply_patch_tool_type IS NOT excluded.apply_patch_tool_type
+                OR codex_model_capabilities.web_search_tool_type IS NOT excluded.web_search_tool_type
+                OR codex_model_capabilities.supports_parallel_tool_calls IS NOT excluded.supports_parallel_tool_calls
+                OR codex_model_capabilities.supports_image_detail_original IS NOT excluded.supports_image_detail_original
+                OR codex_model_capabilities.supports_search_tool IS NOT excluded.supports_search_tool
+                OR codex_model_capabilities.truncation_policy_mode IS NOT excluded.truncation_policy_mode
+                OR codex_model_capabilities.truncation_policy_limit IS NOT excluded.truncation_policy_limit
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(model.slug, to: 1, in: statement)
+        bindOptionalText(model.displayName, to: 2, in: statement)
+        bindOptionalText(model.visibility, to: 3, in: statement)
+        bindOptionalBool(model.supportedInAPI, to: 4, in: statement)
+        bindOptionalInt(model.priority, to: 5, in: statement)
+        bindOptionalInt(model.contextWindow, to: 6, in: statement)
+        bindOptionalInt(model.maxContextWindow, to: 7, in: statement)
+        bindOptionalInt(model.effectiveContextWindowPercent, to: 8, in: statement)
+        bindOptionalText(model.defaultReasoningLevel, to: 9, in: statement)
+        bindOptionalBool(model.supportsReasoningSummaries, to: 10, in: statement)
+        bindOptionalText(model.defaultReasoningSummary, to: 11, in: statement)
+        bindOptionalBool(model.supportsVerbosity, to: 12, in: statement)
+        bindOptionalText(model.defaultVerbosity, to: 13, in: statement)
+        bindOptionalText(model.shellType, to: 14, in: statement)
+        bindOptionalText(model.applyPatchToolType, to: 15, in: statement)
+        bindOptionalText(model.webSearchToolType, to: 16, in: statement)
+        bindOptionalBool(model.supportsParallelToolCalls, to: 17, in: statement)
+        bindOptionalBool(model.supportsImageDetailOriginal, to: 18, in: statement)
+        bindOptionalBool(model.supportsSearchTool, to: 19, in: statement)
+        bindOptionalText(model.truncationPolicyMode, to: 20, in: statement)
+        bindOptionalInt(model.truncationPolicyLimit, to: 21, in: statement)
+        bindOptionalDate(recordedAt, to: 22, in: statement)
+
+        try step(statement)
+        guard sqlite3_changes(database) > 0 else {
+            return .duplicate
+        }
+        return existed ? .updated : .inserted
+    }
+
+    private func insertModelCapabilityChildTempAndRow(
+        modelSlug: String,
+        position: Int,
+        tempTable: String,
+        insertSQL: String,
+        bind: (OpaquePointer) -> Void
+    ) throws -> Int {
+        let tempStatement = try prepare("INSERT OR IGNORE INTO \(tempTable) (model_slug, position) VALUES (?, ?)")
+        defer { sqlite3_finalize(tempStatement) }
+
+        bindText(modelSlug, to: 1, in: tempStatement)
+        sqlite3_bind_int64(tempStatement, 2, Int64(position))
+        try step(tempStatement)
+
+        let statement = try prepare(insertSQL)
+        defer { sqlite3_finalize(statement) }
+
+        bindText(modelSlug, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, Int64(position))
+        bind(statement)
+        try step(statement)
+        return Int(sqlite3_changes(database))
+    }
+
+    private func pruneModelCapabilityChildRows(table: String, tempTable: String) throws -> Int {
+        try execute(
+            """
+            DELETE FROM \(table)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM \(tempTable)
+                WHERE \(tempTable).model_slug = \(table).model_slug
+                    AND \(tempTable).position = \(table).position
+            )
+            """
+        )
+        return Int(sqlite3_changes(database))
+    }
+
+    private func codexModelCapabilityReasoningLevels(modelSlug: String) throws -> [CodexModelCapabilityReasoningLevel] {
+        try codexModelCapabilityChildRows(
+            modelSlug: modelSlug,
+            sql: """
+            SELECT position, effort
+            FROM codex_model_capability_reasoning_levels
+            WHERE model_slug = ?
+            ORDER BY position
+            """,
+            build: { position, statement in
+                CodexModelCapabilityReasoningLevel(position: position, effort: optionalColumnText(statement, index: 1))
+            }
+        )
+    }
+
+    private func codexModelCapabilityServiceTiers(modelSlug: String) throws -> [CodexModelCapabilityServiceTier] {
+        try codexModelCapabilityChildRows(
+            modelSlug: modelSlug,
+            sql: """
+            SELECT position, tier_id, tier_name
+            FROM codex_model_capability_service_tiers
+            WHERE model_slug = ?
+            ORDER BY position
+            """,
+            build: { position, statement in
+                CodexModelCapabilityServiceTier(
+                    position: position,
+                    tierID: optionalColumnText(statement, index: 1),
+                    tierName: optionalColumnText(statement, index: 2)
+                )
+            }
+        )
+    }
+
+    private func codexModelCapabilitySpeedTiers(modelSlug: String) throws -> [CodexModelCapabilitySpeedTier] {
+        try codexModelCapabilityChildRows(
+            modelSlug: modelSlug,
+            sql: """
+            SELECT position, tier_id
+            FROM codex_model_capability_speed_tiers
+            WHERE model_slug = ?
+            ORDER BY position
+            """,
+            build: { position, statement in
+                CodexModelCapabilitySpeedTier(position: position, tierID: optionalColumnText(statement, index: 1))
+            }
+        )
+    }
+
+    private func codexModelCapabilityInputModalities(modelSlug: String) throws -> [CodexModelCapabilityInputModality] {
+        try codexModelCapabilityChildRows(
+            modelSlug: modelSlug,
+            sql: """
+            SELECT position, modality
+            FROM codex_model_capability_input_modalities
+            WHERE model_slug = ?
+            ORDER BY position
+            """,
+            build: { position, statement in
+                CodexModelCapabilityInputModality(position: position, modality: optionalColumnText(statement, index: 1))
+            }
+        )
+    }
+
+    private func codexModelCapabilityTools(modelSlug: String) throws -> [CodexModelCapabilityToolIdentifier] {
+        try codexModelCapabilityChildRows(
+            modelSlug: modelSlug,
+            sql: """
+            SELECT position, tool_kind, tool_value
+            FROM codex_model_capability_tools
+            WHERE model_slug = ?
+            ORDER BY position
+            """,
+            build: { position, statement in
+                CodexModelCapabilityToolIdentifier(
+                    position: position,
+                    toolKind: optionalColumnText(statement, index: 1),
+                    toolValue: optionalColumnText(statement, index: 2)
+                )
+            }
+        )
+    }
+
+    private func codexModelCapabilityChildRows<T>(
+        modelSlug: String,
+        sql: String,
+        build: (Int, OpaquePointer) -> T?
+    ) throws -> [T] {
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+
+        bindText(modelSlug, to: 1, in: statement)
+        var rows: [T] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let row = build(Int(sqlite3_column_int64(statement, 0)), statement) {
+                    rows.append(row)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+        return rows
+    }
+
     private enum ThreadCatalogUpsertResult {
         case inserted
         case updated

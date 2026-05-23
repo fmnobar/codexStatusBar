@@ -66,10 +66,52 @@ extension UsageHistoryStoreTests {
         try store.recordCodexThreadCatalogCaptureState(
             CodexThreadCatalogCaptureState(lastCheckedAt: date("2026-04-14T20:00:05Z"), status: .imported, threadsInsertedCount: 1)
         )
+        try store.importCodexModelCapabilities(
+            CodexModelCapabilitiesImportBatch(
+                models: [
+                    CodexModelCapability(
+                        slug: "gpt-5.5",
+                        displayName: "GPT-5.5",
+                        visibility: "stable",
+                        supportedInAPI: true,
+                        priority: 1,
+                        contextWindow: 258_400,
+                        maxContextWindow: 400_000,
+                        effectiveContextWindowPercent: 82,
+                        defaultReasoningLevel: "xhigh",
+                        supportsReasoningSummaries: true,
+                        defaultReasoningSummary: "auto",
+                        supportsVerbosity: true,
+                        defaultVerbosity: "medium",
+                        shellType: "default_shell",
+                        applyPatchToolType: "apply_patch",
+                        webSearchToolType: "web_search",
+                        supportsParallelToolCalls: true,
+                        supportsImageDetailOriginal: false,
+                        supportsSearchTool: true,
+                        truncationPolicyMode: "auto",
+                        truncationPolicyLimit: 12_000,
+                        reasoningLevels: [
+                            CodexModelCapabilityReasoningLevel(position: 0, effort: "xhigh")!,
+                        ],
+                        serviceTiers: [],
+                        speedTiers: [],
+                        inputModalities: [],
+                        toolIdentifiers: []
+                    )!,
+                ],
+                cacheFetchedAt: date("2026-04-14T20:00:06Z"),
+                clientVersion: "0.99.0"
+            )
+        )
+        try store.recordCodexModelCapabilitiesCaptureState(
+            CodexModelCapabilitiesCaptureState(lastCheckedAt: date("2026-04-14T20:00:06Z"), status: .imported, modelsInsertedCount: 1)
+        )
         XCTAssertTrue(try store.hasAnyHistory())
         XCTAssertEqual(try store.codexSessionTokenImportFileRecords().count, 1)
         XCTAssertEqual(try store.sessionTaskTimingEvents().count, 1)
         XCTAssertEqual(try store.codexThreadCatalogThreads().count, 1)
+        XCTAssertEqual(try store.codexModelCapabilities().count, 1)
 
         try store.clearHistory()
 
@@ -80,6 +122,8 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.codexSessionTaskTimingCaptureState().status, .neverChecked)
         XCTAssertTrue(try store.codexThreadCatalogThreads().isEmpty)
         XCTAssertEqual(try store.codexThreadCatalogCaptureState().status, .neverChecked)
+        XCTAssertTrue(try store.codexModelCapabilities().isEmpty)
+        XCTAssertEqual(try store.codexModelCapabilitiesCaptureState().status, .neverChecked)
         XCTAssertFalse(try store.hasAnyHistory())
     }
 
@@ -272,6 +316,63 @@ extension UsageHistoryStoreTests {
                 sourcePath: "/Users/example/.codex/state_5.sqlite"
             )
         )
+        try sourceStore.importCodexModelCapabilities(
+            CodexModelCapabilitiesImportBatch(
+                models: [
+                    CodexModelCapability(
+                        slug: "gpt-5.5",
+                        displayName: "GPT-5.5",
+                        visibility: "stable",
+                        supportedInAPI: true,
+                        priority: 1,
+                        contextWindow: 258_400,
+                        maxContextWindow: 400_000,
+                        effectiveContextWindowPercent: 82,
+                        defaultReasoningLevel: "xhigh",
+                        supportsReasoningSummaries: true,
+                        defaultReasoningSummary: "auto",
+                        supportsVerbosity: true,
+                        defaultVerbosity: "medium",
+                        shellType: "default_shell",
+                        applyPatchToolType: "apply_patch",
+                        webSearchToolType: "web_search",
+                        supportsParallelToolCalls: true,
+                        supportsImageDetailOriginal: false,
+                        supportsSearchTool: true,
+                        truncationPolicyMode: "auto",
+                        truncationPolicyLimit: 12_000,
+                        reasoningLevels: [
+                            CodexModelCapabilityReasoningLevel(position: 0, effort: "xhigh")!,
+                        ],
+                        serviceTiers: [
+                            CodexModelCapabilityServiceTier(position: 0, tierID: "priority", tierName: "Priority")!,
+                        ],
+                        speedTiers: [
+                            CodexModelCapabilitySpeedTier(position: 0, tierID: "fast")!,
+                        ],
+                        inputModalities: [
+                            CodexModelCapabilityInputModality(position: 0, modality: "text")!,
+                        ],
+                        toolIdentifiers: [
+                            CodexModelCapabilityToolIdentifier(position: 0, toolKind: "shell_type", toolValue: "default_shell")!,
+                        ]
+                    )!,
+                ],
+                cacheFetchedAt: date("2026-04-14T20:13:00Z"),
+                clientVersion: "0.99.0"
+            )
+        )
+        try sourceStore.recordCodexModelCapabilitiesCaptureState(
+            CodexModelCapabilitiesCaptureState(
+                lastCheckedAt: date("2026-04-14T20:13:05Z"),
+                cacheFetchedAt: date("2026-04-14T20:13:00Z"),
+                status: .imported,
+                modelsInsertedCount: 1,
+                childRowsInsertedCount: 4,
+                clientVersion: "0.99.0",
+                sourcePath: "/Users/example/.codex/models_cache.json"
+            )
+        )
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
 
         try sourceStore.exportBackup(to: backupURL)
@@ -303,6 +404,11 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try destinationStore.codexThreadSpawnEdges().first?.status, "running")
         XCTAssertEqual(try destinationStore.codexThreadDynamicTools().first?.namespace, "github")
         XCTAssertEqual(try destinationStore.codexThreadCatalogCaptureState().status, .imported)
+        let model = try XCTUnwrap(try destinationStore.codexModelCapabilities().first)
+        XCTAssertEqual(model.slug, "gpt-5.5")
+        XCTAssertEqual(model.reasoningLevels.map(\.effort), ["xhigh"])
+        XCTAssertEqual(model.serviceTiers.map(\.tierID), ["priority"])
+        XCTAssertEqual(try destinationStore.codexModelCapabilitiesCaptureState().status, .imported)
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
@@ -805,6 +911,33 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.threadCatalogCaptureThreadsText, "1 imported, 2 updated")
         XCTAssertEqual(viewModel.threadCatalogCaptureRelationshipsText, "8 imported, 10 updated, 7 stale")
         XCTAssertEqual(viewModel.threadCatalogCaptureLastErrorText, "None")
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsModelCapabilitiesCaptureState() async throws {
+        let (store, _) = try makeTemporaryStore()
+        try store.recordCodexModelCapabilitiesCaptureState(
+            CodexModelCapabilitiesCaptureState(
+                lastCheckedAt: date("2026-05-17T11:58:00Z"),
+                cacheFetchedAt: date("2026-05-17T11:57:00Z"),
+                status: .updated,
+                modelsInsertedCount: 1,
+                modelsUpdatedCount: 2,
+                childRowsInsertedCount: 3,
+                staleRowsDeletedCount: 4,
+                clientVersion: "0.99.0",
+                sourcePath: "/Users/example/.codex/models_cache.json"
+            )
+        )
+        let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(viewModel.modelCapabilitiesCaptureState.status, .updated)
+        XCTAssertEqual(viewModel.modelCapabilitiesCaptureModelsText, "1 imported, 2 updated")
+        XCTAssertEqual(viewModel.modelCapabilitiesCaptureDetailsText, "3 details imported, 4 stale")
+        XCTAssertEqual(viewModel.modelCapabilitiesCaptureClientVersionText, "0.99.0")
+        XCTAssertEqual(viewModel.modelCapabilitiesCaptureLastErrorText, "None")
     }
 
     @MainActor

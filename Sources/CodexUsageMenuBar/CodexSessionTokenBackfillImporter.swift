@@ -360,6 +360,263 @@ struct CodexThreadCatalogCaptureState: Equatable, Sendable {
     }
 }
 
+enum CodexModelCapabilitiesCaptureStatus: String, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case imported
+    case updated
+    case noNewEvents = "no_new_events"
+    case noSource = "no_source"
+    case malformed
+    case noModels = "no_models"
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            "Not checked yet"
+        case .imported:
+            "Imported model capabilities"
+        case .updated:
+            "Checked, updated capabilities"
+        case .noNewEvents:
+            "Checked, no model changes"
+        case .noSource:
+            "Models cache not found"
+        case .malformed:
+            "Models cache unreadable"
+        case .noModels:
+            "No models in cache"
+        case .failed:
+            "Capture failed"
+        }
+    }
+}
+
+struct CodexModelCapabilitiesCaptureState: Equatable, Sendable {
+    static let modelsCacheSourceKey = "codex-model-capabilities"
+
+    let sourceKey: String
+    let lastCheckedAt: Date?
+    let cacheFetchedAt: Date?
+    let status: CodexModelCapabilitiesCaptureStatus
+    let modelsInsertedCount: Int
+    let modelsUpdatedCount: Int
+    let childRowsInsertedCount: Int
+    let staleRowsDeletedCount: Int
+    let clientVersion: String?
+    let sourcePath: String?
+    let lastErrorText: String?
+
+    init(
+        sourceKey: String = Self.modelsCacheSourceKey,
+        lastCheckedAt: Date? = nil,
+        cacheFetchedAt: Date? = nil,
+        status: CodexModelCapabilitiesCaptureStatus = .neverChecked,
+        modelsInsertedCount: Int = 0,
+        modelsUpdatedCount: Int = 0,
+        childRowsInsertedCount: Int = 0,
+        staleRowsDeletedCount: Int = 0,
+        clientVersion: String? = nil,
+        sourcePath: String? = nil,
+        lastErrorText: String? = nil
+    ) {
+        self.sourceKey = sourceKey
+        self.lastCheckedAt = lastCheckedAt
+        self.cacheFetchedAt = cacheFetchedAt
+        self.status = status
+        self.modelsInsertedCount = max(modelsInsertedCount, 0)
+        self.modelsUpdatedCount = max(modelsUpdatedCount, 0)
+        self.childRowsInsertedCount = max(childRowsInsertedCount, 0)
+        self.staleRowsDeletedCount = max(staleRowsDeletedCount, 0)
+        self.clientVersion = CodexTokenContextNormalizer.normalizedIdentifier(clientVersion)
+        self.sourcePath = CodexThreadCatalogCaptureState.normalizedPathPointer(sourcePath)
+        self.lastErrorText = lastErrorText
+    }
+
+    var changedRowCount: Int {
+        modelsInsertedCount + modelsUpdatedCount + childRowsInsertedCount + staleRowsDeletedCount
+    }
+}
+
+struct CodexModelCapabilitiesImportResult: Equatable, Sendable {
+    let modelsInsertedCount: Int
+    let modelsUpdatedCount: Int
+    let childRowsInsertedCount: Int
+    let staleRowsDeletedCount: Int
+    let cacheFetchedAt: Date?
+    let clientVersion: String?
+
+    var changedRowCount: Int {
+        modelsInsertedCount + modelsUpdatedCount + childRowsInsertedCount + staleRowsDeletedCount
+    }
+}
+
+struct CodexModelCapabilitiesImportBatch: Equatable, Sendable {
+    let models: [CodexModelCapability]
+    let cacheFetchedAt: Date?
+    let clientVersion: String?
+}
+
+struct CodexModelCapability: Equatable, Sendable {
+    let slug: String
+    let displayName: String?
+    let visibility: String?
+    let supportedInAPI: Bool?
+    let priority: Int64?
+    let contextWindow: Int64?
+    let maxContextWindow: Int64?
+    let effectiveContextWindowPercent: Int64?
+    let defaultReasoningLevel: String?
+    let supportsReasoningSummaries: Bool?
+    let defaultReasoningSummary: String?
+    let supportsVerbosity: Bool?
+    let defaultVerbosity: String?
+    let shellType: String?
+    let applyPatchToolType: String?
+    let webSearchToolType: String?
+    let supportsParallelToolCalls: Bool?
+    let supportsImageDetailOriginal: Bool?
+    let supportsSearchTool: Bool?
+    let truncationPolicyMode: String?
+    let truncationPolicyLimit: Int64?
+    let reasoningLevels: [CodexModelCapabilityReasoningLevel]
+    let serviceTiers: [CodexModelCapabilityServiceTier]
+    let speedTiers: [CodexModelCapabilitySpeedTier]
+    let inputModalities: [CodexModelCapabilityInputModality]
+    let toolIdentifiers: [CodexModelCapabilityToolIdentifier]
+
+    init?(
+        slug: String?,
+        displayName: String?,
+        visibility: String?,
+        supportedInAPI: Bool?,
+        priority: Int64?,
+        contextWindow: Int64?,
+        maxContextWindow: Int64?,
+        effectiveContextWindowPercent: Int64?,
+        defaultReasoningLevel: String?,
+        supportsReasoningSummaries: Bool?,
+        defaultReasoningSummary: String?,
+        supportsVerbosity: Bool?,
+        defaultVerbosity: String?,
+        shellType: String?,
+        applyPatchToolType: String?,
+        webSearchToolType: String?,
+        supportsParallelToolCalls: Bool?,
+        supportsImageDetailOriginal: Bool?,
+        supportsSearchTool: Bool?,
+        truncationPolicyMode: String?,
+        truncationPolicyLimit: Int64?,
+        reasoningLevels: [CodexModelCapabilityReasoningLevel] = [],
+        serviceTiers: [CodexModelCapabilityServiceTier] = [],
+        speedTiers: [CodexModelCapabilitySpeedTier] = [],
+        inputModalities: [CodexModelCapabilityInputModality] = [],
+        toolIdentifiers: [CodexModelCapabilityToolIdentifier] = []
+    ) {
+        guard let slug = CodexModelIdentifier.normalized(slug) else {
+            return nil
+        }
+
+        self.slug = slug
+        self.displayName = CodexTokenContextNormalizer.normalizedDimensionValue(displayName)
+        self.visibility = CodexTokenContextNormalizer.normalizedIdentifier(visibility)
+        self.supportedInAPI = supportedInAPI
+        self.priority = priority
+        self.contextWindow = contextWindow.map { max($0, 0) }
+        self.maxContextWindow = maxContextWindow.map { max($0, 0) }
+        self.effectiveContextWindowPercent = effectiveContextWindowPercent.map { min(max($0, 0), 100) }
+        self.defaultReasoningLevel = CodexTokenContextNormalizer.normalizedIdentifier(defaultReasoningLevel)
+        self.supportsReasoningSummaries = supportsReasoningSummaries
+        self.defaultReasoningSummary = CodexTokenContextNormalizer.normalizedIdentifier(defaultReasoningSummary)
+        self.supportsVerbosity = supportsVerbosity
+        self.defaultVerbosity = CodexTokenContextNormalizer.normalizedIdentifier(defaultVerbosity)
+        self.shellType = CodexTokenContextNormalizer.normalizedIdentifier(shellType)
+        self.applyPatchToolType = CodexTokenContextNormalizer.normalizedIdentifier(applyPatchToolType)
+        self.webSearchToolType = CodexTokenContextNormalizer.normalizedIdentifier(webSearchToolType)
+        self.supportsParallelToolCalls = supportsParallelToolCalls
+        self.supportsImageDetailOriginal = supportsImageDetailOriginal
+        self.supportsSearchTool = supportsSearchTool
+        self.truncationPolicyMode = CodexTokenContextNormalizer.normalizedIdentifier(truncationPolicyMode)
+        self.truncationPolicyLimit = truncationPolicyLimit.map { max($0, 0) }
+        self.reasoningLevels = reasoningLevels
+        self.serviceTiers = serviceTiers
+        self.speedTiers = speedTiers
+        self.inputModalities = inputModalities
+        self.toolIdentifiers = toolIdentifiers
+    }
+}
+
+struct CodexModelCapabilityReasoningLevel: Equatable, Sendable {
+    let position: Int
+    let effort: String
+
+    init?(position: Int, effort: String?) {
+        guard let effort = CodexTokenContextNormalizer.normalizedIdentifier(effort) else {
+            return nil
+        }
+        self.position = max(position, 0)
+        self.effort = effort
+    }
+}
+
+struct CodexModelCapabilityServiceTier: Equatable, Sendable {
+    let position: Int
+    let tierID: String
+    let tierName: String?
+
+    init?(position: Int, tierID: String?, tierName: String?) {
+        guard let tierID = CodexTokenContextNormalizer.normalizedIdentifier(tierID) else {
+            return nil
+        }
+        self.position = max(position, 0)
+        self.tierID = tierID
+        self.tierName = CodexTokenContextNormalizer.normalizedDimensionValue(tierName)
+    }
+}
+
+struct CodexModelCapabilitySpeedTier: Equatable, Sendable {
+    let position: Int
+    let tierID: String
+
+    init?(position: Int, tierID: String?) {
+        guard let tierID = CodexTokenContextNormalizer.normalizedIdentifier(tierID) else {
+            return nil
+        }
+        self.position = max(position, 0)
+        self.tierID = tierID
+    }
+}
+
+struct CodexModelCapabilityInputModality: Equatable, Sendable {
+    let position: Int
+    let modality: String
+
+    init?(position: Int, modality: String?) {
+        guard let modality = CodexTokenContextNormalizer.normalizedIdentifier(modality) else {
+            return nil
+        }
+        self.position = max(position, 0)
+        self.modality = modality
+    }
+}
+
+struct CodexModelCapabilityToolIdentifier: Equatable, Sendable {
+    let position: Int
+    let toolKind: String
+    let toolValue: String
+
+    init?(position: Int, toolKind: String?, toolValue: String?) {
+        guard let toolKind = CodexTokenContextNormalizer.normalizedIdentifier(toolKind),
+              let toolValue = CodexTokenContextNormalizer.normalizedIdentifier(toolValue)
+        else {
+            return nil
+        }
+        self.position = max(position, 0)
+        self.toolKind = toolKind
+        self.toolValue = toolValue
+    }
+}
+
 struct CodexThreadCatalogImportResult: Equatable, Sendable {
     let threadsInsertedCount: Int
     let threadsUpdatedCount: Int
@@ -862,6 +1119,228 @@ struct CodexThreadCatalogImporter {
             return nil
         }
         return Date(timeIntervalSince1970: TimeInterval(timestamp))
+    }
+}
+
+enum CodexModelCapabilitiesImporterError: LocalizedError {
+    case sourceUnavailable
+    case malformedJSON
+    case noModels
+
+    var errorDescription: String? {
+        switch self {
+        case .sourceUnavailable:
+            "Codex models cache not found."
+        case .malformedJSON:
+            "Codex models cache could not be read."
+        case .noModels:
+            "Codex models cache has no models."
+        }
+    }
+}
+
+struct CodexModelCapabilitiesImporter {
+    let modelsCacheURL: URL
+    let fileManager: FileManager
+
+    init(
+        modelsCacheURL: URL = Self.defaultModelsCacheURL(),
+        fileManager: FileManager = .default
+    ) {
+        self.modelsCacheURL = modelsCacheURL
+        self.fileManager = fileManager
+    }
+
+    static func defaultModelsCacheURL(fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("models_cache.json")
+    }
+
+    func importModelCapabilities(into store: UsageHistoryStore) throws -> CodexModelCapabilitiesImportResult {
+        guard fileManager.fileExists(atPath: modelsCacheURL.path) else {
+            throw CodexModelCapabilitiesImporterError.sourceUnavailable
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: modelsCacheURL)
+        } catch {
+            throw CodexModelCapabilitiesImporterError.malformedJSON
+        }
+
+        guard
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let rawModels = root["models"] as? [[String: Any]]
+        else {
+            throw CodexModelCapabilitiesImporterError.malformedJSON
+        }
+
+        let models = rawModels.compactMap(Self.model(from:))
+        guard !models.isEmpty else {
+            throw CodexModelCapabilitiesImporterError.noModels
+        }
+
+        let batch = CodexModelCapabilitiesImportBatch(
+            models: models,
+            cacheFetchedAt: Self.date(from: root["fetched_at"]),
+            clientVersion: Self.string(root["client_version"])
+        )
+        return try store.importCodexModelCapabilities(batch)
+    }
+
+    private static func model(from dictionary: [String: Any]) -> CodexModelCapability? {
+        let truncationPolicy = dictionary["truncation_policy"] as? [String: Any]
+        return CodexModelCapability(
+            slug: string(dictionary["slug"]),
+            displayName: string(dictionary["display_name"]),
+            visibility: string(dictionary["visibility"]),
+            supportedInAPI: bool(dictionary["supported_in_api"]),
+            priority: int64(dictionary["priority"]),
+            contextWindow: int64(dictionary["context_window"]),
+            maxContextWindow: int64(dictionary["max_context_window"]),
+            effectiveContextWindowPercent: int64(dictionary["effective_context_window_percent"]),
+            defaultReasoningLevel: string(dictionary["default_reasoning_level"]),
+            supportsReasoningSummaries: bool(dictionary["supports_reasoning_summaries"]),
+            defaultReasoningSummary: string(dictionary["default_reasoning_summary"]),
+            supportsVerbosity: bool(dictionary["support_verbosity"]),
+            defaultVerbosity: string(dictionary["default_verbosity"]),
+            shellType: string(dictionary["shell_type"]),
+            applyPatchToolType: string(dictionary["apply_patch_tool_type"]),
+            webSearchToolType: string(dictionary["web_search_tool_type"]),
+            supportsParallelToolCalls: bool(dictionary["supports_parallel_tool_calls"]),
+            supportsImageDetailOriginal: bool(dictionary["supports_image_detail_original"]),
+            supportsSearchTool: bool(dictionary["supports_search_tool"]),
+            truncationPolicyMode: string(truncationPolicy?["mode"]),
+            truncationPolicyLimit: int64(truncationPolicy?["limit"]),
+            reasoningLevels: reasoningLevels(from: dictionary["supported_reasoning_levels"]),
+            serviceTiers: serviceTiers(from: dictionary["service_tiers"]),
+            speedTiers: speedTiers(from: dictionary["additional_speed_tiers"]),
+            inputModalities: inputModalities(from: dictionary["input_modalities"]),
+            toolIdentifiers: toolIdentifiers(from: dictionary)
+        )
+    }
+
+    private static func reasoningLevels(from value: Any?) -> [CodexModelCapabilityReasoningLevel] {
+        guard let levels = value as? [[String: Any]] else {
+            return []
+        }
+        return levels.enumerated().compactMap { offset, level in
+            CodexModelCapabilityReasoningLevel(position: offset, effort: string(level["effort"]))
+        }
+    }
+
+    private static func serviceTiers(from value: Any?) -> [CodexModelCapabilityServiceTier] {
+        guard let tiers = value as? [[String: Any]] else {
+            return []
+        }
+        return tiers.enumerated().compactMap { offset, tier in
+            CodexModelCapabilityServiceTier(
+                position: offset,
+                tierID: string(tier["id"]),
+                tierName: string(tier["name"])
+            )
+        }
+    }
+
+    private static func speedTiers(from value: Any?) -> [CodexModelCapabilitySpeedTier] {
+        guard let tiers = value as? [Any] else {
+            return []
+        }
+        return tiers.enumerated().compactMap { offset, tier in
+            CodexModelCapabilitySpeedTier(position: offset, tierID: string(tier))
+        }
+    }
+
+    private static func inputModalities(from value: Any?) -> [CodexModelCapabilityInputModality] {
+        guard let modalities = value as? [Any] else {
+            return []
+        }
+        return modalities.enumerated().compactMap { offset, modality in
+            CodexModelCapabilityInputModality(position: offset, modality: string(modality))
+        }
+    }
+
+    private static func toolIdentifiers(from dictionary: [String: Any]) -> [CodexModelCapabilityToolIdentifier] {
+        var tools: [CodexModelCapabilityToolIdentifier] = []
+        for (kind, key) in [
+            ("shell_type", "shell_type"),
+            ("apply_patch_tool_type", "apply_patch_tool_type"),
+            ("web_search_tool_type", "web_search_tool_type"),
+        ] {
+            if let tool = CodexModelCapabilityToolIdentifier(
+                position: tools.count,
+                toolKind: kind,
+                toolValue: string(dictionary[key])
+            ) {
+                tools.append(tool)
+            }
+        }
+
+        if let experimentalTools = dictionary["experimental_supported_tools"] as? [Any] {
+            for rawTool in experimentalTools {
+                let value: String?
+                if let dictionary = rawTool as? [String: Any] {
+                    value = string(dictionary["name"]) ?? string(dictionary["id"]) ?? string(dictionary["type"])
+                } else {
+                    value = string(rawTool)
+                }
+
+                if let tool = CodexModelCapabilityToolIdentifier(
+                    position: tools.count,
+                    toolKind: "experimental_supported_tool",
+                    toolValue: value
+                ) {
+                    tools.append(tool)
+                }
+            }
+        }
+
+        return tools
+    }
+
+    private static func string(_ value: Any?) -> String? {
+        switch value {
+        case let value as String:
+            return value
+        case let value as NSNumber:
+            return value.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func bool(_ value: Any?) -> Bool? {
+        switch value {
+        case let value as Bool:
+            return value
+        case let value as NSNumber:
+            return value.boolValue
+        default:
+            return nil
+        }
+    }
+
+    private static func int64(_ value: Any?) -> Int64? {
+        switch value {
+        case let value as Int:
+            return Int64(value)
+        case let value as Int64:
+            return value
+        case let value as NSNumber:
+            return value.int64Value
+        case let value as String:
+            return Int64(value)
+        default:
+            return nil
+        }
+    }
+
+    private static func date(from value: Any?) -> Date? {
+        guard let rawValue = string(value) else {
+            return nil
+        }
+        return CodexSessionTokenBackfillImporter.parseTimestamp(rawValue)
     }
 }
 

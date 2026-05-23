@@ -1188,6 +1188,150 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(thread.updatedAt, Date(timeIntervalSince1970: 1_770_000_200))
     }
 
+    func testModelCapabilitiesImporterCapturesSafeMetadataOnly() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let cacheURL = try makeTemporaryDirectory().appendingPathComponent("models_cache.json")
+        try Data(
+            """
+            {
+              "fetched_at": "2026-05-22T10:11:12Z",
+              "client_version": "0.99.0",
+              "models": [
+                {
+                  "slug": "gpt-5.5",
+                  "display_name": "GPT-5.5",
+                  "description": "do not store this description",
+                  "visibility": "stable",
+                  "supported_in_api": true,
+                  "priority": 10,
+                  "context_window": 258400,
+                  "max_context_window": 400000,
+                  "effective_context_window_percent": 82,
+                  "default_reasoning_level": "xhigh",
+                  "supported_reasoning_levels": [
+                    { "effort": "low", "description": "secret low detail" },
+                    { "effort": "xhigh", "description": "secret high detail" }
+                  ],
+                  "supports_reasoning_summaries": true,
+                  "default_reasoning_summary": "auto",
+                  "support_verbosity": true,
+                  "default_verbosity": "medium",
+                  "input_modalities": ["text", "image"],
+                  "shell_type": "default_shell",
+                  "apply_patch_tool_type": "apply_patch",
+                  "web_search_tool_type": "web_search",
+                  "experimental_supported_tools": [
+                    { "name": "safe_tool", "description": "do not store tool prose" }
+                  ],
+                  "supports_parallel_tool_calls": true,
+                  "supports_image_detail_original": false,
+                  "supports_search_tool": true,
+                  "truncation_policy": { "mode": "auto", "limit": 12000 },
+                  "additional_speed_tiers": ["fast"],
+                  "service_tiers": [
+                    { "id": "priority", "name": "Priority", "description": "do not store tier description" }
+                  ],
+                  "base_instructions": "do not store instructions",
+                  "model_messages": ["do not store messages"],
+                  "availability_nux": "do not store nux",
+                  "upgrade": { "migration_markdown": "do not store migration markdown" },
+                  "unknown_large_text": "do not store unknown text"
+                }
+              ]
+            }
+            """.utf8
+        ).write(to: cacheURL)
+        let importer = CodexModelCapabilitiesImporter(modelsCacheURL: cacheURL)
+
+        let result = try importer.importModelCapabilities(into: store)
+
+        XCTAssertEqual(result.modelsInsertedCount, 1)
+        XCTAssertEqual(result.cacheFetchedAt, date("2026-05-22T10:11:12Z"))
+        XCTAssertEqual(result.clientVersion, "0.99.0")
+        let model = try XCTUnwrap(try store.codexModelCapabilities().first)
+        XCTAssertEqual(model.slug, "gpt-5.5")
+        XCTAssertEqual(model.displayName, "GPT-5.5")
+        XCTAssertEqual(model.visibility, "stable")
+        XCTAssertEqual(model.supportedInAPI, true)
+        XCTAssertEqual(model.contextWindow, 258_400)
+        XCTAssertEqual(model.maxContextWindow, 400_000)
+        XCTAssertEqual(model.effectiveContextWindowPercent, 82)
+        XCTAssertEqual(model.defaultReasoningLevel, "xhigh")
+        XCTAssertEqual(model.reasoningLevels.map(\.effort), ["low", "xhigh"])
+        XCTAssertEqual(model.serviceTiers.map(\.tierID), ["priority"])
+        XCTAssertEqual(model.serviceTiers.map(\.tierName), ["Priority"])
+        XCTAssertEqual(model.speedTiers.map(\.tierID), ["fast"])
+        XCTAssertEqual(model.inputModalities.map(\.modality), ["text", "image"])
+        XCTAssertEqual(model.toolIdentifiers.map(\.toolKind), ["shell_type", "apply_patch_tool_type", "web_search_tool_type", "experimental_supported_tool"])
+        XCTAssertEqual(model.toolIdentifiers.map(\.toolValue).last, "safe_tool")
+        let modelColumns = try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('codex_model_capabilities')")
+        let reasoningColumns = try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('codex_model_capability_reasoning_levels')")
+        let serviceTierColumns = try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('codex_model_capability_service_tiers')")
+        XCTAssertFalse(modelColumns.contains("description"))
+        XCTAssertFalse(modelColumns.contains("base_instructions"))
+        XCTAssertFalse(modelColumns.contains("model_messages"))
+        XCTAssertFalse(modelColumns.contains("availability_nux"))
+        XCTAssertFalse(modelColumns.contains("migration_markdown"))
+        XCTAssertFalse(reasoningColumns.contains("description"))
+        XCTAssertFalse(serviceTierColumns.contains("description"))
+    }
+
+    func testModelCapabilitiesImporterHandlesMissingOptionalFieldsAndIsIdempotent() async throws {
+        let store = try makeStore()
+        let cacheURL = try makeTemporaryDirectory().appendingPathComponent("models_cache.json")
+        try Data(
+            """
+            {
+              "models": [
+                { "slug": "codex-future-7" }
+              ]
+            }
+            """.utf8
+        ).write(to: cacheURL)
+        let importer = CodexModelCapabilitiesImporter(modelsCacheURL: cacheURL)
+
+        let firstResult = try importer.importModelCapabilities(into: store)
+        let secondResult = try importer.importModelCapabilities(into: store)
+
+        XCTAssertEqual(firstResult.modelsInsertedCount, 1)
+        XCTAssertEqual(secondResult.changedRowCount, 0)
+        let model = try XCTUnwrap(try store.codexModelCapabilities().first)
+        XCTAssertEqual(model.slug, "codex-future-7")
+        XCTAssertNil(model.displayName)
+        XCTAssertTrue(model.reasoningLevels.isEmpty)
+    }
+
+    func testModelCapabilitiesCaptureReportsSourceAndJSONProblems() async throws {
+        let store = try makeStore()
+        let directoryURL = try makeTemporaryDirectory()
+        let missingURL = directoryURL.appendingPathComponent("missing-models_cache.json")
+        let malformedURL = directoryURL.appendingPathComponent("malformed-models_cache.json")
+        let emptyURL = directoryURL.appendingPathComponent("empty-models_cache.json")
+        try Data("not json".utf8).write(to: malformedURL)
+        try Data(#"{ "models": [] }"#.utf8).write(to: emptyURL)
+
+        let missingState = store.captureCodexModelCapabilities(
+            at: date("2026-05-22T12:00:00Z"),
+            force: true,
+            importer: CodexModelCapabilitiesImporter(modelsCacheURL: missingURL)
+        )
+        let malformedState = store.captureCodexModelCapabilities(
+            at: date("2026-05-22T12:01:00Z"),
+            force: true,
+            importer: CodexModelCapabilitiesImporter(modelsCacheURL: malformedURL)
+        )
+        let emptyState = store.captureCodexModelCapabilities(
+            at: date("2026-05-22T12:02:00Z"),
+            force: true,
+            importer: CodexModelCapabilitiesImporter(modelsCacheURL: emptyURL)
+        )
+
+        XCTAssertEqual(missingState.status, .noSource)
+        XCTAssertEqual(malformedState.status, .malformed)
+        XCTAssertEqual(emptyState.status, .noModels)
+        XCTAssertEqual(try store.codexModelCapabilitiesCaptureState().status, .noModels)
+    }
+
     private func createThreadCatalogSourceDatabase(at databaseURL: URL, sql: String) throws {
         var database: OpaquePointer?
         XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
