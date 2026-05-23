@@ -590,6 +590,38 @@ extension UsageHistoryStoreTests {
         """
     }
 
+    func taskStartedLine(
+        timestamp: String,
+        turnID: String,
+        startedAt: String,
+        modelContextWindow: Int64? = nil,
+        collaborationModeKind: String? = nil,
+        model: String? = nil,
+        extraPayload: String = ""
+    ) -> String {
+        let contextWindowFragment = modelContextWindow.map { #","model_context_window":\#($0)"# } ?? ""
+        let collaborationModeKindFragment = collaborationModeKind.map { #","collaboration_mode_kind":"\#($0)""# } ?? ""
+        let modelFragment = model.map { #","model":"\#($0)""# } ?? ""
+        return """
+        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"task_started","turn_id":"\(turnID)","started_at":\(Int64(date(startedAt).timeIntervalSince1970))\(contextWindowFragment)\(collaborationModeKindFragment)\(modelFragment)\(extraPayload)}}
+        """
+    }
+
+    func taskCompleteLine(
+        timestamp: String,
+        turnID: String,
+        completedAt: String,
+        durationMilliseconds: Int64? = nil,
+        timeToFirstTokenMilliseconds: Int64? = nil,
+        extraPayload: String = ""
+    ) -> String {
+        let durationFragment = durationMilliseconds.map { #","duration_ms":\#($0)"# } ?? ""
+        let firstTokenFragment = timeToFirstTokenMilliseconds.map { #","time_to_first_token_ms":\#($0)"# } ?? ""
+        return """
+        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"task_complete","turn_id":"\(turnID)","completed_at":\(Int64(date(completedAt).timeIntervalSince1970))\(durationFragment)\(firstTokenFragment)\(extraPayload)}}
+        """
+    }
+
     func date(_ string: String) -> Date {
         ISO8601DateFormatter().date(from: string)!
     }

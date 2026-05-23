@@ -71,6 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 calendar: .autoupdatingCurrent,
                 force: true
             )
+            _ = await historyDatabase.captureSessionTaskTimingIfNeeded(
+                at: Date(),
+                calendar: .autoupdatingCurrent,
+                force: true
+            )
         }
 
         Task {

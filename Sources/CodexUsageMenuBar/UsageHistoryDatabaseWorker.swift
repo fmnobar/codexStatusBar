@@ -56,6 +56,8 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func liveTokenCaptureState() async -> CodexLiveTokenCaptureState
     func captureTurnPerformanceIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexTurnPerformanceCaptureState
     func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState
+    func captureSessionTaskTimingIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexSessionTaskTimingCaptureState
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
@@ -75,6 +77,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
     typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexLiveTokenCaptureState
     typealias TurnPerformanceImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexTurnPerformanceCaptureState
+    typealias SessionTaskTimingImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexSessionTaskTimingCaptureState
 
     static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
         store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
@@ -84,32 +87,42 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         store.captureCodexOtelTurnPerformance(at: date, calendar: calendar, force: force)
     }
 
+    static let liveSessionTaskTimingImporter: SessionTaskTimingImporter = { store, date, calendar, force in
+        store.captureCodexSessionTaskTiming(at: date, calendar: calendar, force: force)
+    }
+
     private let storeFactory: StoreFactory
     private let recentTokenHistoryImporter: RecentTokenHistoryImporter
     private let turnPerformanceImporter: TurnPerformanceImporter
+    private let sessionTaskTimingImporter: SessionTaskTimingImporter
     private var cachedStore: UsageHistoryStore?
     private var lastRecentTokenImportAt: Date?
     private var lastTurnPerformanceImportAt: Date?
+    private var lastSessionTaskTimingImportAt: Date?
 
     init(
         store: UsageHistoryStore,
         recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter,
-        turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter
+        turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter,
+        sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter
     ) {
         self.storeFactory = { store }
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
         self.turnPerformanceImporter = turnPerformanceImporter
+        self.sessionTaskTimingImporter = sessionTaskTimingImporter
         self.cachedStore = store
     }
 
     init(
         storeFactory: @escaping StoreFactory,
         recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.liveRecentTokenHistoryImporter,
-        turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter
+        turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter,
+        sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter
     ) {
         self.storeFactory = storeFactory
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
         self.turnPerformanceImporter = turnPerformanceImporter
+        self.sessionTaskTimingImporter = sessionTaskTimingImporter
     }
 
     static func applicationSupportStore() -> UsageHistoryDatabaseWorker {
@@ -215,6 +228,28 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             return try store.codexTurnPerformanceCaptureState()
         } catch {
             return CodexTurnPerformanceCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexSessionTaskTimingCaptureState {
+        do {
+            let store = try store()
+            return importSessionTaskTimingIfNeeded(store: store, at: date, calendar: calendar, force: force)
+        } catch {
+            return CodexSessionTaskTimingCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func sessionTaskTimingCaptureState() -> CodexSessionTaskTimingCaptureState {
+        do {
+            let store = try store()
+            return try store.codexSessionTaskTimingCaptureState()
+        } catch {
+            return CodexSessionTaskTimingCaptureState(status: .failed, lastErrorText: error.localizedDescription)
         }
     }
 
@@ -382,6 +417,25 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
         let state = turnPerformanceImporter(store, date, calendar, force)
         lastTurnPerformanceImportAt = date
+        return state
+    }
+
+    private func importSessionTaskTimingIfNeeded(
+        store: UsageHistoryStore,
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) -> CodexSessionTaskTimingCaptureState {
+        if let lastSessionTaskTimingImportAt,
+           date.timeIntervalSince(lastSessionTaskTimingImportAt) < 30,
+           calendar.isDate(lastSessionTaskTimingImportAt, inSameDayAs: date),
+           !force
+        {
+            return (try? store.codexSessionTaskTimingCaptureState()) ?? CodexSessionTaskTimingCaptureState()
+        }
+
+        let state = sessionTaskTimingImporter(store, date, calendar, force)
+        lastSessionTaskTimingImportAt = date
         return state
     }
 

@@ -231,6 +231,59 @@ extension UsageHistoryStore {
             )
             """
         )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_session_task_timing_events (
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                source_path TEXT,
+                started_at INTEGER,
+                completed_at INTEGER,
+                duration_ms INTEGER,
+                time_to_first_token_ms INTEGER,
+                model_context_window INTEGER,
+                collaboration_mode_kind TEXT,
+                model TEXT,
+                project_path TEXT,
+                project_name TEXT,
+                effort TEXT,
+                source TEXT,
+                dimensions_json TEXT,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, turn_id)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_session_task_timing_import_files (
+                file_path TEXT PRIMARY KEY,
+                file_size INTEGER NOT NULL,
+                modified_at INTEGER NOT NULL,
+                imported_at INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                timing_version TEXT
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_session_task_timing_capture_state (
+                source_key TEXT PRIMARY KEY,
+                last_checked_at INTEGER,
+                last_imported_event_at INTEGER,
+                status TEXT NOT NULL,
+                files_discovered INTEGER NOT NULL DEFAULT 0,
+                files_scanned INTEGER NOT NULL DEFAULT 0,
+                files_skipped_unchanged INTEGER NOT NULL DEFAULT 0,
+                inserted_count INTEGER NOT NULL DEFAULT 0,
+                updated_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                failed_lines_skipped INTEGER NOT NULL DEFAULT 0,
+                last_error_text TEXT
+            )
+            """
+        )
         try addColumnIfNeeded(table: "usage_rollups", column: "peak_used_percent", definition: "INTEGER")
         try addColumnIfNeeded(table: "usage_samples", column: "consumed_percent", definition: "REAL")
         try addColumnIfNeeded(table: "usage_rollups", column: "consumed_percent", definition: "REAL")
@@ -286,6 +339,16 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_transport_timestamp ON codex_turn_performance_events(transport, event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_success_timestamp ON codex_turn_performance_events(success, event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_capture_state_checked ON codex_turn_performance_capture_state(last_checked_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_started_at ON codex_session_task_timing_events(started_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_completed_at ON codex_session_task_timing_events(completed_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_model_started ON codex_session_task_timing_events(model, started_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_project_started ON codex_session_task_timing_events(project_path, started_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_effort_started ON codex_session_task_timing_events(effort, started_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_source_started ON codex_session_task_timing_events(source, started_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_collaboration_started ON codex_session_task_timing_events(collaboration_mode_kind, started_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_duration ON codex_session_task_timing_events(duration_ms)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_import_files_status ON codex_session_task_timing_import_files(status, imported_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_capture_state_checked ON codex_session_task_timing_capture_state(last_checked_at DESC)")
 
         try cleanupTokenModelLabelsIfNeeded()
         try cleanupTokenContextValuesIfNeeded()

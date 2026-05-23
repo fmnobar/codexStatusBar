@@ -45,6 +45,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics
     @Published private(set) var localTokenCaptureState = CodexLiveTokenCaptureState()
     @Published private(set) var turnPerformanceCaptureState = CodexTurnPerformanceCaptureState()
+    @Published private(set) var sessionTaskTimingCaptureState = CodexSessionTaskTimingCaptureState()
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -89,8 +90,17 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
         tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
     ) {
+        let testSafeWorker = UsageHistoryDatabaseWorker(
+            store: store,
+            turnPerformanceImporter: { store, _, _, _ in
+                (try? store.codexTurnPerformanceCaptureState()) ?? CodexTurnPerformanceCaptureState()
+            },
+            sessionTaskTimingImporter: { store, _, _, _ in
+                (try? store.codexSessionTaskTimingCaptureState()) ?? CodexSessionTaskTimingCaptureState()
+            }
+        )
         self.init(
-            database: UsageHistoryDatabaseWorker(store: store),
+            database: testSafeWorker,
             defaults: defaults,
             byteFormatter: byteFormatter,
             tokenBackfillImporter: tokenBackfillImporter,
@@ -188,6 +198,34 @@ final class DataManagementSettingsViewModel: ObservableObject {
         turnPerformanceCaptureState.lastErrorText ?? "None"
     }
 
+    var sessionTaskTimingCaptureLastCheckedText: String {
+        guard let lastCheckedAt = sessionTaskTimingCaptureState.lastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var sessionTaskTimingCaptureLastEventText: String {
+        guard let lastImportedEventAt = sessionTaskTimingCaptureState.lastImportedEventAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: lastImportedEventAt)
+    }
+
+    var sessionTaskTimingCaptureFilesText: String {
+        "\(sessionTaskTimingCaptureState.filesScanned) scanned, \(sessionTaskTimingCaptureState.filesSkippedUnchanged) skipped"
+    }
+
+    var sessionTaskTimingCaptureResultText: String {
+        "\(sessionTaskTimingCaptureState.insertedCount) imported, \(sessionTaskTimingCaptureState.updatedCount) updated, \(sessionTaskTimingCaptureState.duplicateCount) duplicate, \(sessionTaskTimingCaptureState.failedLinesSkipped) failed lines"
+    }
+
+    var sessionTaskTimingCaptureLastErrorText: String {
+        sessionTaskTimingCaptureState.lastErrorText ?? "None"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -221,11 +259,20 @@ final class DataManagementSettingsViewModel: ObservableObject {
         )
     }
 
+    func refreshSessionTaskTimingCaptureState() async {
+        sessionTaskTimingCaptureState = await database.captureSessionTaskTimingIfNeeded(
+            at: Date(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
         await refreshLocalTokenCaptureState()
         await refreshTurnPerformanceCaptureState()
+        await refreshSessionTaskTimingCaptureState()
     }
 
     func revealDatabaseInFinder() {
@@ -761,6 +808,53 @@ struct DataManagementSettingsView: View {
                     GridRow {
                         Text("Last error")
                         Text(viewModel.turnPerformanceCaptureLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Session task timing")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Source")
+                        Text(viewModel.sessionTaskTimingCaptureState.sourceKey)
+                            .monospaced()
+                    }
+                    GridRow {
+                        Text("Status")
+                        Text(viewModel.sessionTaskTimingCaptureState.status.displayText)
+                    }
+                    GridRow {
+                        Text("Last checked")
+                        Text(viewModel.sessionTaskTimingCaptureLastCheckedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Latest task")
+                        Text(viewModel.sessionTaskTimingCaptureLastEventText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Files")
+                        Text(viewModel.sessionTaskTimingCaptureFilesText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last result")
+                        Text(viewModel.sessionTaskTimingCaptureResultText)
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.sessionTaskTimingCaptureLastErrorText)
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }

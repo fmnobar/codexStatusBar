@@ -845,6 +845,162 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
     }
 
+    func testSessionTaskTimingImporterPairsStartCompleteAndAppliesSafeContext() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-timing.jsonl")
+        try writeSessionLines(
+            [
+                sessionMetaLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    sessionID: "session-task-timing",
+                    cwd: "/Users/example/Projects/task-timing",
+                    source: "cli",
+                    extraPayload: #","originator":"vscode","cli_version":"0.78.0""#
+                ),
+                turnContextLine(
+                    timestamp: "2026-05-17T15:00:01Z",
+                    model: "gpt-5.5",
+                    effort: "xhigh",
+                    extraPayload: #","approval_policy":"never","sandbox_policy":{"type":"danger-full-access"}"#
+                ),
+                """
+                {"timestamp":"2026-05-17T15:00:01.500Z","type":"response_item","payload":{"item":{"type":"message","content":[{"text":"secret task text"}]}}}
+                """,
+                "{not valid json \"task_started\"",
+                taskStartedLine(
+                    timestamp: "2026-05-17T15:00:02Z",
+                    turnID: "turn-task",
+                    startedAt: "2026-05-17T15:00:02Z",
+                    modelContextWindow: 258_400,
+                    collaborationModeKind: "agentic"
+                ),
+                taskCompleteLine(
+                    timestamp: "2026-05-17T15:00:05Z",
+                    turnID: "turn-task",
+                    completedAt: "2026-05-17T15:00:05Z",
+                    durationMilliseconds: 3_500,
+                    timeToFirstTokenMilliseconds: 800
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTaskTimingImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        let events = try store.sessionTaskTimingEvents()
+        let event = try XCTUnwrap(events.first)
+
+        XCTAssertEqual(summary.filesDiscovered, 1)
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.insertedCount, 1)
+        XCTAssertEqual(summary.failedLinesSkipped, 1)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(event.sessionID, "session-task-timing")
+        XCTAssertEqual(event.turnID, "turn-task")
+        XCTAssertEqual(event.startedAt, date("2026-05-17T15:00:02Z"))
+        XCTAssertEqual(event.completedAt, date("2026-05-17T15:00:05Z"))
+        XCTAssertEqual(event.durationMilliseconds, 3_500)
+        XCTAssertEqual(event.timeToFirstTokenMilliseconds, 800)
+        XCTAssertEqual(event.modelContextWindow, 258_400)
+        XCTAssertEqual(event.collaborationModeKind, "agentic")
+        XCTAssertEqual(event.model, "gpt-5.5")
+        XCTAssertEqual(event.projectPath, "/Users/example/Projects/task-timing")
+        XCTAssertEqual(event.projectName, "task-timing")
+        XCTAssertEqual(event.effort, "xhigh")
+        XCTAssertEqual(event.source, "cli")
+        XCTAssertTrue(event.dimensionsJSON?.contains("approval_policy") == true)
+        XCTAssertFalse(event.dimensionsJSON?.contains("secret") == true)
+    }
+
+    func testSessionTaskTimingImporterSkipsUnchangedAndForceRescanIsIdempotent() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-idempotent.jsonl")
+        try writeSessionLines(
+            [
+                taskStartedLine(
+                    timestamp: "2026-05-17T15:00:02Z",
+                    turnID: "turn-task",
+                    startedAt: "2026-05-17T15:00:02Z"
+                ),
+                taskCompleteLine(
+                    timestamp: "2026-05-17T15:00:05Z",
+                    turnID: "turn-task",
+                    completedAt: "2026-05-17T15:00:05Z"
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTaskTimingImporter(sourceDirectories: [sessionsURL])
+
+        let firstSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        let secondSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        let forcedSummary = try importer.importTaskTiming(
+            into: store,
+            now: date("2026-05-18T12:00:00Z"),
+            forceRescan: true
+        )
+
+        XCTAssertEqual(firstSummary.insertedCount, 1)
+        XCTAssertEqual(secondSummary.filesScanned, 0)
+        XCTAssertEqual(secondSummary.filesSkippedUnchanged, 1)
+        XCTAssertEqual(forcedSummary.insertedCount, 0)
+        XCTAssertEqual(forcedSummary.updatedCount, 0)
+        XCTAssertEqual(forcedSummary.duplicateCount, 1)
+        XCTAssertEqual(try store.sessionTaskTimingEvents().count, 1)
+    }
+
+    func testSessionTaskTimingImporterReimportsChangedFilesAndRepairsRows() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-repair.jsonl")
+        try writeSessionLines(
+            [
+                taskStartedLine(
+                    timestamp: "2026-05-17T15:00:02Z",
+                    turnID: "turn-task",
+                    startedAt: "2026-05-17T15:00:02Z"
+                ),
+            ],
+            to: sessionURL
+        )
+        try setModificationDate(date("2026-05-17T15:01:00Z"), for: sessionURL)
+        let importer = CodexSessionTaskTimingImporter(sourceDirectories: [sessionsURL])
+
+        let firstSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+
+        try writeSessionLines(
+            [
+                taskStartedLine(
+                    timestamp: "2026-05-17T15:00:02Z",
+                    turnID: "turn-task",
+                    startedAt: "2026-05-17T15:00:02Z"
+                ),
+                taskCompleteLine(
+                    timestamp: "2026-05-17T15:00:06Z",
+                    turnID: "turn-task",
+                    completedAt: "2026-05-17T15:00:06Z",
+                    timeToFirstTokenMilliseconds: 900
+                ),
+            ],
+            to: sessionURL
+        )
+        try setModificationDate(date("2026-05-17T15:05:00Z"), for: sessionURL)
+
+        let repairSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        let event = try XCTUnwrap(try store.sessionTaskTimingEvents().first)
+
+        XCTAssertEqual(firstSummary.insertedCount, 1)
+        XCTAssertEqual(repairSummary.updatedCount, 1)
+        XCTAssertEqual(event.completedAt, date("2026-05-17T15:00:06Z"))
+        XCTAssertEqual(event.durationMilliseconds, 4_000)
+        XCTAssertEqual(event.timeToFirstTokenMilliseconds, 900)
+    }
+
     func testSessionTokenImportMetadataMigratesFromExistingDatabase() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyTokenHistoryDatabase(at: databaseURL)

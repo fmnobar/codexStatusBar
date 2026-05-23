@@ -197,6 +197,243 @@ struct CodexTurnPerformanceCaptureRunResult: Equatable, Sendable {
     let lastImportedEventAt: Date?
 }
 
+enum CodexSessionTaskTimingCaptureStatus: String, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case imported
+    case updated
+    case noNewEvents = "no_new_events"
+    case duplicateOnly = "duplicate_only"
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            "Not checked yet"
+        case .imported:
+            "Imported new timing"
+        case .updated:
+            "Checked, updated timing"
+        case .noNewEvents:
+            "Checked, no new timing"
+        case .duplicateOnly:
+            "Checked, duplicates only"
+        case .failed:
+            "Capture failed"
+        }
+    }
+}
+
+struct CodexSessionTaskTimingCaptureState: Equatable, Sendable {
+    static let sessionJSONLSourceKey = "codex-session-task-timing"
+
+    let sourceKey: String
+    let lastCheckedAt: Date?
+    let lastImportedEventAt: Date?
+    let status: CodexSessionTaskTimingCaptureStatus
+    let filesDiscovered: Int
+    let filesScanned: Int
+    let filesSkippedUnchanged: Int
+    let insertedCount: Int
+    let updatedCount: Int
+    let duplicateCount: Int
+    let failedLinesSkipped: Int
+    let lastErrorText: String?
+
+    init(
+        sourceKey: String = Self.sessionJSONLSourceKey,
+        lastCheckedAt: Date? = nil,
+        lastImportedEventAt: Date? = nil,
+        status: CodexSessionTaskTimingCaptureStatus = .neverChecked,
+        filesDiscovered: Int = 0,
+        filesScanned: Int = 0,
+        filesSkippedUnchanged: Int = 0,
+        insertedCount: Int = 0,
+        updatedCount: Int = 0,
+        duplicateCount: Int = 0,
+        failedLinesSkipped: Int = 0,
+        lastErrorText: String? = nil
+    ) {
+        self.sourceKey = sourceKey
+        self.lastCheckedAt = lastCheckedAt
+        self.lastImportedEventAt = lastImportedEventAt
+        self.status = status
+        self.filesDiscovered = max(filesDiscovered, 0)
+        self.filesScanned = max(filesScanned, 0)
+        self.filesSkippedUnchanged = max(filesSkippedUnchanged, 0)
+        self.insertedCount = max(insertedCount, 0)
+        self.updatedCount = max(updatedCount, 0)
+        self.duplicateCount = max(duplicateCount, 0)
+        self.failedLinesSkipped = max(failedLinesSkipped, 0)
+        self.lastErrorText = lastErrorText
+    }
+}
+
+enum CodexSessionTaskTimingImportFileStatus: String, Sendable {
+    case imported
+    case failed
+}
+
+struct CodexSessionTaskTimingImportFileRecord: Equatable, Sendable {
+    let metadata: CodexSessionTokenImportFileMetadata
+    let importedAt: Int64
+    let status: CodexSessionTaskTimingImportFileStatus
+    let timingVersion: String?
+}
+
+struct CodexSessionTaskTimingImportResult: Equatable, Sendable {
+    let insertedCount: Int
+    let updatedCount: Int
+    let duplicateCount: Int
+
+    static let empty = CodexSessionTaskTimingImportResult(insertedCount: 0, updatedCount: 0, duplicateCount: 0)
+}
+
+struct CodexSessionTaskTimingSummary: Equatable, Sendable {
+    let filesDiscovered: Int
+    let filesScanned: Int
+    let filesSkippedByBounds: Int
+    let filesSkippedUnchanged: Int
+    let insertedCount: Int
+    let updatedCount: Int
+    let duplicateCount: Int
+    let failedLinesSkipped: Int
+    let latestEventAt: Date?
+}
+
+struct CodexSessionTaskTimingEvent: Equatable, Sendable {
+    let sessionID: String
+    let turnID: String
+    let sourcePath: String?
+    let startedAt: Date?
+    let completedAt: Date?
+    let durationMilliseconds: Int64?
+    let timeToFirstTokenMilliseconds: Int64?
+    let modelContextWindow: Int64?
+    let collaborationModeKind: String?
+    let model: String?
+    let projectPath: String?
+    let projectName: String?
+    let effort: String?
+    let source: String?
+    let dimensionsJSON: String?
+    let recordedAt: Date
+
+    init?(
+        sessionID: String?,
+        turnID: String?,
+        sourcePath: String? = nil,
+        startedAt: Date? = nil,
+        completedAt: Date? = nil,
+        durationMilliseconds: Int64? = nil,
+        timeToFirstTokenMilliseconds: Int64? = nil,
+        modelContextWindow: Int64? = nil,
+        collaborationModeKind: String? = nil,
+        model: String? = nil,
+        projectPath: String? = nil,
+        effort: String? = nil,
+        source: String? = nil,
+        dimensions: [TokenUsageDimension] = [],
+        dimensionsJSON: String? = nil,
+        recordedAt: Date = Date()
+    ) {
+        guard let normalizedSessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID),
+              let normalizedTurnID = CodexTokenContextNormalizer.normalizedIdentifier(turnID)
+        else {
+            return nil
+        }
+
+        self.sessionID = normalizedSessionID
+        self.turnID = normalizedTurnID
+        self.sourcePath = sourcePath
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        let computedDuration = Self.durationMilliseconds(startedAt: startedAt, completedAt: completedAt)
+        self.durationMilliseconds = durationMilliseconds.map { max($0, 0) } ?? computedDuration
+        self.timeToFirstTokenMilliseconds = timeToFirstTokenMilliseconds.map { max($0, 0) }
+        self.modelContextWindow = modelContextWindow.map { max($0, 0) }
+        self.collaborationModeKind = CodexTokenContextNormalizer.normalizedIdentifier(collaborationModeKind)
+        self.model = CodexModelIdentifier.normalized(model)
+        self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
+        self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
+        self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
+        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+        self.dimensionsJSON = dimensionsJSON ?? Self.dimensionsJSON(dimensions)
+        self.recordedAt = recordedAt
+    }
+
+    var latestEventAt: Date? {
+        [startedAt, completedAt].compactMap(\.self).max()
+    }
+
+    func merged(with incoming: CodexSessionTaskTimingEvent) -> CodexSessionTaskTimingEvent {
+        CodexSessionTaskTimingEvent(
+            sessionID: sessionID,
+            turnID: turnID,
+            sourcePath: incoming.sourcePath ?? sourcePath,
+            startedAt: incoming.startedAt ?? startedAt,
+            completedAt: incoming.completedAt ?? completedAt,
+            durationMilliseconds: incoming.durationMilliseconds ?? durationMilliseconds,
+            timeToFirstTokenMilliseconds: incoming.timeToFirstTokenMilliseconds ?? timeToFirstTokenMilliseconds,
+            modelContextWindow: incoming.modelContextWindow ?? modelContextWindow,
+            collaborationModeKind: incoming.collaborationModeKind ?? collaborationModeKind,
+            model: incoming.model ?? model,
+            projectPath: incoming.projectPath ?? projectPath,
+            effort: incoming.effort ?? effort,
+            source: incoming.source ?? source,
+            dimensionsJSON: incoming.dimensionsJSON ?? dimensionsJSON,
+            recordedAt: incoming.recordedAt
+        )!
+    }
+
+    func hasSameStoredContent(as other: CodexSessionTaskTimingEvent) -> Bool {
+        sessionID == other.sessionID
+            && turnID == other.turnID
+            && sourcePath == other.sourcePath
+            && startedAt == other.startedAt
+            && completedAt == other.completedAt
+            && durationMilliseconds == other.durationMilliseconds
+            && timeToFirstTokenMilliseconds == other.timeToFirstTokenMilliseconds
+            && modelContextWindow == other.modelContextWindow
+            && collaborationModeKind == other.collaborationModeKind
+            && model == other.model
+            && projectPath == other.projectPath
+            && projectName == other.projectName
+            && effort == other.effort
+            && source == other.source
+            && dimensionsJSON == other.dimensionsJSON
+    }
+
+    private static func durationMilliseconds(startedAt: Date?, completedAt: Date?) -> Int64? {
+        guard let startedAt, let completedAt, completedAt >= startedAt else {
+            return nil
+        }
+
+        return Int64((completedAt.timeIntervalSince(startedAt) * 1_000).rounded())
+    }
+
+    private static func dimensionsJSON(_ dimensions: [TokenUsageDimension]) -> String? {
+        let unique = TokenUsageDimension.unique(dimensions)
+            .sorted { left, right in
+                left.key.rawValue == right.key.rawValue
+                    ? left.value < right.value
+                    : left.key.rawValue < right.key.rawValue
+            }
+        guard !unique.isEmpty else {
+            return nil
+        }
+
+        let rows = unique.map { ["key": $0.key.rawValue, "value": $0.value] }
+        guard JSONSerialization.isValidJSONObject(rows),
+              let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+
+        return text
+    }
+}
+
 struct CodexTurnPerformanceEvent: Equatable, Sendable {
     let sourceKey: String
     let sourceRowID: Int64
@@ -461,6 +698,328 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
 
         parts.append(String(format: "%.1fs elapsed.", elapsedTime))
         return parts.joined(separator: " ")
+    }
+}
+
+struct CodexSessionTaskTimingImporter: @unchecked Sendable {
+    let sourceDirectories: [URL]
+    let fileManager: FileManager
+
+    private static let taskStartedLineNeedle = Data(#""task_started""#.utf8)
+    private static let taskCompleteLineNeedle = Data(#""task_complete""#.utf8)
+    private static let turnContextLineNeedle = Data(#""turn_context""#.utf8)
+    private static let sessionMetaLineNeedle = Data(#""session_meta""#.utf8)
+
+    init(
+        sourceDirectories: [URL] = Self.defaultSourceDirectories(),
+        fileManager: FileManager = .default
+    ) {
+        self.sourceDirectories = sourceDirectories
+        self.fileManager = fileManager
+    }
+
+    static func defaultSourceDirectories(fileManager: FileManager = .default) -> [URL] {
+        [
+            fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex", isDirectory: true)
+                .appendingPathComponent("sessions", isDirectory: true),
+        ]
+    }
+
+    func importTaskTiming(
+        into store: UsageHistoryStore,
+        now: Date,
+        recentDayCount: Int = CodexSessionTokenBackfillRequest.defaultRecentDayCount,
+        forceRescan: Bool = false
+    ) throws -> CodexSessionTaskTimingSummary {
+        let since = Calendar(identifier: .gregorian).date(byAdding: .day, value: -recentDayCount, to: now) ?? now
+        let discoveredFiles = sessionFileCandidates()
+        var filesSkippedByBounds = 0
+        var filesSkippedUnchanged = 0
+        var failedLinesSkipped = 0
+        var insertedCount = 0
+        var updatedCount = 0
+        var duplicateCount = 0
+        var latestEventAt: Date?
+
+        let sessionFiles = discoveredFiles.filter { candidate in
+            guard shouldInclude(candidate: candidate, since: since) else {
+                filesSkippedByBounds += 1
+                return false
+            }
+
+            guard !shouldSkipUnchanged(candidate.metadata, store: store, forceRescan: forceRescan) else {
+                filesSkippedUnchanged += 1
+                return false
+            }
+
+            return true
+        }
+
+        for candidate in sessionFiles {
+            let fileResult = parseSessionFile(candidate.url)
+            failedLinesSkipped += fileResult.failedLinesSkipped
+            let importResult = try store.importSessionTaskTimingEvents(fileResult.events)
+            insertedCount += importResult.insertedCount
+            updatedCount += importResult.updatedCount
+            duplicateCount += importResult.duplicateCount
+            latestEventAt = Self.latestDate(latestEventAt, fileResult.events.compactMap(\.latestEventAt).max())
+            try store.recordCodexSessionTaskTimingImportFile(
+                candidate.metadata,
+                importedAt: Int64(Date().timeIntervalSince1970),
+                status: fileResult.readSucceeded ? .imported : .failed
+            )
+        }
+
+        return CodexSessionTaskTimingSummary(
+            filesDiscovered: discoveredFiles.count,
+            filesScanned: sessionFiles.count,
+            filesSkippedByBounds: filesSkippedByBounds,
+            filesSkippedUnchanged: filesSkippedUnchanged,
+            insertedCount: insertedCount,
+            updatedCount: updatedCount,
+            duplicateCount: duplicateCount,
+            failedLinesSkipped: failedLinesSkipped,
+            latestEventAt: latestEventAt
+        )
+    }
+
+    private struct SessionFileCandidate {
+        let url: URL
+        let metadata: CodexSessionTokenImportFileMetadata
+        let sessionDate: Date?
+    }
+
+    private func sessionFileCandidates() -> [SessionFileCandidate] {
+        sourceDirectories.flatMap { directoryURL -> [URL] in
+            guard fileManager.fileExists(atPath: directoryURL.path) else {
+                return []
+            }
+
+            guard let enumerator = fileManager.enumerator(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return []
+            }
+
+            return enumerator.compactMap { item -> URL? in
+                guard let fileURL = item as? URL, fileURL.pathExtension == "jsonl" else {
+                    return nil
+                }
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+                return values?.isRegularFile == true ? fileURL : nil
+            }
+        }
+        .compactMap { fileURL in
+            guard let metadata = fileMetadata(for: fileURL) else {
+                return nil
+            }
+            return SessionFileCandidate(
+                url: fileURL,
+                metadata: metadata,
+                sessionDate: CodexSessionTokenBackfillImporter.sessionDate(from: fileURL)
+            )
+        }
+        .sorted { $0.metadata.path.localizedStandardCompare($1.metadata.path) == .orderedAscending }
+    }
+
+    private func fileMetadata(for fileURL: URL) -> CodexSessionTokenImportFileMetadata? {
+        let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        return CodexSessionTokenImportFileMetadata(
+            path: fileURL.path,
+            fileSize: Int64(values?.fileSize ?? 0),
+            modifiedAt: values?.contentModificationDate.map { Int64($0.timeIntervalSince1970) } ?? 0
+        )
+    }
+
+    private func shouldInclude(candidate: SessionFileCandidate, since: Date) -> Bool {
+        if let sessionDate = candidate.sessionDate {
+            return sessionDate >= since
+        }
+
+        return Date(timeIntervalSince1970: TimeInterval(candidate.metadata.modifiedAt)) >= since
+    }
+
+    private func shouldSkipUnchanged(
+        _ metadata: CodexSessionTokenImportFileMetadata,
+        store: UsageHistoryStore,
+        forceRescan: Bool
+    ) -> Bool {
+        guard !forceRescan,
+              let record = try? store.codexSessionTaskTimingImportFileRecord(path: metadata.path)
+        else {
+            return false
+        }
+
+        return record.status == .imported
+            && record.metadata.fileSize == metadata.fileSize
+            && record.metadata.modifiedAt == metadata.modifiedAt
+            && record.timingVersion == UsageHistoryStore.currentSessionTaskTimingImportVersion
+    }
+
+    private static func latestDate(_ left: Date?, _ right: Date?) -> Date? {
+        switch (left, right) {
+        case let (left?, right?):
+            return max(left, right)
+        case let (left?, nil):
+            return left
+        case let (nil, right?):
+            return right
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private func parseSessionFile(_ fileURL: URL) -> (events: [CodexSessionTaskTimingEvent], failedLinesSkipped: Int, readSucceeded: Bool) {
+        guard let lineReader = try? StreamingLineReader(fileURL: fileURL) else {
+            return ([], 1, false)
+        }
+        defer { lineReader.close() }
+
+        let decoder = JSONDecoder()
+        let sessionID = CodexSessionTokenBackfillImporter.sessionIdentifier(for: fileURL)
+        var currentContext = CodexSessionTokenContextTracker(sessionID: sessionID)
+        var currentModel: String?
+        var eventsByTurnID: [String: CodexSessionTaskTimingEvent] = [:]
+        var failedLinesSkipped = 0
+
+        do {
+            while let lineData = try lineReader.nextLineData() {
+                guard !lineData.isEmpty, Self.shouldDecodeSessionLine(lineData) else {
+                    continue
+                }
+
+                do {
+                    let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
+                    if line.isSessionMetadata {
+                        currentContext.applyMetadata(from: line.payload)
+                    }
+                    if line.isTurnContext {
+                        currentContext.applyTurnContext(from: line.payload)
+                    }
+                    if line.payload?.hasModelMetadata == true {
+                        currentModel = line.payload?.modelIdentifier
+                    }
+
+                    guard let event = Self.timingEvent(
+                        from: line,
+                        sourcePath: fileURL.path,
+                        fallbackSessionID: sessionID,
+                        currentContext: currentContext,
+                        currentModel: currentModel
+                    ) else {
+                        continue
+                    }
+
+                    eventsByTurnID[event.turnID] = eventsByTurnID[event.turnID]?.merged(with: event) ?? event
+                } catch {
+                    failedLinesSkipped += 1
+                }
+            }
+        } catch {
+            return (Array(eventsByTurnID.values), failedLinesSkipped + 1, false)
+        }
+
+        return (
+            eventsByTurnID.values.sorted {
+                ($0.startedAt ?? $0.completedAt ?? .distantPast) < ($1.startedAt ?? $1.completedAt ?? .distantPast)
+            },
+            failedLinesSkipped,
+            true
+        )
+    }
+
+    private static func timingEvent(
+        from line: CodexSessionTokenBackfillLine,
+        sourcePath: String,
+        fallbackSessionID: String,
+        currentContext: CodexSessionTokenContextTracker,
+        currentModel: String?
+    ) -> CodexSessionTaskTimingEvent? {
+        guard let payload = line.payload,
+              payload.isTaskStarted || payload.isTaskComplete,
+              let turnID = payload.turnID
+        else {
+            return nil
+        }
+
+        let lineTimestamp = CodexSessionTokenBackfillImporter.parseTimestamp(line.timestamp)
+        let startedAt = payload.isTaskStarted ? (payload.startedAtDate ?? lineTimestamp) : nil
+        let completedAt = payload.isTaskComplete ? (payload.completedAtDate ?? lineTimestamp) : nil
+        let context = currentContext.context
+
+        return CodexSessionTaskTimingEvent(
+            sessionID: context?.sessionID ?? fallbackSessionID,
+            turnID: turnID,
+            sourcePath: sourcePath,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            durationMilliseconds: payload.durationMilliseconds,
+            timeToFirstTokenMilliseconds: payload.timeToFirstTokenMilliseconds,
+            modelContextWindow: payload.modelContextWindow,
+            collaborationModeKind: payload.collaborationModeKind,
+            model: payload.modelIdentifier ?? currentModel,
+            projectPath: context?.projectPath,
+            effort: context?.effort,
+            source: context?.source,
+            dimensions: context?.dimensions ?? []
+        )
+    }
+
+    private static func shouldDecodeSessionLine(_ lineData: Data) -> Bool {
+        let searchablePrefix = lineData.prefix(4_096)
+        return searchablePrefix.range(of: taskStartedLineNeedle) != nil
+            || searchablePrefix.range(of: taskCompleteLineNeedle) != nil
+            || searchablePrefix.range(of: turnContextLineNeedle) != nil
+            || searchablePrefix.range(of: sessionMetaLineNeedle) != nil
+    }
+
+    private final class StreamingLineReader {
+        private let handle: FileHandle
+        private var buffer = Data()
+        private var reachedEnd = false
+
+        init(fileURL: URL) throws {
+            handle = try FileHandle(forReadingFrom: fileURL)
+        }
+
+        func nextLineData() throws -> Data? {
+            while true {
+                if let newlineRange = buffer.firstRange(of: Data([0x0A])) {
+                    var line = buffer[..<newlineRange.lowerBound]
+                    buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
+                    if line.last == 0x0D {
+                        line = line.dropLast()
+                    }
+                    return Data(line)
+                }
+
+                if reachedEnd {
+                    guard !buffer.isEmpty else {
+                        return nil
+                    }
+                    var line = buffer
+                    buffer.removeAll(keepingCapacity: false)
+                    if line.last == 0x0D {
+                        line.removeLast()
+                    }
+                    return line
+                }
+
+                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                if chunk.isEmpty {
+                    reachedEnd = true
+                } else {
+                    buffer.append(chunk)
+                }
+            }
+        }
+
+        func close() {
+            try? handle.close()
+        }
     }
 }
 
@@ -1947,7 +2506,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         }
     }
 
-    private static func sessionDate(from fileURL: URL) -> Date? {
+    static func sessionDate(from fileURL: URL) -> Date? {
         let name = fileURL.deletingPathExtension().lastPathComponent
         let pattern = #"rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
@@ -1971,7 +2530,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         return parseTimestamp("\(parts[0])-\(parts[1])-\(parts[2])T\(parts[3]):\(parts[4]):\(parts[5])Z")
     }
 
-    private static func sessionIdentifier(for fileURL: URL) -> String {
+    static func sessionIdentifier(for fileURL: URL) -> String {
         "session:\(fileURL.deletingPathExtension().lastPathComponent)"
     }
 
@@ -2025,6 +2584,13 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         let speedMode: String?
         let mode: String?
         let collaborationMode: CollaborationMode?
+        let turnID: String?
+        let startedAt: Int64?
+        let completedAt: Int64?
+        let durationMilliseconds: Int64?
+        let timeToFirstTokenMilliseconds: Int64?
+        let modelContextWindow: Int64?
+        let collaborationModeKind: String?
         let info: Info?
         let model: String?
         let slug: String?
@@ -2054,6 +2620,22 @@ private struct CodexSessionTokenBackfillLine: Decodable {
 
         var hasModelMetadata: Bool {
             model != nil || slug != nil || modelSlug != nil
+        }
+
+        var isTaskStarted: Bool {
+            type == "task_started"
+        }
+
+        var isTaskComplete: Bool {
+            type == "task_complete"
+        }
+
+        var startedAtDate: Date? {
+            Self.date(fromEpoch: startedAt)
+        }
+
+        var completedAtDate: Date? {
+            Self.date(fromEpoch: completedAt)
         }
 
         var dimensions: [TokenUsageDimension] {
@@ -2098,6 +2680,13 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             case speedMode = "speed_mode"
             case mode
             case collaborationMode = "collaboration_mode"
+            case turnID = "turn_id"
+            case startedAt = "started_at"
+            case completedAt = "completed_at"
+            case durationMilliseconds = "duration_ms"
+            case timeToFirstTokenMilliseconds = "time_to_first_token_ms"
+            case modelContextWindow = "model_context_window"
+            case collaborationModeKind = "collaboration_mode_kind"
             case info
             case model
             case slug
@@ -2125,6 +2714,13 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             speedMode = try? container.decodeIfPresent(String.self, forKey: .speedMode)
             mode = try? container.decodeIfPresent(String.self, forKey: .mode)
             collaborationMode = try? container.decode(CollaborationMode.self, forKey: .collaborationMode)
+            turnID = try? container.decodeIfPresent(String.self, forKey: .turnID)
+            startedAt = Self.decodeFlexibleInt64(from: container, .startedAt)
+            completedAt = Self.decodeFlexibleInt64(from: container, .completedAt)
+            durationMilliseconds = Self.decodeFlexibleInt64(from: container, .durationMilliseconds)
+            timeToFirstTokenMilliseconds = Self.decodeFlexibleInt64(from: container, .timeToFirstTokenMilliseconds)
+            modelContextWindow = Self.decodeFlexibleInt64(from: container, .modelContextWindow)
+            collaborationModeKind = try? container.decodeIfPresent(String.self, forKey: .collaborationModeKind)
             info = try? container.decode(Info.self, forKey: .info)
             model = try container.decodeIfPresent(String.self, forKey: .model)
             slug = try container.decodeIfPresent(String.self, forKey: .slug)
@@ -2140,6 +2736,33 @@ private struct CodexSessionTokenBackfillLine: Decodable {
             }
 
             return (try? container.decodeIfPresent(CodexSafeMetadataValuePayload.self, forKey: key))?.value
+        }
+
+        private static func decodeFlexibleInt64(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            _ key: CodingKeys
+        ) -> Int64? {
+            if let value = try? container.decodeIfPresent(Int64.self, forKey: key) {
+                return value
+            }
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return Int64(value.rounded())
+            }
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return Int64(value)
+            }
+            return nil
+        }
+
+        private static func date(fromEpoch rawValue: Int64?) -> Date? {
+            guard let rawValue, rawValue > 0 else {
+                return nil
+            }
+
+            if rawValue > 10_000_000_000 {
+                return Date(timeIntervalSince1970: TimeInterval(rawValue) / 1_000)
+            }
+            return Date(timeIntervalSince1970: TimeInterval(rawValue))
         }
     }
 

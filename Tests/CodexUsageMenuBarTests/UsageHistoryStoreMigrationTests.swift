@@ -39,6 +39,9 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(tables.contains("token_source_catalog"))
         XCTAssertTrue(tables.contains("token_usage_dimensions"))
         XCTAssertTrue(tables.contains("token_dimension_catalog"))
+        XCTAssertTrue(tables.contains("codex_session_task_timing_events"))
+        XCTAssertTrue(tables.contains("codex_session_task_timing_import_files"))
+        XCTAssertTrue(tables.contains("codex_session_task_timing_capture_state"))
         XCTAssertTrue(
             try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_project_catalog')")
                 .contains("display_name")
@@ -52,6 +55,11 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_sample"))
         XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_key_value_seen"))
         XCTAssertTrue(indexes.contains("idx_token_dimension_catalog_key_seen"))
+        XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_started_at"))
+        XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_completed_at"))
+        XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_project_started"))
+        XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_effort_started"))
+        XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_duration"))
     }
 
     func testTokenModelCleanupMigrationRepairsStoredRowsAndCatalogs() async throws {

@@ -203,6 +203,79 @@ extension UsageHistoryStore {
         }
         return .noNewEvents
     }
+
+    @discardableResult
+    func captureCodexSessionTaskTiming(
+        at date: Date,
+        calendar: Calendar = .autoupdatingCurrent,
+        minimumInterval: TimeInterval = 30,
+        force: Bool = false,
+        importer: CodexSessionTaskTimingImporter = CodexSessionTaskTimingImporter()
+    ) -> CodexSessionTaskTimingCaptureState {
+        let sourceKey = CodexSessionTaskTimingCaptureState.sessionJSONLSourceKey
+        let existingState = (try? codexSessionTaskTimingCaptureState(sourceKey: sourceKey))
+            ?? CodexSessionTaskTimingCaptureState(sourceKey: sourceKey)
+
+        if !force,
+           let lastCheckedAt = existingState.lastCheckedAt,
+           date.timeIntervalSince(lastCheckedAt) < minimumInterval
+        {
+            return existingState
+        }
+
+        do {
+            let summary = try importer.importTaskTiming(into: self, now: date)
+            let status = Self.sessionTaskTimingCaptureStatus(for: summary)
+            let state = CodexSessionTaskTimingCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedEventAt: summary.latestEventAt ?? existingState.lastImportedEventAt,
+                status: status,
+                filesDiscovered: summary.filesDiscovered,
+                filesScanned: summary.filesScanned,
+                filesSkippedUnchanged: summary.filesSkippedUnchanged + summary.filesSkippedByBounds,
+                insertedCount: summary.insertedCount,
+                updatedCount: summary.updatedCount,
+                duplicateCount: summary.duplicateCount,
+                failedLinesSkipped: summary.failedLinesSkipped,
+                lastErrorText: nil
+            )
+            try recordCodexSessionTaskTimingCaptureState(state)
+            return state
+        } catch {
+            let state = CodexSessionTaskTimingCaptureState(
+                sourceKey: sourceKey,
+                lastCheckedAt: date,
+                lastImportedEventAt: existingState.lastImportedEventAt,
+                status: .failed,
+                filesDiscovered: existingState.filesDiscovered,
+                filesScanned: existingState.filesScanned,
+                filesSkippedUnchanged: existingState.filesSkippedUnchanged,
+                insertedCount: 0,
+                updatedCount: 0,
+                duplicateCount: 0,
+                failedLinesSkipped: 0,
+                lastErrorText: error.localizedDescription
+            )
+            try? recordCodexSessionTaskTimingCaptureState(state)
+            return state
+        }
+    }
+
+    private static func sessionTaskTimingCaptureStatus(
+        for summary: CodexSessionTaskTimingSummary
+    ) -> CodexSessionTaskTimingCaptureStatus {
+        if summary.insertedCount > 0 {
+            return .imported
+        }
+        if summary.updatedCount > 0 {
+            return .updated
+        }
+        if summary.duplicateCount > 0 {
+            return .duplicateOnly
+        }
+        return .noNewEvents
+    }
 }
 
 enum UsageHistoryStoreError: LocalizedError {
@@ -599,6 +672,7 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let tokenDimensionCleanupMetadataKey = "token_dimension_cleanup_version"
     static let currentTokenDimensionCleanupVersion = "1"
     static let currentSessionTokenContextImportVersion = "3"
+    static let currentSessionTaskTimingImportVersion = "1"
     static let resetCohortTolerance: Int64 = 60 * 60
     static let observedTokenComponentsPredicate = """
         observed_input_tokens > 0

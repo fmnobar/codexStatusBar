@@ -4,11 +4,10 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Capture session task timing metadata | Import safe `task_started` / `task_complete` JSONL metadata such as duration, time-to-first-token, model context window, and collaboration mode kind. |
-| 2 | Import Codex thread catalog metadata from `state_5.sqlite` | Read safe thread-level metadata such as source, model, effort, project cwd, sandbox/approval mode, memory mode, CLI version, git branch/SHA/origin, subagent role, and tokens used. |
-| 3 | Catalog Codex model capabilities | Import non-usage model metadata from `models_cache.json`, including context windows, supported reasoning levels, speed tiers, supported tools, and truncation policy. |
-| 4 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
-| 5 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
+| 1 | Import Codex thread catalog metadata from `state_5.sqlite` | Read safe thread-level metadata such as source, model, effort, project cwd, sandbox/approval mode, memory mode, CLI version, git branch/SHA/origin, subagent role, and tokens used. |
+| 2 | Catalog Codex model capabilities | Import non-usage model metadata from `models_cache.json`, including context windows, supported reasoning levels, speed tiers, supported tools, and truncation policy. |
+| 3 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
+| 4 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
 
 ## Conditional Watchlist
 
@@ -18,13 +17,6 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Planned
-
-- Capture session task timing metadata
-  - New source: session JSONL `event_msg` payloads such as `task_started` and `task_complete`.
-  - Capture `started_at`, `completed_at`, `duration_ms`, `time_to_first_token_ms`, `turn_id`, `model_context_window`, and `collaboration_mode_kind`.
-  - Join to existing safe `session_meta` / `turn_context` state for model, effort, project, source, runtime policy, and thread identity.
-  - Keep the importer metadata-only; exclude message text, last-agent-message text, tool payloads, summaries, instructions, and user content.
-  - Verification: importer tests for timing records, idempotent re-import, partial/malformed lines, and dashboard-ready period queries.
 
 - Import Codex thread catalog metadata from `state_5.sqlite`
   - New source: `~/.codex/state_5.sqlite`, especially `threads`, `thread_spawn_edges`, and `thread_dynamic_tools`.
@@ -214,6 +206,12 @@
   - Stored event name/kind, timestamp, duration, success/error summary, local thread/turn identifiers, model, effort, project, source, transport, wire API, API path, app version, terminal type, and originator where explicitly present.
   - Added SQLite event/cursor tables and Settings Data diagnostics without changing token totals, History charts, menu-bar text, or dashboard semantics.
   - Kept extraction allowlist-only and excluded `user.email`, `user.account_id`, prompt/message/tool payloads, raw request bodies, auth values, and arbitrary unknown fields.
+
+- Capture session task timing metadata
+  - Added recent active-session JSONL capture for safe `task_started` and `task_complete` metadata.
+  - Stored session/turn ids, start and completion times, duration, time-to-first-token, model context window, collaboration mode kind, model, effort, project, source, and allowlisted dimensions.
+  - Added SQLite timing event/import-state tables plus Settings Data diagnostics, backup/import, and clear-history support without changing token totals or dashboard semantics.
+  - Kept parsing metadata-only and excluded message text, prompts, summaries, instructions, tool payloads, auth fields, and arbitrary unknown fields.
 
 - Add lightweight update notifications
   - Added shared app-session GitHub Release update checks outside the Settings window.

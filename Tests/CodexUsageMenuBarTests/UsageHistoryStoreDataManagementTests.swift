@@ -6,19 +6,37 @@ extension UsageHistoryStoreTests {
     func testClearHistoryDeletesTokenUsageSamples() async throws {
         let store = try makeStore()
         let metadata = CodexSessionTokenImportFileMetadata(path: "/tmp/session.jsonl", fileSize: 123, modifiedAt: 456)
+        let timingMetadata = CodexSessionTokenImportFileMetadata(path: "/tmp/task-session.jsonl", fileSize: 456, modifiedAt: 789)
 
         try store.record(
             tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 120, totalTotal: 120),
             at: date("2026-04-14T20:00:00Z")
         )
         try store.recordCodexSessionTokenImportFile(metadata, importedAt: 789, status: .imported)
+        try store.importSessionTaskTimingEvents([
+            CodexSessionTaskTimingEvent(
+                sessionID: "session-clear",
+                turnID: "turn-clear",
+                startedAt: date("2026-04-14T20:00:00Z"),
+                completedAt: date("2026-04-14T20:00:03Z"),
+                recordedAt: date("2026-04-14T20:00:03Z")
+            )!,
+        ])
+        try store.recordCodexSessionTaskTimingImportFile(timingMetadata, importedAt: 999, status: .imported)
+        try store.recordCodexSessionTaskTimingCaptureState(
+            CodexSessionTaskTimingCaptureState(lastCheckedAt: date("2026-04-14T20:00:04Z"), status: .imported, insertedCount: 1)
+        )
         XCTAssertTrue(try store.hasAnyHistory())
         XCTAssertEqual(try store.codexSessionTokenImportFileRecords().count, 1)
+        XCTAssertEqual(try store.sessionTaskTimingEvents().count, 1)
 
         try store.clearHistory()
 
         XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
         XCTAssertTrue(try store.codexSessionTokenImportFileRecords().isEmpty)
+        XCTAssertTrue(try store.sessionTaskTimingEvents().isEmpty)
+        XCTAssertNil(try store.codexSessionTaskTimingImportFileRecord(path: timingMetadata.path))
+        XCTAssertEqual(try store.codexSessionTaskTimingCaptureState().status, .neverChecked)
         XCTAssertFalse(try store.hasAnyHistory())
     }
 
@@ -132,6 +150,33 @@ extension UsageHistoryStoreTests {
                 )
             ),
         ])
+        try sourceStore.importSessionTaskTimingEvents([
+            CodexSessionTaskTimingEvent(
+                sessionID: "session-backup",
+                turnID: "turn-backup",
+                startedAt: date("2026-04-14T20:11:00Z"),
+                completedAt: date("2026-04-14T20:11:04Z"),
+                durationMilliseconds: 4_000,
+                timeToFirstTokenMilliseconds: 700,
+                modelContextWindow: 258_400,
+                collaborationModeKind: "agentic",
+                model: "gpt-5.5",
+                projectPath: "/Users/example/Projects/backup-project",
+                effort: "high",
+                source: "cli",
+                recordedAt: date("2026-04-14T20:11:04Z")
+            )!,
+        ])
+        try sourceStore.recordCodexSessionTaskTimingCaptureState(
+            CodexSessionTaskTimingCaptureState(
+                lastCheckedAt: date("2026-04-14T20:11:05Z"),
+                lastImportedEventAt: date("2026-04-14T20:11:04Z"),
+                status: .imported,
+                filesDiscovered: 1,
+                filesScanned: 1,
+                insertedCount: 1
+            )
+        )
         let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
 
         try sourceStore.exportBackup(to: backupURL)
@@ -150,6 +195,12 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(tokenSamples.first?.projectName, "backup-project")
         XCTAssertEqual(tokenSamples.first?.effort, "high")
         XCTAssertEqual(tokenSamples.first?.source, "cli")
+        let timingEvent = try XCTUnwrap(try destinationStore.sessionTaskTimingEvents().first)
+        XCTAssertEqual(timingEvent.sessionID, "session-backup")
+        XCTAssertEqual(timingEvent.durationMilliseconds, 4_000)
+        XCTAssertEqual(timingEvent.timeToFirstTokenMilliseconds, 700)
+        XCTAssertEqual(timingEvent.projectName, "backup-project")
+        XCTAssertEqual(try destinationStore.codexSessionTaskTimingCaptureState().status, .imported)
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
     }
@@ -596,6 +647,34 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.localTokenCaptureState.lastLogRowID, 42)
         XCTAssertEqual(viewModel.localTokenCaptureResultText, "2 imported, 3 duplicate, 3 repaired")
         XCTAssertEqual(viewModel.localTokenCaptureLastErrorText, "None")
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsSessionTaskTimingCaptureState() async throws {
+        let (store, _) = try makeTemporaryStore()
+        try store.recordCodexSessionTaskTimingCaptureState(
+            CodexSessionTaskTimingCaptureState(
+                lastCheckedAt: Date(),
+                lastImportedEventAt: date("2026-05-17T11:58:00Z"),
+                status: .updated,
+                filesDiscovered: 5,
+                filesScanned: 2,
+                filesSkippedUnchanged: 3,
+                insertedCount: 1,
+                updatedCount: 2,
+                duplicateCount: 4,
+                failedLinesSkipped: 1
+            )
+        )
+        let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(viewModel.sessionTaskTimingCaptureState.status, .updated)
+        XCTAssertEqual(viewModel.sessionTaskTimingCaptureState.filesDiscovered, 5)
+        XCTAssertEqual(viewModel.sessionTaskTimingCaptureFilesText, "2 scanned, 3 skipped")
+        XCTAssertEqual(viewModel.sessionTaskTimingCaptureResultText, "1 imported, 2 updated, 4 duplicate, 1 failed lines")
+        XCTAssertEqual(viewModel.sessionTaskTimingCaptureLastErrorText, "None")
     }
 
     @MainActor

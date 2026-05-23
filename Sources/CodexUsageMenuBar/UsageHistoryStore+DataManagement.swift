@@ -42,6 +42,9 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_live_token_capture_state")
             try execute("DELETE FROM codex_turn_performance_events")
             try execute("DELETE FROM codex_turn_performance_capture_state")
+            try execute("DELETE FROM codex_session_task_timing_events")
+            try execute("DELETE FROM codex_session_task_timing_import_files")
+            try execute("DELETE FROM codex_session_task_timing_capture_state")
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
@@ -214,6 +217,18 @@ extension UsageHistoryStore {
             table: "codex_turn_performance_capture_state",
             schema: "imported_usage_history"
         )
+        let importedHasSessionTaskTimingEvents = try tableExists(
+            table: "codex_session_task_timing_events",
+            schema: "imported_usage_history"
+        )
+        let importedHasSessionTaskTimingImportFiles = try tableExists(
+            table: "codex_session_task_timing_import_files",
+            schema: "imported_usage_history"
+        )
+        let importedHasSessionTaskTimingCaptureState = try tableExists(
+            table: "codex_session_task_timing_capture_state",
+            schema: "imported_usage_history"
+        )
 
         try transaction {
             try execute("DELETE FROM usage_samples")
@@ -230,6 +245,9 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_live_token_capture_state")
             try execute("DELETE FROM codex_turn_performance_events")
             try execute("DELETE FROM codex_turn_performance_capture_state")
+            try execute("DELETE FROM codex_session_task_timing_events")
+            try execute("DELETE FROM codex_session_task_timing_import_files")
+            try execute("DELETE FROM codex_session_task_timing_capture_state")
             try execute(
                 """
                 INSERT INTO usage_samples (
@@ -336,6 +354,51 @@ extension UsageHistoryStore {
                     SELECT source_key, last_checked_at, last_imported_event_at, last_log_row_id,
                         status, inserted_count, duplicate_count, last_error_text
                     FROM imported_usage_history.codex_turn_performance_capture_state
+                    """
+                )
+            }
+            if importedHasSessionTaskTimingEvents {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_session_task_timing_events (
+                        session_id, turn_id, source_path, started_at, completed_at,
+                        duration_ms, time_to_first_token_ms, model_context_window,
+                        collaboration_mode_kind, model, project_path, project_name,
+                        effort, source, dimensions_json, recorded_at
+                    )
+                    SELECT session_id, turn_id, source_path, started_at, completed_at,
+                        duration_ms, time_to_first_token_ms, model_context_window,
+                        collaboration_mode_kind, model, project_path, project_name,
+                        effort, source, dimensions_json, recorded_at
+                    FROM imported_usage_history.codex_session_task_timing_events
+                    """
+                )
+            }
+            if importedHasSessionTaskTimingImportFiles {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_session_task_timing_import_files (
+                        file_path, file_size, modified_at, imported_at, status, timing_version
+                    )
+                    SELECT file_path, file_size, modified_at, imported_at, status, timing_version
+                    FROM imported_usage_history.codex_session_task_timing_import_files
+                    """
+                )
+            }
+            if importedHasSessionTaskTimingCaptureState {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_session_task_timing_capture_state (
+                        source_key, last_checked_at, last_imported_event_at, status,
+                        files_discovered, files_scanned, files_skipped_unchanged,
+                        inserted_count, updated_count, duplicate_count, failed_lines_skipped,
+                        last_error_text
+                    )
+                    SELECT source_key, last_checked_at, last_imported_event_at, status,
+                        files_discovered, files_scanned, files_skipped_unchanged,
+                        inserted_count, updated_count, duplicate_count, failed_lines_skipped,
+                        last_error_text
+                    FROM imported_usage_history.codex_session_task_timing_capture_state
                     """
                 )
             }
