@@ -704,7 +704,9 @@ struct CodexSessionTokenBackfillSummary: Equatable, Sendable {
 struct CodexSessionTaskTimingImporter: @unchecked Sendable {
     let sourceDirectories: [URL]
     let fileManager: FileManager
+    let maximumSessionFileSize: Int64
 
+    static let defaultMaximumSessionFileSize: Int64 = 64 * 1024 * 1024
     private static let taskStartedLineNeedle = Data(#""task_started""#.utf8)
     private static let taskCompleteLineNeedle = Data(#""task_complete""#.utf8)
     private static let turnContextLineNeedle = Data(#""turn_context""#.utf8)
@@ -712,10 +714,12 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
 
     init(
         sourceDirectories: [URL] = Self.defaultSourceDirectories(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        maximumSessionFileSize: Int64 = Self.defaultMaximumSessionFileSize
     ) {
         self.sourceDirectories = sourceDirectories
         self.fileManager = fileManager
+        self.maximumSessionFileSize = max(maximumSessionFileSize, 0)
     }
 
     static func defaultSourceDirectories(fileManager: FileManager = .default) -> [URL] {
@@ -744,6 +748,11 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
 
         let sessionFiles = discoveredFiles.filter { candidate in
             guard shouldInclude(candidate: candidate, since: since) else {
+                filesSkippedByBounds += 1
+                return false
+            }
+
+            guard candidate.metadata.fileSize <= maximumSessionFileSize else {
                 filesSkippedByBounds += 1
                 return false
             }

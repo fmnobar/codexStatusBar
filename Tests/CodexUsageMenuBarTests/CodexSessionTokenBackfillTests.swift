@@ -914,6 +914,34 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(event.dimensionsJSON?.contains("secret") == true)
     }
 
+    func testSessionTaskTimingImporterSkipsOversizedFiles() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-oversized.jsonl")
+        try writeSessionLines(
+            [
+                taskStartedLine(
+                    timestamp: "2026-05-17T15:00:02Z",
+                    turnID: "turn-task",
+                    startedAt: "2026-05-17T15:00:02Z"
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTaskTimingImporter(
+            sourceDirectories: [sessionsURL],
+            maximumSessionFileSize: 1
+        )
+
+        let summary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+
+        XCTAssertEqual(summary.filesDiscovered, 1)
+        XCTAssertEqual(summary.filesScanned, 0)
+        XCTAssertEqual(summary.filesSkippedByBounds, 1)
+        XCTAssertTrue(try store.sessionTaskTimingEvents().isEmpty)
+    }
+
     func testSessionTaskTimingImporterSkipsUnchangedAndForceRescanIsIdempotent() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
