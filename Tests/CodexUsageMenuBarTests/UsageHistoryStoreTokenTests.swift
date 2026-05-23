@@ -2344,6 +2344,31 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(dimensions.contains { $0.contains("request") || $0.contains("private") || $0.contains("prompt") })
     }
 
+    func testCodexLogTokenImporterDoesNotTreatPrefixKeysAsModel() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed input_token_count=100 output_token_count=2 cached_token_count=80 reasoning_token_count=1 tool_token_count=102 event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation model_provider=openai codex.turn.model=gpt-5.7 cwd='/Users/example/Projects/prefix safe'
+        """
+        try createCodexLogsDatabase(at: databaseURL, rows: [(timestamp, body)])
+        let importer = CodexLogTokenUsageImporter(logsDatabaseURL: databaseURL)
+
+        _ = try importer.importTokenHistory(
+            into: store,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+        let dimensions = try store.tokenDimensionCatalogEntries()
+            .map { "\($0.key.rawValue)=\($0.value)" }
+            .sorted()
+
+        XCTAssertEqual(sample.model, "gpt-5.7")
+        XCTAssertEqual(sample.projectPath, "/Users/example/Projects/prefix safe")
+        XCTAssertEqual(dimensions, ["model_provider=openai", "source_kind=codex-log"])
+    }
+
     func testCodexLogTokenImporterCarriesSafeContextFromEarlierTraceRows() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")

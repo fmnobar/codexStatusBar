@@ -1957,30 +1957,7 @@ private struct CodexLogMetadataExtractor {
     }
 
     private func value(for key: String, in searchBody: String) -> String? {
-        let escapedKey = NSRegularExpression.escapedPattern(for: key)
-        let pattern = "(?<![A-Za-z0-9_.-])\(escapedKey)\\s*=\\s*(?:\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'|([^\\s,;\\}\\]\\)]+))"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return nil
-        }
-
-        let range = NSRange(searchBody.startIndex..<searchBody.endIndex, in: searchBody)
-        guard let match = regex.firstMatch(in: searchBody, range: range) else {
-            return nil
-        }
-
-        for index in 1..<match.numberOfRanges {
-            guard match.range(at: index).location != NSNotFound,
-                  let valueRange = Range(match.range(at: index), in: searchBody)
-            else {
-                continue
-            }
-
-            let value = String(searchBody[valueRange])
-                .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
-            return value.isEmpty ? nil : value
-        }
-
-        return nil
+        CodexLogMetadataExtractor.safeEqualsValue(for: key, in: searchBody)
     }
 
     private func firstValue(for keys: [String]) -> String? {
@@ -2011,6 +1988,71 @@ private struct CodexLogMetadataExtractor {
         }
 
         return String(body[..<eventNameRange.lowerBound])
+    }
+
+    private static func safeEqualsValue(for key: String, in searchBody: String) -> String? {
+        var searchStart = searchBody.startIndex
+        while let keyRange = searchBody.range(of: key, range: searchStart..<searchBody.endIndex) {
+            defer { searchStart = keyRange.upperBound }
+
+            if keyRange.lowerBound > searchBody.startIndex {
+                let previousIndex = searchBody.index(before: keyRange.lowerBound)
+                guard !isIdentifierCharacter(searchBody[previousIndex]) else {
+                    continue
+                }
+            }
+
+            var cursor = keyRange.upperBound
+            while cursor < searchBody.endIndex, searchBody[cursor].isWhitespace {
+                cursor = searchBody.index(after: cursor)
+            }
+            guard cursor < searchBody.endIndex, searchBody[cursor] == "=" else {
+                continue
+            }
+            cursor = searchBody.index(after: cursor)
+
+            while cursor < searchBody.endIndex, searchBody[cursor].isWhitespace {
+                cursor = searchBody.index(after: cursor)
+            }
+            guard cursor < searchBody.endIndex else {
+                continue
+            }
+
+            let valueStart: String.Index
+            let valueEnd: String.Index
+            if searchBody[cursor] == "\"" || searchBody[cursor] == "'" {
+                let quote = searchBody[cursor]
+                valueStart = searchBody.index(after: cursor)
+                var end = valueStart
+                while end < searchBody.endIndex, searchBody[end] != quote, !searchBody[end].isNewline {
+                    end = searchBody.index(after: end)
+                }
+                valueEnd = end
+            } else {
+                valueStart = cursor
+                var end = cursor
+                while end < searchBody.endIndex, !isUnquotedValueTerminator(searchBody[end]) {
+                    end = searchBody.index(after: end)
+                }
+                valueEnd = end
+            }
+
+            let value = String(searchBody[valueStart..<valueEnd])
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            if !value.isEmpty {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private static func isIdentifierCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "_" || character == "." || character == "-"
+    }
+
+    private static func isUnquotedValueTerminator(_ character: Character) -> Bool {
+        character.isWhitespace || character == "," || character == ";" || character == "}" || character == "]" || character == ")"
     }
 }
 
