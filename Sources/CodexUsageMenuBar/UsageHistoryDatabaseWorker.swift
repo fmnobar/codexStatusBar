@@ -64,6 +64,7 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
     func exportBackup(to destinationURL: URL) async throws
     func importBackup(from sourceURL: URL) async throws
@@ -396,6 +397,27 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             ),
             availableBreakdownDimensions: availableBreakdownDimensions,
             historyBounds: try store.tokenDashboardBounds()
+        )
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
+        let store = try store()
+        if isApplicationSupportStore(store) {
+            let now = Date()
+            _ = importTurnPerformanceIfNeeded(store: store, at: now, calendar: .autoupdatingCurrent)
+            _ = importSessionTaskTimingIfNeeded(store: store, at: now, calendar: .autoupdatingCurrent)
+        }
+
+        return PerformanceDashboardLoadResult(
+            timingSamples: try store.performanceDashboardTimingSamples(
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            reliabilitySamples: try store.performanceDashboardReliabilitySamples(
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            historyBounds: try store.performanceDashboardBounds()
         )
     }
 

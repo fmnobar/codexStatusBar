@@ -12,6 +12,7 @@ struct MenuBarContentView: View {
     @ObservedObject var updateMonitor: AppUpdateMonitor
     let historyDatabase: UsageHistoryDatabaseWorking
     var onOpenTokenDashboard: () -> Void
+    var onOpenPerformanceDashboard: () -> Void
     var onOpenUpdatesSettings: () -> Void
     var onContentSizeChange: (NSSize) -> Void
     var appVersionInfo: AppVersionInfo
@@ -24,6 +25,7 @@ struct MenuBarContentView: View {
         historyDatabase: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
         onOpenTokenDashboard: @escaping () -> Void = {},
+        onOpenPerformanceDashboard: @escaping () -> Void = {},
         onOpenUpdatesSettings: @escaping () -> Void = {},
         onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
         appVersionInfo: AppVersionInfo = .current(),
@@ -33,6 +35,7 @@ struct MenuBarContentView: View {
         self.updateMonitor = updateMonitor
         self.historyDatabase = historyDatabase
         self.onOpenTokenDashboard = onOpenTokenDashboard
+        self.onOpenPerformanceDashboard = onOpenPerformanceDashboard
         self.onOpenUpdatesSettings = onOpenUpdatesSettings
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
@@ -61,6 +64,8 @@ struct MenuBarContentView: View {
                 historySection
                 Divider()
                 tokenDashboardRow
+                Divider()
+                performanceDashboardRow
                 Divider()
                 settingsSection
                 Divider()
@@ -201,6 +206,32 @@ struct MenuBarContentView: View {
         }
         .buttonStyle(.plain)
         .help("Open detailed token dashboard")
+    }
+
+    private var performanceDashboardRow: some View {
+        Button {
+            onOpenPerformanceDashboard()
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 14))
+                    .frame(width: 14)
+
+                Text("Performance Dashboard")
+                    .font(.system(size: 13))
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open turn performance dashboard")
     }
 
     private func expandableHeader(

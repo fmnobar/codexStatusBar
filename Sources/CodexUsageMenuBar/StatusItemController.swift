@@ -10,6 +10,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private lazy var tokenDashboardWindowController = TokenDashboardWindowController(database: historyDatabase)
+    private lazy var performanceDashboardWindowController = PerformanceDashboardWindowController(database: historyDatabase)
     private lazy var contextMenu = StatusItemContextMenuFactory.makeMenu(
         target: self,
         quitAction: #selector(quit)
@@ -48,6 +49,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 updateMonitor: updateMonitor,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
+                },
+                onOpenPerformanceDashboard: { [weak self] in
+                    self?.openPerformanceDashboard()
                 },
                 onOpenUpdatesSettings: { [weak self] in
                     self?.openUpdatesSettings()
@@ -182,6 +186,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func openTokenDashboard() {
         popover.performClose(nil)
         tokenDashboardWindowController.showWindow()
+    }
+
+    private func openPerformanceDashboard() {
+        popover.performClose(nil)
+        performanceDashboardWindowController.showWindow()
     }
 
     private func openUpdatesSettings() {

@@ -39,6 +39,12 @@
 		A70000000000000000000012 /* TokenDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* TokenDashboardWindowController.swift */; };
 		A70000000000000000000021 /* TokenDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* TokenDashboardView.swift */; };
 		A70000000000000000000022 /* TokenDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* TokenDashboardWindowController.swift */; };
+		A71000000000000000000011 /* PerformanceDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000001 /* PerformanceDashboardView.swift */; };
+		A71000000000000000000012 /* PerformanceDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000002 /* PerformanceDashboardWindowController.swift */; };
+		A71000000000000000000013 /* UsageHistoryStore+PerformanceQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000003 /* UsageHistoryStore+PerformanceQueries.swift */; };
+		A71000000000000000000021 /* PerformanceDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000001 /* PerformanceDashboardView.swift */; };
+		A71000000000000000000022 /* PerformanceDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000002 /* PerformanceDashboardWindowController.swift */; };
+		A71000000000000000000023 /* UsageHistoryStore+PerformanceQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000003 /* UsageHistoryStore+PerformanceQueries.swift */; };
 		A80000000000000000000011 /* UsageHistoryDatabaseWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */; };
 		A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */; };
 		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
@@ -114,6 +120,9 @@
 		A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionTokenBackfillImporter.swift; sourceTree = "<group>"; };
 		A70000000000000000000001 /* TokenDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenDashboardView.swift; sourceTree = "<group>"; };
 		A70000000000000000000002 /* TokenDashboardWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenDashboardWindowController.swift; sourceTree = "<group>"; };
+		A71000000000000000000001 /* PerformanceDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceDashboardView.swift; sourceTree = "<group>"; };
+		A71000000000000000000002 /* PerformanceDashboardWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceDashboardWindowController.swift; sourceTree = "<group>"; };
+		A71000000000000000000003 /* UsageHistoryStore+PerformanceQueries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UsageHistoryStore+PerformanceQueries.swift"; sourceTree = "<group>"; };
 		A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryDatabaseWorker.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* UsageHistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* UsageHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageHistoryStore.swift; sourceTree = "<group>"; };
@@ -202,6 +211,8 @@
 				F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */,
 				B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */,
 				6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */,
+				A71000000000000000000001 /* PerformanceDashboardView.swift */,
+				A71000000000000000000002 /* PerformanceDashboardWindowController.swift */,
 				B5363F89C9BF34793883A496 /* StatusItemController.swift */,
 				A70000000000000000000001 /* TokenDashboardView.swift */,
 				A70000000000000000000002 /* TokenDashboardWindowController.swift */,
@@ -212,6 +223,7 @@
 				B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */,
 				B10000000000000000000003 /* UsageHistoryStore+TokenQueries.swift */,
 				B10000000000000000000004 /* UsageHistoryStore+UsageQueries.swift */,
+				A71000000000000000000003 /* UsageHistoryStore+PerformanceQueries.swift */,
 				B10000000000000000000005 /* UsageHistoryStore+DataManagement.swift */,
 				B10000000000000000000006 /* UsageHistoryStore+Migrations.swift */,
 				B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */,
@@ -349,6 +361,8 @@
 				319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */,
 				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
+				A71000000000000000000021 /* PerformanceDashboardView.swift in Sources */,
+				A71000000000000000000022 /* PerformanceDashboardWindowController.swift in Sources */,
 				A70000000000000000000021 /* TokenDashboardView.swift in Sources */,
 				A70000000000000000000022 /* TokenDashboardWindowController.swift in Sources */,
 				A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */,
@@ -358,6 +372,7 @@
 				B12000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */,
 				B12000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */,
 				B12000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */,
+				A71000000000000000000023 /* UsageHistoryStore+PerformanceQueries.swift in Sources */,
 				B12000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */,
 				B12000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */,
 				B12000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */,
@@ -401,6 +416,8 @@
 				AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */,
 				9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */,
 				D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */,
+				A71000000000000000000011 /* PerformanceDashboardView.swift in Sources */,
+				A71000000000000000000012 /* PerformanceDashboardWindowController.swift in Sources */,
 				746901348E7A668975CEDA56 /* StatusItemController.swift in Sources */,
 				A70000000000000000000011 /* TokenDashboardView.swift in Sources */,
 				A70000000000000000000012 /* TokenDashboardWindowController.swift in Sources */,
@@ -411,6 +428,7 @@
 				B11000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */,
 				B11000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */,
 				B11000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */,
+				A71000000000000000000013 /* UsageHistoryStore+PerformanceQueries.swift in Sources */,
 				B11000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */,
 				B11000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */,
 				B11000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */,

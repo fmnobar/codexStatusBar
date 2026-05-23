@@ -8,8 +8,7 @@
 
 | Priority | Item | Scope |
 | --- | --- | --- |
-| 1 | Add turn performance and reliability analytics | Use captured OTEL/session timing data to show latency, time-to-first-token, error/disconnect rates, transport behavior, and model/project/effort comparisons. |
-| 2 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
+| 1 | Add model/project efficiency insights | Combine token, timing, and thread catalog metadata to compare cost shape, speed, context-window pressure, and usage patterns by model, effort, project, and source. |
 
 ## Conditional Watchlist
 
@@ -19,11 +18,6 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Planned
-
-- Add turn performance and reliability analytics
-  - Use the captured OTEL/session timing data to add a dashboard for duration, time-to-first-token, transport, success/error, and retry/disconnect rates.
-  - Break down by model, effort, project, source, and transport without changing token totals.
-  - Candidate views: slowest projects, model latency comparison, effort versus latency, websocket/SSE reliability, and recent error timeline.
 
 - Add model/project efficiency insights
   - Combine token categories, turn duration, model capability metadata, project metadata, and effort.
@@ -281,10 +275,12 @@
   - Excluded instruction templates, model messages, availability NUX, migration markdown, descriptions, and arbitrary unknown text.
   - Added SQLite capability/capture-state tables, backup/import, clear-history handling, launch capture, and Data settings diagnostics without changing token totals, History charts, or model-selection behavior.
 
-## Next Candidates
-
 - Add turn performance and reliability analytics
-  - Use captured OTEL/session timing data to show latency, time-to-first-token, success/error rates, transport behavior, and model/project/effort comparisons.
+  - Added a separate Performance Dashboard window from the left-click popover.
+  - Used captured session task timing and OTEL performance rows to show turn count, median/p95 duration, median first token, event counts, failure rate, transport, and wire API behavior.
+  - Added model, effort, project, source, transport, and wire API breakdowns plus CSV export without changing token totals, History charts, or telemetry schema.
+
+## Next Candidates
 
 - Add model/project efficiency insights
   - Combine token categories, turn duration, model capability metadata, project metadata, and effort to compare throughput, cache reuse, context-window pressure, and cost shape.

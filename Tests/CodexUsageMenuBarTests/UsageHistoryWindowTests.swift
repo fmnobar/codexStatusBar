@@ -45,4 +45,17 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(frame, visibleFrame)
     }
+
+    func testPerformanceDashboardWindowFrameClampsLikeHistoryWindow() async {
+        let visibleFrame = CGRect(x: 100, y: 50, width: 900, height: 620)
+        let restoredFrame = CGRect(x: 20, y: -40, width: 1040, height: 700)
+
+        let frame = PerformanceDashboardWindowFrame.clampedFrame(
+            restoredFrame,
+            minimumSize: CGSize(width: 780, height: 560),
+            visibleFrame: visibleFrame
+        )
+
+        XCTAssertEqual(frame, visibleFrame)
+    }
 }

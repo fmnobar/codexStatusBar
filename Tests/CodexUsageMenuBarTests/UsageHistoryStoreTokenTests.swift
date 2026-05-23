@@ -2787,4 +2787,233 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.codexTurnPerformanceCaptureState().status, .noNewEvents)
     }
 
+    func testPerformanceDashboardQueriesAggregateTimingAndReliabilityInputs() async throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let timingSamples = try store.performanceDashboardTimingSamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let reliabilitySamples = try store.performanceDashboardReliabilitySamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let presentation = PerformanceDashboardPresentationBuilder.build(
+            timingSamples: timingSamples,
+            reliabilitySamples: reliabilitySamples,
+            breakdownDimension: .model,
+            range: .month,
+            calendar: calendar
+        )
+        let rowsByID = Dictionary(uniqueKeysWithValues: presentation.breakdownRows.map { ($0.id, $0) })
+        let aggregate = try XCTUnwrap(rowsByID[PerformanceDashboardSeries.aggregateID])
+        let model = try XCTUnwrap(rowsByID["model:gpt-5.5"])
+
+        XCTAssertEqual(timingSamples.count, 4)
+        XCTAssertEqual(reliabilitySamples.count, 3)
+        XCTAssertEqual(aggregate.turnCount, 4)
+        XCTAssertEqual(aggregate.completedTurnCount, 3)
+        XCTAssertEqual(aggregate.incompleteTurnCount, 1)
+        XCTAssertEqual(aggregate.medianDurationMilliseconds, 3_000)
+        XCTAssertEqual(aggregate.p95DurationMilliseconds, 9_000)
+        XCTAssertEqual(aggregate.medianFirstTokenMilliseconds, 300)
+        XCTAssertEqual(aggregate.eventCount, 3)
+        XCTAssertEqual(aggregate.failureCount, 1)
+        XCTAssertEqual(aggregate.failurePercent, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(aggregate.topErrorSummary, "connection")
+        XCTAssertEqual(model.turnCount, 2)
+        XCTAssertEqual(model.medianDurationMilliseconds, 2_000)
+        XCTAssertEqual(model.p95DurationMilliseconds, 3_000)
+        XCTAssertEqual(model.eventCount, 2)
+        XCTAssertEqual(try store.performanceDashboardBounds()?.earliest, date("2026-05-02T10:00:00Z"))
+    }
+
+    @MainActor
+    func testPerformanceDashboardViewModelDefaultsFiltersAndExportsVisibleRows() async throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+
+        let viewModel = PerformanceDashboardViewModel(
+            store: store,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.selectedRange, .month)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+        XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "4")
+        XCTAssertEqual(viewModel.exportFilename, "codex-performance-dashboard-month-2026-05.csv")
+        XCTAssertEqual(viewModel.formattedDuration(1_250), "1.2s")
+        XCTAssertEqual(viewModel.formattedCountAxisValue(1_200_000), "1.2M")
+        XCTAssertTrue(viewModel.csvText.contains("duration_bucket,month"))
+        XCTAssertTrue(viewModel.csvText.contains("reliability_bucket,month"))
+        XCTAssertTrue(viewModel.csvText.contains("breakdown_row,model,performance_all,All,aggregate,all,,4"))
+
+        viewModel.selectSeries("model:gpt-5.5")
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["model:gpt-5.5"])
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "2")
+        XCTAssertTrue(viewModel.csvText.contains("breakdown_row,model,model:gpt-5.5,gpt-5.5,model,gpt-5.5,,2"))
+        XCTAssertFalse(viewModel.csvText.contains("model:gpt-5.4"))
+
+        viewModel.selectedBreakdownDimension = .transport
+
+        XCTAssertEqual(viewModel.breakdownColumnTitle, "Transport")
+        XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
+        XCTAssertTrue(viewModel.breakdownRows.contains { $0.series.id == "transport:websocket" })
+        XCTAssertTrue(viewModel.breakdownRows.contains { $0.series.id == "transport:sse" })
+
+        viewModel.selectSeries("transport:websocket")
+
+        XCTAssertEqual(viewModel.selectedSeriesIDs, ["transport:websocket"])
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "0")
+        XCTAssertEqual(viewModel.visibleSummaryRow.eventCount, 2)
+        XCTAssertEqual(viewModel.visibleSummaryRow.failurePercent, 0.5, accuracy: 0.0001)
+    }
+
+    private func seedPerformanceDashboardFixture(in store: UsageHistoryStore) throws {
+        try store.importSessionTaskTimingEvents([
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "session-a",
+                turnID: "turn-a",
+                sourcePath: "/tmp/session-a.jsonl",
+                startedAt: date("2026-05-02T10:00:00Z"),
+                completedAt: date("2026-05-02T10:00:01Z"),
+                durationMilliseconds: 1_000,
+                timeToFirstTokenMilliseconds: 100,
+                model: "gpt-5.5",
+                projectPath: "/Users/example/Projects/codex_codex",
+                effort: "high",
+                source: "cli",
+                recordedAt: date("2026-05-02T10:00:01Z")
+            )),
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "session-a",
+                turnID: "turn-b",
+                sourcePath: "/tmp/session-a.jsonl",
+                startedAt: date("2026-05-02T11:00:00Z"),
+                completedAt: date("2026-05-02T11:00:03Z"),
+                durationMilliseconds: 3_000,
+                timeToFirstTokenMilliseconds: 300,
+                model: "gpt-5.5",
+                projectPath: "/Users/example/Projects/codex_codex",
+                effort: "high",
+                source: "cli",
+                recordedAt: date("2026-05-02T11:00:03Z")
+            )),
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "session-b",
+                turnID: "turn-a",
+                sourcePath: "/tmp/session-b.jsonl",
+                startedAt: date("2026-05-03T11:00:00Z"),
+                completedAt: date("2026-05-03T11:00:09Z"),
+                durationMilliseconds: 9_000,
+                timeToFirstTokenMilliseconds: 900,
+                model: "gpt-5.4",
+                projectPath: "/Users/example/Other/perf",
+                effort: "low",
+                source: "vscode",
+                recordedAt: date("2026-05-03T11:00:09Z")
+            )),
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "session-c",
+                turnID: "turn-a",
+                sourcePath: "/tmp/session-c.jsonl",
+                startedAt: date("2026-05-04T12:00:00Z"),
+                completedAt: nil,
+                durationMilliseconds: nil,
+                timeToFirstTokenMilliseconds: nil,
+                model: nil,
+                projectPath: nil,
+                effort: nil,
+                source: nil,
+                recordedAt: date("2026-05-04T12:00:00Z")
+            )),
+        ])
+
+        try store.importTurnPerformanceEvents([
+            CodexTurnPerformanceEvent(
+                sourceKey: "otel",
+                sourceRowID: 1,
+                target: "codex_api::endpoint::responses_websocket",
+                eventTimestamp: date("2026-05-02T10:00:02Z"),
+                eventName: "response.completed",
+                eventKind: "response.completed",
+                durationMilliseconds: 1_100,
+                success: true,
+                errorSummary: nil,
+                threadID: "session-a",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                sessionID: "session-a",
+                projectPath: "/Users/example/Projects/codex_codex",
+                effort: "high",
+                source: "cli",
+                originator: "codex",
+                appVersion: "1.0.0",
+                terminalType: "apple-terminal",
+                transport: "websocket",
+                wireAPI: "responses",
+                apiPath: "/v1/responses",
+                recordedAt: date("2026-05-02T10:00:02Z")
+            ),
+            CodexTurnPerformanceEvent(
+                sourceKey: "otel",
+                sourceRowID: 2,
+                target: "codex_api::endpoint::responses_websocket",
+                eventTimestamp: date("2026-05-02T11:00:02Z"),
+                eventName: "response.failed",
+                eventKind: "response.failed",
+                durationMilliseconds: 2_000,
+                success: false,
+                errorSummary: "connection",
+                threadID: "session-a",
+                turnID: "turn-b",
+                model: "gpt-5.5",
+                sessionID: "session-a",
+                projectPath: "/Users/example/Projects/codex_codex",
+                effort: "high",
+                source: "cli",
+                originator: "codex",
+                appVersion: "1.0.0",
+                terminalType: "apple-terminal",
+                transport: "websocket",
+                wireAPI: "responses",
+                apiPath: "/v1/responses",
+                recordedAt: date("2026-05-02T11:00:02Z")
+            ),
+            CodexTurnPerformanceEvent(
+                sourceKey: "otel",
+                sourceRowID: 3,
+                target: "codex_api::sse::responses",
+                eventTimestamp: date("2026-05-03T11:00:02Z"),
+                eventName: "response.completed",
+                eventKind: "response.completed",
+                durationMilliseconds: 3_000,
+                success: nil,
+                errorSummary: nil,
+                threadID: "session-b",
+                turnID: "turn-a",
+                model: "gpt-5.4",
+                sessionID: "session-b",
+                projectPath: "/Users/example/Other/perf",
+                effort: "low",
+                source: "vscode",
+                originator: "codex",
+                appVersion: "1.0.0",
+                terminalType: "apple-terminal",
+                transport: "sse",
+                wireAPI: "responses",
+                apiPath: "/v1/responses",
+                recordedAt: date("2026-05-03T11:00:02Z")
+            ),
+        ])
+    }
+
 }
