@@ -33,7 +33,7 @@ enum PerformanceDashboardBreakdownDimension: String, CaseIterable, Identifiable,
     }
 }
 
-enum PerformanceDashboardMode: String, CaseIterable, Identifiable, Equatable {
+enum PerformanceDashboardMode: String, CaseIterable, Identifiable, Equatable, Hashable {
     case performance
     case efficiency
 
@@ -499,9 +499,22 @@ struct PerformanceDashboardSummaryTile: Identifiable, Equatable {
 }
 
 struct PerformanceDashboardLoadRequest: Equatable {
+    let mode: PerformanceDashboardMode
     let range: UsageHistoryRange
     let periodStart: Date
     let periodEnd: Date
+
+    init(
+        mode: PerformanceDashboardMode = .performance,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) {
+        self.mode = mode
+        self.range = range
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+    }
 }
 
 struct PerformanceDashboardLoadResult: Equatable {
@@ -609,7 +622,16 @@ final class PerformanceDashboardViewModel: ObservableObject {
             selectedSeriesIDs = []
             breakdownSortState = nil
             efficiencySortState = nil
-            rebuildPresentation()
+            if loadedModes.contains(selectedMode) {
+                if selectedMode == .performance {
+                    reloadTask?.cancel()
+                    reloadTask = nil
+                }
+                applyCachedHistoryBounds(for: selectedMode)
+                rebuildPresentation()
+            } else {
+                scheduleReload()
+            }
         }
     }
 
@@ -621,6 +643,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
             selectedPeriodStart = currentPeriod.start
             selectedSeriesIDs = []
+            resetLoadedModeState()
             scheduleReload()
         }
     }
@@ -659,6 +682,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private let calendar: Calendar
     private var reloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
+    private var loadedModes: Set<PerformanceDashboardMode> = []
+    private var historyBoundsByMode: [PerformanceDashboardMode: UsageHistoryBounds] = [:]
 
     init(
         database: UsageHistoryDatabaseWorking,
@@ -1232,6 +1257,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
         let generation = nextReloadGeneration()
         let queryPeriod = periodForQuery()
         let request = PerformanceDashboardLoadRequest(
+            mode: selectedMode,
             range: selectedRange,
             periodStart: queryPeriod.start,
             periodEnd: queryPeriod.end
@@ -1245,9 +1271,16 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
             timingSamples = result.timingSamples
             reliabilitySamples = result.reliabilitySamples
-            efficiencyTokenSamples = result.efficiencyTokenSamples
-            modelCapabilities = result.modelCapabilities
-            historyBounds = result.historyBounds
+            if request.mode == .efficiency {
+                efficiencyTokenSamples = result.efficiencyTokenSamples
+                modelCapabilities = result.modelCapabilities
+            } else if !loadedModes.contains(.efficiency) {
+                efficiencyTokenSamples = []
+                modelCapabilities = []
+            }
+            cacheHistoryBounds(result.historyBounds, for: request.mode)
+            loadedModes.insert(request.mode)
+            applyCachedHistoryBounds(for: selectedMode)
             rebuildPresentation()
             errorMessage = nil
             return true
@@ -1267,6 +1300,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
             efficiencyRows = []
             series = []
             selectedSeriesIDs = []
+            loadedModes = []
+            historyBoundsByMode = [:]
             historyBounds = nil
             errorMessage = "Performance dashboard could not be loaded."
             return false
@@ -1321,6 +1356,24 @@ final class PerformanceDashboardViewModel: ObservableObject {
         return reloadGeneration
     }
 
+    private func resetLoadedModeState() {
+        loadedModes.removeAll()
+        historyBoundsByMode.removeAll()
+        historyBounds = nil
+    }
+
+    private func cacheHistoryBounds(_ bounds: UsageHistoryBounds?, for mode: PerformanceDashboardMode) {
+        if let bounds {
+            historyBoundsByMode[mode] = bounds
+        } else {
+            historyBoundsByMode.removeValue(forKey: mode)
+        }
+    }
+
+    private func applyCachedHistoryBounds(for mode: PerformanceDashboardMode) {
+        historyBounds = historyBoundsByMode[mode]
+    }
+
     func goToPreviousPeriod() {
         guard canGoToPreviousPeriod,
               let previous = calendar.date(byAdding: selectedRange.periodComponent, value: -1, to: selectedPeriod.start)
@@ -1329,6 +1382,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = previous
+        resetLoadedModeState()
         scheduleReload()
     }
 
@@ -1340,6 +1394,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = min(next, currentPeriod.start)
+        resetLoadedModeState()
         scheduleReload()
     }
 
@@ -1349,6 +1404,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = currentPeriod.start
+        resetLoadedModeState()
         scheduleReload()
     }
 

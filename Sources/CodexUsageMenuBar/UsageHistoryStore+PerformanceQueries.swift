@@ -159,7 +159,15 @@ extension UsageHistoryStore {
         return samples
     }
 
-    func performanceDashboardBounds() throws -> UsageHistoryBounds? {
+    func performanceDashboardBounds(includeEfficiencyTokens: Bool = true) throws -> UsageHistoryBounds? {
+        let tokenBoundsSQL = includeEfficiencyTokens
+            ? """
+                UNION ALL
+                SELECT received_at AS timestamp
+                FROM token_usage_samples
+                WHERE \(Self.observedTokenComponentsPredicate)
+            """
+            : ""
         let statement = try prepare(
             """
             SELECT MIN(timestamp), MAX(timestamp)
@@ -170,10 +178,7 @@ extension UsageHistoryStore {
                 UNION ALL
                 SELECT event_timestamp AS timestamp
                 FROM codex_turn_performance_events
-                UNION ALL
-                SELECT received_at AS timestamp
-                FROM token_usage_samples
-                WHERE \(Self.observedTokenComponentsPredicate)
+                \(tokenBoundsSQL)
             )
             """
         )

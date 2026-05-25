@@ -2848,6 +2848,8 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
         XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
         XCTAssertEqual(viewModel.summaryTiles.first?.value, "4")
+        XCTAssertTrue(viewModel.efficiencyTokenSamples.isEmpty)
+        XCTAssertTrue(viewModel.modelCapabilities.isEmpty)
         XCTAssertEqual(viewModel.exportFilename, "codex-performance-dashboard-month-2026-05.csv")
         XCTAssertEqual(viewModel.formattedDuration(1_250), "1.2s")
         XCTAssertEqual(viewModel.formattedCountAxisValue(1_200_000), "1.2M")
@@ -2886,6 +2888,61 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.breakdownSortIndicator(for: .turns), "chevron.up")
         XCTAssertEqual(viewModel.sortedBreakdownRows.last?.series.id, PerformanceDashboardSeries.aggregateID)
+    }
+
+    func testPerformanceDashboardWorkerSnapshotsAreModeSpecific() async throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "token-only",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 1_000,
+                    lastCached: 0,
+                    lastOutput: 0,
+                    lastReasoning: 0,
+                    lastTotal: 1_000,
+                    totalInput: 1_000,
+                    totalTotal: 1_000
+                ),
+                receivedAt: date("2026-05-01T09:00:00Z")
+            ),
+        ])
+        let worker = UsageHistoryDatabaseWorker(store: store)
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+
+        let performanceResult = try await worker.performanceDashboardSnapshot(
+            for: PerformanceDashboardLoadRequest(
+                mode: .performance,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
+        )
+
+        XCTAssertFalse(performanceResult.timingSamples.isEmpty)
+        XCTAssertFalse(performanceResult.reliabilitySamples.isEmpty)
+        XCTAssertTrue(performanceResult.efficiencyTokenSamples.isEmpty)
+        XCTAssertTrue(performanceResult.modelCapabilities.isEmpty)
+        XCTAssertEqual(performanceResult.historyBounds?.earliest, date("2026-05-02T10:00:00Z"))
+
+        let efficiencyResult = try await worker.performanceDashboardSnapshot(
+            for: PerformanceDashboardLoadRequest(
+                mode: .efficiency,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
+        )
+
+        XCTAssertFalse(efficiencyResult.timingSamples.isEmpty)
+        XCTAssertFalse(efficiencyResult.reliabilitySamples.isEmpty)
+        XCTAssertEqual(efficiencyResult.efficiencyTokenSamples.count, 4)
+        XCTAssertEqual(efficiencyResult.modelCapabilities.count, 1)
+        XCTAssertEqual(efficiencyResult.historyBounds?.earliest, date("2026-05-01T09:00:00Z"))
     }
 
     func testPerformanceDashboardEfficiencyAggregatesTokensTimingReliabilityAndContext() async throws {
@@ -2950,6 +3007,7 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.selectedMode, .performance)
         viewModel.selectedMode = .efficiency
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedMode, .efficiency)
         XCTAssertEqual(viewModel.selectedRange, .month)
@@ -2960,6 +3018,15 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.exportFilename, "codex-efficiency-dashboard-month-2026-05.csv")
         XCTAssertTrue(viewModel.csvText.contains("efficiency_bucket,month"))
         XCTAssertTrue(viewModel.csvText.contains("efficiency_breakdown_row,model,performance_all,All,aggregate,all,,4,3,16000"))
+
+        viewModel.selectedMode = .performance
+
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "4")
+        XCTAssertEqual(viewModel.efficiencyTokenSamples.count, 3)
+
+        viewModel.selectedMode = .efficiency
+
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "16.0k")
 
         viewModel.selectSeries("model:gpt-5.5")
 

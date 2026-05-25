@@ -6,7 +6,101 @@
 
 ## Remaining Work
 
-No remaining prioritized implementation items. Revisit after a product/backlog review.
+| Priority | Item | Why | Planning |
+| --- | --- | --- | --- |
+| 1 | Pre-aggregate Token Dashboard attribution coverage | The slowest measured path is Token Dashboard coverage: month is about 635 ms of query time and year is about 1.17 s before SwiftUI rendering. | Needs a short implementation plan because it may introduce derived coverage summaries or query consolidation. |
+| 2 | Return pre-aggregated Performance Dashboard presentation rows | Performance Dashboard month pulls about 80k rows and year pulls about 105k rows, then rebuilds chart/table presentation in Swift. | Needs planning to preserve CSV, sorting, and selection semantics. |
+| 3 | Add dashboard snapshot and presentation caching | Repeated dashboard mode/breakdown/period toggles should reuse stable results until capture/import data changes. | Needs planning around invalidation and stale-result behavior. |
+| 4 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
+| 5 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
+
+### Pre-Aggregate Token Dashboard Attribution Coverage
+
+- Problem:
+  - Token Dashboard snapshot always computes available dimensions, points, series, attribution coverage, and bounds.
+  - Attribution coverage currently performs repeated period scans and a join through `token_usage_dimensions`.
+  - Live measurement on the current database showed Token Dashboard model snapshot query work at about 635 ms for month and 1.17 s for year before SwiftUI rendering.
+- Implementation options:
+  - Short-term: combine model/project/effort/source coverage into one bounded SQL pass and avoid separate scans for each core column.
+  - Medium-term: add derived daily/monthly attribution coverage summaries keyed by dimension and period bucket.
+  - Keep low-signal provenance filtering rules unchanged, including hiding `source_kind=codex-log` as user-facing analytics.
+- Planning notes:
+  - Decide whether a query-only consolidation is enough, or whether a derived coverage table is worth the schema/migration cost.
+  - Preserve current CSV coverage output and dashboard sorting behavior.
+- Verification:
+  - Add query-plan and timing regression tests for month/year coverage.
+  - Add correctness tests for model, project, effort, source, generic dimensions, unattributed rows, and hidden low-signal values.
+  - Run `git diff --check`, the full Xcode test suite, `./install.sh`, and installed fingerprint verification.
+
+### Return Pre-Aggregated Performance Dashboard Presentation Rows
+
+- Problem:
+  - The store returns raw timing, reliability, and token samples, then `PerformanceDashboardViewModel` rebuilds charts and tables in Swift when mode or breakdown changes.
+  - Breakdown toggles avoid SQLite reloads, but they can still do large main-actor presentation work.
+- Implementation options:
+  - Add read-only store queries that return bucketed chart points and table rows for the selected mode, period, and breakdown dimension.
+  - Keep raw sample APIs only where tests or export paths still need them.
+  - For Performance mode, return duration bucket rows and reliability bucket rows directly.
+  - For Efficiency mode, return token-rate bucket rows and efficiency breakdown rows directly.
+- Planning notes:
+  - Needs a plan before implementation because it touches dashboard presentation contracts, row selection, sorting, and CSV export.
+  - Be explicit about which aggregations happen in SQLite and which remain in Swift.
+- Verification:
+  - Add store/view-model parity tests against current raw-sample behavior.
+  - Add tests for all breakdown dimensions: model, project, effort, source, transport, and wire API where applicable.
+  - Run full verification and relaunch latest installed app with `./install.sh`.
+
+### Add Dashboard Snapshot And Presentation Caching
+
+- Problem:
+  - Period changes should reload, but repeated toggles between recently viewed mode/breakdown combinations should not recompute the same data repeatedly.
+- Implementation options:
+  - Cache snapshots by period range and mode.
+  - Cache presentation results by period, mode, breakdown dimension, sort state, and selected rows when practical.
+  - Invalidate on history-change notifications, local token capture, OTEL capture, session timing capture, imports, clear-history, and project alias updates.
+- Planning notes:
+  - Needs a short plan because stale data would be worse than slow data.
+  - Keep existing reload-generation cancellation behavior.
+- Verification:
+  - Add tests for cache hit/miss behavior and invalidation after data-change notifications.
+  - Add tests that stale async results are still ignored.
+  - Run full verification and relaunch latest installed app with `./install.sh`.
+
+### Add Built-In Dashboard/Menu Performance Instrumentation
+
+- Problem:
+  - External Accessibility automation could query the menu-bar item, but automated clicks did not reliably open the popover in the current session.
+  - The app should measure its own user-visible timings so future audits have first-render data instead of only query timings.
+- Implementation notes:
+  - Add lightweight internal timing around:
+    - app launch to first real menu-bar title
+    - menu popover open to first rendered content
+    - History expand/reload
+    - Token Dashboard open/reload
+    - Performance Dashboard open/reload
+    - Performance/Efficiency mode switches
+    - dashboard breakdown and period changes
+  - Store only local timing metrics, not payloads or sensitive data.
+  - Surface a compact diagnostics readout in Settings Data or a diagnostics export.
+- Verification:
+  - Add tests for timing event recording and bounded retention.
+  - Run full verification and relaunch latest installed app with `./install.sh`.
+
+### Add Indexed Event Timestamp For Session Task Timing Queries
+
+- Problem:
+  - Session timing queries filter and sort on `COALESCE(started_at, completed_at, recorded_at)`, which currently scans `codex_session_task_timing_events`.
+  - The table is small today, but this will degrade as task timing history grows.
+- Implementation options:
+  - Add a stored `event_timestamp` column populated during import and migration.
+  - Add an index on `event_timestamp`.
+  - Update timing queries and bounds queries to use that column directly.
+- Planning notes:
+  - Needs a migration plan and compatibility tests for existing databases with partial timing rows.
+- Verification:
+  - Add migration tests for rows with started, completed, and recorded-only timestamps.
+  - Add query-plan tests proving the timing dashboard query uses the new timestamp index.
+  - Run full verification and relaunch latest installed app with `./install.sh`.
 
 ## Conditional Watchlist
 
@@ -16,6 +110,12 @@ No remaining prioritized implementation items. Revisit after a product/backlog r
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Split Performance Dashboard snapshots by selected mode
+  - Made Performance Dashboard snapshots mode-aware so the default `Performance` view no longer loads Efficiency token samples or model capabilities.
+  - Added lazy Efficiency loading when the user switches to `Efficiency`, while preserving cached Performance data for fast switching back.
+  - Added mode-specific dashboard bounds so Performance navigation no longer scans token history just to open the default view.
+  - Added worker and view-model tests for mode-specific payloads, lazy Efficiency loading, and cached mode switching.
 
 - Polish Performance Dashboard layout and tables
   - Reworked the Performance Dashboard shell so header controls, summary tiles, charts, and tables stay visible at launch.

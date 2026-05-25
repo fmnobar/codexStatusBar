@@ -408,22 +408,36 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             _ = importSessionTaskTimingIfNeeded(store: store, at: now, calendar: .autoupdatingCurrent)
         }
 
-        return PerformanceDashboardLoadResult(
-            timingSamples: try store.performanceDashboardTimingSamples(
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
-            reliabilitySamples: try store.performanceDashboardReliabilitySamples(
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
-            efficiencyTokenSamples: try store.performanceDashboardEfficiencyTokenSamples(
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
-            modelCapabilities: try store.codexModelCapabilities(),
-            historyBounds: try store.performanceDashboardBounds()
+        let timingSamples = try store.performanceDashboardTimingSamples(
+            periodStart: request.periodStart,
+            periodEnd: request.periodEnd
         )
+        let reliabilitySamples = try store.performanceDashboardReliabilitySamples(
+            periodStart: request.periodStart,
+            periodEnd: request.periodEnd
+        )
+
+        switch request.mode {
+        case .performance:
+            return PerformanceDashboardLoadResult(
+                timingSamples: timingSamples,
+                reliabilitySamples: reliabilitySamples,
+                efficiencyTokenSamples: [],
+                modelCapabilities: [],
+                historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: false)
+            )
+        case .efficiency:
+            return PerformanceDashboardLoadResult(
+                timingSamples: timingSamples,
+                reliabilitySamples: reliabilitySamples,
+                efficiencyTokenSamples: try store.performanceDashboardEfficiencyTokenSamples(
+                    periodStart: request.periodStart,
+                    periodEnd: request.periodEnd
+                ),
+                modelCapabilities: try store.codexModelCapabilities(),
+                historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: true)
+            )
+        }
     }
 
     func databaseInfo() throws -> UsageHistoryDatabaseInfo {
