@@ -654,7 +654,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             selectedSeriesIDs = []
             breakdownSortState = nil
             efficiencySortState = nil
-            scheduleReload()
+            scheduleReload(trigger: .performanceDashboardModeChange)
         }
     }
 
@@ -667,7 +667,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             selectedPeriodStart = currentPeriod.start
             selectedSeriesIDs = []
             resetLoadedModeState()
-            scheduleReload()
+            scheduleReload(trigger: .performanceDashboardPeriodChange)
         }
     }
 
@@ -685,7 +685,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             }
             selectedSeriesIDs = []
             breakdownSortState = nil
-            scheduleReload()
+            scheduleReload(trigger: .performanceDashboardBreakdownChange)
         }
     }
 
@@ -707,6 +707,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
     @Published private(set) var efficiencySortState: PerformanceDashboardSortState<PerformanceDashboardEfficiencySortColumn>?
 
     private let database: UsageHistoryDatabaseWorking
+    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
     private var reloadTask: Task<Void, Never>?
@@ -715,14 +716,17 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private var snapshotCache: [PerformanceDashboardSnapshotCacheKey: PerformanceDashboardLoadResult] = [:]
     private var snapshotCacheOrder: [PerformanceDashboardSnapshotCacheKey] = []
     private let snapshotCacheLimit = 24
+    private var nextReloadInstrumentationKind: AppPerformanceEventKind = .performanceDashboardReload
 
     init(
         database: UsageHistoryDatabaseWorking,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
         automaticallyReload: Bool = true
     ) {
         self.database = database
+        self.performanceInstrumentationStore = performanceInstrumentationStore
         self.now = now
         self.calendar = calendar
         selectedPeriodStart = UsageHistoryRange.month.period(containing: now(), calendar: calendar).start
@@ -738,6 +742,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
     ) {
         self.init(
             database: UsageHistoryDatabaseWorker(store: store),
+            performanceInstrumentationStore: nil,
             now: now,
             calendar: calendar
         )
@@ -1279,7 +1284,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
         return await performReload()
     }
 
-    func scheduleReload() {
+    func scheduleReload(trigger: AppPerformanceEventKind = .performanceDashboardReload) {
+        nextReloadInstrumentationKind = trigger
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.performReload()
@@ -1303,10 +1309,21 @@ final class PerformanceDashboardViewModel: ObservableObject {
             calendar: calendar
         )
         let cacheKey = PerformanceDashboardSnapshotCacheKey(request: request)
+        let instrumentationKind = nextReloadInstrumentationKind
+        nextReloadInstrumentationKind = .performanceDashboardReload
+        let instrumentationSpan = performanceInstrumentationStore?.begin(
+            instrumentationKind,
+            metadata: dashboardInstrumentationMetadata(cacheHit: false)
+        )
 
         if let cachedResult = cachedSnapshot(for: cacheKey) {
             applyLoadResult(cachedResult, for: request.mode)
             errorMessage = nil
+            performanceInstrumentationStore?.finish(
+                instrumentationSpan,
+                status: hasAnyData ? .success : .noData,
+                metadata: instrumentationResultMetadata(cacheHit: true)
+            )
             return true
         }
 
@@ -1319,6 +1336,11 @@ final class PerformanceDashboardViewModel: ObservableObject {
             cacheSnapshot(result, for: cacheKey)
             applyLoadResult(result, for: request.mode)
             errorMessage = nil
+            performanceInstrumentationStore?.finish(
+                instrumentationSpan,
+                status: hasAnyData ? .success : .noData,
+                metadata: instrumentationResultMetadata(cacheHit: false)
+            )
             return true
         } catch {
             guard generation == reloadGeneration, !Task.isCancelled else {
@@ -1339,6 +1361,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             historyBoundsByMode = [:]
             historyBounds = nil
             errorMessage = "Performance dashboard could not be loaded."
+            performanceInstrumentationStore?.finish(instrumentationSpan, status: .failed)
             return false
         }
     }
@@ -1351,7 +1374,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
     func invalidateSnapshotCacheAndReload() {
         invalidateSnapshotCache()
-        scheduleReload()
+        scheduleReload(trigger: .performanceDashboardPeriodChange)
     }
 
     private func nextReloadGeneration() -> Int {
@@ -1430,7 +1453,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
         selectedPeriodStart = previous
         resetLoadedModeState()
-        scheduleReload()
+        scheduleReload(trigger: .performanceDashboardPeriodChange)
     }
 
     func goToNextPeriod() {
@@ -1442,7 +1465,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
         selectedPeriodStart = min(next, currentPeriod.start)
         resetLoadedModeState()
-        scheduleReload()
+        scheduleReload(trigger: .performanceDashboardPeriodChange)
     }
 
     func jumpToCurrentPeriod() {
@@ -1574,6 +1597,24 @@ final class PerformanceDashboardViewModel: ObservableObject {
         case .failure:
             return .red
         }
+    }
+
+    private func dashboardInstrumentationMetadata(cacheHit: Bool) -> [String: String] {
+        [
+            "dashboard": "performance",
+            "mode": selectedMode.rawValue,
+            "range": selectedRange.rawValue,
+            "breakdown": selectedBreakdownDimension.rawValue,
+            "cacheHit": cacheHit ? "true" : "false",
+        ]
+    }
+
+    private func instrumentationResultMetadata(cacheHit: Bool) -> [String: String] {
+        var metadata = dashboardInstrumentationMetadata(cacheHit: cacheHit)
+        metadata["rowCount"] = "\(selectedMode == .performance ? breakdownRows.count : efficiencyRows.count)"
+        metadata["pointCount"] = "\(selectedMode == .performance ? durationPoints.count + reliabilityPoints.count : efficiencyPoints.count)"
+        metadata["seriesCount"] = "\(series.count)"
+        return metadata
     }
 
     func compactSeriesTitle(_ name: String) -> String {
@@ -2912,9 +2953,20 @@ private enum PerformanceDashboardLayout {
 
 struct PerformanceDashboardView: View {
     @StateObject private var viewModel: PerformanceDashboardViewModel
+    private let onFirstRendered: () -> Void
 
-    init(database: UsageHistoryDatabaseWorking) {
-        _viewModel = StateObject(wrappedValue: PerformanceDashboardViewModel(database: database))
+    init(
+        database: UsageHistoryDatabaseWorking,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
+        onFirstRendered: @escaping () -> Void = {}
+    ) {
+        _viewModel = StateObject(
+            wrappedValue: PerformanceDashboardViewModel(
+                database: database,
+                performanceInstrumentationStore: performanceInstrumentationStore
+            )
+        )
+        self.onFirstRendered = onFirstRendered
     }
 
     var body: some View {
@@ -2937,6 +2989,11 @@ struct PerformanceDashboardView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
             viewModel.invalidateSnapshotCacheAndReload()
+        }
+        .onAppear {
+            DispatchQueue.main.async {
+                onFirstRendered()
+            }
         }
     }
 

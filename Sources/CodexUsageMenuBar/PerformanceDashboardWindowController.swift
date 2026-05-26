@@ -4,10 +4,23 @@ import SwiftUI
 @MainActor
 final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
     private let database: UsageHistoryDatabaseWorking
+    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private var window: NSWindow?
+    private var pendingOpenSpan: AppPerformanceSpan?
 
-    init(database: UsageHistoryDatabaseWorking) {
+    init(
+        database: UsageHistoryDatabaseWorking,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
+    ) {
         self.database = database
+        self.performanceInstrumentationStore = performanceInstrumentationStore
+    }
+
+    func prepareOpenInstrumentation() {
+        pendingOpenSpan = performanceInstrumentationStore.begin(
+            .performanceDashboardOpen,
+            metadata: ["dashboard": "performance", "windowState": window == nil ? "new" : "existing"]
+        )
     }
 
     func showWindow() {
@@ -15,6 +28,12 @@ final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
             enforceMinimumFrame(for: window)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            performanceInstrumentationStore.finish(
+                pendingOpenSpan,
+                status: .success,
+                metadata: ["dashboard": "performance", "windowState": "existing"]
+            )
+            pendingOpenSpan = nil
             return
         }
 
@@ -29,13 +48,34 @@ final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.setFrameAutosaveName("CodexPerformanceDashboardWindow")
-        window.contentViewController = NSHostingController(rootView: PerformanceDashboardView(database: database))
+        window.contentViewController = NSHostingController(
+            rootView: PerformanceDashboardView(
+                database: database,
+                performanceInstrumentationStore: performanceInstrumentationStore,
+                onFirstRendered: { [weak self] in
+                    self?.recordFirstRendered()
+                }
+            )
+        )
         window.center()
         enforceMinimumFrame(for: window)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         self.window = window
+    }
+
+    private func recordFirstRendered() {
+        guard pendingOpenSpan != nil else {
+            return
+        }
+
+        performanceInstrumentationStore.finish(
+            pendingOpenSpan,
+            status: .success,
+            metadata: ["dashboard": "performance", "windowState": "new"]
+        )
+        pendingOpenSpan = nil
     }
 
     private func enforceMinimumFrame(for window: NSWindow) {
@@ -55,6 +95,14 @@ final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        if pendingOpenSpan != nil {
+            performanceInstrumentationStore.finish(
+                pendingOpenSpan,
+                status: .cancelled,
+                metadata: ["dashboard": "performance"]
+            )
+            pendingOpenSpan = nil
+        }
         window = nil
     }
 }

@@ -234,7 +234,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
             selectedPeriodStart = currentPeriod.start
             selectedSeriesIDs = []
-            scheduleReload()
+            scheduleReload(trigger: .tokenDashboardPeriodChange)
         }
     }
 
@@ -246,7 +246,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
             selectedSeriesIDs = []
             breakdownSortState = nil
-            scheduleReload()
+            scheduleReload(trigger: .tokenDashboardBreakdownChange)
         }
     }
 
@@ -262,21 +262,28 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var attributionSortState: TokenDashboardSortState<TokenDashboardAttributionSortColumn>?
 
     private let database: UsageHistoryDatabaseWorking
+    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
     private var reloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
+    private var nextReloadInstrumentationKind: AppPerformanceEventKind = .tokenDashboardReload
 
     init(
         database: UsageHistoryDatabaseWorking,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
         now: @escaping () -> Date = Date.init,
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        automaticallyReload: Bool = true
     ) {
         self.database = database
+        self.performanceInstrumentationStore = performanceInstrumentationStore
         self.now = now
         self.calendar = calendar
         selectedPeriodStart = UsageHistoryRange.month.period(containing: now(), calendar: calendar).start
-        scheduleReload()
+        if automaticallyReload {
+            scheduleReload()
+        }
     }
 
     convenience init(
@@ -290,6 +297,7 @@ final class TokenDashboardViewModel: ObservableObject {
                 store: store,
                 recentTokenHistoryImporter: recentTokenHistoryImporter
             ),
+            performanceInstrumentationStore: nil,
             now: now,
             calendar: calendar
         )
@@ -567,6 +575,12 @@ final class TokenDashboardViewModel: ObservableObject {
             periodStart: queryPeriod.start,
             periodEnd: queryPeriod.end
         )
+        let instrumentationKind = nextReloadInstrumentationKind
+        nextReloadInstrumentationKind = .tokenDashboardReload
+        let instrumentationSpan = performanceInstrumentationStore?.begin(
+            instrumentationKind,
+            metadata: dashboardInstrumentationMetadata()
+        )
 
         do {
             let result = try await database.tokenDashboardSnapshot(for: request)
@@ -582,6 +596,11 @@ final class TokenDashboardViewModel: ObservableObject {
                 historyBounds = result.historyBounds
                 selectedSeriesIDs = []
                 selectedBreakdownDimension = .model
+                performanceInstrumentationStore?.finish(
+                    instrumentationSpan,
+                    status: .noData,
+                    metadata: ["rowCount": "0", "pointCount": "0", "seriesCount": "0"]
+                )
                 return false
             }
 
@@ -591,6 +610,15 @@ final class TokenDashboardViewModel: ObservableObject {
             historyBounds = result.historyBounds
             reconcileSelection()
             errorMessage = nil
+            performanceInstrumentationStore?.finish(
+                instrumentationSpan,
+                status: hasTokenData ? .success : .noData,
+                metadata: [
+                    "pointCount": "\(points.count)",
+                    "rowCount": "\(series.count)",
+                    "seriesCount": "\(series.count)",
+                ]
+            )
             return true
         } catch {
             guard generation == reloadGeneration, !Task.isCancelled else {
@@ -604,11 +632,13 @@ final class TokenDashboardViewModel: ObservableObject {
             historyBounds = nil
             selectedSeriesIDs = []
             errorMessage = "Token dashboard could not be loaded."
+            performanceInstrumentationStore?.finish(instrumentationSpan, status: .failed)
             return false
         }
     }
 
-    func scheduleReload() {
+    func scheduleReload(trigger: AppPerformanceEventKind = .tokenDashboardReload) {
+        nextReloadInstrumentationKind = trigger
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.performReload()
@@ -628,7 +658,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = previous
-        scheduleReload()
+        scheduleReload(trigger: .tokenDashboardPeriodChange)
     }
 
     func goToNextPeriod() {
@@ -639,7 +669,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = min(next, currentPeriod.start)
-        scheduleReload()
+        scheduleReload(trigger: .tokenDashboardPeriodChange)
     }
 
     func jumpToCurrentPeriod() {
@@ -648,7 +678,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         selectedPeriodStart = currentPeriod.start
-        scheduleReload()
+        scheduleReload(trigger: .tokenDashboardPeriodChange)
     }
 
     func selectSeries(_ id: String) {
@@ -756,6 +786,14 @@ final class TokenDashboardViewModel: ObservableObject {
         case nil:
             return .secondary
         }
+    }
+
+    private func dashboardInstrumentationMetadata() -> [String: String] {
+        [
+            "dashboard": "token",
+            "range": selectedRange.rawValue,
+            "breakdown": selectedBreakdownDimension.displayTitle,
+        ]
     }
 
     func compactSeriesTitle(_ name: String) -> String {
@@ -1163,9 +1201,20 @@ struct TokenDashboardView: View {
     private let numberColumnWidth: CGFloat = 78
     private let outputColumnWidth: CGFloat = 70
     private let reasoningColumnWidth: CGFloat = 86
+    private let onFirstRendered: () -> Void
 
-    init(database: UsageHistoryDatabaseWorking) {
-        _viewModel = StateObject(wrappedValue: TokenDashboardViewModel(database: database))
+    init(
+        database: UsageHistoryDatabaseWorking,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
+        onFirstRendered: @escaping () -> Void = {}
+    ) {
+        _viewModel = StateObject(
+            wrappedValue: TokenDashboardViewModel(
+                database: database,
+                performanceInstrumentationStore: performanceInstrumentationStore
+            )
+        )
+        self.onFirstRendered = onFirstRendered
     }
 
     var body: some View {
@@ -1194,6 +1243,11 @@ struct TokenDashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
             viewModel.scheduleReload()
+        }
+        .onAppear {
+            DispatchQueue.main.async {
+                onFirstRendered()
+            }
         }
     }
 

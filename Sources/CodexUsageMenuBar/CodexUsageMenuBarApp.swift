@@ -11,7 +11,8 @@ struct CodexUsageMenuBarApp: App {
                 database: appDelegate.historyDatabase,
                 updateMonitor: appDelegate.updateMonitor,
                 tokenPayloadAuditStore: appDelegate.tokenPayloadAuditStore,
-                tokenPayloadAuditDiagnosticsStore: appDelegate.tokenPayloadAuditDiagnosticsStore
+                tokenPayloadAuditDiagnosticsStore: appDelegate.tokenPayloadAuditDiagnosticsStore,
+                performanceInstrumentationStore: appDelegate.performanceInstrumentationStore
             )
         }
     }
@@ -23,9 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let updateMonitor: AppUpdateMonitor
     let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
+    let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
     private var liveTokenCaptureCoordinator: CodexLiveTokenCaptureCoordinator?
+    private var launchToMenuTitleSpan: AppPerformanceSpan?
 
     override init() {
         AppFreshnessRuntime.captureLaunchFingerprint()
@@ -34,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let codexClient = CodexAppServerClient()
         let payloadAuditStore = CodexTokenPayloadAuditStore.applicationSupportStore()
         let payloadAuditDiagnosticsStore = CodexAppServerAuditDiagnosticsStore.applicationSupportStore()
+        let performanceInstrumentationStore = AppPerformanceInstrumentationStore.shared
         codexClient.onTokenUsagePayloadAudit = { audit in
             switch payloadAuditStore.record(audit) {
             case .success:
@@ -49,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateMonitor = AppUpdateMonitor()
         tokenPayloadAuditStore = payloadAuditStore
         tokenPayloadAuditDiagnosticsStore = payloadAuditDiagnosticsStore
+        self.performanceInstrumentationStore = performanceInstrumentationStore
+        launchToMenuTitleSpan = performanceInstrumentationStore.begin(.appLaunchToFirstMenuBarTitle)
         viewModel = MenuBarStatusViewModel(
             client: codexClient,
             historyRecorder: historyRecorder,
@@ -61,7 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = StatusItemController(
             viewModel: viewModel,
             historyDatabase: historyDatabase,
-            updateMonitor: updateMonitor
+            updateMonitor: updateMonitor,
+            performanceInstrumentationStore: performanceInstrumentationStore,
+            launchToMenuTitleSpan: launchToMenuTitleSpan
         )
 
         Task {

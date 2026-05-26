@@ -1760,6 +1760,52 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testTokenDashboardViewModelRecordsReloadInstrumentation() async throws {
+        var currentDate = date("2026-05-17T12:00:00Z")
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-instrument",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(effort: "high")
+            ),
+        ])
+        let instrumentationStore = AppPerformanceInstrumentationStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json"),
+            now: { currentDate }
+        )
+        let viewModel = TokenDashboardViewModel(
+            database: UsageHistoryDatabaseWorker(store: store),
+            performanceInstrumentationStore: instrumentationStore,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        currentDate = currentDate.addingTimeInterval(0.15)
+        await viewModel.reload()
+
+        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.tokenDashboardReload])
+        XCTAssertEqual(instrumentationStore.events.first?.status, .success)
+        XCTAssertEqual(instrumentationStore.events.first?.metadata["dashboard"], "token")
+        XCTAssertEqual(instrumentationStore.events.first?.metadata["range"], "month")
+
+        viewModel.selectedBreakdownDimension = .effort
+        currentDate = currentDate.addingTimeInterval(0.1)
+        await viewModel.reload()
+
+        XCTAssertEqual(instrumentationStore.events.last?.kind, .tokenDashboardBreakdownChange)
+    }
+
+    @MainActor
     func testTokenDashboardViewModelSwitchesBreakdownDimensionAndFiltersRows() async throws {
         let store = try makeStore()
         _ = try store.importTokenUsageSamples([
@@ -3290,6 +3336,45 @@ extension UsageHistoryStoreTests {
         await viewModel.reload()
         requestCount = await database.requestCount()
         XCTAssertEqual(requestCount, 3)
+    }
+
+    @MainActor
+    func testPerformanceDashboardViewModelRecordsWorkerAndCacheReloadTimings() async throws {
+        var currentDate = date("2026-05-17T12:00:00Z")
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let instrumentationStore = AppPerformanceInstrumentationStore(
+            fileURL: diagnosticsURL,
+            now: { currentDate }
+        )
+        let database = PerformanceDashboardCacheSpyDatabase()
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            performanceInstrumentationStore: instrumentationStore,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        currentDate = currentDate.addingTimeInterval(0.2)
+        await viewModel.reload()
+        currentDate = currentDate.addingTimeInterval(0.1)
+        await viewModel.reload()
+
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.performanceDashboardReload, .performanceDashboardReload])
+        XCTAssertEqual(instrumentationStore.events.map(\.status), [.success, .success])
+        XCTAssertEqual(instrumentationStore.events[0].metadata["cacheHit"], "false")
+        XCTAssertEqual(instrumentationStore.events[1].metadata["cacheHit"], "true")
+        XCTAssertEqual(instrumentationStore.events[0].metadata["mode"], "performance")
+        XCTAssertEqual(instrumentationStore.events[0].metadata["range"], "month")
+
+        viewModel.selectedMode = .efficiency
+        currentDate = currentDate.addingTimeInterval(0.3)
+        await viewModel.reload()
+
+        XCTAssertEqual(instrumentationStore.events.last?.kind, .performanceDashboardModeChange)
+        XCTAssertEqual(instrumentationStore.events.last?.metadata["mode"], "efficiency")
     }
 
     @MainActor

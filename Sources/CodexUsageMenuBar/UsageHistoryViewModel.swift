@@ -168,6 +168,7 @@ final class UsageHistoryViewModel: ObservableObject {
     let chartSemantics: UsageHistoryChartSemantics
 
     private let database: UsageHistoryDatabaseWorking
+    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
     private var historyBounds: UsageHistoryBounds?
@@ -189,10 +190,12 @@ final class UsageHistoryViewModel: ObservableObject {
     init(
         database: UsageHistoryDatabaseWorking,
         chartSemantics: UsageHistoryChartSemantics = .independentSignals,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent
     ) {
         self.database = database
+        self.performanceInstrumentationStore = performanceInstrumentationStore
         self.chartSemantics = chartSemantics
         self.now = now
         self.calendar = calendar
@@ -221,6 +224,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 recentTokenHistoryImporter: recentTokenHistoryImporter
             ),
             chartSemantics: chartSemantics,
+            performanceInstrumentationStore: nil,
             now: now,
             calendar: calendar
         )
@@ -562,6 +566,15 @@ final class UsageHistoryViewModel: ObservableObject {
             now: now(),
             calendar: calendar
         )
+        let instrumentationSpan = performanceInstrumentationStore?.begin(
+            .historyReload,
+            metadata: [
+                "surface": "history",
+                "range": selectedRange.rawValue,
+                "chartKind": selectedChartKind.rawValue,
+                "window": selectedWindow.rawValue,
+            ]
+        )
 
         do {
             let result = try await database.usageHistorySnapshot(for: request)
@@ -581,6 +594,14 @@ final class UsageHistoryViewModel: ObservableObject {
             rebuildChartCaches()
             clearHoverSelectionAndCancelPendingWork()
             errorMessage = nil
+            performanceInstrumentationStore?.finish(
+                instrumentationSpan,
+                status: hasHistory ? .success : .noData,
+                metadata: [
+                    "rowCount": "\(points.count + tokenComponentBucketPoints.count)",
+                    "seriesCount": "\(series.count)",
+                ]
+            )
             return true
         } catch {
             guard generation == reloadGeneration, !Task.isCancelled else {
@@ -599,6 +620,7 @@ final class UsageHistoryViewModel: ObservableObject {
             rebuildChartCaches()
             clearHoverSelectionAndCancelPendingWork()
             errorMessage = "History could not be loaded."
+            performanceInstrumentationStore?.finish(instrumentationSpan, status: .failed)
             return false
         }
     }

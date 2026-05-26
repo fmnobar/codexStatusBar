@@ -750,6 +750,74 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testPerformanceInstrumentationStoreRecordsSanitizesPrunesExportsAndClears() throws {
+        var currentDate = date("2026-05-20T12:00:00Z")
+        var uuidIndex = 0
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let store = AppPerformanceInstrumentationStore(
+            fileURL: diagnosticsURL,
+            now: { currentDate },
+            makeUUID: {
+                uuidIndex += 1
+                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", uuidIndex))!
+            },
+            retentionLimit: 2,
+            retentionAge: 60
+        )
+
+        store.record(
+            kind: .tokenDashboardReload,
+            durationMilliseconds: 12,
+            metadata: [
+                "dashboard": "token",
+                "breakdown": "model",
+                "unsafe": "ignored",
+                "surface": "/Users/example/private",
+            ]
+        )
+        currentDate = currentDate.addingTimeInterval(1)
+        let span = store.begin(.performanceDashboardReload, metadata: ["dashboard": "performance", "cacheHit": "false"])
+        currentDate = currentDate.addingTimeInterval(0.25)
+        store.finish(span, status: .success, metadata: ["rowCount": "7"])
+        currentDate = currentDate.addingTimeInterval(1)
+        store.record(kind: .menuPopoverOpenToContent, durationMilliseconds: 5)
+
+        XCTAssertEqual(store.events.map(\.kind), [.performanceDashboardReload, .menuPopoverOpenToContent])
+        XCTAssertEqual(store.events[0].metadata["dashboard"], "performance")
+        XCTAssertEqual(store.events[0].metadata["rowCount"], "7")
+        XCTAssertNil(store.events[0].metadata["unsafe"])
+        XCTAssertNil(store.events[0].metadata["surface"])
+
+        let exported = try XCTUnwrap(store.exportData())
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode([AppPerformanceEvent].self, from: exported)
+        XCTAssertEqual(decoded.count, 2)
+
+        let summary = store.summary()
+        XCTAssertEqual(summary.eventCount, 2)
+        XCTAssertEqual(summary.lastEvent?.kind, .menuPopoverOpenToContent)
+        XCTAssertEqual(summary.rows.first?.kind, .performanceDashboardReload)
+
+        store.clear()
+
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertNil(try store.exportData())
+    }
+
+    @MainActor
+    func testPerformanceInstrumentationStoreWriteFailureDoesNotBlockRecording() throws {
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        try FileManager.default.createDirectory(at: diagnosticsURL, withIntermediateDirectories: true)
+        let store = AppPerformanceInstrumentationStore(fileURL: diagnosticsURL)
+
+        store.record(kind: .tokenDashboardReload, durationMilliseconds: 10)
+
+        XCTAssertEqual(store.events.count, 1)
+        XCTAssertNotNil(store.lastErrorText)
+    }
+
+    @MainActor
     func testAppServerAuditDiagnosticsStoreTracksPersistsAndClearsCaptureState() throws {
         let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
         let store = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL, now: { Date(timeIntervalSince1970: 1_777_100_000) })
@@ -827,6 +895,40 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.statusMessage, "Capture diagnostics cleared.")
         XCTAssertEqual(viewModel.tokenPayloadAuditDiagnostics.tokenUsageNotificationCount, 0)
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsExportsAndClearsPerformanceDiagnostics() async throws {
+        let (historyStore, _) = try makeTemporaryStore()
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let performanceStore = AppPerformanceInstrumentationStore(fileURL: diagnosticsURL)
+        let viewModel = DataManagementSettingsViewModel(
+            store: historyStore,
+            defaults: makeIsolatedDefaults(),
+            performanceInstrumentationStore: performanceStore
+        )
+        let exportURL = try makeTemporaryDirectory().appendingPathComponent("performance-export.json")
+
+        XCTAssertFalse(viewModel.canExportPerformanceDiagnostics)
+        XCTAssertEqual(viewModel.performanceDiagnosticsEventCountText, "0")
+
+        performanceStore.record(kind: .performanceDashboardOpen, durationMilliseconds: 42, metadata: ["dashboard": "performance"])
+
+        XCTAssertTrue(viewModel.canExportPerformanceDiagnostics)
+        XCTAssertEqual(viewModel.performanceDiagnosticsEventCountText, "1")
+        XCTAssertTrue(viewModel.performanceDiagnosticsLastEventText.contains("Performance dashboard open"))
+
+        viewModel.exportPerformanceDiagnostics(to: exportURL)
+
+        XCTAssertEqual(viewModel.statusMessage, "Performance diagnostics exported.")
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+
+        viewModel.clearPerformanceDiagnostics()
+
+        XCTAssertEqual(viewModel.statusMessage, "Performance diagnostics cleared.")
+        XCTAssertEqual(viewModel.performanceInstrumentationSummary.eventCount, 0)
+        XCTAssertFalse(viewModel.canExportPerformanceDiagnostics)
     }
 
     @MainActor

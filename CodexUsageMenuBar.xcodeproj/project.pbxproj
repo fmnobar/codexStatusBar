@@ -30,6 +30,8 @@
 		A41000000000000000000011 /* AppBuildFreshness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000001 /* AppBuildFreshness.swift */; };
 		A41000000000000000000021 /* AppBuildFreshness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000001 /* AppBuildFreshness.swift */; };
 		A41000000000000000000022 /* AppBuildFreshnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000002 /* AppBuildFreshnessTests.swift */; };
+		A42000000000000000000011 /* AppPerformanceInstrumentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A42000000000000000000001 /* AppPerformanceInstrumentation.swift */; };
+		A42000000000000000000021 /* AppPerformanceInstrumentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A42000000000000000000001 /* AppPerformanceInstrumentation.swift */; };
 		A50000000000000000000011 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000021 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000002 /* AppUpdateCheckTests.swift */; };
@@ -115,6 +117,7 @@
 		A40000000000000000000001 /* InstallUpdateSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallUpdateSettingsView.swift; sourceTree = "<group>"; };
 		A41000000000000000000001 /* AppBuildFreshness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildFreshness.swift; sourceTree = "<group>"; };
 		A41000000000000000000002 /* AppBuildFreshnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildFreshnessTests.swift; sourceTree = "<group>"; };
+		A42000000000000000000001 /* AppPerformanceInstrumentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPerformanceInstrumentation.swift; sourceTree = "<group>"; };
 		A50000000000000000000001 /* AppUpdateCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheck.swift; sourceTree = "<group>"; };
 		A50000000000000000000002 /* AppUpdateCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCheckTests.swift; sourceTree = "<group>"; };
 		A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionTokenBackfillImporter.swift; sourceTree = "<group>"; };
@@ -205,6 +208,7 @@
 				A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */,
 				A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */,
 				F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */,
+				A42000000000000000000001 /* AppPerformanceInstrumentation.swift */,
 				A30000000000000000000001 /* DataManagementSettingsView.swift */,
 				A40000000000000000000001 /* InstallUpdateSettingsView.swift */,
 				318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */,
@@ -352,6 +356,7 @@
 			files = (
 				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
 				A41000000000000000000021 /* AppBuildFreshness.swift in Sources */,
+				A42000000000000000000021 /* AppPerformanceInstrumentation.swift in Sources */,
 				A50000000000000000000021 /* AppUpdateCheck.swift in Sources */,
 				A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */,
 				ED158C1DA325D4FA480D76DC /* CodexAppServerClient.swift in Sources */,
@@ -404,6 +409,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A41000000000000000000011 /* AppBuildFreshness.swift in Sources */,
+				A42000000000000000000011 /* AppPerformanceInstrumentation.swift in Sources */,
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
 				A50000000000000000000011 /* AppUpdateCheck.swift in Sources */,
 				A60000000000000000000011 /* CodexSessionTokenBackfillImporter.swift in Sources */,

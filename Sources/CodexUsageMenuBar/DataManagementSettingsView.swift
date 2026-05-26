@@ -48,6 +48,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var sessionTaskTimingCaptureState = CodexSessionTaskTimingCaptureState()
     @Published private(set) var threadCatalogCaptureState = CodexThreadCatalogCaptureState()
     @Published private(set) var modelCapabilitiesCaptureState = CodexModelCapabilitiesCaptureState()
+    @Published private(set) var performanceInstrumentationSummary: AppPerformanceInstrumentationSummary
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -55,9 +56,12 @@ final class DataManagementSettingsViewModel: ObservableObject {
     private let tokenBackfillImporter: CodexSessionTokenBackfillImporting
     private let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     private let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
+    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private var databaseInfo: UsageHistoryDatabaseInfo?
     private var tokenPayloadAuditCancellable: AnyCancellable?
     private var tokenPayloadAuditDiagnosticsCancellable: AnyCancellable?
+    private var performanceInstrumentationCancellable: AnyCancellable?
+    private var performanceInstrumentationErrorCancellable: AnyCancellable?
 
     init(
         database: UsageHistoryDatabaseWorking,
@@ -65,7 +69,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
-        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
+        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
     ) {
         self.database = database
         self.defaults = defaults
@@ -73,14 +78,22 @@ final class DataManagementSettingsViewModel: ObservableObject {
         self.tokenBackfillImporter = tokenBackfillImporter
         self.tokenPayloadAuditStore = tokenPayloadAuditStore
         self.tokenPayloadAuditDiagnosticsStore = tokenPayloadAuditDiagnosticsStore
+        self.performanceInstrumentationStore = performanceInstrumentationStore
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
         tokenPayloadAudit = tokenPayloadAuditStore.latestAudit
         tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
+        performanceInstrumentationSummary = performanceInstrumentationStore.summary()
         tokenPayloadAuditCancellable = tokenPayloadAuditStore.$latestAudit.sink { [weak self] audit in
             self?.tokenPayloadAudit = audit
         }
         tokenPayloadAuditDiagnosticsCancellable = tokenPayloadAuditDiagnosticsStore.$diagnostics.sink { [weak self] diagnostics in
             self?.tokenPayloadAuditDiagnostics = diagnostics
+        }
+        performanceInstrumentationCancellable = performanceInstrumentationStore.$events.sink { [weak self] _ in
+            self?.refreshPerformanceInstrumentationSummary()
+        }
+        performanceInstrumentationErrorCancellable = performanceInstrumentationStore.$lastErrorText.sink { [weak self] _ in
+            self?.refreshPerformanceInstrumentationSummary()
         }
     }
 
@@ -90,7 +103,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
         byteFormatter: ByteCountFormatter = ByteCountFormatter(),
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
-        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
+        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
     ) {
         let testSafeWorker = UsageHistoryDatabaseWorker(
             store: store,
@@ -113,7 +127,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
             byteFormatter: byteFormatter,
             tokenBackfillImporter: tokenBackfillImporter,
             tokenPayloadAuditStore: tokenPayloadAuditStore,
-            tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore
+            tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore,
+            performanceInstrumentationStore: performanceInstrumentationStore
         )
     }
 
@@ -127,6 +142,10 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
     var canExportTokenPayloadAudit: Bool {
         tokenPayloadAudit != nil
+    }
+
+    var canExportPerformanceDiagnostics: Bool {
+        performanceInstrumentationSummary.eventCount > 0
     }
 
     var tokenPayloadAuditCapturedAtText: String {
@@ -294,6 +313,30 @@ final class DataManagementSettingsViewModel: ObservableObject {
         modelCapabilitiesCaptureState.lastErrorText ?? "None"
     }
 
+    var performanceDiagnosticsEventCountText: String {
+        "\(performanceInstrumentationSummary.eventCount)"
+    }
+
+    var performanceDiagnosticsLastEventText: String {
+        guard let event = performanceInstrumentationSummary.lastEvent else {
+            return "No events yet"
+        }
+
+        return "\(event.displayTitle) · \(Self.durationText(milliseconds: event.durationMilliseconds))"
+    }
+
+    var performanceDiagnosticsSlowestEventText: String {
+        guard let event = performanceInstrumentationSummary.slowestEvent else {
+            return "--"
+        }
+
+        return "\(event.displayTitle) · \(Self.durationText(milliseconds: event.durationMilliseconds))"
+    }
+
+    var performanceDiagnosticsLastErrorText: String {
+        performanceInstrumentationSummary.lastErrorText ?? "None"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -351,6 +394,10 @@ final class DataManagementSettingsViewModel: ObservableObject {
         )
     }
 
+    func refreshPerformanceInstrumentationSummary() {
+        performanceInstrumentationSummary = performanceInstrumentationStore.summary()
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
@@ -359,6 +406,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         await refreshSessionTaskTimingCaptureState()
         await refreshThreadCatalogCaptureState()
         await refreshModelCapabilitiesCaptureState()
+        refreshPerformanceInstrumentationSummary()
     }
 
     func revealDatabaseInFinder() {
@@ -469,6 +517,30 @@ final class DataManagementSettingsViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func exportPerformanceDiagnostics(to destinationURL: URL) {
+        do {
+            guard let data = try performanceInstrumentationStore.exportData() else {
+                statusMessage = nil
+                errorMessage = "No performance diagnostics have been captured yet."
+                return
+            }
+
+            try data.write(to: destinationURL, options: .atomic)
+            statusMessage = "Performance diagnostics exported."
+            errorMessage = nil
+        } catch {
+            statusMessage = nil
+            errorMessage = "Performance diagnostics could not be exported."
+        }
+    }
+
+    func clearPerformanceDiagnostics() {
+        performanceInstrumentationStore.clear()
+        refreshPerformanceInstrumentationSummary()
+        statusMessage = "Performance diagnostics cleared."
+        errorMessage = nil
+    }
+
     func importTokenHistoryFromCodexSessions() {
         importRecentTokenHistoryFromCodexSessions()
     }
@@ -525,6 +597,14 @@ final class DataManagementSettingsViewModel: ObservableObject {
         formatter.timeStyle = .medium
         return formatter
     }()
+
+    private static func durationText(milliseconds: Double) -> String {
+        if milliseconds >= 1_000 {
+            return String(format: "%.1fs", milliseconds / 1_000)
+        }
+
+        return "\(Int(milliseconds.rounded()))ms"
+    }
 }
 
 struct DataManagementSettingsView: View {
@@ -540,13 +620,15 @@ struct DataManagementSettingsView: View {
         database: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
-        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore()
+        tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
     ) {
         _viewModel = StateObject(
             wrappedValue: DataManagementSettingsViewModel(
                 database: database,
                 tokenPayloadAuditStore: tokenPayloadAuditStore,
-                tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore
+                tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore,
+                performanceInstrumentationStore: performanceInstrumentationStore
             )
         )
         self.updateMonitor = updateMonitor
@@ -1047,6 +1129,10 @@ struct DataManagementSettingsView: View {
                 .font(.caption)
             }
 
+            Divider()
+
+            performanceDiagnosticsSection
+
             HStack {
                 Button("Export Payload Audit...") {
                     exportTokenPayloadAudit()
@@ -1061,6 +1147,83 @@ struct DataManagementSettingsView: View {
                 Button("Clear Capture Diagnostics") {
                     viewModel.clearTokenPayloadAuditDiagnostics()
                 }
+            }
+        }
+    }
+
+    private var performanceDiagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Performance diagnostics")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+
+            if viewModel.performanceInstrumentationSummary.eventCount == 0 {
+                Text("No dashboard or menu timings have been captured yet. Open the menu popover or dashboards to collect local diagnostics.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Events")
+                        Text(viewModel.performanceDiagnosticsEventCountText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last")
+                        Text(viewModel.performanceDiagnosticsLastEventText)
+                    }
+                    GridRow {
+                        Text("Slowest")
+                        Text(viewModel.performanceDiagnosticsSlowestEventText)
+                    }
+                    GridRow {
+                        Text("Last error")
+                        Text(viewModel.performanceDiagnosticsLastErrorText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Flow")
+                            .fontWeight(.semibold)
+                        Text("Count")
+                            .fontWeight(.semibold)
+                        Text("P50")
+                            .fontWeight(.semibold)
+                        Text("P95")
+                            .fontWeight(.semibold)
+                    }
+
+                    ForEach(viewModel.performanceInstrumentationSummary.rows.prefix(6)) { row in
+                        GridRow {
+                            Text(row.kind.displayTitle)
+                                .lineLimit(1)
+                            Text("\(row.eventCount)")
+                                .monospacedDigit()
+                            Text(Self.performanceDurationText(row.p50Milliseconds))
+                                .monospacedDigit()
+                            Text(Self.performanceDurationText(row.p95Milliseconds))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                .font(.caption)
+            }
+
+            HStack {
+                Button("Export Diagnostics...") {
+                    exportPerformanceDiagnostics()
+                }
+                .disabled(!viewModel.canExportPerformanceDiagnostics)
+
+                Button("Clear Diagnostics") {
+                    viewModel.clearPerformanceDiagnostics()
+                }
+                .disabled(viewModel.performanceInstrumentationSummary.eventCount == 0)
             }
         }
     }
@@ -1191,8 +1354,29 @@ struct DataManagementSettingsView: View {
         viewModel.exportTokenPayloadAudit(to: url)
     }
 
+    private func exportPerformanceDiagnostics() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "codex-performance-diagnostics.json"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        viewModel.exportPerformanceDiagnostics(to: url)
+    }
+
     private func presenceText(_ isPresent: Bool) -> String {
         isPresent ? "Present" : "Missing"
+    }
+
+    private static func performanceDurationText(_ milliseconds: Double) -> String {
+        if milliseconds >= 1_000 {
+            return String(format: "%.1fs", milliseconds / 1_000)
+        }
+
+        return "\(Int(milliseconds.rounded()))ms"
     }
 
     private var sqliteBackupContentType: UTType {

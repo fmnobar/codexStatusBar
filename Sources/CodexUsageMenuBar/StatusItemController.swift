@@ -7,10 +7,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel: MenuBarStatusViewModel
     private let historyDatabase: UsageHistoryDatabaseWorking
     private let updateMonitor: AppUpdateMonitor
+    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
-    private lazy var tokenDashboardWindowController = TokenDashboardWindowController(database: historyDatabase)
-    private lazy var performanceDashboardWindowController = PerformanceDashboardWindowController(database: historyDatabase)
+    private lazy var tokenDashboardWindowController = TokenDashboardWindowController(
+        database: historyDatabase,
+        performanceInstrumentationStore: performanceInstrumentationStore
+    )
+    private lazy var performanceDashboardWindowController = PerformanceDashboardWindowController(
+        database: historyDatabase,
+        performanceInstrumentationStore: performanceInstrumentationStore
+    )
     private lazy var contextMenu = StatusItemContextMenuFactory.makeMenu(
         target: self,
         quitAction: #selector(quit)
@@ -19,17 +26,23 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
+    private var pendingPopoverOpenSpan: AppPerformanceSpan?
+    private var pendingLaunchToMenuTitleSpan: AppPerformanceSpan?
 
     init(
         viewModel: MenuBarStatusViewModel,
         historyDatabase: UsageHistoryDatabaseWorking,
-        updateMonitor: AppUpdateMonitor
+        updateMonitor: AppUpdateMonitor,
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        launchToMenuTitleSpan: AppPerformanceSpan? = nil
     ) {
         self.viewModel = viewModel
         self.historyDatabase = historyDatabase
         self.updateMonitor = updateMonitor
+        self.performanceInstrumentationStore = performanceInstrumentationStore
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.autosaveName = "CodexStatusBarStatusItem"
+        self.pendingLaunchToMenuTitleSpan = launchToMenuTitleSpan
         StatusItemVisibility.forceVisible(statusItem)
         super.init()
 
@@ -47,6 +60,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 viewModel: viewModel,
                 historyDatabase: historyDatabase,
                 updateMonitor: updateMonitor,
+                performanceInstrumentationStore: performanceInstrumentationStore,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
                 },
@@ -55,6 +69,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 },
                 onOpenUpdatesSettings: { [weak self] in
                     self?.openUpdatesSettings()
+                },
+                onFirstRendered: { [weak self] in
+                    self?.recordPopoverContentRendered()
                 },
                 onContentSizeChange: { [weak self] size in
                     self?.updatePopoverContentSize(size)
@@ -112,6 +129,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.cell?.lineBreakMode = .byTruncatingTail
         statusItem.length = StatusItemTitleLayout.length(for: visibleText, font: font)
         StatusItemVisibility.forceVisible(statusItem)
+
+        if visibleText != "--",
+           !visibleText.isEmpty,
+           pendingLaunchToMenuTitleSpan != nil
+        {
+            performanceInstrumentationStore.finish(
+                pendingLaunchToMenuTitleSpan,
+                status: .success,
+                metadata: ["surface": "menuBar"]
+            )
+            pendingLaunchToMenuTitleSpan = nil
+        }
     }
 
     @objc
@@ -132,6 +161,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             return
         }
 
+        pendingPopoverOpenSpan = performanceInstrumentationStore.begin(
+            .menuPopoverOpenToContent,
+            metadata: ["surface": "menuPopover"]
+        )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         startOutsideClickMonitors()
 
@@ -184,11 +217,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func openTokenDashboard() {
+        tokenDashboardWindowController.prepareOpenInstrumentation()
         popover.performClose(nil)
         tokenDashboardWindowController.showWindow()
     }
 
     private func openPerformanceDashboard() {
+        performanceDashboardWindowController.prepareOpenInstrumentation()
         popover.performClose(nil)
         performanceDashboardWindowController.showWindow()
     }
@@ -206,7 +241,28 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        if pendingPopoverOpenSpan != nil {
+            performanceInstrumentationStore.finish(
+                pendingPopoverOpenSpan,
+                status: .cancelled,
+                metadata: ["surface": "menuPopover"]
+            )
+            pendingPopoverOpenSpan = nil
+        }
         stopOutsideClickMonitors()
+    }
+
+    private func recordPopoverContentRendered() {
+        guard pendingPopoverOpenSpan != nil else {
+            return
+        }
+
+        performanceInstrumentationStore.finish(
+            pendingPopoverOpenSpan,
+            status: .success,
+            metadata: ["surface": "menuPopover"]
+        )
+        pendingPopoverOpenSpan = nil
     }
 
     private func startOutsideClickMonitors() {

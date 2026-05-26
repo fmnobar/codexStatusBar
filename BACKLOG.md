@@ -8,28 +8,7 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
-| 2 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
-
-### Add Built-In Dashboard/Menu Performance Instrumentation
-
-- Problem:
-  - External Accessibility automation could query the menu-bar item, but automated clicks did not reliably open the popover in the current session.
-  - The app should measure its own user-visible timings so future audits have first-render data instead of only query timings.
-- Implementation notes:
-  - Add lightweight internal timing around:
-    - app launch to first real menu-bar title
-    - menu popover open to first rendered content
-    - History expand/reload
-    - Token Dashboard open/reload
-    - Performance Dashboard open/reload
-    - Performance/Efficiency mode switches
-    - dashboard breakdown and period changes
-  - Store only local timing metrics, not payloads or sensitive data.
-  - Surface a compact diagnostics readout in Settings Data or a diagnostics export.
-- Verification:
-  - Add tests for timing event recording and bounded retention.
-  - Run full verification and relaunch latest installed app with `./install.sh`.
+| 1 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
 
 ### Add Indexed Event Timestamp For Session Task Timing Queries
 
@@ -55,6 +34,12 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Add built-in dashboard/menu performance instrumentation
+  - Added a local JSON-backed performance diagnostics store with bounded retention and metadata sanitization.
+  - Instrumented app launch to first real menu-bar title, menu popover first render, History reloads, Token Dashboard reloads/period/breakdown changes, Performance Dashboard reloads/mode/period/breakdown changes, and Performance Dashboard cache-hit versus worker-backed reloads.
+  - Added Settings Data performance diagnostics with recent event summaries plus export and clear actions.
+  - Added tests for event recording, sanitization, retention, export/clear, write failures, Settings presentation, and Token/Performance Dashboard instrumentation.
 
 - Add dashboard snapshot and presentation caching
   - Added bounded view-model scoped caching for Performance Dashboard presentation snapshots by mode, breakdown, range, period, and calendar/time zone.

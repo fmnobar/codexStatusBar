@@ -11,9 +11,11 @@ struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     @ObservedObject var updateMonitor: AppUpdateMonitor
     let historyDatabase: UsageHistoryDatabaseWorking
+    let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     var onOpenTokenDashboard: () -> Void
     var onOpenPerformanceDashboard: () -> Void
     var onOpenUpdatesSettings: () -> Void
+    var onFirstRendered: () -> Void
     var onContentSizeChange: (NSSize) -> Void
     var appVersionInfo: AppVersionInfo
     @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
@@ -24,9 +26,11 @@ struct MenuBarContentView: View {
         viewModel: MenuBarStatusViewModel,
         historyDatabase: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         onOpenTokenDashboard: @escaping () -> Void = {},
         onOpenPerformanceDashboard: @escaping () -> Void = {},
         onOpenUpdatesSettings: @escaping () -> Void = {},
+        onFirstRendered: @escaping () -> Void = {},
         onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
         appVersionInfo: AppVersionInfo = .current(),
         freshnessViewModel: AppFreshnessStatusViewModel = .current()
@@ -34,13 +38,20 @@ struct MenuBarContentView: View {
         self.viewModel = viewModel
         self.updateMonitor = updateMonitor
         self.historyDatabase = historyDatabase
+        self.performanceInstrumentationStore = performanceInstrumentationStore
         self.onOpenTokenDashboard = onOpenTokenDashboard
         self.onOpenPerformanceDashboard = onOpenPerformanceDashboard
         self.onOpenUpdatesSettings = onOpenUpdatesSettings
+        self.onFirstRendered = onFirstRendered
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
         _freshnessViewModel = StateObject(wrappedValue: freshnessViewModel)
-        _historyViewModel = StateObject(wrappedValue: UsageHistoryViewModel(database: historyDatabase))
+        _historyViewModel = StateObject(
+            wrappedValue: UsageHistoryViewModel(
+                database: historyDatabase,
+                performanceInstrumentationStore: performanceInstrumentationStore
+            )
+        )
     }
 
     var body: some View {
@@ -87,6 +98,9 @@ struct MenuBarContentView: View {
         .onAppear {
             freshnessViewModel.refresh()
             historyViewModel.activateCurrentPeriod()
+            DispatchQueue.main.async {
+                onFirstRendered()
+            }
             Task {
                 await updateMonitor.checkIfNeeded()
             }
