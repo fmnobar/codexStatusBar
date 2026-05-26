@@ -1589,6 +1589,102 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testTokenAttributionCoverageRowsUseObservedVolumeAndMeaningfulDimensions() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-attributed",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastTotal: 100,
+                    totalInput: 100,
+                    totalTotal: 100
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-a",
+                    projectPath: "/Users/example/Projects/codex_codex",
+                    effort: "high",
+                    source: "cli",
+                    dimensions: [
+                        TokenUsageDimension(.approvalPolicy, "never"),
+                        TokenUsageDimension(.approvalPolicy, "on-request"),
+                        TokenUsageDimension(.sourceKind, "cli"),
+                    ].compactMap { $0 }
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-hidden",
+                    turnID: "turn-a",
+                    lastInput: 50,
+                    lastTotal: 50,
+                    totalInput: 50,
+                    totalTotal: 50
+                ),
+                receivedAt: date("2026-05-03T10:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-hidden",
+                    dimensions: [TokenUsageDimension(.sourceKind, "codex-log")].compactMap { $0 }
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-partial",
+                    turnID: "turn-a",
+                    model: "gpt-5.4",
+                    lastInput: 25,
+                    lastTotal: 25,
+                    totalInput: 25,
+                    totalTotal: 25
+                ),
+                receivedAt: date("2026-05-04T10:15:00Z"),
+                context: TokenUsageContext(
+                    sessionID: "session-partial",
+                    effort: "low"
+                )
+            ),
+        ])
+
+        let rows = try store.tokenAttributionCoverageRows(
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z")
+        )
+        let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+
+        XCTAssertEqual(rows.map(\.id), [
+            "model",
+            "project",
+            "effort",
+            "source",
+            "dimension:source_kind",
+            "dimension:approval_policy",
+        ])
+        XCTAssertEqual(rowsByID["model"]?.attributedTokenCount, 125)
+        XCTAssertEqual(rowsByID["model"]?.missingTokenCount, 50)
+        XCTAssertEqual(rowsByID["model"]?.distinctValueCount, 2)
+        XCTAssertEqual(rowsByID["project"]?.attributedTokenCount, 100)
+        XCTAssertEqual(rowsByID["project"]?.missingTokenCount, 75)
+        XCTAssertEqual(rowsByID["effort"]?.attributedTokenCount, 125)
+        XCTAssertEqual(rowsByID["source"]?.attributedTokenCount, 100)
+
+        XCTAssertEqual(rowsByID["dimension:approval_policy"]?.attributedTokenCount, 100)
+        XCTAssertEqual(rowsByID["dimension:approval_policy"]?.missingTokenCount, 75)
+        XCTAssertEqual(rowsByID["dimension:approval_policy"]?.distinctValueCount, 1)
+        XCTAssertEqual(rowsByID["dimension:source_kind"]?.attributedTokenCount, 100)
+        XCTAssertEqual(rowsByID["dimension:source_kind"]?.missingTokenCount, 75)
+        XCTAssertEqual(rowsByID["dimension:source_kind"]?.distinctValueCount, 1)
+
+        XCTAssertTrue(
+            try store.tokenAttributionCoverageRows(
+                periodStart: date("2026-06-01T00:00:00Z"),
+                periodEnd: date("2026-07-01T00:00:00Z")
+            ).isEmpty
+        )
+    }
+
     @MainActor
     func testTokenDashboardViewModelDefaultsFiltersAndExportsVisibleRows() async throws {
         let store = try makeStore()

@@ -8,29 +8,10 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Pre-aggregate Token Dashboard attribution coverage | The slowest measured path is Token Dashboard coverage: month is about 635 ms of query time and year is about 1.17 s before SwiftUI rendering. | Needs a short implementation plan because it may introduce derived coverage summaries or query consolidation. |
-| 2 | Return pre-aggregated Performance Dashboard presentation rows | Performance Dashboard month pulls about 80k rows and year pulls about 105k rows, then rebuilds chart/table presentation in Swift. | Needs planning to preserve CSV, sorting, and selection semantics. |
-| 3 | Add dashboard snapshot and presentation caching | Repeated dashboard mode/breakdown/period toggles should reuse stable results until capture/import data changes. | Needs planning around invalidation and stale-result behavior. |
-| 4 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
-| 5 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
-
-### Pre-Aggregate Token Dashboard Attribution Coverage
-
-- Problem:
-  - Token Dashboard snapshot always computes available dimensions, points, series, attribution coverage, and bounds.
-  - Attribution coverage currently performs repeated period scans and a join through `token_usage_dimensions`.
-  - Live measurement on the current database showed Token Dashboard model snapshot query work at about 635 ms for month and 1.17 s for year before SwiftUI rendering.
-- Implementation options:
-  - Short-term: combine model/project/effort/source coverage into one bounded SQL pass and avoid separate scans for each core column.
-  - Medium-term: add derived daily/monthly attribution coverage summaries keyed by dimension and period bucket.
-  - Keep low-signal provenance filtering rules unchanged, including hiding `source_kind=codex-log` as user-facing analytics.
-- Planning notes:
-  - Decide whether a query-only consolidation is enough, or whether a derived coverage table is worth the schema/migration cost.
-  - Preserve current CSV coverage output and dashboard sorting behavior.
-- Verification:
-  - Add query-plan and timing regression tests for month/year coverage.
-  - Add correctness tests for model, project, effort, source, generic dimensions, unattributed rows, and hidden low-signal values.
-  - Run `git diff --check`, the full Xcode test suite, `./install.sh`, and installed fingerprint verification.
+| 1 | Return pre-aggregated Performance Dashboard presentation rows | Performance Dashboard month pulls about 80k rows and year pulls about 105k rows, then rebuilds chart/table presentation in Swift. | Needs planning to preserve CSV, sorting, and selection semantics. |
+| 2 | Add dashboard snapshot and presentation caching | Repeated dashboard mode/breakdown/period toggles should reuse stable results until capture/import data changes. | Needs planning around invalidation and stale-result behavior. |
+| 3 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
+| 4 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
 
 ### Return Pre-Aggregated Performance Dashboard Presentation Rows
 
@@ -110,6 +91,12 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Pre-aggregate Token Dashboard attribution coverage
+  - Replaced repeated attribution coverage scans with one shared, period-bounded `period_samples` query for core and generic dimensions.
+  - Preserved existing observed-token semantics, CSV coverage rows, sorting, and low-signal `source_kind=codex-log` handling.
+  - Added correctness coverage for missing attribution, meaningful dimensions, duplicate dimension rows, and no-token periods.
+  - Added query-plan and conservative timing regression checks for the consolidated coverage path.
 
 - Split Performance Dashboard snapshots by selected mode
   - Made Performance Dashboard snapshots mode-aware so the default `Performance` view no longer loads Efficiency token samples or model capabilities.

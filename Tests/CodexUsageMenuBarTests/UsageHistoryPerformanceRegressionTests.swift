@@ -116,6 +116,19 @@ extension UsageHistoryStoreTests {
         )
         XCTAssertPlanUsesSearch(dashboardPlan, table: "token_usage_samples")
         XCTAssertPlanMentions(dashboardPlan, "idx_token_usage_samples_observed_components_received_at")
+
+        let coveragePlan = try queryPlan(
+            at: fixture.databaseURL,
+            sql: UsageHistoryStore.tokenAttributionCoverageSQL()
+        )
+        XCTAssertPlanUsesSearch(coveragePlan, table: "token_usage_samples")
+        XCTAssertPlanMentions(coveragePlan, "idx_token_usage_samples_observed_components_received_at")
+        XCTAssertPlanUsesSearch(coveragePlan, tableOrAlias: "dimensions", fullScanTable: "token_usage_dimensions")
+        XCTAssertEqual(
+            coveragePlan.filter { $0.contains("SEARCH token_usage_samples") }.count,
+            1,
+            "Coverage should materialize one bounded token sample pass, got:\n\(coveragePlan.joined(separator: "\n"))"
+        )
     }
 
     func testAvailableSeriesQueriesUseCatalogTables() throws {
@@ -254,6 +267,16 @@ extension UsageHistoryStoreTests {
             XCTAssertFalse(result.series.isEmpty)
         }
         XCTAssertLessThan(dashboardDuration, 2.0)
+
+        let year = UsageHistoryRange.year.period(containing: fixture.now, calendar: calendar)
+        let coverageDuration = try elapsed {
+            let rows = try fixture.store.tokenAttributionCoverageRows(
+                periodStart: year.start,
+                periodEnd: year.end
+            )
+            XCTAssertFalse(rows.isEmpty)
+        }
+        XCTAssertLessThan(coverageDuration, 1.0)
     }
 
     func testHoverIndexLookupStaysBoundedForLargeVisibleDatasets() throws {

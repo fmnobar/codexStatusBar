@@ -1169,242 +1169,201 @@ extension UsageHistoryStore {
     }
 
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) throws -> [TokenAttributionCoverageRow] {
-        let totalTokenCount = try totalObservedTokenCount(periodStart: periodStart, periodEnd: periodEnd)
-        guard totalTokenCount > 0 else {
-            return []
-        }
-
-        var rows: [TokenAttributionCoverageRow] = [
-            try tokenColumnAttributionCoverageRow(
-                id: "model",
-                title: "Model",
-                valueExpression: Self.normalizedModelSQLExpression(column: "model"),
-                totalTokenCount: totalTokenCount,
-                periodStart: periodStart,
-                periodEnd: periodEnd
-            ),
-            try tokenColumnAttributionCoverageRow(
-                id: "project",
-                title: "Project",
-                valueExpression: "project_path",
-                totalTokenCount: totalTokenCount,
-                periodStart: periodStart,
-                periodEnd: periodEnd
-            ),
-            try tokenColumnAttributionCoverageRow(
-                id: "effort",
-                title: "Effort",
-                valueExpression: "effort",
-                totalTokenCount: totalTokenCount,
-                periodStart: periodStart,
-                periodEnd: periodEnd
-            ),
-            try tokenColumnAttributionCoverageRow(
-                id: "source",
-                title: "Source",
-                valueExpression: "source",
-                totalTokenCount: totalTokenCount,
-                periodStart: periodStart,
-                periodEnd: periodEnd
-            ),
-        ]
-
-        rows += try tokenDimensionAttributionCoverageRows(
-            totalTokenCount: totalTokenCount,
-            periodStart: periodStart,
-            periodEnd: periodEnd
+        let statement = try prepare(
+            Self.tokenAttributionCoverageSQL()
         )
+        defer { sqlite3_finalize(statement) }
 
-        return rows
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+
+        var coreRowsByID: [String: TokenAttributionCoverageRow] = [:]
+        var dimensionRowsByKey: [TokenUsageDimensionKey: TokenAttributionCoverageRow] = [:]
+        var totalTokenCount: Int64 = 0
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                totalTokenCount = sqlite3_column_int64(statement, 5)
+                guard totalTokenCount > 0 else {
+                    continue
+                }
+
+                let id = columnText(statement, index: 0)
+                let attributedTokenCount = sqlite3_column_int64(statement, 3)
+                let row = TokenAttributionCoverageRow(
+                    id: id,
+                    title: tokenAttributionCoverageTitle(id: id, dimensionKey: optionalColumnText(statement, index: 2)),
+                    attributedTokenCount: attributedTokenCount,
+                    missingTokenCount: max(totalTokenCount - attributedTokenCount, 0),
+                    distinctValueCount: Int(sqlite3_column_int(statement, 4)),
+                    dimensionKey: optionalColumnText(statement, index: 2).flatMap(TokenUsageDimensionKey.init(rawValue:))
+                )
+                if let dimensionKey = row.dimensionKey {
+                    guard attributedTokenCount > 0, row.distinctValueCount > 0 else {
+                        continue
+                    }
+                    dimensionRowsByKey[dimensionKey] = row
+                } else {
+                    coreRowsByID[id] = row
+                }
+            case SQLITE_DONE:
+                guard totalTokenCount > 0 else {
+                    return []
+                }
+
+                let coreRows = ["model", "project", "effort", "source"].compactMap { coreRowsByID[$0] }
+                return coreRows + TokenUsageDimensionKey.allCases.compactMap { dimensionRowsByKey[$0] }
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
     }
 
-    private func totalObservedTokenCount(periodStart: Date, periodEnd: Date) throws -> Int64 {
-        let statement = try prepare(
-            """
-            SELECT IFNULL(SUM(\(Self.observedTokenVolumeSQLExpression())), 0)
+    static func tokenAttributionCoverageSQL() -> String {
+        """
+        WITH period_samples AS MATERIALIZED (
+            SELECT thread_id,
+                turn_id,
+                total_total_tokens,
+                \(observedTokenVolumeSQLExpression()) AS token_count,
+                \(normalizedModelSQLExpression(column: "model")) AS model_value,
+                project_path,
+                effort,
+                source
             FROM token_usage_samples
             WHERE received_at >= ? AND received_at < ?
                 AND (
-                    \(Self.observedTokenComponentsPredicate)
+                    \(observedTokenComponentsPredicate)
                 )
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-
-        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
-
-        switch sqlite3_step(statement) {
-        case SQLITE_ROW:
-            return sqlite3_column_int64(statement, 0)
-        case SQLITE_DONE:
-            return 0
-        default:
-            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
-        }
-    }
-
-    private func tokenColumnAttributionCoverageRow(
-        id: String,
-        title: String,
-        valueExpression: String,
-        totalTokenCount: Int64,
-        periodStart: Date,
-        periodEnd: Date
-    ) throws -> TokenAttributionCoverageRow {
-        let statement = try prepare(
-            """
-            WITH period_samples AS (
-                SELECT \(Self.observedTokenVolumeSQLExpression()) AS token_count,
-                    \(valueExpression) AS value
-                FROM token_usage_samples
-                WHERE received_at >= ? AND received_at < ?
-                    AND (
-                        \(Self.observedTokenComponentsPredicate)
-                    )
-            )
-            SELECT IFNULL(SUM(
-                    CASE
-                        WHEN value IS NOT NULL AND trim(value) <> ''
-                            THEN token_count
-                        ELSE 0
-                    END
-                ), 0),
-                COUNT(DISTINCT
-                    CASE
-                        WHEN value IS NOT NULL AND trim(value) <> ''
-                            THEN value
-                    END
-                )
+        ),
+        total AS (
+            SELECT IFNULL(SUM(token_count), 0) AS total_token_count
             FROM period_samples
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-
-        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
-
-        switch sqlite3_step(statement) {
-        case SQLITE_ROW:
-            let attributedTokenCount = sqlite3_column_int64(statement, 0)
-            return TokenAttributionCoverageRow(
-                id: id,
-                title: title,
-                attributedTokenCount: attributedTokenCount,
-                missingTokenCount: max(totalTokenCount - attributedTokenCount, 0),
-                distinctValueCount: Int(sqlite3_column_int(statement, 1)),
-                dimensionKey: nil
-            )
-        case SQLITE_DONE:
-            return TokenAttributionCoverageRow(
-                id: id,
-                title: title,
-                attributedTokenCount: 0,
-                missingTokenCount: totalTokenCount,
-                distinctValueCount: 0,
-                dimensionKey: nil
-            )
-        default:
-            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
-        }
-    }
-
-    private func tokenDimensionAttributionCoverageRows(
-        totalTokenCount: Int64,
-        periodStart: Date,
-        periodEnd: Date
-    ) throws -> [TokenAttributionCoverageRow] {
-        let statement = try prepare(
-            """
-            WITH period_samples AS (
-                SELECT thread_id,
-                    turn_id,
-                    total_total_tokens,
-                    \(Self.observedTokenVolumeSQLExpression()) AS token_count
-                FROM token_usage_samples
-                WHERE received_at >= ? AND received_at < ?
-                    AND (
-                        \(Self.observedTokenComponentsPredicate)
-                    )
-            ),
-            sample_values AS (
-                SELECT period_samples.thread_id,
-                    period_samples.turn_id,
-                    period_samples.total_total_tokens,
-                    dimensions.dimension_key,
-                    period_samples.token_count,
-                    MIN(
-                        CASE
-                            WHEN dimensions.dimension_value IS NOT NULL
-                                AND trim(dimensions.dimension_value) <> ''
-                                AND NOT (
-                                    dimensions.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
-                                    AND dimensions.dimension_value = 'codex-log'
-                                )
-                                THEN dimensions.dimension_value
-                        END
-                    ) AS value
-                FROM period_samples
-                JOIN token_usage_dimensions AS dimensions
-                    ON dimensions.thread_id = period_samples.thread_id
-                    AND dimensions.turn_id = period_samples.turn_id
-                    AND dimensions.total_total_tokens = period_samples.total_total_tokens
-                GROUP BY period_samples.thread_id,
-                    period_samples.turn_id,
-                    period_samples.total_total_tokens,
-                    dimensions.dimension_key,
-                    period_samples.token_count
-            )
-            SELECT dimension_key,
+        ),
+        core_values AS (
+            SELECT 'model' AS id, model_value AS value, token_count FROM period_samples
+            UNION ALL
+            SELECT 'project' AS id, project_path AS value, token_count FROM period_samples
+            UNION ALL
+            SELECT 'effort' AS id, effort AS value, token_count FROM period_samples
+            UNION ALL
+            SELECT 'source' AS id, source AS value, token_count FROM period_samples
+        ),
+        core_coverage AS (
+            SELECT id,
+                NULL AS dimension_key,
                 IFNULL(SUM(
                     CASE
                         WHEN value IS NOT NULL AND trim(value) <> ''
                             THEN token_count
                         ELSE 0
                     END
-                ), 0),
+                ), 0) AS attributed_token_count,
                 COUNT(DISTINCT
                     CASE
                         WHEN value IS NOT NULL AND trim(value) <> ''
                             THEN value
                     END
-                )
-            FROM sample_values
+                ) AS distinct_value_count
+            FROM core_values
+            GROUP BY id
+        ),
+        dimension_sample_values AS (
+            SELECT period_samples.thread_id,
+                period_samples.turn_id,
+                period_samples.total_total_tokens,
+                dimensions.dimension_key,
+                period_samples.token_count,
+                MIN(
+                    CASE
+                        WHEN dimensions.dimension_value IS NOT NULL
+                            AND trim(dimensions.dimension_value) <> ''
+                            AND NOT (
+                                dimensions.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                                AND dimensions.dimension_value = 'codex-log'
+                            )
+                            THEN dimensions.dimension_value
+                    END
+                ) AS value
+            FROM period_samples
+            JOIN token_usage_dimensions AS dimensions
+                ON dimensions.thread_id = period_samples.thread_id
+                AND dimensions.turn_id = period_samples.turn_id
+                AND dimensions.total_total_tokens = period_samples.total_total_tokens
+            GROUP BY period_samples.thread_id,
+                period_samples.turn_id,
+                period_samples.total_total_tokens,
+                dimensions.dimension_key,
+                period_samples.token_count
+        ),
+        dimension_coverage AS (
+            SELECT 'dimension:' || dimension_key AS id,
+                dimension_key,
+                IFNULL(SUM(
+                    CASE
+                        WHEN value IS NOT NULL AND trim(value) <> ''
+                            THEN token_count
+                        ELSE 0
+                    END
+                ), 0) AS attributed_token_count,
+                COUNT(DISTINCT
+                    CASE
+                        WHEN value IS NOT NULL AND trim(value) <> ''
+                            THEN value
+                    END
+                ) AS distinct_value_count
+            FROM dimension_sample_values
             GROUP BY dimension_key
-            """
         )
-        defer { sqlite3_finalize(statement) }
+        SELECT coverage.id,
+            coverage.row_order,
+            coverage.dimension_key,
+            coverage.attributed_token_count,
+            coverage.distinct_value_count,
+            total.total_token_count
+        FROM (
+            SELECT id,
+                CASE id
+                    WHEN 'model' THEN 0
+                    WHEN 'project' THEN 1
+                    WHEN 'effort' THEN 2
+                    WHEN 'source' THEN 3
+                    ELSE 4
+                END AS row_order,
+                dimension_key,
+                attributed_token_count,
+                distinct_value_count
+            FROM core_coverage
+            UNION ALL
+            SELECT id,
+                4 AS row_order,
+                dimension_key,
+                attributed_token_count,
+                distinct_value_count
+            FROM dimension_coverage
+            WHERE attributed_token_count > 0 AND distinct_value_count > 0
+        ) AS coverage
+        CROSS JOIN total
+        ORDER BY coverage.row_order ASC, coverage.id ASC
+        """
+    }
 
-        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+    private func tokenAttributionCoverageTitle(id: String, dimensionKey: String?) -> String {
+        if let dimensionKey, let key = TokenUsageDimensionKey(rawValue: dimensionKey) {
+            return key.dashboardDisplayTitle
+        }
 
-        var rowsByKey: [TokenUsageDimensionKey: TokenAttributionCoverageRow] = [:]
-        while true {
-            switch sqlite3_step(statement) {
-            case SQLITE_ROW:
-                guard let key = TokenUsageDimensionKey(rawValue: columnText(statement, index: 0)) else {
-                    continue
-                }
-
-                let attributedTokenCount = sqlite3_column_int64(statement, 1)
-                let distinctValueCount = Int(sqlite3_column_int(statement, 2))
-                guard attributedTokenCount > 0, distinctValueCount > 0 else {
-                    continue
-                }
-
-                rowsByKey[key] = TokenAttributionCoverageRow(
-                    id: "dimension:\(key.rawValue)",
-                    title: key.dashboardDisplayTitle,
-                    attributedTokenCount: attributedTokenCount,
-                    missingTokenCount: max(totalTokenCount - attributedTokenCount, 0),
-                    distinctValueCount: distinctValueCount,
-                    dimensionKey: key
-                )
-            case SQLITE_DONE:
-                return TokenUsageDimensionKey.allCases.compactMap { rowsByKey[$0] }
-            default:
-                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
-            }
+        switch id {
+        case "model":
+            return "Model"
+        case "project":
+            return "Project"
+        case "effort":
+            return "Effort"
+        case "source":
+            return "Source"
+        default:
+            return id
         }
     }
 
