@@ -3245,6 +3245,219 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.sortedEfficiencyRows.last?.series.id, PerformanceDashboardSeries.aggregateID)
     }
 
+    @MainActor
+    func testPerformanceDashboardSnapshotCacheReusesModeBreakdownAndPeriodResults() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase()
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        viewModel.sortBreakdownRows(by: .turns)
+        viewModel.selectSeries("model:gpt-5.5")
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        viewModel.selectedMode = .efficiency
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "2.0k")
+
+        viewModel.selectedMode = .performance
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+
+        viewModel.selectedBreakdownDimension = .effort
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 3)
+
+        viewModel.selectedBreakdownDimension = .model
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 3)
+    }
+
+    @MainActor
+    func testPerformanceDashboardSnapshotCacheReusesRevisitedPeriods() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase()
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+
+        viewModel.goToPreviousPeriod()
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-01T00:00:00Z"))
+
+        viewModel.goToNextPeriod()
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+    }
+
+    @MainActor
+    func testPerformanceDashboardSnapshotCacheNormalizesUnsupportedEfficiencyBreakdown() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase()
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        viewModel.selectedMode = .efficiency
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        let requests = await database.requestsSnapshot()
+        XCTAssertEqual(requests.last?.breakdownDimension, .model)
+
+        viewModel.selectedBreakdownDimension = .transport
+        await viewModel.reload()
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    @MainActor
+    func testPerformanceDashboardSnapshotCacheDoesNotCacheFailures() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase(stubs: [
+            .failure,
+            .success(value: 42),
+        ])
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        let failed = await viewModel.reload()
+        XCTAssertFalse(failed)
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(viewModel.errorMessage, "Performance dashboard could not be loaded.")
+
+        let succeeded = await viewModel.reload()
+        XCTAssertTrue(succeeded)
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "42")
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testPerformanceDashboardSnapshotCacheInvalidationClearsEntriesAndReloads() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase(stubs: [
+            .success(value: 7),
+            .success(value: 8),
+        ])
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "7")
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 1)
+
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        viewModel.invalidateSnapshotCache()
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 0)
+
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "8")
+    }
+
+    @MainActor
+    func testPerformanceDashboardStaleAsyncResultIsIgnoredAfterBreakdownChange() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1, delayNanoseconds: 150_000_000),
+            .success(value: 2),
+        ])
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        let firstReload = Task { await viewModel.reload() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        viewModel.selectedBreakdownDimension = .effort
+        let secondResult = await viewModel.reload()
+        let firstResult = await firstReload.value
+
+        XCTAssertTrue(secondResult)
+        XCTAssertFalse(firstResult)
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .effort)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "2")
+    }
+
+    @MainActor
+    func testPerformanceDashboardSnapshotCachePrunesToBoundedEntryCount() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase()
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        for range in UsageHistoryRange.allCases {
+            viewModel.selectedMode = .performance
+            viewModel.selectedRange = range
+            for breakdownDimension in PerformanceDashboardBreakdownDimension.allCases {
+                viewModel.selectedBreakdownDimension = breakdownDimension
+                await viewModel.reload()
+            }
+        }
+
+        viewModel.selectedMode = .efficiency
+        viewModel.selectedRange = .month
+        viewModel.selectedBreakdownDimension = .model
+        await viewModel.reload()
+
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 25)
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 24)
+    }
+
     private func seedPerformanceDashboardFixture(in store: UsageHistoryStore) throws {
         try store.importSessionTaskTimingEvents([
             try XCTUnwrap(CodexSessionTaskTimingEvent(
@@ -3484,4 +3697,354 @@ extension UsageHistoryStoreTests {
         )
     }
 
+}
+
+private actor PerformanceDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
+    struct Stub {
+        let resultValue: Int?
+        let delayNanoseconds: UInt64
+        let error: Error?
+
+        static func success(value: Int, delayNanoseconds: UInt64 = 0) -> Stub {
+            Stub(resultValue: value, delayNanoseconds: delayNanoseconds, error: nil)
+        }
+
+        static var failure: Stub {
+            Stub(resultValue: nil, delayNanoseconds: 0, error: PerformanceDashboardCacheSpyError.configuredFailure)
+        }
+    }
+
+    private enum PerformanceDashboardCacheSpyError: Error {
+        case configuredFailure
+        case unused
+    }
+
+    private var stubs: [Stub]
+    private var performanceRequests: [PerformanceDashboardLoadRequest] = []
+
+    init(stubs: [Stub] = []) {
+        self.stubs = stubs
+    }
+
+    func requestCount() -> Int {
+        performanceRequests.count
+    }
+
+    func requestsSnapshot() -> [PerformanceDashboardLoadRequest] {
+        performanceRequests
+    }
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
+
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        nil
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .neverChecked)
+    }
+
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .neverChecked)
+    }
+
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .neverChecked)
+    }
+
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .neverChecked)
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .neverChecked)
+    }
+
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .neverChecked)
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .neverChecked)
+    }
+
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .neverChecked)
+    }
+
+    func captureModelCapabilitiesIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .neverChecked)
+    }
+
+    func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .neverChecked)
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func performanceDashboardSnapshot(
+        for request: PerformanceDashboardLoadRequest
+    ) async throws -> PerformanceDashboardLoadResult {
+        let callIndex = performanceRequests.count
+        performanceRequests.append(request)
+
+        if callIndex < stubs.count {
+            let stub = stubs[callIndex]
+            if stub.delayNanoseconds > 0 {
+                try await Task.sleep(nanoseconds: stub.delayNanoseconds)
+            }
+            if let error = stub.error {
+                throw error
+            }
+            return Self.result(for: request, value: stub.resultValue ?? callIndex + 1)
+        }
+
+        return Self.result(for: request, value: callIndex + 1)
+    }
+
+    func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func exportBackup(to destinationURL: URL) async throws {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func importBackup(from sourceURL: URL) async throws {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func clearHistory() async throws {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry] {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry] {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    func importTokenHistory(
+        importer: CodexSessionTokenBackfillImporting,
+        request: CodexSessionTokenBackfillRequest
+    ) async throws -> CodexSessionTokenBackfillSummary {
+        throw PerformanceDashboardCacheSpyError.unused
+    }
+
+    private static func result(
+        for request: PerformanceDashboardLoadRequest,
+        value: Int
+    ) -> PerformanceDashboardLoadResult {
+        let aggregate = PerformanceDashboardSeries(
+            id: PerformanceDashboardSeries.aggregateID,
+            name: "All",
+            kind: .aggregate,
+            contextID: "all"
+        )
+        let child = childSeries(for: request.breakdownDimension)
+        let series = [aggregate, child]
+        let bucketEnd = request.calendar.date(
+            byAdding: request.range.chartBucketComponent,
+            value: 1,
+            to: request.periodStart
+        ) ?? request.periodEnd
+        let historyBounds = UsageHistoryBounds(
+            earliest: request.periodStart.addingTimeInterval(-90 * 24 * 60 * 60),
+            latest: request.periodEnd
+        )
+
+        switch request.mode {
+        case .performance:
+            return PerformanceDashboardLoadResult(
+                timingSamples: [],
+                reliabilitySamples: [],
+                efficiencyTokenSamples: [],
+                modelCapabilities: [],
+                durationPoints: series.map {
+                    PerformanceDashboardDurationPoint(
+                        bucketStart: request.periodStart,
+                        bucketEnd: bucketEnd,
+                        series: $0,
+                        turnCount: value,
+                        completedTurnCount: value,
+                        incompleteTurnCount: 0,
+                        durationValues: [Int64(value * 1_000)],
+                        firstTokenValues: [Int64(value * 100)]
+                    )
+                },
+                reliabilityPoints: series.map {
+                    PerformanceDashboardReliabilityPoint(
+                        bucketStart: request.periodStart,
+                        bucketEnd: bucketEnd,
+                        series: $0,
+                        successCount: value,
+                        failureCount: 0,
+                        unknownCount: 0,
+                        errorCounts: [:]
+                    )
+                },
+                breakdownRows: series.map {
+                    PerformanceDashboardBreakdownRow(
+                        series: $0,
+                        turnCount: value,
+                        completedTurnCount: value,
+                        incompleteTurnCount: 0,
+                        durationValues: [Int64(value * 1_000)],
+                        firstTokenValues: [Int64(value * 100)],
+                        eventCount: value,
+                        successCount: value,
+                        failureCount: 0,
+                        unknownCount: 0,
+                        errorCounts: [:]
+                    )
+                },
+                efficiencyPoints: [],
+                efficiencyRows: [],
+                series: series,
+                historyBounds: historyBounds
+            )
+        case .efficiency:
+            return PerformanceDashboardLoadResult(
+                timingSamples: [],
+                reliabilitySamples: [],
+                efficiencyTokenSamples: [],
+                modelCapabilities: [],
+                durationPoints: [],
+                reliabilityPoints: [],
+                breakdownRows: [],
+                efficiencyPoints: series.map {
+                    PerformanceDashboardEfficiencyPoint(
+                        bucketStart: request.periodStart,
+                        bucketEnd: bucketEnd,
+                        series: $0,
+                        turnCount: value,
+                        completedTurnCount: value,
+                        durationValues: [Int64(value * 1_000)],
+                        firstTokenValues: [Int64(value * 100)],
+                        durationTotalMilliseconds: Int64(value * 60_000),
+                        eventCount: value,
+                        successCount: value,
+                        failureCount: 0,
+                        unknownCount: 0,
+                        inputTokens: Int64(value * 500),
+                        cachedInputTokens: Int64(value * 300),
+                        outputTokens: Int64(value * 150),
+                        reasoningOutputTokens: Int64(value * 50),
+                        contextPressureValues: [0.25]
+                    )
+                },
+                efficiencyRows: series.map {
+                    PerformanceDashboardEfficiencyRow(
+                        series: $0,
+                        turnCount: value,
+                        completedTurnCount: value,
+                        durationValues: [Int64(value * 1_000)],
+                        firstTokenValues: [Int64(value * 100)],
+                        durationTotalMilliseconds: Int64(value * 60_000),
+                        eventCount: value,
+                        successCount: value,
+                        failureCount: 0,
+                        unknownCount: 0,
+                        inputTokens: Int64(value * 500),
+                        cachedInputTokens: Int64(value * 300),
+                        outputTokens: Int64(value * 150),
+                        reasoningOutputTokens: Int64(value * 50),
+                        contextPressureValues: [0.25]
+                    )
+                },
+                series: series,
+                historyBounds: historyBounds
+            )
+        }
+    }
+
+    private static func childSeries(
+        for breakdownDimension: PerformanceDashboardBreakdownDimension
+    ) -> PerformanceDashboardSeries {
+        switch breakdownDimension {
+        case .model:
+            return PerformanceDashboardSeries(
+                id: "model:gpt-5.5",
+                name: "gpt-5.5",
+                kind: .model,
+                contextID: "gpt-5.5"
+            )
+        case .effort:
+            return PerformanceDashboardSeries(
+                id: "effort:xhigh",
+                name: "xhigh",
+                kind: .effort,
+                contextID: "xhigh"
+            )
+        case .project:
+            return PerformanceDashboardSeries(
+                id: "project:/Users/example/codex",
+                name: "codex",
+                kind: .project,
+                contextID: "/Users/example/codex",
+                projectPath: "/Users/example/codex"
+            )
+        case .source:
+            return PerformanceDashboardSeries(
+                id: "source:cli",
+                name: "cli",
+                kind: .source,
+                contextID: "cli"
+            )
+        case .transport:
+            return PerformanceDashboardSeries(
+                id: "transport:websocket",
+                name: "websocket",
+                kind: .transport,
+                contextID: "websocket"
+            )
+        case .wireAPI:
+            return PerformanceDashboardSeries(
+                id: "wire_api:responses",
+                name: "responses",
+                kind: .wireAPI,
+                contextID: "responses"
+            )
+        }
+    }
 }

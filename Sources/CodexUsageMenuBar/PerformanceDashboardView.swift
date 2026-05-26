@@ -537,6 +537,26 @@ struct PerformanceDashboardLoadResult: Equatable {
     let historyBounds: UsageHistoryBounds?
 }
 
+struct PerformanceDashboardSnapshotCacheKey: Hashable {
+    let mode: String
+    let breakdownDimension: String
+    let range: String
+    let periodStart: Date
+    let periodEnd: Date
+    let calendarIdentifier: Calendar.Identifier
+    let timeZoneIdentifier: String
+
+    init(request: PerformanceDashboardLoadRequest) {
+        self.mode = request.mode.rawValue
+        self.breakdownDimension = request.breakdownDimension.rawValue
+        self.range = request.range.rawValue
+        self.periodStart = request.periodStart
+        self.periodEnd = request.periodEnd
+        self.calendarIdentifier = request.calendar.identifier
+        self.timeZoneIdentifier = request.calendar.timeZone.identifier
+    }
+}
+
 enum PerformanceDashboardBreakdownSortColumn: Equatable {
     case title
     case turns
@@ -692,17 +712,23 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private var reloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
     private var historyBoundsByMode: [PerformanceDashboardMode: UsageHistoryBounds] = [:]
+    private var snapshotCache: [PerformanceDashboardSnapshotCacheKey: PerformanceDashboardLoadResult] = [:]
+    private var snapshotCacheOrder: [PerformanceDashboardSnapshotCacheKey] = []
+    private let snapshotCacheLimit = 24
 
     init(
         database: UsageHistoryDatabaseWorking,
         now: @escaping () -> Date = Date.init,
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        automaticallyReload: Bool = true
     ) {
         self.database = database
         self.now = now
         self.calendar = calendar
         selectedPeriodStart = UsageHistoryRange.month.period(containing: now(), calendar: calendar).start
-        scheduleReload()
+        if automaticallyReload {
+            scheduleReload()
+        }
     }
 
     convenience init(
@@ -1001,6 +1027,10 @@ final class PerformanceDashboardViewModel: ObservableObject {
         }
     }
 
+    var snapshotCacheEntryCount: Int {
+        snapshotCache.count
+    }
+
     private var performanceCSVText: String {
         var rows = [
             "section,range,period_start,period_end,bucket_start,bucket_end,breakdown_dimension,series_id,series_name,series_kind,context_id,project_path,turn_count,completed_turns,incomplete_turns,median_duration_ms,p95_duration_ms,median_first_token_ms,p95_first_token_ms,event_count,success_count,failure_count,unknown_count,failure_percent,top_error"
@@ -1272,6 +1302,13 @@ final class PerformanceDashboardViewModel: ObservableObject {
             periodEnd: queryPeriod.end,
             calendar: calendar
         )
+        let cacheKey = PerformanceDashboardSnapshotCacheKey(request: request)
+
+        if let cachedResult = cachedSnapshot(for: cacheKey) {
+            applyLoadResult(cachedResult, for: request.mode)
+            errorMessage = nil
+            return true
+        }
 
         do {
             let result = try await database.performanceDashboardSnapshot(for: request)
@@ -1279,19 +1316,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
                 return false
             }
 
-            timingSamples = result.timingSamples
-            reliabilitySamples = result.reliabilitySamples
-            efficiencyTokenSamples = result.efficiencyTokenSamples
-            modelCapabilities = result.modelCapabilities
-            durationPoints = result.durationPoints
-            reliabilityPoints = result.reliabilityPoints
-            breakdownRows = result.breakdownRows
-            efficiencyPoints = result.efficiencyPoints
-            efficiencyRows = result.efficiencyRows
-            series = result.series
-            cacheHistoryBounds(result.historyBounds, for: request.mode)
-            applyCachedHistoryBounds(for: selectedMode)
-            reconcileSelection()
+            cacheSnapshot(result, for: cacheKey)
+            applyLoadResult(result, for: request.mode)
             errorMessage = nil
             return true
         } catch {
@@ -1317,9 +1343,65 @@ final class PerformanceDashboardViewModel: ObservableObject {
         }
     }
 
+    func invalidateSnapshotCache() {
+        snapshotCache.removeAll()
+        snapshotCacheOrder.removeAll()
+        resetLoadedModeState()
+    }
+
+    func invalidateSnapshotCacheAndReload() {
+        invalidateSnapshotCache()
+        scheduleReload()
+    }
+
     private func nextReloadGeneration() -> Int {
         reloadGeneration += 1
         return reloadGeneration
+    }
+
+    private func cachedSnapshot(
+        for key: PerformanceDashboardSnapshotCacheKey
+    ) -> PerformanceDashboardLoadResult? {
+        guard let result = snapshotCache[key] else {
+            return nil
+        }
+
+        markSnapshotCacheKeyRecentlyUsed(key)
+        return result
+    }
+
+    private func cacheSnapshot(
+        _ result: PerformanceDashboardLoadResult,
+        for key: PerformanceDashboardSnapshotCacheKey
+    ) {
+        snapshotCache[key] = result
+        markSnapshotCacheKeyRecentlyUsed(key)
+
+        while snapshotCacheOrder.count > snapshotCacheLimit {
+            let removedKey = snapshotCacheOrder.removeFirst()
+            snapshotCache.removeValue(forKey: removedKey)
+        }
+    }
+
+    private func markSnapshotCacheKeyRecentlyUsed(_ key: PerformanceDashboardSnapshotCacheKey) {
+        snapshotCacheOrder.removeAll { $0 == key }
+        snapshotCacheOrder.append(key)
+    }
+
+    private func applyLoadResult(_ result: PerformanceDashboardLoadResult, for mode: PerformanceDashboardMode) {
+        timingSamples = result.timingSamples
+        reliabilitySamples = result.reliabilitySamples
+        efficiencyTokenSamples = result.efficiencyTokenSamples
+        modelCapabilities = result.modelCapabilities
+        durationPoints = result.durationPoints
+        reliabilityPoints = result.reliabilityPoints
+        breakdownRows = result.breakdownRows
+        efficiencyPoints = result.efficiencyPoints
+        efficiencyRows = result.efficiencyRows
+        series = result.series
+        cacheHistoryBounds(result.historyBounds, for: mode)
+        applyCachedHistoryBounds(for: mode)
+        reconcileSelection()
     }
 
     private func resetLoadedModeState() {
@@ -2853,6 +2935,9 @@ struct PerformanceDashboardView: View {
             alignment: .top
         )
         .background(Color(nsColor: .windowBackgroundColor))
+        .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
+            viewModel.invalidateSnapshotCacheAndReload()
+        }
     }
 
     private var header: some View {

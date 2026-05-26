@@ -8,25 +8,8 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Add dashboard snapshot and presentation caching | Repeated dashboard mode/breakdown/period toggles should reuse stable results until capture/import data changes. | Needs planning around invalidation and stale-result behavior. |
-| 2 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
-| 3 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
-
-### Add Dashboard Snapshot And Presentation Caching
-
-- Problem:
-  - Period changes should reload, but repeated toggles between recently viewed mode/breakdown combinations should not recompute the same data repeatedly.
-- Implementation options:
-  - Cache snapshots by period range and mode.
-  - Cache presentation results by period, mode, breakdown dimension, sort state, and selected rows when practical.
-  - Invalidate on history-change notifications, local token capture, OTEL capture, session timing capture, imports, clear-history, and project alias updates.
-- Planning notes:
-  - Needs a short plan because stale data would be worse than slow data.
-  - Keep existing reload-generation cancellation behavior.
-- Verification:
-  - Add tests for cache hit/miss behavior and invalidation after data-change notifications.
-  - Add tests that stale async results are still ignored.
-  - Run full verification and relaunch latest installed app with `./install.sh`.
+| 1 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
+| 2 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
 
 ### Add Built-In Dashboard/Menu Performance Instrumentation
 
@@ -72,6 +55,13 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Add dashboard snapshot and presentation caching
+  - Added bounded view-model scoped caching for Performance Dashboard presentation snapshots by mode, breakdown, range, period, and calendar/time zone.
+  - Cache hits now apply already-loaded rows and chart points without calling the database worker.
+  - Sorting and row selection remain UI-only and do not invalidate or miss the snapshot cache.
+  - History-change notifications clear cached snapshots and reload the current dashboard selection.
+  - Added tests for cache hits, misses, failure behavior, invalidation, stale async results, unsupported Efficiency breakdown reset, and bounded pruning.
 
 - Return pre-aggregated Performance Dashboard presentation rows
   - Moved Performance Dashboard presentation aggregation into store/worker snapshot queries.
