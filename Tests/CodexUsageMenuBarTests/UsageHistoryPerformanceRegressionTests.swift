@@ -239,6 +239,22 @@ extension UsageHistoryStoreTests {
             periodStart: month.start,
             periodEnd: month.end
         )
+        let performanceDashboardRequest = PerformanceDashboardLoadRequest(
+            mode: .performance,
+            breakdownDimension: .model,
+            range: .month,
+            periodStart: month.start,
+            periodEnd: month.end,
+            calendar: calendar
+        )
+        let efficiencyDashboardRequest = PerformanceDashboardLoadRequest(
+            mode: .efficiency,
+            breakdownDimension: .model,
+            range: .month,
+            periodStart: month.start,
+            periodEnd: month.end,
+            calendar: calendar
+        )
 
         let capacityDuration = try await elapsed {
             let result = try await worker.usageHistorySnapshot(for: capacityRequest)
@@ -268,7 +284,65 @@ extension UsageHistoryStoreTests {
         }
         XCTAssertLessThan(dashboardDuration, 2.0)
 
+        let performanceDashboardDuration = try await elapsed {
+            let result = try await worker.performanceDashboardSnapshot(for: performanceDashboardRequest)
+            XCTAssertFalse(result.durationPoints.isEmpty)
+            XCTAssertFalse(result.reliabilityPoints.isEmpty)
+            XCTAssertFalse(result.breakdownRows.isEmpty)
+            XCTAssertLessThanOrEqual(result.durationPoints.count, 31 * 4)
+            XCTAssertLessThanOrEqual(result.reliabilityPoints.count, 31 * 4)
+            XCTAssertLessThanOrEqual(result.breakdownRows.count, 4)
+            XCTAssertTrue(result.timingSamples.isEmpty)
+            XCTAssertTrue(result.efficiencyTokenSamples.isEmpty)
+        }
+        XCTAssertLessThan(performanceDashboardDuration, 2.0)
+
+        let efficiencyDashboardDuration = try await elapsed {
+            let result = try await worker.performanceDashboardSnapshot(for: efficiencyDashboardRequest)
+            XCTAssertFalse(result.efficiencyPoints.isEmpty)
+            XCTAssertFalse(result.efficiencyRows.isEmpty)
+            XCTAssertLessThanOrEqual(result.efficiencyPoints.count, 31 * 5)
+            XCTAssertLessThanOrEqual(result.efficiencyRows.count, 5)
+            XCTAssertTrue(result.timingSamples.isEmpty)
+            XCTAssertTrue(result.efficiencyTokenSamples.isEmpty)
+            XCTAssertTrue(result.modelCapabilities.isEmpty)
+        }
+        XCTAssertLessThan(efficiencyDashboardDuration, 2.0)
+
         let year = UsageHistoryRange.year.period(containing: fixture.now, calendar: calendar)
+        let yearPerformanceDashboardRequest = PerformanceDashboardLoadRequest(
+            mode: .performance,
+            breakdownDimension: .model,
+            range: .year,
+            periodStart: year.start,
+            periodEnd: year.end,
+            calendar: calendar
+        )
+        let yearEfficiencyDashboardRequest = PerformanceDashboardLoadRequest(
+            mode: .efficiency,
+            breakdownDimension: .model,
+            range: .year,
+            periodStart: year.start,
+            periodEnd: year.end,
+            calendar: calendar
+        )
+
+        let yearPerformanceDashboardDuration = try await elapsed {
+            let result = try await worker.performanceDashboardSnapshot(for: yearPerformanceDashboardRequest)
+            XCTAssertFalse(result.durationPoints.isEmpty)
+            XCTAssertFalse(result.reliabilityPoints.isEmpty)
+            XCTAssertLessThanOrEqual(result.durationPoints.count, 12 * 4)
+            XCTAssertLessThanOrEqual(result.reliabilityPoints.count, 12 * 4)
+        }
+        XCTAssertLessThan(yearPerformanceDashboardDuration, 2.0)
+
+        let yearEfficiencyDashboardDuration = try await elapsed {
+            let result = try await worker.performanceDashboardSnapshot(for: yearEfficiencyDashboardRequest)
+            XCTAssertFalse(result.efficiencyPoints.isEmpty)
+            XCTAssertLessThanOrEqual(result.efficiencyPoints.count, 12 * 5)
+        }
+        XCTAssertLessThan(yearEfficiencyDashboardDuration, 2.0)
+
         let coverageDuration = try elapsed {
             let rows = try fixture.store.tokenAttributionCoverageRows(
                 periodStart: year.start,
@@ -347,6 +421,7 @@ private extension UsageHistoryStoreTests {
             notificationCenter: NotificationCenter(),
             calendar: calendar
         )
+        try seedPerformanceDashboardInputs(in: store, now: now)
         return UsageHistoryPerformanceFixture(store: store, databaseURL: databaseURL, now: now)
     }
 
@@ -360,6 +435,86 @@ private extension UsageHistoryStoreTests {
             try seedTokenUsageSamples(into: database, now: now)
             try database.execute("DELETE FROM usage_history_metadata WHERE key = 'series_catalog_version'")
         }
+    }
+
+    func seedPerformanceDashboardInputs(in store: UsageHistoryStore, now: Date) throws {
+        let contexts: [(model: String, project: String, effort: String, source: String, transport: String, wireAPI: String)] = [
+            ("gpt-5.4", "/Users/example/Projects/codex_codex", "high", "cli", "websocket", "responses"),
+            ("gpt-5.4-mini", "/Users/example/Projects/sidecar", "medium", "vscode", "sse", "responses"),
+            ("gpt-5.5", "/Users/example/Projects/analytics", "xhigh", "desktop", "websocket", "responses"),
+        ]
+        let start = calendar.date(
+            byAdding: .day,
+            value: -119,
+            to: UsageHistoryRange.bucketStart(for: now, component: .day, calendar: calendar)
+        )!
+        var timingEvents: [CodexSessionTaskTimingEvent] = []
+        var performanceEvents: [CodexTurnPerformanceEvent] = []
+        var sourceRowID: Int64 = 1
+
+        for dayIndex in 0..<120 {
+            for slotIndex in 0..<4 {
+                for (contextIndex, context) in contexts.enumerated() {
+                    let startedAt = start
+                        .addingTimeInterval(TimeInterval(dayIndex * 24 * 60 * 60))
+                        .addingTimeInterval(TimeInterval(slotIndex * 6 * 60 * 60))
+                        .addingTimeInterval(TimeInterval(contextIndex * 5 * 60))
+                    let duration = Int64(1_000 + ((dayIndex + slotIndex + contextIndex) % 30) * 700)
+                    let completed = (dayIndex + slotIndex + contextIndex) % 23 != 0
+                    let completedAt = completed ? startedAt.addingTimeInterval(TimeInterval(duration) / 1_000) : nil
+                    let turnID = "turn-\(dayIndex)-\(slotIndex)-\(contextIndex)"
+                    let sessionID = "session-\(dayIndex)-\(contextIndex)"
+
+                    timingEvents.append(try XCTUnwrap(CodexSessionTaskTimingEvent(
+                        sessionID: sessionID,
+                        turnID: turnID,
+                        sourcePath: "/tmp/perf-\(dayIndex).jsonl",
+                        startedAt: startedAt,
+                        completedAt: completedAt,
+                        durationMilliseconds: completed ? duration : nil,
+                        timeToFirstTokenMilliseconds: Int64(150 + ((slotIndex + contextIndex) % 8) * 80),
+                        model: context.model,
+                        projectPath: context.project,
+                        effort: context.effort,
+                        source: context.source,
+                        recordedAt: completedAt ?? startedAt
+                    )))
+
+                    let failed = (dayIndex + slotIndex + contextIndex) % 37 == 0
+                    performanceEvents.append(CodexTurnPerformanceEvent(
+                        sourceKey: "fixture",
+                        sourceRowID: sourceRowID,
+                        target: context.transport == "websocket"
+                            ? "codex_api::endpoint::responses_websocket"
+                            : "codex_api::sse::responses",
+                        eventTimestamp: startedAt.addingTimeInterval(2),
+                        eventName: failed ? "response.failed" : "response.completed",
+                        eventKind: failed ? "response.failed" : "response.completed",
+                        durationMilliseconds: duration,
+                        success: failed ? false : true,
+                        errorSummary: failed ? "timeout" : nil,
+                        threadID: sessionID,
+                        turnID: turnID,
+                        model: context.model,
+                        sessionID: sessionID,
+                        projectPath: context.project,
+                        effort: context.effort,
+                        source: context.source,
+                        originator: "codex",
+                        appVersion: "1.0.0",
+                        terminalType: "apple-terminal",
+                        transport: context.transport,
+                        wireAPI: context.wireAPI,
+                        apiPath: "/v1/responses",
+                        recordedAt: startedAt.addingTimeInterval(2)
+                    ))
+                    sourceRowID += 1
+                }
+            }
+        }
+
+        _ = try store.importSessionTaskTimingEvents(timingEvents)
+        _ = try store.importTurnPerformanceEvents(performanceEvents)
     }
 
     func seedUsageSamples(into database: SQLitePerformanceFixtureDatabase, now: Date) throws {

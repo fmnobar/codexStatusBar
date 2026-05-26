@@ -8,28 +8,9 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Return pre-aggregated Performance Dashboard presentation rows | Performance Dashboard month pulls about 80k rows and year pulls about 105k rows, then rebuilds chart/table presentation in Swift. | Needs planning to preserve CSV, sorting, and selection semantics. |
-| 2 | Add dashboard snapshot and presentation caching | Repeated dashboard mode/breakdown/period toggles should reuse stable results until capture/import data changes. | Needs planning around invalidation and stale-result behavior. |
-| 3 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
-| 4 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
-
-### Return Pre-Aggregated Performance Dashboard Presentation Rows
-
-- Problem:
-  - The store returns raw timing, reliability, and token samples, then `PerformanceDashboardViewModel` rebuilds charts and tables in Swift when mode or breakdown changes.
-  - Breakdown toggles avoid SQLite reloads, but they can still do large main-actor presentation work.
-- Implementation options:
-  - Add read-only store queries that return bucketed chart points and table rows for the selected mode, period, and breakdown dimension.
-  - Keep raw sample APIs only where tests or export paths still need them.
-  - For Performance mode, return duration bucket rows and reliability bucket rows directly.
-  - For Efficiency mode, return token-rate bucket rows and efficiency breakdown rows directly.
-- Planning notes:
-  - Needs a plan before implementation because it touches dashboard presentation contracts, row selection, sorting, and CSV export.
-  - Be explicit about which aggregations happen in SQLite and which remain in Swift.
-- Verification:
-  - Add store/view-model parity tests against current raw-sample behavior.
-  - Add tests for all breakdown dimensions: model, project, effort, source, transport, and wire API where applicable.
-  - Run full verification and relaunch latest installed app with `./install.sh`.
+| 1 | Add dashboard snapshot and presentation caching | Repeated dashboard mode/breakdown/period toggles should reuse stable results until capture/import data changes. | Needs planning around invalidation and stale-result behavior. |
+| 2 | Add built-in dashboard/menu performance instrumentation | External UI automation could not reliably open the menu popover in this session, so the app should record open-to-first-render and toggle timings internally. | Ready to plan; best as diagnostics-only first. |
+| 3 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
 
 ### Add Dashboard Snapshot And Presentation Caching
 
@@ -91,6 +72,13 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Return pre-aggregated Performance Dashboard presentation rows
+  - Moved Performance Dashboard presentation aggregation into store/worker snapshot queries.
+  - Performance mode now returns pre-bucketed duration points, reliability points, breakdown rows, series, and bounds for the selected breakdown.
+  - Efficiency mode now returns pre-bucketed efficiency points, efficiency rows, series, and bounds for supported breakdowns.
+  - The view model consumes presentation-ready arrays instead of rebuilding from raw sample arrays on the main actor.
+  - Added parity tests against the existing presentation builder and realistic fixture regression coverage for month/year Performance and Efficiency snapshots.
 
 - Pre-aggregate Token Dashboard attribution coverage
   - Replaced repeated attribution coverage scans with one shared, period-bounded `period_samples` query for core and generic dimensions.

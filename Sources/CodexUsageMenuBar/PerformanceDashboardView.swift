@@ -500,20 +500,26 @@ struct PerformanceDashboardSummaryTile: Identifiable, Equatable {
 
 struct PerformanceDashboardLoadRequest: Equatable {
     let mode: PerformanceDashboardMode
+    let breakdownDimension: PerformanceDashboardBreakdownDimension
     let range: UsageHistoryRange
     let periodStart: Date
     let periodEnd: Date
+    let calendar: Calendar
 
     init(
         mode: PerformanceDashboardMode = .performance,
+        breakdownDimension: PerformanceDashboardBreakdownDimension = .model,
         range: UsageHistoryRange,
         periodStart: Date,
-        periodEnd: Date
+        periodEnd: Date,
+        calendar: Calendar = .autoupdatingCurrent
     ) {
         self.mode = mode
+        self.breakdownDimension = breakdownDimension
         self.range = range
         self.periodStart = periodStart
         self.periodEnd = periodEnd
+        self.calendar = calendar
     }
 }
 
@@ -522,6 +528,12 @@ struct PerformanceDashboardLoadResult: Equatable {
     let reliabilitySamples: [PerformanceDashboardReliabilitySample]
     let efficiencyTokenSamples: [PerformanceDashboardEfficiencyTokenSample]
     let modelCapabilities: [CodexModelCapability]
+    let durationPoints: [PerformanceDashboardDurationPoint]
+    let reliabilityPoints: [PerformanceDashboardReliabilityPoint]
+    let breakdownRows: [PerformanceDashboardBreakdownRow]
+    let efficiencyPoints: [PerformanceDashboardEfficiencyPoint]
+    let efficiencyRows: [PerformanceDashboardEfficiencyRow]
+    let series: [PerformanceDashboardSeries]
     let historyBounds: UsageHistoryBounds?
 }
 
@@ -622,16 +634,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             selectedSeriesIDs = []
             breakdownSortState = nil
             efficiencySortState = nil
-            if loadedModes.contains(selectedMode) {
-                if selectedMode == .performance {
-                    reloadTask?.cancel()
-                    reloadTask = nil
-                }
-                applyCachedHistoryBounds(for: selectedMode)
-                rebuildPresentation()
-            } else {
-                scheduleReload()
-            }
+            scheduleReload()
         }
     }
 
@@ -654,9 +657,15 @@ final class PerformanceDashboardViewModel: ObservableObject {
                 return
             }
 
+            if selectedMode == .efficiency,
+               !availableBreakdownDimensions.contains(selectedBreakdownDimension)
+            {
+                selectedBreakdownDimension = .model
+                return
+            }
             selectedSeriesIDs = []
             breakdownSortState = nil
-            rebuildPresentation()
+            scheduleReload()
         }
     }
 
@@ -682,7 +691,6 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private let calendar: Calendar
     private var reloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
-    private var loadedModes: Set<PerformanceDashboardMode> = []
     private var historyBoundsByMode: [PerformanceDashboardMode: UsageHistoryBounds] = [:]
 
     init(
@@ -760,9 +768,9 @@ final class PerformanceDashboardViewModel: ObservableObject {
     var hasAnyData: Bool {
         switch selectedMode {
         case .performance:
-            return !timingSamples.isEmpty || !reliabilitySamples.isEmpty
+            return !durationPoints.isEmpty || !reliabilityPoints.isEmpty || !breakdownRows.isEmpty
         case .efficiency:
-            return !efficiencyTokenSamples.isEmpty || !timingSamples.isEmpty || !reliabilitySamples.isEmpty
+            return !efficiencyPoints.isEmpty || !efficiencyRows.isEmpty
         }
     }
 
@@ -1258,9 +1266,11 @@ final class PerformanceDashboardViewModel: ObservableObject {
         let queryPeriod = periodForQuery()
         let request = PerformanceDashboardLoadRequest(
             mode: selectedMode,
+            breakdownDimension: selectedBreakdownDimension,
             range: selectedRange,
             periodStart: queryPeriod.start,
-            periodEnd: queryPeriod.end
+            periodEnd: queryPeriod.end,
+            calendar: calendar
         )
 
         do {
@@ -1271,17 +1281,17 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
             timingSamples = result.timingSamples
             reliabilitySamples = result.reliabilitySamples
-            if request.mode == .efficiency {
-                efficiencyTokenSamples = result.efficiencyTokenSamples
-                modelCapabilities = result.modelCapabilities
-            } else if !loadedModes.contains(.efficiency) {
-                efficiencyTokenSamples = []
-                modelCapabilities = []
-            }
+            efficiencyTokenSamples = result.efficiencyTokenSamples
+            modelCapabilities = result.modelCapabilities
+            durationPoints = result.durationPoints
+            reliabilityPoints = result.reliabilityPoints
+            breakdownRows = result.breakdownRows
+            efficiencyPoints = result.efficiencyPoints
+            efficiencyRows = result.efficiencyRows
+            series = result.series
             cacheHistoryBounds(result.historyBounds, for: request.mode)
-            loadedModes.insert(request.mode)
             applyCachedHistoryBounds(for: selectedMode)
-            rebuildPresentation()
+            reconcileSelection()
             errorMessage = nil
             return true
         } catch {
@@ -1300,55 +1310,11 @@ final class PerformanceDashboardViewModel: ObservableObject {
             efficiencyRows = []
             series = []
             selectedSeriesIDs = []
-            loadedModes = []
             historyBoundsByMode = [:]
             historyBounds = nil
             errorMessage = "Performance dashboard could not be loaded."
             return false
         }
-    }
-
-    private func rebuildPresentation() {
-        if selectedMode == .efficiency,
-           !availableBreakdownDimensions.contains(selectedBreakdownDimension)
-        {
-            selectedBreakdownDimension = .model
-            return
-        }
-
-        switch selectedMode {
-        case .performance:
-            let presentation = PerformanceDashboardPresentationBuilder.build(
-                timingSamples: timingSamples,
-                reliabilitySamples: reliabilitySamples,
-                breakdownDimension: selectedBreakdownDimension,
-                range: selectedRange,
-                calendar: calendar
-            )
-            durationPoints = presentation.durationPoints
-            reliabilityPoints = presentation.reliabilityPoints
-            breakdownRows = presentation.breakdownRows
-            efficiencyPoints = []
-            efficiencyRows = []
-            series = presentation.series
-        case .efficiency:
-            let presentation = PerformanceDashboardPresentationBuilder.buildEfficiency(
-                tokenSamples: efficiencyTokenSamples,
-                timingSamples: timingSamples,
-                reliabilitySamples: reliabilitySamples,
-                modelCapabilities: modelCapabilities,
-                breakdownDimension: selectedBreakdownDimension,
-                range: selectedRange,
-                calendar: calendar
-            )
-            durationPoints = []
-            reliabilityPoints = []
-            breakdownRows = []
-            efficiencyPoints = presentation.points
-            efficiencyRows = presentation.rows
-            series = presentation.series
-        }
-        reconcileSelection()
     }
 
     private func nextReloadGeneration() -> Int {
@@ -1357,7 +1323,6 @@ final class PerformanceDashboardViewModel: ObservableObject {
     }
 
     private func resetLoadedModeState() {
-        loadedModes.removeAll()
         historyBoundsByMode.removeAll()
         historyBounds = nil
     }
@@ -2379,12 +2344,12 @@ enum PerformanceDashboardPresentationBuilder {
     }
 }
 
-private struct PerformanceDashboardBucketSeriesKey: Hashable {
+struct PerformanceDashboardBucketSeriesKey: Hashable {
     let bucketStart: Date
     let seriesID: String
 }
 
-private struct PerformanceDashboardDurationAccumulator {
+struct PerformanceDashboardDurationAccumulator {
     let bucketStart: Date
     let bucketEnd: Date
     let series: PerformanceDashboardSeries
@@ -2409,6 +2374,14 @@ private struct PerformanceDashboardDurationAccumulator {
         }
     }
 
+    mutating func add(_ point: PerformanceDashboardDurationPoint) {
+        turnCount += point.turnCount
+        completedTurnCount += point.completedTurnCount
+        incompleteTurnCount += point.incompleteTurnCount
+        durationValues += point.durationValues
+        firstTokenValues += point.firstTokenValues
+    }
+
     var point: PerformanceDashboardDurationPoint {
         PerformanceDashboardDurationPoint(
             bucketStart: bucketStart,
@@ -2423,7 +2396,7 @@ private struct PerformanceDashboardDurationAccumulator {
     }
 }
 
-private struct PerformanceDashboardReliabilityAccumulator {
+struct PerformanceDashboardReliabilityAccumulator {
     let bucketStart: Date
     let bucketEnd: Date
     let series: PerformanceDashboardSeries
@@ -2446,6 +2419,13 @@ private struct PerformanceDashboardReliabilityAccumulator {
         }
     }
 
+    mutating func add(_ point: PerformanceDashboardReliabilityPoint) {
+        successCount += point.successCount
+        failureCount += point.failureCount
+        unknownCount += point.unknownCount
+        merge(errorCounts: point.errorCounts)
+    }
+
     mutating func merge(errorCounts incomingErrorCounts: [String: Int]) {
         for (error, count) in incomingErrorCounts {
             errorCounts[error, default: 0] += count
@@ -2465,7 +2445,7 @@ private struct PerformanceDashboardReliabilityAccumulator {
     }
 }
 
-private struct PerformanceDashboardRowAccumulator {
+struct PerformanceDashboardRowAccumulator {
     let series: PerformanceDashboardSeries
     var durationAccumulator: PerformanceDashboardDurationAccumulator?
     var reliabilityAccumulator: PerformanceDashboardReliabilityAccumulator?
@@ -2496,6 +2476,28 @@ private struct PerformanceDashboardRowAccumulator {
         reliabilityAccumulator?.add(sample)
     }
 
+    mutating func add(_ point: PerformanceDashboardDurationPoint) {
+        if durationAccumulator == nil {
+            durationAccumulator = PerformanceDashboardDurationAccumulator(
+                bucketStart: point.bucketStart,
+                bucketEnd: point.bucketEnd,
+                series: series
+            )
+        }
+        durationAccumulator?.add(point)
+    }
+
+    mutating func add(_ point: PerformanceDashboardReliabilityPoint) {
+        if reliabilityAccumulator == nil {
+            reliabilityAccumulator = PerformanceDashboardReliabilityAccumulator(
+                bucketStart: point.bucketStart,
+                bucketEnd: point.bucketEnd,
+                series: series
+            )
+        }
+        reliabilityAccumulator?.add(point)
+    }
+
     var row: PerformanceDashboardBreakdownRow {
         PerformanceDashboardBreakdownRow(
             series: series,
@@ -2515,7 +2517,7 @@ private struct PerformanceDashboardRowAccumulator {
     }
 }
 
-private struct PerformanceDashboardEfficiencyAccumulator {
+struct PerformanceDashboardEfficiencyAccumulator {
     let bucketStart: Date
     let bucketEnd: Date
     let series: PerformanceDashboardSeries
@@ -2545,6 +2547,22 @@ private struct PerformanceDashboardEfficiencyAccumulator {
         }
     }
 
+    mutating func addTokenTotals(
+        inputTokens: Int64,
+        cachedInputTokens: Int64,
+        outputTokens: Int64,
+        reasoningOutputTokens: Int64,
+        contextPressure: Double?
+    ) {
+        self.inputTokens += max(inputTokens, 0)
+        self.cachedInputTokens += max(cachedInputTokens, 0)
+        self.outputTokens += max(outputTokens, 0)
+        self.reasoningOutputTokens += max(reasoningOutputTokens, 0)
+        if let contextPressure {
+            contextPressureValues.append(contextPressure)
+        }
+    }
+
     mutating func add(_ sample: PerformanceDashboardTimingSample) {
         turnCount += 1
         if sample.isCompleted {
@@ -2559,6 +2577,16 @@ private struct PerformanceDashboardEfficiencyAccumulator {
         }
     }
 
+    mutating func add(_ point: PerformanceDashboardDurationPoint) {
+        turnCount += point.turnCount
+        completedTurnCount += point.completedTurnCount
+        durationValues += point.durationValues
+        firstTokenValues += point.firstTokenValues
+        durationTotalMilliseconds += point.durationValues.reduce(Int64(0)) { partialResult, value in
+            partialResult + max(value, 0)
+        }
+    }
+
     mutating func add(_ sample: PerformanceDashboardReliabilitySample) {
         eventCount += 1
         switch sample.success {
@@ -2569,6 +2597,13 @@ private struct PerformanceDashboardEfficiencyAccumulator {
         case nil:
             unknownCount += 1
         }
+    }
+
+    mutating func add(_ point: PerformanceDashboardReliabilityPoint) {
+        eventCount += point.eventCount
+        successCount += point.successCount
+        failureCount += point.failureCount
+        unknownCount += point.unknownCount
     }
 
     mutating func add(_ point: PerformanceDashboardEfficiencyPoint) {
@@ -2648,7 +2683,7 @@ private struct PerformanceDashboardEfficiencyAccumulator {
     }
 }
 
-private extension PerformanceDashboardSeries {
+extension PerformanceDashboardSeries {
     static let aggregate = PerformanceDashboardSeries(
         id: PerformanceDashboardSeries.aggregateID,
         name: "All",
@@ -2671,7 +2706,7 @@ private extension PerformanceDashboardSeries {
     )
 }
 
-private extension Array where Element == PerformanceDashboardDurationPoint {
+extension Array where Element == PerformanceDashboardDurationPoint {
     func sortedByDashboardDisplayOrder() -> [PerformanceDashboardDurationPoint] {
         sorted { lhs, rhs in
             if lhs.bucketStart != rhs.bucketStart {
@@ -2682,7 +2717,7 @@ private extension Array where Element == PerformanceDashboardDurationPoint {
     }
 }
 
-private extension Array where Element == PerformanceDashboardReliabilityPoint {
+extension Array where Element == PerformanceDashboardReliabilityPoint {
     func sortedByDashboardDisplayOrder() -> [PerformanceDashboardReliabilityPoint] {
         sorted { lhs, rhs in
             if lhs.bucketStart != rhs.bucketStart {
@@ -2693,7 +2728,7 @@ private extension Array where Element == PerformanceDashboardReliabilityPoint {
     }
 }
 
-private extension Array where Element == PerformanceDashboardEfficiencyPoint {
+extension Array where Element == PerformanceDashboardEfficiencyPoint {
     func sortedByDashboardDisplayOrder() -> [PerformanceDashboardEfficiencyPoint] {
         sorted { lhs, rhs in
             if lhs.bucketStart != rhs.bucketStart {
@@ -2704,7 +2739,7 @@ private extension Array where Element == PerformanceDashboardEfficiencyPoint {
     }
 }
 
-private extension Array where Element == PerformanceDashboardBreakdownRow {
+extension Array where Element == PerformanceDashboardBreakdownRow {
     func sortedByDashboardSeriesOrder() -> [PerformanceDashboardBreakdownRow] {
         sorted { lhs, rhs in
             if lhs.series.kind == .aggregate, rhs.series.kind != .aggregate {
@@ -2730,7 +2765,7 @@ private extension Array where Element == PerformanceDashboardBreakdownRow {
     }
 }
 
-private extension Array where Element == PerformanceDashboardEfficiencyRow {
+extension Array where Element == PerformanceDashboardEfficiencyRow {
     func sortedByDashboardSeriesOrder() -> [PerformanceDashboardEfficiencyRow] {
         sorted { lhs, rhs in
             if lhs.series.kind == .aggregate, rhs.series.kind != .aggregate {

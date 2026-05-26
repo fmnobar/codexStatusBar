@@ -2927,6 +2927,44 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.performanceDashboardBounds()?.earliest, date("2026-05-02T10:00:00Z"))
     }
 
+    func testPerformanceDashboardPresentationQueryMatchesBuilderForBreakdowns() throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let timingSamples = try store.performanceDashboardTimingSamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let reliabilitySamples = try store.performanceDashboardReliabilitySamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+
+        for breakdownDimension in PerformanceDashboardBreakdownDimension.allCases {
+            let expected = PerformanceDashboardPresentationBuilder.build(
+                timingSamples: timingSamples,
+                reliabilitySamples: reliabilitySamples,
+                breakdownDimension: breakdownDimension,
+                range: .month,
+                calendar: calendar
+            )
+            let actual = try store.performanceDashboardPresentation(
+                breakdownDimension: breakdownDimension,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                calendar: calendar
+            )
+
+            XCTAssertEqual(actual.durationPoints, expected.durationPoints, "duration points for \(breakdownDimension)")
+            XCTAssertEqual(actual.reliabilityPoints, expected.reliabilityPoints, "reliability points for \(breakdownDimension)")
+            XCTAssertEqual(actual.breakdownRows, expected.breakdownRows, "breakdown rows for \(breakdownDimension)")
+            XCTAssertEqual(actual.series, expected.series, "series for \(breakdownDimension)")
+        }
+    }
+
     @MainActor
     func testPerformanceDashboardViewModelDefaultsFiltersAndExportsVisibleRows() async throws {
         let store = try makeStore()
@@ -2961,6 +2999,7 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(viewModel.csvText.contains("model:gpt-5.4"))
 
         viewModel.selectedBreakdownDimension = .transport
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Transport")
         XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
@@ -2975,6 +3014,7 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.visibleSummaryRow.failurePercent, 0.5, accuracy: 0.0001)
 
         viewModel.selectedBreakdownDimension = .model
+        await viewModel.reload()
         viewModel.sortBreakdownRows(by: .turns)
 
         XCTAssertEqual(viewModel.breakdownSortIndicator(for: .turns), "chevron.down")
@@ -3019,10 +3059,15 @@ extension UsageHistoryStoreTests {
             )
         )
 
-        XCTAssertFalse(performanceResult.timingSamples.isEmpty)
-        XCTAssertFalse(performanceResult.reliabilitySamples.isEmpty)
+        XCTAssertTrue(performanceResult.timingSamples.isEmpty)
+        XCTAssertTrue(performanceResult.reliabilitySamples.isEmpty)
         XCTAssertTrue(performanceResult.efficiencyTokenSamples.isEmpty)
         XCTAssertTrue(performanceResult.modelCapabilities.isEmpty)
+        XCTAssertFalse(performanceResult.durationPoints.isEmpty)
+        XCTAssertFalse(performanceResult.reliabilityPoints.isEmpty)
+        XCTAssertFalse(performanceResult.breakdownRows.isEmpty)
+        XCTAssertTrue(performanceResult.efficiencyPoints.isEmpty)
+        XCTAssertTrue(performanceResult.efficiencyRows.isEmpty)
         XCTAssertEqual(performanceResult.historyBounds?.earliest, date("2026-05-02T10:00:00Z"))
 
         let efficiencyResult = try await worker.performanceDashboardSnapshot(
@@ -3034,10 +3079,15 @@ extension UsageHistoryStoreTests {
             )
         )
 
-        XCTAssertFalse(efficiencyResult.timingSamples.isEmpty)
-        XCTAssertFalse(efficiencyResult.reliabilitySamples.isEmpty)
-        XCTAssertEqual(efficiencyResult.efficiencyTokenSamples.count, 4)
-        XCTAssertEqual(efficiencyResult.modelCapabilities.count, 1)
+        XCTAssertTrue(efficiencyResult.timingSamples.isEmpty)
+        XCTAssertTrue(efficiencyResult.reliabilitySamples.isEmpty)
+        XCTAssertTrue(efficiencyResult.efficiencyTokenSamples.isEmpty)
+        XCTAssertTrue(efficiencyResult.modelCapabilities.isEmpty)
+        XCTAssertTrue(efficiencyResult.durationPoints.isEmpty)
+        XCTAssertTrue(efficiencyResult.reliabilityPoints.isEmpty)
+        XCTAssertTrue(efficiencyResult.breakdownRows.isEmpty)
+        XCTAssertFalse(efficiencyResult.efficiencyPoints.isEmpty)
+        XCTAssertFalse(efficiencyResult.efficiencyRows.isEmpty)
         XCTAssertEqual(efficiencyResult.historyBounds?.earliest, date("2026-05-01T09:00:00Z"))
     }
 
@@ -3089,6 +3139,50 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.performanceDashboardBounds()?.earliest, date("2026-05-02T10:00:00Z"))
     }
 
+    func testPerformanceDashboardEfficiencyPresentationQueryMatchesBuilderForBreakdowns() throws {
+        let store = try makeStore()
+        try seedPerformanceDashboardFixture(in: store)
+
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let tokenSamples = try store.performanceDashboardEfficiencyTokenSamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let timingSamples = try store.performanceDashboardTimingSamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let reliabilitySamples = try store.performanceDashboardReliabilitySamples(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let modelCapabilities = try store.codexModelCapabilities()
+
+        for breakdownDimension in [PerformanceDashboardBreakdownDimension.model, .project, .effort, .source] {
+            let expected = PerformanceDashboardPresentationBuilder.buildEfficiency(
+                tokenSamples: tokenSamples,
+                timingSamples: timingSamples,
+                reliabilitySamples: reliabilitySamples,
+                modelCapabilities: modelCapabilities,
+                breakdownDimension: breakdownDimension,
+                range: .month,
+                calendar: calendar
+            )
+            let actual = try store.performanceDashboardEfficiencyPresentation(
+                breakdownDimension: breakdownDimension,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                calendar: calendar
+            )
+
+            XCTAssertEqual(actual.points, expected.points, "efficiency points for \(breakdownDimension)")
+            XCTAssertEqual(actual.rows, expected.rows, "efficiency rows for \(breakdownDimension)")
+            XCTAssertEqual(actual.series, expected.series, "efficiency series for \(breakdownDimension)")
+        }
+    }
+
     @MainActor
     func testPerformanceDashboardEfficiencyModeFiltersAndExportsVisibleRows() async throws {
         let store = try makeStore()
@@ -3116,11 +3210,13 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(viewModel.csvText.contains("efficiency_breakdown_row,model,performance_all,All,aggregate,all,,4,3,16000"))
 
         viewModel.selectedMode = .performance
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.summaryTiles.first?.value, "4")
-        XCTAssertEqual(viewModel.efficiencyTokenSamples.count, 3)
+        XCTAssertTrue(viewModel.efficiencyTokenSamples.isEmpty)
 
         viewModel.selectedMode = .efficiency
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.summaryTiles.first?.value, "16.0k")
 
@@ -3133,6 +3229,7 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(viewModel.csvText.contains("model:gpt-5.4"))
 
         viewModel.selectedBreakdownDimension = .transport
+        await viewModel.reload()
 
         XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
         XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])

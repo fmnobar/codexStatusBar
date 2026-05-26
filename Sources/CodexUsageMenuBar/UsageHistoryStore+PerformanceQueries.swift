@@ -159,6 +159,518 @@ extension UsageHistoryStore {
         return samples
     }
 
+    func performanceDashboardPresentation(
+        breakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) throws -> PerformanceDashboardPresentation {
+        let durationPoints = try performanceDashboardDurationPoints(
+            breakdownDimension: breakdownDimension,
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        let reliabilityPoints = try performanceDashboardReliabilityPoints(
+            breakdownDimension: breakdownDimension,
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        let rows = Self.performanceDashboardRows(
+            durationPoints: durationPoints,
+            reliabilityPoints: reliabilityPoints
+        )
+
+        return PerformanceDashboardPresentation(
+            durationPoints: durationPoints,
+            reliabilityPoints: reliabilityPoints,
+            breakdownRows: rows,
+            series: rows.map(\.series)
+        )
+    }
+
+    func performanceDashboardEfficiencyPresentation(
+        breakdownDimension requestedBreakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) throws -> PerformanceDashboardEfficiencyPresentation {
+        let breakdownDimension = requestedBreakdownDimension.isSupportedByEfficiencyDashboard
+            ? requestedBreakdownDimension
+            : .model
+        let tokenPoints = try performanceDashboardEfficiencyTokenPoints(
+            breakdownDimension: breakdownDimension,
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        let durationPoints = try performanceDashboardDurationPoints(
+            breakdownDimension: breakdownDimension,
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        let reliabilityPoints = try performanceDashboardReliabilityPoints(
+            breakdownDimension: breakdownDimension,
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+
+        let points = Self.performanceDashboardEfficiencyPoints(
+            tokenPoints: tokenPoints,
+            durationPoints: durationPoints,
+            reliabilityPoints: reliabilityPoints
+        )
+        let rows = Self.performanceDashboardEfficiencyRows(points: points)
+        return PerformanceDashboardEfficiencyPresentation(
+            points: points,
+            rows: rows,
+            series: rows.map(\.series)
+        )
+    }
+
+    func performanceDashboardDurationPoints(
+        breakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) throws -> [PerformanceDashboardDurationPoint] {
+        let intervals = Self.performanceDashboardBucketIntervals(
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        guard !intervals.isEmpty else {
+            return []
+        }
+
+        let bucketValuesSQL = Self.performanceDashboardBucketValuesSQL(intervals)
+        let breakdown = Self.performanceDashboardBreakdownSQL(
+            dimension: breakdownDimension,
+            unavailableAsUnattributed: breakdownDimension == .transport || breakdownDimension == .wireAPI
+        )
+        let eventTimestampSQL = "COALESCE(started_at, completed_at, recorded_at)"
+        let statement = try prepare(
+            """
+            WITH buckets(bucket_start, query_end, bucket_end) AS (
+                VALUES \(bucketValuesSQL)
+            ),
+            timing_base AS (
+                SELECT
+                    b.bucket_start,
+                    b.bucket_end,
+                    t.completed_at,
+                    t.duration_ms,
+                    t.time_to_first_token_ms,
+                    t.model,
+                    t.project_path,
+                    t.project_name,
+                    t.effort,
+                    t.source,
+                    NULL AS transport,
+                    NULL AS wire_api
+                FROM buckets b
+                JOIN codex_session_task_timing_events t
+                    ON \(eventTimestampSQL) >= b.bucket_start
+                    AND \(eventTimestampSQL) < b.query_end
+                WHERE \(eventTimestampSQL) >= ?
+                    AND \(eventTimestampSQL) < ?
+            ),
+            expanded AS (
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    'aggregate' AS series_kind,
+                    NULL AS series_value,
+                    NULL AS series_project_path,
+                    NULL AS series_project_name,
+                    completed_at,
+                    duration_ms,
+                    time_to_first_token_ms
+                FROM timing_base
+                UNION ALL
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    \(breakdown.kindSQL) AS series_kind,
+                    \(breakdown.valueSQL) AS series_value,
+                    \(breakdown.projectPathSQL) AS series_project_path,
+                    \(breakdown.projectNameSQL) AS series_project_name,
+                    completed_at,
+                    duration_ms,
+                    time_to_first_token_ms
+                FROM timing_base
+            )
+            SELECT
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name,
+                COUNT(*) AS turn_count,
+                SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed_turn_count,
+                SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END) AS incomplete_turn_count,
+                GROUP_CONCAT(duration_ms) AS duration_values,
+                GROUP_CONCAT(time_to_first_token_ms) AS first_token_values
+            FROM expanded
+            GROUP BY
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name
+            ORDER BY bucket_start ASC, series_kind ASC, series_value ASC, series_project_path ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statement)
+        sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
+
+        var points: [PerformanceDashboardDurationPoint] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let series = Self.performanceDashboardSeries(
+                    kindRawValue: columnText(statement, index: 2),
+                    value: optionalColumnText(statement, index: 3),
+                    projectPath: optionalColumnText(statement, index: 4),
+                    projectName: optionalColumnText(statement, index: 5)
+                )
+                points.append(
+                    PerformanceDashboardDurationPoint(
+                        bucketStart: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0))),
+                        bucketEnd: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 1))),
+                        series: series,
+                        turnCount: Int(sqlite3_column_int64(statement, 6)),
+                        completedTurnCount: Int(sqlite3_column_int64(statement, 7)),
+                        incompleteTurnCount: Int(sqlite3_column_int64(statement, 8)),
+                        durationValues: Self.performanceDashboardIntValues(optionalColumnText(statement, index: 9)),
+                        firstTokenValues: Self.performanceDashboardIntValues(optionalColumnText(statement, index: 10))
+                    )
+                )
+            case SQLITE_DONE:
+                return points.sortedByDashboardDisplayOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func performanceDashboardReliabilityPoints(
+        breakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) throws -> [PerformanceDashboardReliabilityPoint] {
+        let intervals = Self.performanceDashboardBucketIntervals(
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        guard !intervals.isEmpty else {
+            return []
+        }
+
+        let bucketValuesSQL = Self.performanceDashboardBucketValuesSQL(intervals)
+        let breakdown = Self.performanceDashboardBreakdownSQL(dimension: breakdownDimension)
+        let statement = try prepare(
+            """
+            WITH buckets(bucket_start, query_end, bucket_end) AS (
+                VALUES \(bucketValuesSQL)
+            ),
+            reliability_base AS (
+                SELECT
+                    b.bucket_start,
+                    b.bucket_end,
+                    r.success,
+                    r.error_summary,
+                    r.model,
+                    r.project_path,
+                    r.project_name,
+                    r.effort,
+                    r.source,
+                    r.transport,
+                    r.wire_api
+                FROM buckets b
+                JOIN codex_turn_performance_events r
+                    ON r.event_timestamp >= b.bucket_start
+                    AND r.event_timestamp < b.query_end
+                WHERE r.event_timestamp >= ?
+                    AND r.event_timestamp < ?
+            ),
+            expanded AS (
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    'aggregate' AS series_kind,
+                    NULL AS series_value,
+                    NULL AS series_project_path,
+                    NULL AS series_project_name,
+                    success,
+                    error_summary
+                FROM reliability_base
+                UNION ALL
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    \(breakdown.kindSQL) AS series_kind,
+                    \(breakdown.valueSQL) AS series_value,
+                    \(breakdown.projectPathSQL) AS series_project_path,
+                    \(breakdown.projectNameSQL) AS series_project_name,
+                    success,
+                    error_summary
+                FROM reliability_base
+            )
+            SELECT
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name,
+                CASE
+                    WHEN success IS NULL THEN 'unknown'
+                    WHEN success = 1 THEN 'success'
+                    ELSE 'failure'
+                END AS status,
+                CASE WHEN success = 0 THEN error_summary ELSE NULL END AS failure_error_summary,
+                COUNT(*) AS event_count
+            FROM expanded
+            GROUP BY
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name,
+                status,
+                failure_error_summary
+            ORDER BY bucket_start ASC, series_kind ASC, series_value ASC, series_project_path ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statement)
+        sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
+
+        var accumulators = [PerformanceDashboardBucketSeriesKey: PerformanceDashboardReliabilityAccumulator]()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let bucketStart = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
+                let bucketEnd = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 1)))
+                let series = Self.performanceDashboardSeries(
+                    kindRawValue: columnText(statement, index: 2),
+                    value: optionalColumnText(statement, index: 3),
+                    projectPath: optionalColumnText(statement, index: 4),
+                    projectName: optionalColumnText(statement, index: 5)
+                )
+                let key = PerformanceDashboardBucketSeriesKey(bucketStart: bucketStart, seriesID: series.id)
+                var accumulator = accumulators[key] ?? PerformanceDashboardReliabilityAccumulator(
+                    bucketStart: bucketStart,
+                    bucketEnd: bucketEnd,
+                    series: series
+                )
+                let count = Int(sqlite3_column_int64(statement, 8))
+                switch columnText(statement, index: 6) {
+                case "success":
+                    accumulator.successCount += count
+                case "failure":
+                    accumulator.failureCount += count
+                    if let errorSummary = optionalColumnText(statement, index: 7) {
+                        accumulator.errorCounts[errorSummary, default: 0] += count
+                    }
+                default:
+                    accumulator.unknownCount += count
+                }
+                accumulators[key] = accumulator
+            case SQLITE_DONE:
+                return accumulators.values.map(\.point).sortedByDashboardDisplayOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func performanceDashboardEfficiencyTokenPoints(
+        breakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) throws -> [PerformanceDashboardEfficiencyPoint] {
+        let intervals = Self.performanceDashboardBucketIntervals(
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        guard !intervals.isEmpty else {
+            return []
+        }
+
+        let bucketValuesSQL = Self.performanceDashboardBucketValuesSQL(intervals)
+        let breakdown = Self.performanceDashboardBreakdownSQL(dimension: breakdownDimension)
+        let totalTokensSQL = """
+        MAX(IFNULL(t.observed_input_tokens, 0), 0)
+            + MAX(IFNULL(t.observed_cached_input_tokens, 0), 0)
+            + MAX(IFNULL(t.observed_output_tokens, 0), 0)
+            + MAX(IFNULL(t.observed_reasoning_output_tokens, 0), 0)
+        """
+        let contextWindowSQL = "COALESCE(c.max_context_window, c.context_window, t.model_context_window)"
+        let statement = try prepare(
+            """
+            WITH buckets(bucket_start, query_end, bucket_end) AS (
+                VALUES \(bucketValuesSQL)
+            ),
+            token_base AS (
+                SELECT
+                    b.bucket_start,
+                    b.bucket_end,
+                    t.model,
+                    t.project_path,
+                    t.project_name,
+                    t.effort,
+                    t.source,
+                    NULL AS transport,
+                    NULL AS wire_api,
+                    MAX(IFNULL(t.observed_input_tokens, 0), 0) AS input_tokens,
+                    MAX(IFNULL(t.observed_cached_input_tokens, 0), 0) AS cached_input_tokens,
+                    MAX(IFNULL(t.observed_output_tokens, 0), 0) AS output_tokens,
+                    MAX(IFNULL(t.observed_reasoning_output_tokens, 0), 0) AS reasoning_output_tokens,
+                    CASE
+                        WHEN \(contextWindowSQL) > 0 THEN CAST((\(totalTokensSQL)) AS REAL) / CAST(\(contextWindowSQL) AS REAL)
+                        ELSE NULL
+                    END AS context_pressure
+                FROM buckets b
+                JOIN token_usage_samples t
+                    ON t.received_at >= b.bucket_start
+                    AND t.received_at < b.query_end
+                LEFT JOIN codex_model_capabilities c
+                    ON c.slug = t.model
+                WHERE t.received_at >= ?
+                    AND t.received_at < ?
+                    AND (
+                        t.observed_input_tokens > 0
+                        OR t.observed_cached_input_tokens > 0
+                        OR t.observed_output_tokens > 0
+                        OR t.observed_reasoning_output_tokens > 0
+                    )
+            ),
+            expanded AS (
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    'aggregate' AS series_kind,
+                    NULL AS series_value,
+                    NULL AS series_project_path,
+                    NULL AS series_project_name,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    context_pressure
+                FROM token_base
+                UNION ALL
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    \(breakdown.kindSQL) AS series_kind,
+                    \(breakdown.valueSQL) AS series_value,
+                    \(breakdown.projectPathSQL) AS series_project_path,
+                    \(breakdown.projectNameSQL) AS series_project_name,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    context_pressure
+                FROM token_base
+            )
+            SELECT
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name,
+                SUM(input_tokens) AS input_tokens,
+                SUM(cached_input_tokens) AS cached_input_tokens,
+                SUM(output_tokens) AS output_tokens,
+                SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                MAX(context_pressure) AS context_pressure
+            FROM expanded
+            GROUP BY
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name
+            HAVING input_tokens > 0
+                OR cached_input_tokens > 0
+                OR output_tokens > 0
+                OR reasoning_output_tokens > 0
+            ORDER BY bucket_start ASC, series_kind ASC, series_value ASC, series_project_path ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statement)
+        sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
+
+        var points: [PerformanceDashboardEfficiencyPoint] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let series = Self.performanceDashboardSeries(
+                    kindRawValue: columnText(statement, index: 2),
+                    value: optionalColumnText(statement, index: 3),
+                    projectPath: optionalColumnText(statement, index: 4),
+                    projectName: optionalColumnText(statement, index: 5)
+                )
+                var accumulator = PerformanceDashboardEfficiencyAccumulator(
+                    bucketStart: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0))),
+                    bucketEnd: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 1))),
+                    series: series
+                )
+                accumulator.addTokenTotals(
+                    inputTokens: sqlite3_column_int64(statement, 6),
+                    cachedInputTokens: sqlite3_column_int64(statement, 7),
+                    outputTokens: sqlite3_column_int64(statement, 8),
+                    reasoningOutputTokens: sqlite3_column_int64(statement, 9),
+                    contextPressure: optionalColumnDouble(statement, index: 10)
+                )
+                points.append(accumulator.point)
+            case SQLITE_DONE:
+                return points.sortedByDashboardDisplayOrder()
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func performanceDashboardBounds(includeEfficiencyTokens: Bool = true) throws -> UsageHistoryBounds? {
         let tokenBoundsSQL = includeEfficiencyTokens
             ? """
@@ -199,6 +711,275 @@ extension UsageHistoryStore {
             return nil
         default:
             throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    static func performanceDashboardBucketIntervals(
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) -> [(start: Date, queryEnd: Date, displayEnd: Date)] {
+        guard periodEnd > periodStart else {
+            return []
+        }
+
+        let component = range.chartBucketComponent
+        var intervals: [(start: Date, queryEnd: Date, displayEnd: Date)] = []
+        var bucketStart = UsageHistoryRange.bucketStart(
+            for: periodStart,
+            component: component,
+            calendar: calendar
+        )
+
+        while bucketStart < periodEnd {
+            guard let nextBucketStart = calendar.date(byAdding: component, value: 1, to: bucketStart),
+                  nextBucketStart > bucketStart
+            else {
+                break
+            }
+
+            let queryEnd = min(nextBucketStart, periodEnd)
+            if queryEnd > bucketStart {
+                intervals.append((start: bucketStart, queryEnd: queryEnd, displayEnd: nextBucketStart))
+            }
+            bucketStart = nextBucketStart
+        }
+
+        return intervals
+    }
+
+    static func performanceDashboardRows(
+        durationPoints: [PerformanceDashboardDurationPoint],
+        reliabilityPoints: [PerformanceDashboardReliabilityPoint]
+    ) -> [PerformanceDashboardBreakdownRow] {
+        var accumulators = [String: PerformanceDashboardRowAccumulator]()
+        for point in durationPoints {
+            var accumulator = accumulators[point.series.id] ?? PerformanceDashboardRowAccumulator(series: point.series)
+            accumulator.add(point)
+            accumulators[point.series.id] = accumulator
+        }
+        for point in reliabilityPoints {
+            var accumulator = accumulators[point.series.id] ?? PerformanceDashboardRowAccumulator(series: point.series)
+            accumulator.add(point)
+            accumulators[point.series.id] = accumulator
+        }
+        return accumulators.values
+            .map(\.row)
+            .filter { $0.turnCount > 0 || $0.eventCount > 0 }
+            .sortedByDashboardSeriesOrder()
+    }
+
+    static func performanceDashboardEfficiencyPoints(
+        tokenPoints: [PerformanceDashboardEfficiencyPoint],
+        durationPoints: [PerformanceDashboardDurationPoint],
+        reliabilityPoints: [PerformanceDashboardReliabilityPoint]
+    ) -> [PerformanceDashboardEfficiencyPoint] {
+        var accumulators = [PerformanceDashboardBucketSeriesKey: PerformanceDashboardEfficiencyAccumulator]()
+        for point in tokenPoints {
+            var accumulator = accumulators[PerformanceDashboardBucketSeriesKey(bucketStart: point.bucketStart, seriesID: point.series.id)]
+                ?? PerformanceDashboardEfficiencyAccumulator(
+                    bucketStart: point.bucketStart,
+                    bucketEnd: point.bucketEnd,
+                    series: point.series
+                )
+            accumulator.add(point)
+            accumulators[PerformanceDashboardBucketSeriesKey(bucketStart: point.bucketStart, seriesID: point.series.id)] = accumulator
+        }
+        for point in durationPoints {
+            var accumulator = accumulators[PerformanceDashboardBucketSeriesKey(bucketStart: point.bucketStart, seriesID: point.series.id)]
+                ?? PerformanceDashboardEfficiencyAccumulator(
+                    bucketStart: point.bucketStart,
+                    bucketEnd: point.bucketEnd,
+                    series: point.series
+                )
+            accumulator.add(point)
+            accumulators[PerformanceDashboardBucketSeriesKey(bucketStart: point.bucketStart, seriesID: point.series.id)] = accumulator
+        }
+        for point in reliabilityPoints {
+            var accumulator = accumulators[PerformanceDashboardBucketSeriesKey(bucketStart: point.bucketStart, seriesID: point.series.id)]
+                ?? PerformanceDashboardEfficiencyAccumulator(
+                    bucketStart: point.bucketStart,
+                    bucketEnd: point.bucketEnd,
+                    series: point.series
+                )
+            accumulator.add(point)
+            accumulators[PerformanceDashboardBucketSeriesKey(bucketStart: point.bucketStart, seriesID: point.series.id)] = accumulator
+        }
+        return accumulators.values
+            .map(\.point)
+            .filter { $0.totalTokens > 0 || $0.turnCount > 0 || $0.eventCount > 0 }
+            .sortedByDashboardDisplayOrder()
+    }
+
+    static func performanceDashboardEfficiencyRows(
+        points: [PerformanceDashboardEfficiencyPoint]
+    ) -> [PerformanceDashboardEfficiencyRow] {
+        var accumulators = [String: PerformanceDashboardEfficiencyAccumulator]()
+        for point in points {
+            var accumulator = accumulators[point.series.id] ?? PerformanceDashboardEfficiencyAccumulator(
+                bucketStart: point.bucketStart,
+                bucketEnd: point.bucketEnd,
+                series: point.series
+            )
+            accumulator.add(point)
+            accumulators[point.series.id] = accumulator
+        }
+        return accumulators.values
+            .map(\.row)
+            .filter { $0.totalTokens > 0 || $0.turnCount > 0 || $0.eventCount > 0 }
+            .sortedByDashboardSeriesOrder()
+    }
+
+    static func performanceDashboardBucketValuesSQL(
+        _ intervals: [(start: Date, queryEnd: Date, displayEnd: Date)]
+    ) -> String {
+        intervals.map { _ in "(?, ?, ?)" }.joined(separator: ",\n")
+    }
+
+    static func bindPerformanceDashboardBucketIntervals(
+        _ intervals: [(start: Date, queryEnd: Date, displayEnd: Date)],
+        in statement: OpaquePointer
+    ) -> Int32 {
+        var bindIndex: Int32 = 1
+        for interval in intervals {
+            sqlite3_bind_int64(statement, bindIndex, interval.start.timeIntervalSince1970Int)
+            bindIndex += 1
+            sqlite3_bind_int64(statement, bindIndex, interval.queryEnd.timeIntervalSince1970Int)
+            bindIndex += 1
+            sqlite3_bind_int64(statement, bindIndex, interval.displayEnd.timeIntervalSince1970Int)
+            bindIndex += 1
+        }
+        return bindIndex
+    }
+
+    static func performanceDashboardBreakdownSQL(
+        dimension: PerformanceDashboardBreakdownDimension,
+        unavailableAsUnattributed: Bool = false
+    ) -> PerformanceDashboardBreakdownSQL {
+        if unavailableAsUnattributed {
+            return PerformanceDashboardBreakdownSQL(
+                kindSQL: "'unattributed'",
+                valueSQL: "NULL",
+                projectPathSQL: "NULL",
+                projectNameSQL: "NULL"
+            )
+        }
+
+        switch dimension {
+        case .model:
+            return contextPerformanceDashboardBreakdownSQL(column: "model", kind: "model")
+        case .effort:
+            return contextPerformanceDashboardBreakdownSQL(column: "effort", kind: "effort")
+        case .project:
+            return PerformanceDashboardBreakdownSQL(
+                kindSQL: "CASE WHEN NULLIF(project_path, '') IS NULL THEN 'unattributed' ELSE 'project' END",
+                valueSQL: "NULL",
+                projectPathSQL: "CASE WHEN NULLIF(project_path, '') IS NULL THEN NULL ELSE project_path END",
+                projectNameSQL: "CASE WHEN NULLIF(project_path, '') IS NULL THEN NULL ELSE NULLIF(project_name, '') END"
+            )
+        case .source:
+            return contextPerformanceDashboardBreakdownSQL(column: "source", kind: "source")
+        case .transport:
+            return contextPerformanceDashboardBreakdownSQL(column: "transport", kind: "transport")
+        case .wireAPI:
+            return contextPerformanceDashboardBreakdownSQL(column: "wire_api", kind: "wire_api")
+        }
+    }
+
+    static func contextPerformanceDashboardBreakdownSQL(
+        column: String,
+        kind: String
+    ) -> PerformanceDashboardBreakdownSQL {
+        PerformanceDashboardBreakdownSQL(
+            kindSQL: "CASE WHEN NULLIF(\(column), '') IS NULL THEN 'unattributed' ELSE '\(kind)' END",
+            valueSQL: "NULLIF(\(column), '')",
+            projectPathSQL: "NULL",
+            projectNameSQL: "NULL"
+        )
+    }
+
+    static func performanceDashboardSeries(
+        kindRawValue: String,
+        value: String?,
+        projectPath: String?,
+        projectName: String?
+    ) -> PerformanceDashboardSeries {
+        guard let kind = PerformanceDashboardSeriesKind(rawValue: kindRawValue) else {
+            return .unattributed
+        }
+
+        switch kind {
+        case .aggregate:
+            return .aggregate
+        case .unattributed:
+            return .unattributed
+        case .project:
+            guard let projectPath, !projectPath.isEmpty else {
+                return .unattributed
+            }
+            let displayName = projectName ?? URL(fileURLWithPath: projectPath).lastPathComponent
+            return PerformanceDashboardSeries(
+                id: "project:\(projectPath)",
+                name: displayName.isEmpty ? projectPath : displayName,
+                kind: .project,
+                contextID: projectPath,
+                projectPath: projectPath
+            )
+        case .model, .effort, .source, .transport, .wireAPI:
+            guard let value, !value.isEmpty else {
+                return .unattributed
+            }
+            return PerformanceDashboardSeries(
+                id: "\(kind.performanceDashboardSeriesPrefix):\(value)",
+                name: value,
+                kind: kind,
+                contextID: value
+            )
+        }
+    }
+
+    static func performanceDashboardIntValues(_ value: String?) -> [Int64] {
+        guard let value, !value.isEmpty else {
+            return []
+        }
+        return value.split(separator: ",").compactMap { Int64($0) }
+    }
+}
+
+struct PerformanceDashboardBreakdownSQL {
+    let kindSQL: String
+    let valueSQL: String
+    let projectPathSQL: String
+    let projectNameSQL: String
+}
+
+private extension PerformanceDashboardBreakdownDimension {
+    var isSupportedByEfficiencyDashboard: Bool {
+        switch self {
+        case .model, .project, .effort, .source:
+            return true
+        case .transport, .wireAPI:
+            return false
+        }
+    }
+}
+
+private extension PerformanceDashboardSeriesKind {
+    var performanceDashboardSeriesPrefix: String {
+        switch self {
+        case .model:
+            return "model"
+        case .effort:
+            return "effort"
+        case .source:
+            return "source"
+        case .transport:
+            return "transport"
+        case .wireAPI:
+            return "wire-api"
+        case .aggregate, .project, .unattributed:
+            return rawValue
         }
     }
 }

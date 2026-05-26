@@ -408,33 +408,47 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             _ = importSessionTaskTimingIfNeeded(store: store, at: now, calendar: .autoupdatingCurrent)
         }
 
-        let timingSamples = try store.performanceDashboardTimingSamples(
-            periodStart: request.periodStart,
-            periodEnd: request.periodEnd
-        )
-        let reliabilitySamples = try store.performanceDashboardReliabilitySamples(
-            periodStart: request.periodStart,
-            periodEnd: request.periodEnd
-        )
-
         switch request.mode {
         case .performance:
+            let presentation = try store.performanceDashboardPresentation(
+                breakdownDimension: request.breakdownDimension,
+                range: request.range,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd,
+                calendar: request.calendar
+            )
             return PerformanceDashboardLoadResult(
-                timingSamples: timingSamples,
-                reliabilitySamples: reliabilitySamples,
+                timingSamples: [],
+                reliabilitySamples: [],
                 efficiencyTokenSamples: [],
                 modelCapabilities: [],
+                durationPoints: presentation.durationPoints,
+                reliabilityPoints: presentation.reliabilityPoints,
+                breakdownRows: presentation.breakdownRows,
+                efficiencyPoints: [],
+                efficiencyRows: [],
+                series: presentation.series,
                 historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: false)
             )
         case .efficiency:
+            let presentation = try store.performanceDashboardEfficiencyPresentation(
+                breakdownDimension: request.breakdownDimension,
+                range: request.range,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd,
+                calendar: request.calendar
+            )
             return PerformanceDashboardLoadResult(
-                timingSamples: timingSamples,
-                reliabilitySamples: reliabilitySamples,
-                efficiencyTokenSamples: try store.performanceDashboardEfficiencyTokenSamples(
-                    periodStart: request.periodStart,
-                    periodEnd: request.periodEnd
-                ),
-                modelCapabilities: try store.codexModelCapabilities(),
+                timingSamples: [],
+                reliabilitySamples: [],
+                efficiencyTokenSamples: [],
+                modelCapabilities: [],
+                durationPoints: [],
+                reliabilityPoints: [],
+                breakdownRows: [],
+                efficiencyPoints: presentation.points,
+                efficiencyRows: presentation.rows,
+                series: presentation.series,
                 historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: true)
             )
         }
