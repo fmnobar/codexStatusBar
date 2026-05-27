@@ -249,6 +249,7 @@ extension UsageHistoryStore {
                 effort TEXT,
                 source TEXT,
                 dimensions_json TEXT,
+                event_timestamp INTEGER,
                 recorded_at INTEGER NOT NULL,
                 PRIMARY KEY (session_id, turn_id)
             )
@@ -474,6 +475,8 @@ extension UsageHistoryStore {
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_output", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfNeeded(table: "token_series_catalog", column: "has_reasoning", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfNeeded(table: "token_project_catalog", column: "display_name", definition: "TEXT")
+        try addColumnIfNeeded(table: "codex_session_task_timing_events", column: "event_timestamp", definition: "INTEGER")
+        try backfillSessionTaskTimingEventTimestamp()
 
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_timestamp ON usage_samples(window, timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_usage_samples_window_bucket_timestamp ON usage_samples(window, bucket_id, timestamp DESC)")
@@ -513,6 +516,7 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_capture_state_checked ON codex_turn_performance_capture_state(last_checked_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_started_at ON codex_session_task_timing_events(started_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_completed_at ON codex_session_task_timing_events(completed_at)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_event_timestamp ON codex_session_task_timing_events(event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_model_started ON codex_session_task_timing_events(model, started_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_project_started ON codex_session_task_timing_events(project_path, started_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_effort_started ON codex_session_task_timing_events(effort, started_at)")
@@ -1083,6 +1087,16 @@ extension UsageHistoryStore {
         }
 
         try execute("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
+    }
+
+    func backfillSessionTaskTimingEventTimestamp() throws {
+        try execute(
+            """
+            UPDATE codex_session_task_timing_events
+            SET event_timestamp = COALESCE(started_at, completed_at, recorded_at)
+            WHERE event_timestamp IS NULL
+            """
+        )
     }
 
     struct StoredUsageSampleConsumptionRow: Hashable {

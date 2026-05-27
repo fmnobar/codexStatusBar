@@ -8,23 +8,7 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Add indexed event timestamp for session task timing queries | Timing queries use `COALESCE(started_at, completed_at, recorded_at)` in `WHERE`/`ORDER BY`, which prevents simple index use and will age poorly. | Needs a migration/index plan. |
-
-### Add Indexed Event Timestamp For Session Task Timing Queries
-
-- Problem:
-  - Session timing queries filter and sort on `COALESCE(started_at, completed_at, recorded_at)`, which currently scans `codex_session_task_timing_events`.
-  - The table is small today, but this will degrade as task timing history grows.
-- Implementation options:
-  - Add a stored `event_timestamp` column populated during import and migration.
-  - Add an index on `event_timestamp`.
-  - Update timing queries and bounds queries to use that column directly.
-- Planning notes:
-  - Needs a migration plan and compatibility tests for existing databases with partial timing rows.
-- Verification:
-  - Add migration tests for rows with started, completed, and recorded-only timestamps.
-  - Add query-plan tests proving the timing dashboard query uses the new timestamp index.
-  - Run full verification and relaunch latest installed app with `./install.sh`.
+| - | No normal implementation items remain | Current performance, telemetry, and analytics backlog items are complete. | Do a product/backlog review before planning more implementation work. |
 
 ## Conditional Watchlist
 
@@ -34,6 +18,13 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Add indexed event timestamp for session task timing queries
+  - Added a stored `event_timestamp` column to `codex_session_task_timing_events`.
+  - Backfilled existing timing rows from `started_at`, then `completed_at`, then `recorded_at`.
+  - Indexed `event_timestamp` and updated Performance Dashboard timing and bounds queries to use it directly instead of computed `COALESCE(...)` filters.
+  - Updated session timing imports and backup restore to maintain or reconstruct the indexed timestamp.
+  - Added migration, upsert, backup compatibility, and query-plan tests for the indexed timestamp path.
 
 - Add built-in dashboard/menu performance instrumentation
   - Added a local JSON-backed performance diagnostics store with bounded retention and metadata sanitization.

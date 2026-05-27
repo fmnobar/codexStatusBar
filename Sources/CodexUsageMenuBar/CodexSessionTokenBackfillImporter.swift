@@ -1441,6 +1441,10 @@ struct CodexSessionTaskTimingEvent: Equatable, Sendable {
         [startedAt, completedAt].compactMap(\.self).max()
     }
 
+    var eventTimestamp: Date {
+        startedAt ?? completedAt ?? recordedAt
+    }
+
     func merged(with incoming: CodexSessionTaskTimingEvent) -> CodexSessionTaskTimingEvent {
         CodexSessionTaskTimingEvent(
             sessionID: sessionID,

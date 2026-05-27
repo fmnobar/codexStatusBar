@@ -54,6 +54,53 @@ extension UsageHistoryStoreTests {
         XCTAssertPlanMentions(rollupPlan, "idx_usage_rollups_window_sample_timestamp")
     }
 
+    func testPerformanceDashboardTimingQueriesUseIndexedEventTimestamp() throws {
+        let fixture = try makePerformanceFixture()
+        let month = UsageHistoryRange.month.period(containing: fixture.now, calendar: calendar)
+        let start = month.start.timeIntervalSince1970Int
+        let end = month.end.timeIntervalSince1970Int
+        let bucketEnd = calendar.date(byAdding: .day, value: 1, to: month.start)!.timeIntervalSince1970Int
+
+        let timingPlan = try queryPlan(
+            at: fixture.databaseURL,
+            sql: """
+            WITH buckets(bucket_start, query_end, bucket_end) AS (
+                VALUES (\(start), \(bucketEnd), \(bucketEnd))
+            )
+            SELECT b.bucket_start, COUNT(*)
+            FROM buckets b
+            JOIN codex_session_task_timing_events t
+                ON t.event_timestamp >= b.bucket_start
+                AND t.event_timestamp < b.query_end
+            WHERE t.event_timestamp >= \(start)
+                AND t.event_timestamp < \(end)
+            GROUP BY b.bucket_start
+            """
+        )
+
+        XCTAssertPlanUsesSearch(
+            timingPlan,
+            tableOrAlias: "t",
+            fullScanTable: "codex_session_task_timing_events"
+        )
+        XCTAssertPlanMentions(timingPlan, "idx_codex_session_task_timing_event_timestamp")
+
+        let boundsPlan = try queryPlan(
+            at: fixture.databaseURL,
+            sql: """
+            SELECT MIN(timestamp), MAX(timestamp)
+            FROM (
+                SELECT event_timestamp AS timestamp
+                FROM codex_session_task_timing_events
+                WHERE event_timestamp IS NOT NULL
+            )
+            """
+        )
+
+        XCTAssertPlanUsesSearch(boundsPlan, table: "codex_session_task_timing_events")
+        XCTAssertPlanMentions(boundsPlan, "idx_codex_session_task_timing_event_timestamp")
+    }
+
     func testTokenHistoryAndDashboardHotQueriesUseBoundedIndexes() throws {
         let fixture = try makePerformanceFixture()
         let month = UsageHistoryRange.month.period(containing: fixture.now, calendar: calendar)

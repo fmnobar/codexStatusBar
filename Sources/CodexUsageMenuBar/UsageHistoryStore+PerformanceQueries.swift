@@ -8,13 +8,13 @@ extension UsageHistoryStore {
     ) throws -> [PerformanceDashboardTimingSample] {
         let statement = try prepare(
             """
-            SELECT COALESCE(started_at, completed_at, recorded_at) AS event_timestamp,
+            SELECT event_timestamp,
                 session_id, turn_id, started_at, completed_at, duration_ms,
                 time_to_first_token_ms, model, project_path, project_name,
                 effort, source
             FROM codex_session_task_timing_events
-            WHERE COALESCE(started_at, completed_at, recorded_at) >= ?
-              AND COALESCE(started_at, completed_at, recorded_at) < ?
+            WHERE event_timestamp >= ?
+              AND event_timestamp < ?
             ORDER BY event_timestamp ASC, session_id ASC, turn_id ASC
             """
         )
@@ -260,7 +260,6 @@ extension UsageHistoryStore {
             dimension: breakdownDimension,
             unavailableAsUnattributed: breakdownDimension == .transport || breakdownDimension == .wireAPI
         )
-        let eventTimestampSQL = "COALESCE(started_at, completed_at, recorded_at)"
         let statement = try prepare(
             """
             WITH buckets(bucket_start, query_end, bucket_end) AS (
@@ -282,10 +281,10 @@ extension UsageHistoryStore {
                     NULL AS wire_api
                 FROM buckets b
                 JOIN codex_session_task_timing_events t
-                    ON \(eventTimestampSQL) >= b.bucket_start
-                    AND \(eventTimestampSQL) < b.query_end
-                WHERE \(eventTimestampSQL) >= ?
-                    AND \(eventTimestampSQL) < ?
+                    ON t.event_timestamp >= b.bucket_start
+                    AND t.event_timestamp < b.query_end
+                WHERE t.event_timestamp >= ?
+                    AND t.event_timestamp < ?
             ),
             expanded AS (
                 SELECT
@@ -684,9 +683,9 @@ extension UsageHistoryStore {
             """
             SELECT MIN(timestamp), MAX(timestamp)
             FROM (
-                SELECT COALESCE(started_at, completed_at, recorded_at) AS timestamp
+                SELECT event_timestamp AS timestamp
                 FROM codex_session_task_timing_events
-                WHERE COALESCE(started_at, completed_at, recorded_at) IS NOT NULL
+                WHERE event_timestamp IS NOT NULL
                 UNION ALL
                 SELECT event_timestamp AS timestamp
                 FROM codex_turn_performance_events

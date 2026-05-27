@@ -232,6 +232,11 @@ extension UsageHistoryStore {
             table: "codex_session_task_timing_events",
             schema: "imported_usage_history"
         )
+        let importedSessionTaskTimingEventTimestampExpression = try importedHasSessionTaskTimingEvents && tableHasColumn(
+            table: "codex_session_task_timing_events",
+            column: "event_timestamp",
+            schema: "imported_usage_history"
+        ) ? "COALESCE(event_timestamp, started_at, completed_at, recorded_at)" : "COALESCE(started_at, completed_at, recorded_at)"
         let importedHasSessionTaskTimingImportFiles = try tableExists(
             table: "codex_session_task_timing_import_files",
             schema: "imported_usage_history"
@@ -430,12 +435,13 @@ extension UsageHistoryStore {
                         session_id, turn_id, source_path, started_at, completed_at,
                         duration_ms, time_to_first_token_ms, model_context_window,
                         collaboration_mode_kind, model, project_path, project_name,
-                        effort, source, dimensions_json, recorded_at
+                        effort, source, dimensions_json, event_timestamp, recorded_at
                     )
                     SELECT session_id, turn_id, source_path, started_at, completed_at,
                         duration_ms, time_to_first_token_ms, model_context_window,
                         collaboration_mode_kind, model, project_path, project_name,
-                        effort, source, dimensions_json, recorded_at
+                        effort, source, dimensions_json,
+                        \(importedSessionTaskTimingEventTimestampExpression), recorded_at
                     FROM imported_usage_history.codex_session_task_timing_events
                     """
                 )

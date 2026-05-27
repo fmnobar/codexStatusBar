@@ -2973,6 +2973,49 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.performanceDashboardBounds()?.earliest, date("2026-05-02T10:00:00Z"))
     }
 
+    func testSessionTaskTimingUpsertMaintainsIndexedEventTimestamp() throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let completed = date("2026-05-17T10:00:05Z")
+        let started = date("2026-05-17T10:00:00Z")
+
+        let firstImport = try store.importSessionTaskTimingEvents([
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "session-event-timestamp",
+                turnID: "turn-a",
+                completedAt: completed,
+                recordedAt: completed
+            )),
+        ])
+
+        XCTAssertEqual(firstImport.insertedCount, 1)
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT CAST(event_timestamp AS TEXT) FROM codex_session_task_timing_events WHERE session_id = 'session-event-timestamp'"
+            ),
+            ["\(completed.timeIntervalSince1970Int)"]
+        )
+
+        let repairImport = try store.importSessionTaskTimingEvents([
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "session-event-timestamp",
+                turnID: "turn-a",
+                startedAt: started,
+                recordedAt: completed
+            )),
+        ])
+
+        XCTAssertEqual(repairImport.updatedCount, 1)
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT CAST(event_timestamp AS TEXT) FROM codex_session_task_timing_events WHERE session_id = 'session-event-timestamp'"
+            ),
+            ["\(started.timeIntervalSince1970Int)"]
+        )
+        XCTAssertEqual(try store.sessionTaskTimingEvents().count, 1)
+    }
+
     func testPerformanceDashboardPresentationQueryMatchesBuilderForBreakdowns() throws {
         let store = try makeStore()
         try seedPerformanceDashboardFixture(in: store)

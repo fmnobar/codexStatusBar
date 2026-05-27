@@ -69,6 +69,7 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_token_dimension_catalog_key_seen"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_started_at"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_completed_at"))
+        XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_event_timestamp"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_project_started"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_effort_started"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_duration"))
@@ -80,6 +81,69 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_codex_model_capabilities_visibility"))
         XCTAssertTrue(indexes.contains("idx_codex_model_capability_reasoning_effort"))
         XCTAssertTrue(indexes.contains("idx_codex_model_capability_tool_kind_value"))
+    }
+
+    func testSessionTaskTimingEventTimestampMigrationBackfillsExistingRows() async throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        try createLegacyHistoryDatabase(at: databaseURL)
+        let started = date("2026-05-17T10:00:00Z").timeIntervalSince1970Int
+        let completed = date("2026-05-17T10:00:05Z").timeIntervalSince1970Int
+        let recorded = date("2026-05-17T10:00:10Z").timeIntervalSince1970Int
+
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            CREATE TABLE codex_session_task_timing_events (
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                source_path TEXT,
+                started_at INTEGER,
+                completed_at INTEGER,
+                duration_ms INTEGER,
+                time_to_first_token_ms INTEGER,
+                model_context_window INTEGER,
+                collaboration_mode_kind TEXT,
+                model TEXT,
+                project_path TEXT,
+                project_name TEXT,
+                effort TEXT,
+                source TEXT,
+                dimensions_json TEXT,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, turn_id)
+            );
+            INSERT INTO codex_session_task_timing_events (
+                session_id, turn_id, started_at, completed_at, recorded_at
+            ) VALUES
+                ('session-a', 'turn-a', \(started), \(completed), \(recorded)),
+                ('session-b', 'turn-b', NULL, \(completed), \(recorded)),
+                ('session-c', 'turn-c', NULL, NULL, \(recorded));
+            """
+        )
+
+        _ = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+
+        let rows = try sqliteStrings(
+            at: databaseURL,
+            sql: """
+            SELECT session_id || ':' || event_timestamp
+            FROM codex_session_task_timing_events
+            ORDER BY session_id
+            """
+        )
+
+        XCTAssertEqual(
+            rows,
+            [
+                "session-a:\(started)",
+                "session-b:\(completed)",
+                "session-c:\(recorded)",
+            ]
+        )
     }
 
     func testTokenModelCleanupMigrationRepairsStoredRowsAndCatalogs() async throws {

@@ -186,7 +186,7 @@ extension UsageHistoryStore {
                 collaboration_mode_kind, model, project_path, effort, source,
                 dimensions_json, recorded_at
             FROM codex_session_task_timing_events
-            ORDER BY COALESCE(started_at, completed_at, recorded_at), session_id, turn_id
+            ORDER BY event_timestamp, session_id, turn_id
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -283,8 +283,8 @@ extension UsageHistoryStore {
                 session_id, turn_id, source_path, started_at, completed_at,
                 duration_ms, time_to_first_token_ms, model_context_window,
                 collaboration_mode_kind, model, project_path, project_name, effort,
-                source, dimensions_json, recorded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source, dimensions_json, event_timestamp, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -300,7 +300,7 @@ extension UsageHistoryStore {
             SET source_path = ?, started_at = ?, completed_at = ?, duration_ms = ?,
                 time_to_first_token_ms = ?, model_context_window = ?,
                 collaboration_mode_kind = ?, model = ?, project_path = ?, project_name = ?,
-                effort = ?, source = ?, dimensions_json = ?, recorded_at = ?
+                effort = ?, source = ?, dimensions_json = ?, event_timestamp = ?, recorded_at = ?
             WHERE session_id = ? AND turn_id = ?
             """
         )
@@ -319,9 +319,10 @@ extension UsageHistoryStore {
         bindOptionalText(event.effort, to: 11, in: statement)
         bindOptionalText(event.source, to: 12, in: statement)
         bindOptionalText(event.dimensionsJSON, to: 13, in: statement)
-        bindOptionalDate(event.recordedAt, to: 14, in: statement)
-        bindText(event.sessionID, to: 15, in: statement)
-        bindText(event.turnID, to: 16, in: statement)
+        bindOptionalDate(event.eventTimestamp, to: 14, in: statement)
+        bindOptionalDate(event.recordedAt, to: 15, in: statement)
+        bindText(event.sessionID, to: 16, in: statement)
+        bindText(event.turnID, to: 17, in: statement)
 
         try step(statement)
     }
@@ -342,7 +343,8 @@ extension UsageHistoryStore {
         bindOptionalText(event.effort, to: 13, in: statement)
         bindOptionalText(event.source, to: 14, in: statement)
         bindOptionalText(event.dimensionsJSON, to: 15, in: statement)
-        bindOptionalDate(event.recordedAt, to: 16, in: statement)
+        bindOptionalDate(event.eventTimestamp, to: 16, in: statement)
+        bindOptionalDate(event.recordedAt, to: 17, in: statement)
     }
 
     func codexTurnPerformanceCaptureState(

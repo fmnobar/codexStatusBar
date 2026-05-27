@@ -379,7 +379,7 @@ extension UsageHistoryStoreTests {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
 
-        let (destinationStore, _) = try makeTemporaryStore()
+        let (destinationStore, destinationDatabaseURL) = try makeTemporaryStore()
         try destinationStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 80)), at: date("2026-04-14T20:00:00Z"))
 
         try destinationStore.importBackup(from: backupURL)
@@ -396,6 +396,13 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(timingEvent.durationMilliseconds, 4_000)
         XCTAssertEqual(timingEvent.timeToFirstTokenMilliseconds, 700)
         XCTAssertEqual(timingEvent.projectName, "backup-project")
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: destinationDatabaseURL,
+                sql: "SELECT CAST(event_timestamp AS TEXT) FROM codex_session_task_timing_events WHERE session_id = 'session-backup'"
+            ),
+            ["\(date("2026-04-14T20:11:00Z").timeIntervalSince1970Int)"]
+        )
         XCTAssertEqual(try destinationStore.codexSessionTaskTimingCaptureState().status, .imported)
         let thread = try XCTUnwrap(try destinationStore.codexThreadCatalogThreads().first)
         XCTAssertEqual(thread.threadID, "thread-backup")
@@ -411,6 +418,51 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try destinationStore.codexModelCapabilitiesCaptureState().status, .imported)
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
+    func testBackupImportReconstructsMissingSessionTaskTimingEventTimestamp() async throws {
+        let backupURL = try makeTemporaryDirectory().appendingPathComponent("legacy-backup.sqlite3")
+        try createLegacyHistoryDatabase(at: backupURL)
+        let completed = date("2026-04-14T20:11:04Z").timeIntervalSince1970Int
+        let recorded = date("2026-04-14T20:11:05Z").timeIntervalSince1970Int
+        try executeSQLite(
+            at: backupURL,
+            sql: """
+            CREATE TABLE codex_session_task_timing_events (
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                source_path TEXT,
+                started_at INTEGER,
+                completed_at INTEGER,
+                duration_ms INTEGER,
+                time_to_first_token_ms INTEGER,
+                model_context_window INTEGER,
+                collaboration_mode_kind TEXT,
+                model TEXT,
+                project_path TEXT,
+                project_name TEXT,
+                effort TEXT,
+                source TEXT,
+                dimensions_json TEXT,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, turn_id)
+            );
+            INSERT INTO codex_session_task_timing_events (
+                session_id, turn_id, completed_at, recorded_at
+            ) VALUES ('session-legacy-backup', 'turn-a', \(completed), \(recorded));
+            """
+        )
+        let (destinationStore, destinationDatabaseURL) = try makeTemporaryStore()
+
+        try destinationStore.importBackup(from: backupURL)
+
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: destinationDatabaseURL,
+                sql: "SELECT CAST(event_timestamp AS TEXT) FROM codex_session_task_timing_events WHERE session_id = 'session-legacy-backup'"
+            ),
+            ["\(completed)"]
+        )
     }
 
     func testTokenProjectDisplayNamesCanBeRenamedResetAndSurviveCatalogRebuild() async throws {
