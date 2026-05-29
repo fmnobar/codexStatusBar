@@ -25,17 +25,45 @@ struct TokenDashboardLoadRequest: Equatable {
     let range: UsageHistoryRange
     let periodStart: Date
     let periodEnd: Date
+    let includeAttributionCoverage: Bool
 
     init(
         breakdownDimension: TokenDashboardBreakdownDimension = .model,
         range: UsageHistoryRange,
         periodStart: Date,
-        periodEnd: Date
+        periodEnd: Date,
+        includeAttributionCoverage: Bool = true
     ) {
         self.breakdownDimension = breakdownDimension
         self.range = range
         self.periodStart = periodStart
         self.periodEnd = periodEnd
+        self.includeAttributionCoverage = includeAttributionCoverage
+    }
+}
+
+struct TokenDashboardQueryTimings: Equatable {
+    var availableBreakdownDimensions: TimeInterval = 0
+    var points: TimeInterval = 0
+    var series: TimeInterval = 0
+    var attributionCoverage: TimeInterval?
+    var bounds: TimeInterval = 0
+
+    func metadata() -> [String: String] {
+        var metadata: [String: String] = [
+            "availableBreakdownsMs": Self.formatMilliseconds(availableBreakdownDimensions),
+            "pointsMs": Self.formatMilliseconds(points),
+            "seriesMs": Self.formatMilliseconds(series),
+            "boundsMs": Self.formatMilliseconds(bounds),
+        ]
+        if let attributionCoverage {
+            metadata["coverageMs"] = Self.formatMilliseconds(attributionCoverage)
+        }
+        return metadata
+    }
+
+    static func formatMilliseconds(_ interval: TimeInterval) -> String {
+        String(format: "%.1f", max(interval * 1_000, 0))
     }
 }
 
@@ -45,6 +73,15 @@ struct TokenDashboardLoadResult: Equatable {
     let attributionCoverageRows: [TokenAttributionCoverageRow]
     let availableBreakdownDimensions: [TokenDashboardBreakdownDimension]
     let historyBounds: UsageHistoryBounds?
+    var queryTimings = TokenDashboardQueryTimings()
+
+    static func == (lhs: TokenDashboardLoadResult, rhs: TokenDashboardLoadResult) -> Bool {
+        lhs.points == rhs.points
+            && lhs.series == rhs.series
+            && lhs.attributionCoverageRows == rhs.attributionCoverageRows
+            && lhs.availableBreakdownDimensions == rhs.availableBreakdownDimensions
+            && lhs.historyBounds == rhs.historyBounds
+    }
 }
 
 protocol UsageHistoryDatabaseWorking: Sendable {
@@ -64,6 +101,7 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
     func exportBackup(to destinationURL: URL) async throws
@@ -81,7 +119,20 @@ protocol UsageHistoryDatabaseWorking: Sendable {
 protocol UsageHistoryDashboardQueryWorking: Sendable {
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
+}
+
+extension UsageHistoryDatabaseWorking {
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
+        throw UsageHistoryStoreError.databaseOperationFailed("Token attribution coverage is unavailable.")
+    }
+}
+
+extension UsageHistoryDashboardQueryWorking {
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
+        throw UsageHistoryStoreError.databaseOperationFailed("Token attribution coverage is unavailable.")
+    }
 }
 
 enum UsageHistorySnapshotReader {
@@ -137,29 +188,64 @@ enum UsageHistorySnapshotReader {
         store: UsageHistoryStore,
         request: TokenDashboardLoadRequest
     ) throws -> TokenDashboardLoadResult {
-        let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
-            periodStart: request.periodStart,
-            periodEnd: request.periodEnd
-        )
-        return TokenDashboardLoadResult(
-            points: try store.tokenDashboardPoints(
+        var timings = TokenDashboardQueryTimings()
+        let availableBreakdownDimensions = try measure(&timings.availableBreakdownDimensions) {
+            try store.tokenDashboardAvailableBreakdownDimensions(
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            )
+        }
+        let points = try measure(&timings.points) {
+            try store.tokenDashboardPoints(
                 breakdownDimension: request.breakdownDimension,
                 range: request.range,
                 periodStart: request.periodStart,
                 periodEnd: request.periodEnd
-            ),
-            series: try store.tokenDashboardSeries(
+            )
+        }
+        let series = try measure(&timings.series) {
+            try store.tokenDashboardSeries(
                 breakdownDimension: request.breakdownDimension,
                 periodStart: request.periodStart,
                 periodEnd: request.periodEnd
-            ),
-            attributionCoverageRows: try store.tokenAttributionCoverageRows(
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
+            )
+        }
+        let attributionCoverageRows: [TokenAttributionCoverageRow]
+        if request.includeAttributionCoverage {
+            attributionCoverageRows = try measureOptional(&timings.attributionCoverage) {
+                try store.tokenAttributionCoverageRows(
+                    periodStart: request.periodStart,
+                    periodEnd: request.periodEnd
+                )
+            }
+        } else {
+            attributionCoverageRows = []
+        }
+        let historyBounds = try measure(&timings.bounds) {
+            try store.tokenDashboardBounds()
+        }
+        return TokenDashboardLoadResult(
+            points: points,
+            series: series,
+            attributionCoverageRows: attributionCoverageRows,
             availableBreakdownDimensions: availableBreakdownDimensions,
-            historyBounds: try store.tokenDashboardBounds()
+            historyBounds: historyBounds,
+            queryTimings: timings
         )
+    }
+
+    private static func measure<T>(_ destination: inout TimeInterval, operation: () throws -> T) rethrows -> T {
+        let start = Date()
+        let value = try operation()
+        destination = Date().timeIntervalSince(start)
+        return value
+    }
+
+    private static func measureOptional<T>(_ destination: inout TimeInterval?, operation: () throws -> T) rethrows -> T {
+        let start = Date()
+        let value = try operation()
+        destination = Date().timeIntervalSince(start)
+        return value
     }
 
     static func performanceDashboardSnapshot(
@@ -259,6 +345,10 @@ actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         try UsageHistorySnapshotReader.tokenDashboardSnapshot(store: store(), request: request)
+    }
+
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
+        try store().tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
     }
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
@@ -366,6 +456,10 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
         try await dashboardQueryWorker.tokenDashboardSnapshot(for: request)
+    }
+
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
+        try await dashboardQueryWorker.tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
     }
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
@@ -762,6 +856,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         try UsageHistorySnapshotReader.tokenDashboardSnapshot(store: store(), request: request)
+    }
+
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
+        try store().tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
     }
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {

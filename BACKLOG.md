@@ -28,6 +28,14 @@
 
 ## Done
 
+- Reduce Token Dashboard reload disk I/O
+  - Split Token Dashboard loading into a primary chart/summary/table snapshot and a separate lazy attribution coverage load.
+  - Added separate coverage caching by clipped period so breakdown switches reuse attribution coverage instead of re-querying it.
+  - Added safe Token Dashboard subquery timing metadata for primary and coverage phases in local performance diagnostics.
+  - Debounced history-change reloads so notification storms coalesce into one cache invalidation and one reload.
+  - Set the read-only dashboard SQLite connection to `PRAGMA temp_store=MEMORY` to avoid file-backed temp sorter writes for dashboard read queries.
+  - Kept token totals, chart points, coverage rows, CSV columns, dashboard semantics, and privacy boundaries unchanged.
+
 - Optimize Performance Dashboard reliability-heavy SQL paths
   - Split Performance Dashboard reliability aggregation into separate bounded status-count and failure-error phases so success and unknown rows no longer group by `error_summary`.
   - Added covering index `idx_codex_turn_performance_events_reliability_cover` for month/year reliability reads while preserving existing narrower query indexes.

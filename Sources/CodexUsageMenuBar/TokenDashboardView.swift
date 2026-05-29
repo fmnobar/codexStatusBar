@@ -240,6 +240,16 @@ struct TokenDashboardSnapshotCacheKey: Hashable {
     }
 }
 
+struct TokenDashboardCoverageCacheKey: Hashable {
+    let periodStart: Date
+    let periodEnd: Date
+
+    init(period: UsageHistoryPeriod) {
+        periodStart = period.start
+        periodEnd = period.end
+    }
+}
+
 struct TokenDashboardEmptyState: Equatable {
     let title: String
     let message: String
@@ -280,6 +290,8 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var selectedSeriesIDs: Set<String> = []
     @Published private(set) var historyBounds: UsageHistoryBounds?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var isAttributionCoverageLoading = false
+    @Published private(set) var attributionCoverageErrorMessage: String?
     @Published private(set) var breakdownSortState: TokenDashboardSortState<TokenDashboardBreakdownSortColumn>?
     @Published private(set) var attributionSortState: TokenDashboardSortState<TokenDashboardAttributionSortColumn>?
 
@@ -287,11 +299,17 @@ final class TokenDashboardViewModel: ObservableObject {
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
+    private let historyChangeDebounceInterval: TimeInterval
     private var reloadTask: Task<Void, Never>?
+    private var coverageTask: Task<Void, Never>?
+    private var historyChangeReloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
     private var snapshotCache: [TokenDashboardSnapshotCacheKey: TokenDashboardLoadResult] = [:]
     private var snapshotCacheOrder: [TokenDashboardSnapshotCacheKey] = []
+    private var coverageCache: [TokenDashboardCoverageCacheKey: [TokenAttributionCoverageRow]] = [:]
+    private var coverageCacheOrder: [TokenDashboardCoverageCacheKey] = []
     private let snapshotCacheLimit = 24
+    private let coverageCacheLimit = 24
     private var nextReloadInstrumentationKind: AppPerformanceEventKind = .tokenDashboardReload
 
     init(
@@ -299,12 +317,14 @@ final class TokenDashboardViewModel: ObservableObject {
         performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
+        historyChangeDebounceInterval: TimeInterval = 0.3,
         automaticallyReload: Bool = true
     ) {
         self.database = database
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.now = now
         self.calendar = calendar
+        self.historyChangeDebounceInterval = historyChangeDebounceInterval
         selectedPeriodStart = UsageHistoryRange.month.period(containing: now(), calendar: calendar).start
         if automaticallyReload {
             scheduleReload()
@@ -330,6 +350,8 @@ final class TokenDashboardViewModel: ObservableObject {
 
     deinit {
         reloadTask?.cancel()
+        coverageTask?.cancel()
+        historyChangeReloadTask?.cancel()
     }
 
     var selectedPeriod: UsageHistoryPeriod {
@@ -427,6 +449,10 @@ final class TokenDashboardViewModel: ObservableObject {
 
     var hasVisiblePoints: Bool {
         !chartPoints.isEmpty
+    }
+
+    var canExportCSV: Bool {
+        hasVisiblePoints && !isAttributionCoverageLoading && attributionCoverageErrorMessage == nil
     }
 
     var summaryTiles: [TokenDashboardSummaryTile] {
@@ -581,6 +607,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
     @discardableResult
     func reload() async -> Bool {
+        cancelPendingHistoryChangeReload(invalidateCaches: true)
         reloadTask?.cancel()
         reloadTask = nil
         return await performReload()
@@ -593,27 +620,39 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         let generation = nextReloadGeneration()
+        coverageTask?.cancel()
+        coverageTask = nil
         let queryPeriod = periodForQuery()
         let request = TokenDashboardLoadRequest(
             breakdownDimension: selectedBreakdownDimension,
             range: selectedRange,
             periodStart: queryPeriod.start,
-            periodEnd: queryPeriod.end
+            periodEnd: queryPeriod.end,
+            includeAttributionCoverage: false
         )
         let cacheKey = TokenDashboardSnapshotCacheKey(request: request, calendar: calendar)
+        let coverageKey = TokenDashboardCoverageCacheKey(period: queryPeriod)
         let instrumentationKind = nextReloadInstrumentationKind
         nextReloadInstrumentationKind = .tokenDashboardReload
         let instrumentationSpan = performanceInstrumentationStore?.begin(
             instrumentationKind,
-            metadata: dashboardInstrumentationMetadata(cacheHit: false)
+            metadata: dashboardInstrumentationMetadata(cacheHit: false, phase: "primary")
         )
 
         if let cachedResult = cachedSnapshot(for: cacheKey) {
-            let applied = applyLoadResult(cachedResult)
+            let applied = applyLoadResult(cachedResult, updateCoverageRows: false)
+            if applied {
+                prepareAttributionCoverageLoad(
+                    coverageKey: coverageKey,
+                    queryPeriod: queryPeriod,
+                    generation: generation,
+                    instrumentationKind: instrumentationKind
+                )
+            }
             performanceInstrumentationStore?.finish(
                 instrumentationSpan,
                 status: applied && hasTokenData ? .success : .noData,
-                metadata: instrumentationResultMetadata(cacheHit: true)
+                metadata: instrumentationResultMetadata(result: cachedResult, cacheHit: true, phase: "primary")
             )
             return applied
         }
@@ -625,11 +664,19 @@ final class TokenDashboardViewModel: ObservableObject {
             }
 
             cacheSnapshot(result, for: cacheKey)
-            let applied = applyLoadResult(result)
+            let applied = applyLoadResult(result, updateCoverageRows: false)
+            if applied {
+                prepareAttributionCoverageLoad(
+                    coverageKey: coverageKey,
+                    queryPeriod: queryPeriod,
+                    generation: generation,
+                    instrumentationKind: instrumentationKind
+                )
+            }
             performanceInstrumentationStore?.finish(
                 instrumentationSpan,
                 status: applied && hasTokenData ? .success : .noData,
-                metadata: instrumentationResultMetadata(cacheHit: false)
+                metadata: instrumentationResultMetadata(result: result, cacheHit: false, phase: "primary")
             )
             return applied
         } catch {
@@ -640,6 +687,10 @@ final class TokenDashboardViewModel: ObservableObject {
             points = []
             series = []
             attributionCoverageRows = []
+            isAttributionCoverageLoading = false
+            attributionCoverageErrorMessage = nil
+            coverageTask?.cancel()
+            coverageTask = nil
             availableBreakdownDimensions = [.model]
             historyBounds = nil
             selectedSeriesIDs = []
@@ -654,16 +705,57 @@ final class TokenDashboardViewModel: ObservableObject {
         snapshotCacheOrder.removeAll()
     }
 
+    func invalidateCoverageCache() {
+        coverageCache.removeAll()
+        coverageCacheOrder.removeAll()
+    }
+
     func invalidateSnapshotCacheAndReload() {
         invalidateSnapshotCache()
+        invalidateCoverageCache()
         scheduleReload(trigger: .tokenDashboardPeriodChange)
     }
 
     func scheduleReload(trigger: AppPerformanceEventKind = .tokenDashboardReload) {
+        cancelPendingHistoryChangeReload(invalidateCaches: true)
         nextReloadInstrumentationKind = trigger
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.performReload()
+        }
+    }
+
+    func scheduleHistoryChangeReload() {
+        historyChangeReloadTask?.cancel()
+        historyChangeReloadTask = Task { [weak self, historyChangeDebounceInterval] in
+            if historyChangeDebounceInterval > 0 {
+                try? await Task.sleep(nanoseconds: UInt64((historyChangeDebounceInterval * 1_000_000_000).rounded()))
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            await MainActor.run {
+                guard let self else {
+                    return
+                }
+                self.historyChangeReloadTask = nil
+                self.invalidateSnapshotCache()
+                self.invalidateCoverageCache()
+                self.scheduleReload(trigger: .tokenDashboardPeriodChange)
+            }
+        }
+    }
+
+    private func cancelPendingHistoryChangeReload(invalidateCaches: Bool) {
+        guard historyChangeReloadTask != nil else {
+            return
+        }
+
+        historyChangeReloadTask?.cancel()
+        historyChangeReloadTask = nil
+        if invalidateCaches {
+            invalidateSnapshotCache()
+            invalidateCoverageCache()
         }
     }
 
@@ -674,6 +766,10 @@ final class TokenDashboardViewModel: ObservableObject {
 
     var snapshotCacheEntryCount: Int {
         snapshotCache.count
+    }
+
+    var coverageCacheEntryCount: Int {
+        coverageCache.count
     }
 
     private func cachedSnapshot(for key: TokenDashboardSnapshotCacheKey) -> TokenDashboardLoadResult? {
@@ -701,12 +797,14 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func applyLoadResult(_ result: TokenDashboardLoadResult) -> Bool {
+    private func applyLoadResult(_ result: TokenDashboardLoadResult, updateCoverageRows: Bool) -> Bool {
         availableBreakdownDimensions = result.availableBreakdownDimensions
         guard result.availableBreakdownDimensions.contains(selectedBreakdownDimension) else {
             points = []
             series = []
             attributionCoverageRows = []
+            isAttributionCoverageLoading = false
+            attributionCoverageErrorMessage = nil
             historyBounds = result.historyBounds
             selectedSeriesIDs = []
             errorMessage = nil
@@ -718,11 +816,155 @@ final class TokenDashboardViewModel: ObservableObject {
 
         points = result.points
         series = result.series
-        attributionCoverageRows = result.attributionCoverageRows
+        if updateCoverageRows {
+            attributionCoverageRows = result.attributionCoverageRows
+        }
         historyBounds = result.historyBounds
         reconcileSelection()
         errorMessage = nil
         return true
+    }
+
+    private func prepareAttributionCoverageLoad(
+        coverageKey: TokenDashboardCoverageCacheKey,
+        queryPeriod: UsageHistoryPeriod,
+        generation: Int,
+        instrumentationKind: AppPerformanceEventKind
+    ) {
+        coverageTask?.cancel()
+        coverageTask = nil
+        attributionCoverageErrorMessage = nil
+
+        if let cachedRows = cachedAttributionCoverage(for: coverageKey) {
+            attributionCoverageRows = cachedRows
+            isAttributionCoverageLoading = false
+            performanceInstrumentationStore?.record(
+                kind: instrumentationKind,
+                durationMilliseconds: 0,
+                metadata: coverageInstrumentationMetadata(
+                    cacheHit: true,
+                    rowCount: cachedRows.count,
+                    coverageMilliseconds: 0
+                )
+            )
+            return
+        }
+
+        attributionCoverageRows = []
+        isAttributionCoverageLoading = true
+        coverageTask = Task { [weak self] in
+            await self?.loadAttributionCoverage(
+                coverageKey: coverageKey,
+                queryPeriod: queryPeriod,
+                generation: generation,
+                instrumentationKind: instrumentationKind
+            )
+        }
+    }
+
+    private func loadAttributionCoverage(
+        coverageKey: TokenDashboardCoverageCacheKey,
+        queryPeriod: UsageHistoryPeriod,
+        generation: Int,
+        instrumentationKind: AppPerformanceEventKind
+    ) async {
+        let span = performanceInstrumentationStore?.begin(
+            instrumentationKind,
+            metadata: dashboardInstrumentationMetadata(cacheHit: false, phase: "coverage")
+        )
+        let startedAt = Date()
+
+        do {
+            let rows = try await database.tokenAttributionCoverageRows(
+                periodStart: queryPeriod.start,
+                periodEnd: queryPeriod.end
+            )
+            let coverageMilliseconds = Date().timeIntervalSince(startedAt) * 1_000
+            guard generation == reloadGeneration, !Task.isCancelled else {
+                performanceInstrumentationStore?.finish(
+                    span,
+                    status: .cancelled,
+                    metadata: coverageInstrumentationMetadata(
+                        cacheHit: false,
+                        rowCount: rows.count,
+                        coverageMilliseconds: coverageMilliseconds
+                    )
+                )
+                return
+            }
+
+            cacheAttributionCoverage(rows, for: coverageKey)
+            attributionCoverageRows = rows
+            isAttributionCoverageLoading = false
+            attributionCoverageErrorMessage = nil
+            performanceInstrumentationStore?.finish(
+                span,
+                status: rows.isEmpty ? .noData : .success,
+                metadata: coverageInstrumentationMetadata(
+                    cacheHit: false,
+                    rowCount: rows.count,
+                    coverageMilliseconds: coverageMilliseconds
+                )
+            )
+        } catch {
+            let coverageMilliseconds = Date().timeIntervalSince(startedAt) * 1_000
+            guard generation == reloadGeneration, !Task.isCancelled else {
+                performanceInstrumentationStore?.finish(
+                    span,
+                    status: .cancelled,
+                    metadata: coverageInstrumentationMetadata(
+                        cacheHit: false,
+                        rowCount: 0,
+                        coverageMilliseconds: coverageMilliseconds
+                    )
+                )
+                return
+            }
+
+            attributionCoverageRows = []
+            isAttributionCoverageLoading = false
+            attributionCoverageErrorMessage = "Attribution coverage could not be loaded."
+            performanceInstrumentationStore?.finish(
+                span,
+                status: .failed,
+                metadata: coverageInstrumentationMetadata(
+                    cacheHit: false,
+                    rowCount: 0,
+                    coverageMilliseconds: coverageMilliseconds
+                )
+            )
+        }
+    }
+
+    func waitForAttributionCoverageLoad() async {
+        await coverageTask?.value
+    }
+
+    private func cachedAttributionCoverage(for key: TokenDashboardCoverageCacheKey) -> [TokenAttributionCoverageRow]? {
+        guard let rows = coverageCache[key] else {
+            return nil
+        }
+
+        markCoverageCacheKeyRecentlyUsed(key)
+        return rows
+    }
+
+    private func cacheAttributionCoverage(
+        _ rows: [TokenAttributionCoverageRow],
+        for key: TokenDashboardCoverageCacheKey
+    ) {
+        coverageCache[key] = rows
+        markCoverageCacheKeyRecentlyUsed(key)
+
+        while coverageCacheOrder.count > coverageCacheLimit {
+            let removedKey = coverageCacheOrder.removeFirst()
+            coverageCache.removeValue(forKey: removedKey)
+        }
+    }
+
+    private func markCoverageCacheKeyRecentlyUsed(_ key: TokenDashboardCoverageCacheKey) {
+        coverageCacheOrder.removeAll { $0 == key }
+        coverageCacheOrder.append(key)
     }
 
     func goToPreviousPeriod() {
@@ -783,6 +1025,10 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     func exportCSV() {
+        guard canExportCSV else {
+            return
+        }
+
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = exportFilename
@@ -863,21 +1109,40 @@ final class TokenDashboardViewModel: ObservableObject {
         }
     }
 
-    private func dashboardInstrumentationMetadata(cacheHit: Bool) -> [String: String] {
+    private func dashboardInstrumentationMetadata(cacheHit: Bool, phase: String) -> [String: String] {
         [
             "dashboard": "token",
             "range": selectedRange.rawValue,
             "breakdown": selectedBreakdownDimension.displayTitle,
             "cacheHit": cacheHit ? "true" : "false",
+            "phase": phase,
         ]
     }
 
-    private func instrumentationResultMetadata(cacheHit: Bool) -> [String: String] {
-        var metadata = dashboardInstrumentationMetadata(cacheHit: cacheHit)
+    private func instrumentationResultMetadata(
+        result: TokenDashboardLoadResult,
+        cacheHit: Bool,
+        phase: String
+    ) -> [String: String] {
+        var metadata = dashboardInstrumentationMetadata(cacheHit: cacheHit, phase: phase)
         metadata["pointCount"] = "\(points.count)"
         metadata["rowCount"] = "\(series.count)"
         metadata["seriesCount"] = "\(series.count)"
         metadata["coverageRowCount"] = "\(attributionCoverageRows.count)"
+        for (key, value) in result.queryTimings.metadata() {
+            metadata[key] = value
+        }
+        return metadata
+    }
+
+    private func coverageInstrumentationMetadata(
+        cacheHit: Bool,
+        rowCount: Int,
+        coverageMilliseconds: Double
+    ) -> [String: String] {
+        var metadata = dashboardInstrumentationMetadata(cacheHit: cacheHit, phase: "coverage")
+        metadata["coverageRowCount"] = "\(rowCount)"
+        metadata["coverageMs"] = String(format: "%.1f", max(coverageMilliseconds, 0))
         return metadata
     }
 
@@ -1327,7 +1592,7 @@ struct TokenDashboardView: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
-            viewModel.invalidateSnapshotCacheAndReload()
+            viewModel.scheduleHistoryChangeReload()
         }
         .onAppear {
             DispatchQueue.main.async {
@@ -1369,8 +1634,8 @@ struct TokenDashboardView: View {
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.bordered)
-            .disabled(!viewModel.hasVisiblePoints)
-            .help("Export CSV")
+            .disabled(!viewModel.canExportCSV)
+            .help(viewModel.canExportCSV ? "Export CSV" : "Export available after attribution coverage loads")
             .accessibilityLabel("Export CSV")
         }
     }
@@ -1575,7 +1840,20 @@ struct TokenDashboardView: View {
 
     private var attributionCoverage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.sortedAttributionCoverageRows.isEmpty {
+            if viewModel.isAttributionCoverageLoading {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text("Loading attribution data")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let message = viewModel.attributionCoverageErrorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if viewModel.sortedAttributionCoverageRows.isEmpty {
                 Text("No attribution data")
                     .font(.caption)
                     .foregroundStyle(.secondary)

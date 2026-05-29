@@ -1731,6 +1731,7 @@ extension UsageHistoryStoreTests {
             calendar: calendar
         )
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         XCTAssertEqual(viewModel.selectedRange, .month)
         XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
@@ -1792,19 +1793,32 @@ extension UsageHistoryStoreTests {
 
         currentDate = currentDate.addingTimeInterval(0.15)
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
-        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.tokenDashboardReload])
-        XCTAssertEqual(instrumentationStore.events.first?.status, .success)
-        XCTAssertEqual(instrumentationStore.events.first?.metadata["dashboard"], "token")
-        XCTAssertEqual(instrumentationStore.events.first?.metadata["range"], "month")
-        XCTAssertEqual(instrumentationStore.events.first?.metadata["cacheHit"], "false")
+        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.tokenDashboardReload, .tokenDashboardReload])
+        let initialPrimaryEvent = try XCTUnwrap(
+            instrumentationStore.events.first { $0.metadata["phase"] == "primary" }
+        )
+        let initialCoverageEvent = try XCTUnwrap(
+            instrumentationStore.events.first { $0.metadata["phase"] == "coverage" }
+        )
+        XCTAssertEqual(initialPrimaryEvent.status, .success)
+        XCTAssertEqual(initialPrimaryEvent.metadata["dashboard"], "token")
+        XCTAssertEqual(initialPrimaryEvent.metadata["range"], "month")
+        XCTAssertEqual(initialPrimaryEvent.metadata["cacheHit"], "false")
+        XCTAssertEqual(initialCoverageEvent.status, .success)
 
         viewModel.selectedBreakdownDimension = .effort
         currentDate = currentDate.addingTimeInterval(0.1)
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
-        XCTAssertEqual(instrumentationStore.events.last?.kind, .tokenDashboardBreakdownChange)
-        XCTAssertEqual(instrumentationStore.events.last?.metadata["cacheHit"], "false")
+        let breakdownPrimaryEvent = try XCTUnwrap(
+            instrumentationStore.events.last {
+                $0.kind == .tokenDashboardBreakdownChange && $0.metadata["phase"] == "primary"
+            }
+        )
+        XCTAssertEqual(breakdownPrimaryEvent.metadata["cacheHit"], "false")
     }
 
     @MainActor
@@ -1847,6 +1861,127 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testTokenDashboardLoadsPrimaryBeforeDelayedCoverage() async throws {
+        let database = TokenDashboardCacheSpyDatabase(coverageDelayNanoseconds: 100_000_000)
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 1_000)
+        XCTAssertTrue(viewModel.isAttributionCoverageLoading)
+        XCTAssertTrue(viewModel.attributionCoverageRows.isEmpty)
+        XCTAssertFalse(viewModel.canExportCSV)
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        await viewModel.waitForAttributionCoverageLoad()
+
+        XCTAssertFalse(viewModel.isAttributionCoverageLoading)
+        XCTAssertNil(viewModel.attributionCoverageErrorMessage)
+        XCTAssertFalse(viewModel.attributionCoverageRows.isEmpty)
+        XCTAssertTrue(viewModel.canExportCSV)
+        let coverageRequestCount = await database.coverageRequestCount()
+        XCTAssertEqual(coverageRequestCount, 1)
+    }
+
+    @MainActor
+    func testTokenDashboardCoverageCacheReusesPeriodAcrossBreakdowns() async throws {
+        let database = TokenDashboardCacheSpyDatabase()
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
+
+        var coverageRequestCount = await database.coverageRequestCount()
+        XCTAssertEqual(coverageRequestCount, 1)
+        XCTAssertEqual(viewModel.coverageCacheEntryCount, 1)
+
+        viewModel.selectedBreakdownDimension = .effort
+        await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
+
+        let requestCount = await database.requestCount()
+        coverageRequestCount = await database.coverageRequestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(coverageRequestCount, 1)
+        XCTAssertFalse(viewModel.attributionCoverageRows.isEmpty)
+    }
+
+    @MainActor
+    func testTokenDashboardCoverageFailureKeepsPrimaryAndDoesNotCache() async throws {
+        let database = TokenDashboardCacheSpyDatabase(
+            coverageError: TokenDashboardCacheSpyDatabase.TokenDashboardCacheSpyError.configuredFailure
+        )
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
+
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 1_000)
+        XCTAssertEqual(viewModel.attributionCoverageErrorMessage, "Attribution coverage could not be loaded.")
+        XCTAssertEqual(viewModel.coverageCacheEntryCount, 0)
+        XCTAssertFalse(viewModel.canExportCSV)
+        var requestCount = await database.requestCount()
+        var coverageRequestCount = await database.coverageRequestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(coverageRequestCount, 1)
+
+        await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
+
+        requestCount = await database.requestCount()
+        coverageRequestCount = await database.coverageRequestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(coverageRequestCount, 2)
+    }
+
+    @MainActor
+    func testTokenDashboardHistoryChangeReloadsAreDebounced() async throws {
+        let database = TokenDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1),
+            .success(value: 2),
+        ])
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            historyChangeDebounceInterval: 0.05,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
+
+        viewModel.scheduleHistoryChangeReload()
+        viewModel.scheduleHistoryChangeReload()
+        viewModel.scheduleHistoryChangeReload()
+
+        try await Task.sleep(nanoseconds: 150_000_000)
+        await viewModel.waitForAttributionCoverageLoad()
+
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 2_000)
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 1)
+        XCTAssertEqual(viewModel.coverageCacheEntryCount, 1)
+    }
+
+    @MainActor
     func testTokenDashboardViewModelRecordsWorkerAndCacheReloadTimings() async throws {
         var currentDate = date("2026-05-17T12:00:00Z")
         let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
@@ -1865,25 +2000,36 @@ extension UsageHistoryStoreTests {
 
         currentDate = currentDate.addingTimeInterval(0.2)
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
         currentDate = currentDate.addingTimeInterval(0.1)
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         let requestCount = await database.requestCount()
         XCTAssertEqual(requestCount, 1)
-        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.tokenDashboardReload, .tokenDashboardReload])
-        XCTAssertEqual(instrumentationStore.events.map(\.status), [.success, .success])
-        XCTAssertEqual(instrumentationStore.events[0].metadata["cacheHit"], "false")
-        XCTAssertEqual(instrumentationStore.events[1].metadata["cacheHit"], "true")
-        XCTAssertEqual(instrumentationStore.events[0].metadata["dashboard"], "token")
-        XCTAssertEqual(instrumentationStore.events[0].metadata["range"], "month")
+        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.tokenDashboardReload, .tokenDashboardReload, .tokenDashboardReload, .tokenDashboardReload])
+        XCTAssertEqual(instrumentationStore.events.map(\.status), [.success, .success, .success, .success])
+        let primaryEvents = instrumentationStore.events.filter { $0.metadata["phase"] == "primary" }
+        let coverageEvents = instrumentationStore.events.filter { $0.metadata["phase"] == "coverage" }
+        XCTAssertEqual(primaryEvents.count, 2)
+        XCTAssertEqual(coverageEvents.count, 2)
+        XCTAssertEqual(primaryEvents[0].metadata["cacheHit"], "false")
+        XCTAssertEqual(primaryEvents[1].metadata["cacheHit"], "true")
+        XCTAssertEqual(primaryEvents[0].metadata["dashboard"], "token")
+        XCTAssertEqual(primaryEvents[0].metadata["range"], "month")
 
         viewModel.selectedBreakdownDimension = .effort
         currentDate = currentDate.addingTimeInterval(0.3)
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
-        XCTAssertEqual(instrumentationStore.events.last?.kind, .tokenDashboardBreakdownChange)
-        XCTAssertEqual(instrumentationStore.events.last?.metadata["breakdown"], "Effort")
-        XCTAssertEqual(instrumentationStore.events.last?.metadata["cacheHit"], "false")
+        let breakdownPrimaryEvent = try XCTUnwrap(
+            instrumentationStore.events.last {
+                $0.kind == .tokenDashboardBreakdownChange && $0.metadata["phase"] == "primary"
+            }
+        )
+        XCTAssertEqual(breakdownPrimaryEvent.metadata["breakdown"], "Effort")
+        XCTAssertEqual(breakdownPrimaryEvent.metadata["cacheHit"], "false")
     }
 
     @MainActor
@@ -2118,6 +2264,7 @@ extension UsageHistoryStoreTests {
             calendar: calendar
         )
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         let coverageRowsByID = Dictionary(uniqueKeysWithValues: viewModel.attributionCoverageRows.map { ($0.id, $0) })
         XCTAssertEqual(coverageRowsByID["model"]?.attributedTokenCount, 215)
@@ -2135,6 +2282,7 @@ extension UsageHistoryStoreTests {
 
         viewModel.selectedBreakdownDimension = .effort
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Effort")
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
@@ -2170,6 +2318,7 @@ extension UsageHistoryStoreTests {
         )
         viewModel.selectedBreakdownDimension = .project
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Project")
         XCTAssertEqual(viewModel.selectedSeriesIDs, ["tokens_all"])
@@ -2183,6 +2332,7 @@ extension UsageHistoryStoreTests {
 
         viewModel.selectedBreakdownDimension = .approvalPolicy
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Approval policy")
         XCTAssertTrue(viewModel.availableBreakdownDimensions.contains(.approvalPolicy))
@@ -2203,6 +2353,7 @@ extension UsageHistoryStoreTests {
 
         viewModel.selectedRange = .day
         await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
 
         XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
         XCTAssertTrue(viewModel.attributionCoverageRows.isEmpty)
@@ -3589,6 +3740,63 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testTokenDashboardSnapshotCanSkipAndLoadAttributionCoverageSeparately() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "coverage-thread",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 1_000,
+                    lastCached: 200,
+                    lastOutput: 300,
+                    lastReasoning: 50,
+                    lastTotal: 1_550,
+                    totalInput: 1_000,
+                    totalCached: 200,
+                    totalOutput: 300,
+                    totalReasoning: 50,
+                    totalTotal: 1_550
+                ),
+                receivedAt: date("2026-05-02T12:00:03Z"),
+                context: TokenUsageContext(effort: "high", source: "cli")
+            ),
+        ])
+        let worker = UsageHistoryDatabaseWorker(store: store)
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let primaryRequest = TokenDashboardLoadRequest(
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            includeAttributionCoverage: false
+        )
+        let fullRequest = TokenDashboardLoadRequest(
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            includeAttributionCoverage: true
+        )
+
+        let primary = try await worker.tokenDashboardSnapshot(for: primaryRequest)
+        let full = try await worker.tokenDashboardSnapshot(for: fullRequest)
+        let coverageRows = try await worker.tokenAttributionCoverageRows(
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+
+        XCTAssertEqual(primary.points, full.points)
+        XCTAssertEqual(primary.series, full.series)
+        XCTAssertEqual(primary.availableBreakdownDimensions, full.availableBreakdownDimensions)
+        XCTAssertEqual(primary.historyBounds, full.historyBounds)
+        XCTAssertTrue(primary.attributionCoverageRows.isEmpty)
+        XCTAssertFalse(full.attributionCoverageRows.isEmpty)
+        XCTAssertEqual(coverageRows, full.attributionCoverageRows)
+        XCTAssertNil(primary.queryTimings.attributionCoverage)
+        XCTAssertNotNil(full.queryTimings.attributionCoverage)
+    }
+
     func testReadOnlyDashboardQueryWorkerMatchesWriterSnapshots() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         try store.record(
@@ -3623,6 +3831,11 @@ extension UsageHistoryStoreTests {
             calendar: calendar,
             openMode: .readOnly
         )
+        let tempStoreStatement = try readOnlyStore.prepare("PRAGMA temp_store")
+        defer { sqlite3_finalize(tempStoreStatement) }
+        XCTAssertEqual(sqlite3_step(tempStoreStatement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(tempStoreStatement, 0), 2)
+
         let writer = UsageHistoryDatabaseWorker(store: store)
         let queryWorker = UsageHistoryDashboardQueryWorker(store: readOnlyStore)
         let periodStart = date("2026-05-01T00:00:00Z")
@@ -5145,16 +5358,25 @@ private actor TokenDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
         }
     }
 
-    private enum TokenDashboardCacheSpyError: Error {
+    enum TokenDashboardCacheSpyError: Error {
         case configuredFailure
         case unused
     }
 
     private var stubs: [Stub]
+    private let coverageDelayNanoseconds: UInt64
+    private let coverageError: Error?
     private var tokenRequests: [TokenDashboardLoadRequest] = []
+    private var coverageRequests: [(periodStart: Date, periodEnd: Date)] = []
 
-    init(stubs: [Stub] = []) {
+    init(
+        stubs: [Stub] = [],
+        coverageDelayNanoseconds: UInt64 = 0,
+        coverageError: Error? = nil
+    ) {
         self.stubs = stubs
+        self.coverageDelayNanoseconds = coverageDelayNanoseconds
+        self.coverageError = coverageError
     }
 
     func requestCount() -> Int {
@@ -5163,6 +5385,14 @@ private actor TokenDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
 
     func requestsSnapshot() -> [TokenDashboardLoadRequest] {
         tokenRequests
+    }
+
+    func coverageRequestCount() -> Int {
+        coverageRequests.count
+    }
+
+    func coverageRequestsSnapshot() -> [(periodStart: Date, periodEnd: Date)] {
+        coverageRequests
     }
 
     func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
@@ -5269,6 +5499,21 @@ private actor TokenDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
         )
     }
 
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
+        coverageRequests.append((periodStart: periodStart, periodEnd: periodEnd))
+        if coverageDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: coverageDelayNanoseconds)
+        }
+        if let coverageError {
+            throw coverageError
+        }
+
+        return Self.coverageRows(
+            availableDimensions: TokenDashboardBreakdownDimension.allCases,
+            tokenCount: 1_000
+        )
+    }
+
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
         throw TokenDashboardCacheSpyError.unused
     }
@@ -5334,16 +5579,9 @@ private actor TokenDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
                 tokenCount: tokenCount
             )
         }
-        let coverageRows = availableDimensions.map { dimension in
-            TokenAttributionCoverageRow(
-                id: dimension.dimensionKey.map { "dimension:\($0.rawValue)" } ?? dimension.rawValue,
-                title: dimension.displayTitle,
-                attributedTokenCount: tokenCount,
-                missingTokenCount: 0,
-                distinctValueCount: 1,
-                dimensionKey: dimension.dimensionKey
-            )
-        }
+        let coverageRows = request.includeAttributionCoverage
+            ? coverageRows(availableDimensions: availableDimensions, tokenCount: tokenCount)
+            : []
         let historyBounds = UsageHistoryBounds(
             earliest: request.periodStart.addingTimeInterval(-90 * 24 * 60 * 60),
             latest: request.periodEnd
@@ -5356,6 +5594,22 @@ private actor TokenDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
             availableBreakdownDimensions: availableDimensions,
             historyBounds: historyBounds
         )
+    }
+
+    private static func coverageRows(
+        availableDimensions: [TokenDashboardBreakdownDimension],
+        tokenCount: Int64
+    ) -> [TokenAttributionCoverageRow] {
+        availableDimensions.map { dimension in
+            TokenAttributionCoverageRow(
+                id: dimension.dimensionKey.map { "dimension:\($0.rawValue)" } ?? dimension.rawValue,
+                title: dimension.displayTitle,
+                attributedTokenCount: tokenCount,
+                missingTokenCount: 0,
+                distinctValueCount: 1,
+                dimensionKey: dimension.dimensionKey
+            )
+        }
     }
 
     private static func childSeries(for dimension: TokenDashboardBreakdownDimension) -> TokenDashboardSeries {

@@ -911,6 +911,7 @@ final class UsageHistoryStore: @unchecked Sendable {
             try execute("PRAGMA foreign_keys=ON")
             try migrate()
         case .readOnly:
+            try execute("PRAGMA temp_store=MEMORY")
             try execute("PRAGMA query_only=ON")
             try execute("PRAGMA foreign_keys=ON")
         }
