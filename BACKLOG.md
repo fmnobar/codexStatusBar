@@ -9,16 +9,9 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
-| 2 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
+| 1 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
 
 ## Performance Recommendation Details
-
-- Optimize Performance Dashboard reliability-heavy SQL paths
-  - Observed evidence: Performance Dashboard month reloads remain multi-second after mode-aware loading, presentation pre-aggregation, caching, and indexed task timing timestamps.
-  - Likely code path/root cause: `UsageHistoryStore+PerformanceQueries.swift` still scans and groups many `codex_turn_performance_events` rows for reliability counts and top errors across month/year windows.
-  - Proposed implementation shape: run `EXPLAIN QUERY PLAN` for the slow live query shapes; add narrowly scoped composite indexes or derived daily/monthly reliability summaries; avoid grouping full error summaries unless visible/exported.
-  - Verification plan: query-plan tests for month/year Performance and Efficiency snapshots; realistic fixture and live DB timing before/after; verify failure-rate and top-error semantics stay unchanged.
 
 - Make dashboard loading and empty states explicit
   - Observed evidence: dashboards can render a no-data state before an async reload finishes, which makes a slow load look like missing data.
@@ -34,6 +27,12 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Optimize Performance Dashboard reliability-heavy SQL paths
+  - Split Performance Dashboard reliability aggregation into separate bounded status-count and failure-error phases so success and unknown rows no longer group by `error_summary`.
+  - Added covering index `idx_codex_turn_performance_events_reliability_cover` for month/year reliability reads while preserving existing narrower query indexes.
+  - Preserved failure-rate, unknown-count, top-error, row-selection, snapshot-cache, and CSV semantics for Performance and Efficiency dashboards.
+  - Added query-plan, correctness, and regression tests for month/year reliability paths across supported breakdowns.
 
 - Cache or precompute Token Dashboard period snapshots
   - Added bounded Token Dashboard view-model snapshot caching by breakdown dimension, range, clipped query period, and calendar/time zone.
@@ -371,4 +370,4 @@
 
 ## Next Candidates
 
-Next item to plan: `Optimize Performance Dashboard reliability-heavy SQL paths`.
+Next item to plan: `Make dashboard loading and empty states explicit`.

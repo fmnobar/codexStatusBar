@@ -101,6 +101,149 @@ extension UsageHistoryStoreTests {
         XCTAssertPlanMentions(boundsPlan, "idx_codex_session_task_timing_event_timestamp")
     }
 
+    func testPerformanceDashboardReliabilityQueriesUseBoundedCoveringIndexes() throws {
+        let fixture = try makePerformanceFixture()
+
+        for range in [UsageHistoryRange.month, .year] {
+            let period = range.period(containing: fixture.now, calendar: calendar)
+            let start = period.start.timeIntervalSince1970Int
+            let end = period.end.timeIntervalSince1970Int
+            let bucketValues = performanceDashboardBucketLiteralValues(
+                range: range,
+                periodStart: period.start,
+                periodEnd: period.end
+            )
+
+            let statusPlan = try queryPlan(
+                at: fixture.databaseURL,
+                sql: """
+                WITH buckets(bucket_start, query_end, bucket_end) AS (
+                    VALUES \(bucketValues)
+                ),
+                expanded AS (
+                    SELECT
+                        b.bucket_start,
+                        b.bucket_end,
+                        'aggregate' AS series_kind,
+                        NULL AS series_value,
+                        NULL AS series_project_path,
+                        NULL AS series_project_name,
+                        r.success
+                    FROM buckets b
+                    JOIN codex_turn_performance_events r
+                        ON r.event_timestamp >= b.bucket_start
+                        AND r.event_timestamp < b.query_end
+                    WHERE r.event_timestamp >= \(start)
+                        AND r.event_timestamp < \(end)
+                    UNION ALL
+                    SELECT
+                        b.bucket_start,
+                        b.bucket_end,
+                        CASE WHEN NULLIF(model, '') IS NULL THEN 'unattributed' ELSE 'model' END AS series_kind,
+                        NULLIF(model, '') AS series_value,
+                        NULL AS series_project_path,
+                        NULL AS series_project_name,
+                        r.success
+                    FROM buckets b
+                    JOIN codex_turn_performance_events r
+                        ON r.event_timestamp >= b.bucket_start
+                        AND r.event_timestamp < b.query_end
+                    WHERE r.event_timestamp >= \(start)
+                        AND r.event_timestamp < \(end)
+                )
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    series_kind,
+                    series_value,
+                    series_project_path,
+                    series_project_name,
+                    CASE
+                        WHEN success IS NULL THEN 'unknown'
+                        WHEN success = 1 THEN 'success'
+                        ELSE 'failure'
+                    END AS status,
+                    COUNT(*) AS event_count
+                FROM expanded
+                GROUP BY
+                    bucket_start,
+                    bucket_end,
+                    series_kind,
+                    series_value,
+                    series_project_path,
+                    series_project_name,
+                    status
+                """
+            )
+            XCTAssertPlanUsesSearch(statusPlan, tableOrAlias: "r", fullScanTable: "codex_turn_performance_events")
+            XCTAssertPlanMentions(statusPlan, "idx_codex_turn_performance_events_reliability_cover")
+
+            let errorPlan = try queryPlan(
+                at: fixture.databaseURL,
+                sql: """
+                WITH buckets(bucket_start, query_end, bucket_end) AS (
+                    VALUES \(bucketValues)
+                ),
+                expanded AS (
+                    SELECT
+                        b.bucket_start,
+                        b.bucket_end,
+                        'aggregate' AS series_kind,
+                        NULL AS series_value,
+                        NULL AS series_project_path,
+                        NULL AS series_project_name,
+                        r.error_summary
+                    FROM buckets b
+                    JOIN codex_turn_performance_events r
+                        ON r.event_timestamp >= b.bucket_start
+                        AND r.event_timestamp < b.query_end
+                    WHERE r.event_timestamp >= \(start)
+                        AND r.event_timestamp < \(end)
+                        AND r.success = 0
+                        AND r.error_summary IS NOT NULL
+                    UNION ALL
+                    SELECT
+                        b.bucket_start,
+                        b.bucket_end,
+                        CASE WHEN NULLIF(model, '') IS NULL THEN 'unattributed' ELSE 'model' END AS series_kind,
+                        NULLIF(model, '') AS series_value,
+                        NULL AS series_project_path,
+                        NULL AS series_project_name,
+                        r.error_summary
+                    FROM buckets b
+                    JOIN codex_turn_performance_events r
+                        ON r.event_timestamp >= b.bucket_start
+                        AND r.event_timestamp < b.query_end
+                    WHERE r.event_timestamp >= \(start)
+                        AND r.event_timestamp < \(end)
+                        AND r.success = 0
+                        AND r.error_summary IS NOT NULL
+                )
+                SELECT
+                    bucket_start,
+                    bucket_end,
+                    series_kind,
+                    series_value,
+                    series_project_path,
+                    series_project_name,
+                    error_summary,
+                    COUNT(*) AS event_count
+                FROM expanded
+                GROUP BY
+                    bucket_start,
+                    bucket_end,
+                    series_kind,
+                    series_value,
+                    series_project_path,
+                    series_project_name,
+                    error_summary
+                """
+            )
+            XCTAssertPlanUsesSearch(errorPlan, tableOrAlias: "r", fullScanTable: "codex_turn_performance_events")
+            XCTAssertPlanMentions(errorPlan, "idx_codex_turn_performance_events_success_timestamp")
+        }
+    }
+
     func testTokenHistoryAndDashboardHotQueriesUseBoundedIndexes() throws {
         let fixture = try makePerformanceFixture()
         let month = UsageHistoryRange.month.period(containing: fixture.now, calendar: calendar)
@@ -789,6 +932,23 @@ private extension UsageHistoryStoreTests {
                 throw SQLitePerformanceFixtureError.operationFailed(database.lastErrorMessage)
             }
         }
+    }
+
+    func performanceDashboardBucketLiteralValues(
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date
+    ) -> String {
+        UsageHistoryStore.performanceDashboardBucketIntervals(
+            range: range,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        .map {
+            "(\($0.start.timeIntervalSince1970Int), \($0.queryEnd.timeIntervalSince1970Int), \($0.displayEnd.timeIntervalSince1970Int))"
+        }
+        .joined(separator: ",\n")
     }
 
     func XCTAssertPlanUsesSearch(

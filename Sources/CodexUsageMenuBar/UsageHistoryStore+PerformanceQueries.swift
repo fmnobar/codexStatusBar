@@ -390,53 +390,43 @@ extension UsageHistoryStore {
 
         let bucketValuesSQL = Self.performanceDashboardBucketValuesSQL(intervals)
         let breakdown = Self.performanceDashboardBreakdownSQL(dimension: breakdownDimension)
-        let statement = try prepare(
+        var accumulators = [PerformanceDashboardBucketSeriesKey: PerformanceDashboardReliabilityAccumulator]()
+
+        let statusStatement = try prepare(
             """
             WITH buckets(bucket_start, query_end, bucket_end) AS (
                 VALUES \(bucketValuesSQL)
             ),
-            reliability_base AS (
+            expanded AS (
                 SELECT
                     b.bucket_start,
                     b.bucket_end,
-                    r.success,
-                    r.error_summary,
-                    r.model,
-                    r.project_path,
-                    r.project_name,
-                    r.effort,
-                    r.source,
-                    r.transport,
-                    r.wire_api
+                    'aggregate' AS series_kind,
+                    NULL AS series_value,
+                    NULL AS series_project_path,
+                    NULL AS series_project_name,
+                    r.success
                 FROM buckets b
                 JOIN codex_turn_performance_events r
                     ON r.event_timestamp >= b.bucket_start
                     AND r.event_timestamp < b.query_end
                 WHERE r.event_timestamp >= ?
                     AND r.event_timestamp < ?
-            ),
-            expanded AS (
-                SELECT
-                    bucket_start,
-                    bucket_end,
-                    'aggregate' AS series_kind,
-                    NULL AS series_value,
-                    NULL AS series_project_path,
-                    NULL AS series_project_name,
-                    success,
-                    error_summary
-                FROM reliability_base
                 UNION ALL
                 SELECT
-                    bucket_start,
-                    bucket_end,
+                    b.bucket_start,
+                    b.bucket_end,
                     \(breakdown.kindSQL) AS series_kind,
                     \(breakdown.valueSQL) AS series_value,
                     \(breakdown.projectPathSQL) AS series_project_path,
                     \(breakdown.projectNameSQL) AS series_project_name,
-                    success,
-                    error_summary
-                FROM reliability_base
+                    r.success
+                FROM buckets b
+                JOIN codex_turn_performance_events r
+                    ON r.event_timestamp >= b.bucket_start
+                    AND r.event_timestamp < b.query_end
+                WHERE r.event_timestamp >= ?
+                    AND r.event_timestamp < ?
             )
             SELECT
                 bucket_start,
@@ -450,7 +440,6 @@ extension UsageHistoryStore {
                     WHEN success = 1 THEN 'success'
                     ELSE 'failure'
                 END AS status,
-                CASE WHEN success = 0 THEN error_summary ELSE NULL END AS failure_error_summary,
                 COUNT(*) AS event_count
             FROM expanded
             GROUP BY
@@ -460,29 +449,30 @@ extension UsageHistoryStore {
                 series_value,
                 series_project_path,
                 series_project_name,
-                status,
-                failure_error_summary
-            ORDER BY bucket_start ASC, series_kind ASC, series_value ASC, series_project_path ASC
+                status
             """
         )
-        defer { sqlite3_finalize(statement) }
+        defer { sqlite3_finalize(statusStatement) }
 
-        var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statement)
-        sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
+        var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statusStatement)
+        sqlite3_bind_int64(statusStatement, bindIndex, periodStart.timeIntervalSince1970Int)
         bindIndex += 1
-        sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statusStatement, bindIndex, periodEnd.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statusStatement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statusStatement, bindIndex, periodEnd.timeIntervalSince1970Int)
 
-        var accumulators = [PerformanceDashboardBucketSeriesKey: PerformanceDashboardReliabilityAccumulator]()
-        while true {
-            switch sqlite3_step(statement) {
+        statusRows: while true {
+            switch sqlite3_step(statusStatement) {
             case SQLITE_ROW:
-                let bucketStart = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
-                let bucketEnd = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 1)))
+                let bucketStart = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statusStatement, 0)))
+                let bucketEnd = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statusStatement, 1)))
                 let series = Self.performanceDashboardSeries(
-                    kindRawValue: columnText(statement, index: 2),
-                    value: optionalColumnText(statement, index: 3),
-                    projectPath: optionalColumnText(statement, index: 4),
-                    projectName: optionalColumnText(statement, index: 5)
+                    kindRawValue: columnText(statusStatement, index: 2),
+                    value: optionalColumnText(statusStatement, index: 3),
+                    projectPath: optionalColumnText(statusStatement, index: 4),
+                    projectName: optionalColumnText(statusStatement, index: 5)
                 )
                 let key = PerformanceDashboardBucketSeriesKey(bucketStart: bucketStart, seriesID: series.id)
                 var accumulator = accumulators[key] ?? PerformanceDashboardReliabilityAccumulator(
@@ -490,17 +480,113 @@ extension UsageHistoryStore {
                     bucketEnd: bucketEnd,
                     series: series
                 )
-                let count = Int(sqlite3_column_int64(statement, 8))
-                switch columnText(statement, index: 6) {
+                let count = Int(sqlite3_column_int64(statusStatement, 7))
+                switch columnText(statusStatement, index: 6) {
                 case "success":
                     accumulator.successCount += count
                 case "failure":
                     accumulator.failureCount += count
-                    if let errorSummary = optionalColumnText(statement, index: 7) {
-                        accumulator.errorCounts[errorSummary, default: 0] += count
-                    }
                 default:
                     accumulator.unknownCount += count
+                }
+                accumulators[key] = accumulator
+            case SQLITE_DONE:
+                break statusRows
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+
+        let errorStatement = try prepare(
+            """
+            WITH buckets(bucket_start, query_end, bucket_end) AS (
+                VALUES \(bucketValuesSQL)
+            ),
+            expanded AS (
+                SELECT
+                    b.bucket_start,
+                    b.bucket_end,
+                    'aggregate' AS series_kind,
+                    NULL AS series_value,
+                    NULL AS series_project_path,
+                    NULL AS series_project_name,
+                    r.error_summary
+                FROM buckets b
+                JOIN codex_turn_performance_events r
+                    ON r.event_timestamp >= b.bucket_start
+                    AND r.event_timestamp < b.query_end
+                WHERE r.event_timestamp >= ?
+                    AND r.event_timestamp < ?
+                    AND r.success = 0
+                    AND r.error_summary IS NOT NULL
+                UNION ALL
+                SELECT
+                    b.bucket_start,
+                    b.bucket_end,
+                    \(breakdown.kindSQL) AS series_kind,
+                    \(breakdown.valueSQL) AS series_value,
+                    \(breakdown.projectPathSQL) AS series_project_path,
+                    \(breakdown.projectNameSQL) AS series_project_name,
+                    r.error_summary
+                FROM buckets b
+                JOIN codex_turn_performance_events r
+                    ON r.event_timestamp >= b.bucket_start
+                    AND r.event_timestamp < b.query_end
+                WHERE r.event_timestamp >= ?
+                    AND r.event_timestamp < ?
+                    AND r.success = 0
+                    AND r.error_summary IS NOT NULL
+            )
+            SELECT
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name,
+                error_summary,
+                COUNT(*) AS event_count
+            FROM expanded
+            GROUP BY
+                bucket_start,
+                bucket_end,
+                series_kind,
+                series_value,
+                series_project_path,
+                series_project_name,
+                error_summary
+            """
+        )
+        defer { sqlite3_finalize(errorStatement) }
+
+        bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: errorStatement)
+        sqlite3_bind_int64(errorStatement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(errorStatement, bindIndex, periodEnd.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(errorStatement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(errorStatement, bindIndex, periodEnd.timeIntervalSince1970Int)
+
+        while true {
+            switch sqlite3_step(errorStatement) {
+            case SQLITE_ROW:
+                let bucketStart = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(errorStatement, 0)))
+                let bucketEnd = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(errorStatement, 1)))
+                let series = Self.performanceDashboardSeries(
+                    kindRawValue: columnText(errorStatement, index: 2),
+                    value: optionalColumnText(errorStatement, index: 3),
+                    projectPath: optionalColumnText(errorStatement, index: 4),
+                    projectName: optionalColumnText(errorStatement, index: 5)
+                )
+                let key = PerformanceDashboardBucketSeriesKey(bucketStart: bucketStart, seriesID: series.id)
+                var accumulator = accumulators[key] ?? PerformanceDashboardReliabilityAccumulator(
+                    bucketStart: bucketStart,
+                    bucketEnd: bucketEnd,
+                    series: series
+                )
+                if let errorSummary = optionalColumnText(errorStatement, index: 6) {
+                    accumulator.errorCounts[errorSummary, default: 0] += Int(sqlite3_column_int64(errorStatement, 7))
                 }
                 accumulators[key] = accumulator
             case SQLITE_DONE:

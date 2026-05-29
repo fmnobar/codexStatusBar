@@ -3299,6 +3299,90 @@ extension UsageHistoryStoreTests {
         }
     }
 
+    func testPerformanceDashboardReliabilityQueryPreservesErrorCountsAndUnknownRows() throws {
+        let store = try makeStore()
+        try store.importTurnPerformanceEvents([
+            performanceDashboardReliabilityEvent(
+                rowID: 1,
+                timestamp: date("2026-05-02T10:00:00Z"),
+                success: true,
+                model: "gpt-5.5",
+                transport: "websocket"
+            ),
+            performanceDashboardReliabilityEvent(
+                rowID: 2,
+                timestamp: date("2026-05-02T11:00:00Z"),
+                success: false,
+                errorSummary: "timeout",
+                model: "gpt-5.5",
+                transport: "websocket"
+            ),
+            performanceDashboardReliabilityEvent(
+                rowID: 3,
+                timestamp: date("2026-05-02T12:00:00Z"),
+                success: false,
+                errorSummary: "timeout",
+                model: "gpt-5.5",
+                transport: "websocket"
+            ),
+            performanceDashboardReliabilityEvent(
+                rowID: 4,
+                timestamp: date("2026-05-02T13:00:00Z"),
+                success: false,
+                errorSummary: "connection",
+                model: "gpt-5.4",
+                transport: "sse"
+            ),
+            performanceDashboardReliabilityEvent(
+                rowID: 5,
+                timestamp: date("2026-05-02T14:00:00Z"),
+                success: nil,
+                model: nil,
+                transport: nil
+            ),
+        ])
+
+        let points = try store.performanceDashboardReliabilityPoints(
+            breakdownDimension: .model,
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z"),
+            calendar: calendar
+        )
+        let pointsByID = Dictionary(uniqueKeysWithValues: points.map { ($0.series.id, $0) })
+        let aggregate = try XCTUnwrap(pointsByID[PerformanceDashboardSeries.aggregateID])
+        let model55 = try XCTUnwrap(pointsByID["model:gpt-5.5"])
+        let model54 = try XCTUnwrap(pointsByID["model:gpt-5.4"])
+        let unattributed = try XCTUnwrap(pointsByID[PerformanceDashboardSeries.unattributedID])
+
+        XCTAssertEqual(aggregate.successCount, 1)
+        XCTAssertEqual(aggregate.failureCount, 3)
+        XCTAssertEqual(aggregate.unknownCount, 1)
+        XCTAssertEqual(aggregate.errorCounts, ["timeout": 2, "connection": 1])
+        XCTAssertEqual(aggregate.topErrorSummary, "timeout")
+        XCTAssertEqual(model55.successCount, 1)
+        XCTAssertEqual(model55.failureCount, 2)
+        XCTAssertEqual(model55.errorCounts, ["timeout": 2])
+        XCTAssertEqual(model54.successCount, 0)
+        XCTAssertEqual(model54.failureCount, 1)
+        XCTAssertEqual(model54.errorCounts, ["connection": 1])
+        XCTAssertEqual(unattributed.unknownCount, 1)
+        XCTAssertEqual(unattributed.failureCount, 0)
+        XCTAssertNil(unattributed.topErrorSummary)
+
+        let transportPoints = try store.performanceDashboardReliabilityPoints(
+            breakdownDimension: .transport,
+            range: .month,
+            periodStart: date("2026-05-01T00:00:00Z"),
+            periodEnd: date("2026-06-01T00:00:00Z"),
+            calendar: calendar
+        )
+        let transportIDs = Set(transportPoints.map(\.series.id))
+        XCTAssertTrue(transportIDs.contains("transport:websocket"))
+        XCTAssertTrue(transportIDs.contains("transport:sse"))
+        XCTAssertTrue(transportIDs.contains(PerformanceDashboardSeries.unattributedID))
+    }
+
     @MainActor
     func testPerformanceDashboardViewModelDefaultsFiltersAndExportsVisibleRows() async throws {
         let store = try makeStore()
@@ -4135,6 +4219,41 @@ extension UsageHistoryStoreTests {
         let requestCount = await database.requestCount()
         XCTAssertEqual(requestCount, 25)
         XCTAssertEqual(viewModel.snapshotCacheEntryCount, 24)
+    }
+
+    private func performanceDashboardReliabilityEvent(
+        rowID: Int64,
+        timestamp: Date,
+        success: Bool?,
+        errorSummary: String? = nil,
+        model: String?,
+        transport: String?
+    ) -> CodexTurnPerformanceEvent {
+        CodexTurnPerformanceEvent(
+            sourceKey: "reliability-test",
+            sourceRowID: rowID,
+            target: transport == "sse" ? "codex_api::sse::responses" : "codex_api::endpoint::responses_websocket",
+            eventTimestamp: timestamp,
+            eventName: success == false ? "response.failed" : "response.completed",
+            eventKind: success == false ? "response.failed" : "response.completed",
+            durationMilliseconds: nil,
+            success: success,
+            errorSummary: errorSummary,
+            threadID: "thread-\(rowID)",
+            turnID: "turn-\(rowID)",
+            model: model,
+            sessionID: "session-\(rowID)",
+            projectPath: nil,
+            effort: nil,
+            source: nil,
+            originator: nil,
+            appVersion: nil,
+            terminalType: nil,
+            transport: transport,
+            wireAPI: transport == nil ? nil : "responses",
+            apiPath: nil,
+            recordedAt: timestamp
+        )
     }
 
     private func seedPerformanceDashboardFixture(in store: UsageHistoryStore) throws {

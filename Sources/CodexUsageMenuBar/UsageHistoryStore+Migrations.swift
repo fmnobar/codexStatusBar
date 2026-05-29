@@ -513,6 +513,23 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_kind_timestamp ON codex_turn_performance_events(event_kind, event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_transport_timestamp ON codex_turn_performance_events(transport, event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_success_timestamp ON codex_turn_performance_events(success, event_timestamp)")
+        try execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_reliability_cover
+            ON codex_turn_performance_events(
+                event_timestamp,
+                success,
+                model,
+                project_path,
+                project_name,
+                effort,
+                source,
+                transport,
+                wire_api,
+                error_summary
+            )
+            """
+        )
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_capture_state_checked ON codex_turn_performance_capture_state(last_checked_at DESC)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_started_at ON codex_session_task_timing_events(started_at)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_session_task_timing_completed_at ON codex_session_task_timing_events(completed_at)")
