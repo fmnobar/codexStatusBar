@@ -9,19 +9,12 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Add a dedicated read-only dashboard query worker or connection | Slow dashboard/capture work on the serial history database worker appears to delay unrelated History and Token Dashboard reads. A separate read path would reduce head-of-line blocking while preserving one writer/importer path. | Needs a separate planning prompt. |
-| 2 | Fix performance diagnostics accuracy and retention | Diagnostics captured useful dashboard reload timings, but `menuPopoverOpenToContent` has cancelled outliers of 16s, 31s, 55s, and 129s, and 491/500 retained events were History reloads, evicting dashboard evidence quickly. | Can be planned as a small implementation item. |
-| 3 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
-| 4 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
-| 5 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
+| 1 | Fix performance diagnostics accuracy and retention | Diagnostics captured useful dashboard reload timings, but `menuPopoverOpenToContent` has cancelled outliers of 16s, 31s, 55s, and 129s, and 491/500 retained events were History reloads, evicting dashboard evidence quickly. | Can be planned as a small implementation item. |
+| 2 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
+| 3 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
+| 4 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
 
 ## Performance Recommendation Details
-
-- Add a dedicated read-only dashboard query worker or connection
-  - Observed evidence: slow History reloads appeared at the same time as dashboard period/mode reloads, indicating serial database-worker head-of-line blocking.
-  - Likely code path/root cause: all app-owned reads, writes, imports, and dashboard snapshots are routed through one `UsageHistoryDatabaseWorker` actor that owns one synchronous `UsageHistoryStore`.
-  - Proposed implementation shape: add a read-only SQLite store/worker for bounded snapshot queries while keeping imports and writes on the existing serial writer; rely on WAL-compatible reads and existing history-change notifications for invalidation.
-  - Verification plan: run concurrent dashboard reload and History reload tests with a spy/slow importer; confirm History reads are not blocked by capture work; run query-plan/performance regression tests and the installed-app visual timing pass.
 
 - Fix performance diagnostics accuracy and retention
   - Observed evidence: popover timing has cancelled spans far longer than real user-visible open times, while dashboard open/reload samples are under-retained because History reload events dominate the 500-event store.
@@ -55,6 +48,12 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Add a dedicated read-only dashboard query worker or connection
+  - Added read-only SQLite open support with `PRAGMA query_only=ON` for persisted dashboard/history snapshots.
+  - Added a dedicated `UsageHistoryDashboardQueryWorker` for History, Token Dashboard, and Performance Dashboard snapshot reads.
+  - Added a `UsageHistoryDatabaseRouter` so dashboard reads use the read-only query worker while recording, token freshness, capture/import, settings, backup/restore, clear-history, and project rename stay on the writer worker.
+  - Added tests for read-only snapshot parity, read-only mutation rejection, first-launch missing database fallback, router routing, and snapshot completion while writer capture is blocked.
 
 - Decouple dashboard reads from live capture/import work
   - Removed metadata capture/import calls from Token Dashboard and Performance Dashboard snapshot reads so dashboard opens and toggles read already persisted rows.
@@ -373,4 +372,4 @@
 
 ## Next Candidates
 
-Next item to plan: `Add a dedicated read-only dashboard query worker or connection`.
+Next item to plan: `Fix performance diagnostics accuracy and retention`.

@@ -20,11 +20,12 @@ struct CodexUsageMenuBarApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let historyDatabase: UsageHistoryDatabaseWorker
+    let historyDatabase: UsageHistoryDatabaseWorking
     let updateMonitor: AppUpdateMonitor
     let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    private let historyWriteDatabase: UsageHistoryDatabaseWorker
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
     private var liveTokenCaptureCoordinator: CodexLiveTokenCaptureCoordinator?
@@ -33,8 +34,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         AppFreshnessRuntime.captureLaunchFingerprint()
-        let resolvedHistoryDatabase = UsageHistoryDatabaseWorker.applicationSupportStoreWithInMemoryFallback()
-        let historyRecorder = UsageHistoryRecorder(database: resolvedHistoryDatabase)
+        let resolvedHistoryWriteDatabase = UsageHistoryDatabaseWorker.applicationSupportStoreWithInMemoryFallback()
+        let resolvedHistoryQueryDatabase = UsageHistoryDashboardQueryWorker.applicationSupportStoreWithInMemoryFallback()
+        let routedHistoryDatabase = UsageHistoryDatabaseRouter(
+            writer: resolvedHistoryWriteDatabase,
+            dashboardQueryWorker: resolvedHistoryQueryDatabase
+        )
+        let historyRecorder = UsageHistoryRecorder(database: resolvedHistoryWriteDatabase)
         let codexClient = CodexAppServerClient()
         let payloadAuditStore = CodexTokenPayloadAuditStore.applicationSupportStore()
         let payloadAuditDiagnosticsStore = CodexAppServerAuditDiagnosticsStore.applicationSupportStore()
@@ -54,7 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 payloadAuditDiagnosticsStore.record(event)
             }
         }
-        historyDatabase = resolvedHistoryDatabase
+        historyWriteDatabase = resolvedHistoryWriteDatabase
+        historyDatabase = routedHistoryDatabase
         updateMonitor = AppUpdateMonitor()
         tokenPayloadAuditStore = payloadAuditStore
         tokenPayloadAuditDiagnosticsStore = payloadAuditDiagnosticsStore
@@ -78,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         Task {
-            _ = try? await historyDatabase.databaseInfo()
+            _ = try? await historyWriteDatabase.databaseInfo()
         }
 
         Task {
@@ -102,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         liveTokenCaptureCoordinator?.start()
 
         backgroundMetadataCaptureCoordinator = CodexBackgroundMetadataCaptureCoordinator(
-            database: historyDatabase
+            database: historyWriteDatabase
         )
         backgroundMetadataCaptureCoordinator?.start()
     }

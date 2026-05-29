@@ -812,6 +812,11 @@ enum UsageHistoryRawRetentionStore {
 }
 
 final class UsageHistoryStore: @unchecked Sendable {
+    enum OpenMode {
+        case readWrite
+        case readOnly
+    }
+
     static let didChangeNotification = Notification.Name("UsageHistoryStoreDidChange")
     static let defaultRawRetention: TimeInterval = 14 * 24 * 60 * 60
     static let consumptionAlgorithmMetadataKey = "usage_consumption_algorithm_version"
@@ -844,13 +849,15 @@ final class UsageHistoryStore: @unchecked Sendable {
         databaseURL: URL,
         notificationCenter: NotificationCenter = .default,
         calendar: Calendar = .autoupdatingCurrent,
-        rawRetention: TimeInterval = UsageHistoryStore.defaultRawRetention
+        rawRetention: TimeInterval = UsageHistoryStore.defaultRawRetention,
+        openMode: OpenMode = .readWrite
     ) throws {
         try self.init(
             databaseURL: databaseURL,
             notificationCenter: notificationCenter,
             calendar: calendar,
-            rawRetentionProvider: { rawRetention }
+            rawRetentionProvider: { rawRetention },
+            openMode: openMode
         )
     }
 
@@ -858,14 +865,16 @@ final class UsageHistoryStore: @unchecked Sendable {
         databaseURL: URL,
         notificationCenter: NotificationCenter = .default,
         calendar: Calendar = .autoupdatingCurrent,
-        rawRetentionProvider: @escaping () -> TimeInterval
+        rawRetentionProvider: @escaping () -> TimeInterval,
+        openMode: OpenMode = .readWrite
     ) throws {
         try self.init(
             databasePath: databaseURL.path,
             databaseURL: databaseURL,
             notificationCenter: notificationCenter,
             calendar: calendar,
-            rawRetentionProvider: rawRetentionProvider
+            rawRetentionProvider: rawRetentionProvider,
+            openMode: openMode
         )
     }
 
@@ -874,10 +883,17 @@ final class UsageHistoryStore: @unchecked Sendable {
         databaseURL: URL?,
         notificationCenter: NotificationCenter,
         calendar: Calendar,
-        rawRetentionProvider: @escaping () -> TimeInterval
+        rawRetentionProvider: @escaping () -> TimeInterval,
+        openMode: OpenMode = .readWrite
     ) throws {
         var openedDatabase: OpaquePointer?
-        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        let flags: Int32
+        switch openMode {
+        case .readWrite:
+            flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        case .readOnly:
+            flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        }
         guard sqlite3_open_v2(databasePath, &openedDatabase, flags, nil) == SQLITE_OK, let openedDatabase else {
             let message = openedDatabase.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown error"
             throw UsageHistoryStoreError.databaseOpenFailed(message)
@@ -889,9 +905,15 @@ final class UsageHistoryStore: @unchecked Sendable {
         self.calendar = calendar
         self.rawRetentionProvider = rawRetentionProvider
 
-        try execute("PRAGMA journal_mode=WAL")
-        try execute("PRAGMA foreign_keys=ON")
-        try migrate()
+        switch openMode {
+        case .readWrite:
+            try execute("PRAGMA journal_mode=WAL")
+            try execute("PRAGMA foreign_keys=ON")
+            try migrate()
+        case .readOnly:
+            try execute("PRAGMA query_only=ON")
+            try execute("PRAGMA foreign_keys=ON")
+        }
     }
 
     deinit {
@@ -908,6 +930,19 @@ final class UsageHistoryStore: @unchecked Sendable {
         return try UsageHistoryStore(
             databaseURL: directoryURL.appendingPathComponent("usage-history.sqlite3"),
             rawRetentionProvider: rawRetentionProvider
+        )
+    }
+
+    static func applicationSupportReadOnlyStore(
+        rawRetentionProvider: @escaping () -> TimeInterval = {
+            UsageHistoryRawRetentionStore.load().timeInterval
+        }
+    ) throws -> UsageHistoryStore {
+        let directoryURL = try applicationSupportDirectoryURL()
+        return try UsageHistoryStore(
+            databaseURL: directoryURL.appendingPathComponent("usage-history.sqlite3"),
+            rawRetentionProvider: rawRetentionProvider,
+            openMode: .readOnly
         )
     }
 

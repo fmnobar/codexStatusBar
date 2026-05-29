@@ -78,6 +78,336 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     ) async throws -> CodexSessionTokenBackfillSummary
 }
 
+protocol UsageHistoryDashboardQueryWorking: Sendable {
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
+}
+
+enum UsageHistorySnapshotReader {
+    static func usageHistorySnapshot(
+        store: UsageHistoryStore,
+        request: UsageHistoryLoadRequest
+    ) throws -> UsageHistoryLoadResult {
+        let points: [UsageHistoryPoint]
+        let tokenComponentBucketPoints: [TokenHistoryComponentBucketPoint]
+        let series: [UsageHistorySeries]
+        let historyBounds: UsageHistoryBounds?
+
+        switch request.chartKind {
+        case .capacity, .usage:
+            points = try store.points(
+                range: request.range,
+                window: request.window,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            )
+            tokenComponentBucketPoints = []
+            series = try store.availableSeries(window: request.window)
+            historyBounds = try store.historyBounds(
+                window: request.window,
+                granularity: request.range.storageGranularity
+            )
+        case .tokens:
+            points = []
+            tokenComponentBucketPoints = try store.tokenComponentBucketPoints(
+                range: request.range,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd,
+                now: request.now,
+                calendar: request.calendar
+            )
+            series = try store.availableTokenComponentSeries()
+                .filter { $0.kind == .aggregate }
+            historyBounds = try store.tokenComponentHistoryBounds()
+        }
+
+        return UsageHistoryLoadResult(
+            points: points,
+            tokenPoints: [],
+            tokenComponentPoints: [],
+            tokenComponentBucketPoints: tokenComponentBucketPoints,
+            series: series,
+            historyBounds: historyBounds,
+            hasAnyHistory: try store.hasAnyHistory()
+        )
+    }
+
+    static func tokenDashboardSnapshot(
+        store: UsageHistoryStore,
+        request: TokenDashboardLoadRequest
+    ) throws -> TokenDashboardLoadResult {
+        let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
+            periodStart: request.periodStart,
+            periodEnd: request.periodEnd
+        )
+        return TokenDashboardLoadResult(
+            points: try store.tokenDashboardPoints(
+                breakdownDimension: request.breakdownDimension,
+                range: request.range,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            series: try store.tokenDashboardSeries(
+                breakdownDimension: request.breakdownDimension,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            attributionCoverageRows: try store.tokenAttributionCoverageRows(
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd
+            ),
+            availableBreakdownDimensions: availableBreakdownDimensions,
+            historyBounds: try store.tokenDashboardBounds()
+        )
+    }
+
+    static func performanceDashboardSnapshot(
+        store: UsageHistoryStore,
+        request: PerformanceDashboardLoadRequest
+    ) throws -> PerformanceDashboardLoadResult {
+        switch request.mode {
+        case .performance:
+            let presentation = try store.performanceDashboardPresentation(
+                breakdownDimension: request.breakdownDimension,
+                range: request.range,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd,
+                calendar: request.calendar
+            )
+            return PerformanceDashboardLoadResult(
+                timingSamples: [],
+                reliabilitySamples: [],
+                efficiencyTokenSamples: [],
+                modelCapabilities: [],
+                durationPoints: presentation.durationPoints,
+                reliabilityPoints: presentation.reliabilityPoints,
+                breakdownRows: presentation.breakdownRows,
+                efficiencyPoints: [],
+                efficiencyRows: [],
+                series: presentation.series,
+                historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: false)
+            )
+        case .efficiency:
+            let presentation = try store.performanceDashboardEfficiencyPresentation(
+                breakdownDimension: request.breakdownDimension,
+                range: request.range,
+                periodStart: request.periodStart,
+                periodEnd: request.periodEnd,
+                calendar: request.calendar
+            )
+            return PerformanceDashboardLoadResult(
+                timingSamples: [],
+                reliabilitySamples: [],
+                efficiencyTokenSamples: [],
+                modelCapabilities: [],
+                durationPoints: [],
+                reliabilityPoints: [],
+                breakdownRows: [],
+                efficiencyPoints: presentation.points,
+                efficiencyRows: presentation.rows,
+                series: presentation.series,
+                historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: true)
+            )
+        }
+    }
+}
+
+actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
+    typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
+
+    private let storeFactory: StoreFactory
+    private let fallbackStoreFactory: StoreFactory
+    private var cachedStore: UsageHistoryStore?
+
+    init(
+        store: UsageHistoryStore,
+        fallbackStoreFactory: @escaping StoreFactory = { try UsageHistoryStore.inMemory() }
+    ) {
+        self.storeFactory = { store }
+        self.fallbackStoreFactory = fallbackStoreFactory
+        self.cachedStore = store
+    }
+
+    init(
+        storeFactory: @escaping StoreFactory,
+        fallbackStoreFactory: @escaping StoreFactory = { try UsageHistoryStore.inMemory() }
+    ) {
+        self.storeFactory = storeFactory
+        self.fallbackStoreFactory = fallbackStoreFactory
+    }
+
+    static func applicationSupportStore() -> UsageHistoryDashboardQueryWorker {
+        UsageHistoryDashboardQueryWorker(storeFactory: {
+            try UsageHistoryStore.applicationSupportReadOnlyStore()
+        })
+    }
+
+    static func applicationSupportStoreWithInMemoryFallback() -> UsageHistoryDashboardQueryWorker {
+        UsageHistoryDashboardQueryWorker(storeFactory: {
+            try UsageHistoryStore.applicationSupportReadOnlyStore()
+        })
+    }
+
+    static func inMemory() throws -> UsageHistoryDashboardQueryWorker {
+        try UsageHistoryDashboardQueryWorker(store: UsageHistoryStore.inMemory())
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) throws -> UsageHistoryLoadResult {
+        try UsageHistorySnapshotReader.usageHistorySnapshot(store: store(), request: request)
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
+        try UsageHistorySnapshotReader.tokenDashboardSnapshot(store: store(), request: request)
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
+        try UsageHistorySnapshotReader.performanceDashboardSnapshot(store: store(), request: request)
+    }
+
+    private func store() throws -> UsageHistoryStore {
+        if let cachedStore {
+            return cachedStore
+        }
+
+        do {
+            let store = try storeFactory()
+            cachedStore = store
+            return store
+        } catch {
+            return try fallbackStoreFactory()
+        }
+    }
+}
+
+struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
+    let writer: UsageHistoryDatabaseWorking
+    let dashboardQueryWorker: UsageHistoryDashboardQueryWorking
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {
+        await writer.record(snapshot: snapshot, at: date)
+    }
+
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        await writer.record(tokenUsage: tokenUsage, at: date)
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        await writer.todayTokenCategoryTotals(at: date, calendar: calendar)
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        await writer.todayTotalTokens(at: date, calendar: calendar)
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        await writer.captureLiveTokenHistoryIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
+        await writer.liveTokenCaptureState()
+    }
+
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexTurnPerformanceCaptureState {
+        await writer.captureTurnPerformanceIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
+        await writer.turnPerformanceCaptureState()
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexSessionTaskTimingCaptureState {
+        await writer.captureSessionTaskTimingIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState {
+        await writer.sessionTaskTimingCaptureState()
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexThreadCatalogCaptureState {
+        await writer.captureThreadCatalogIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState {
+        await writer.threadCatalogCaptureState()
+    }
+
+    func captureModelCapabilitiesIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexModelCapabilitiesCaptureState {
+        await writer.captureModelCapabilitiesIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
+    func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState {
+        await writer.modelCapabilitiesCaptureState()
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        try await dashboardQueryWorker.usageHistorySnapshot(for: request)
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        try await dashboardQueryWorker.tokenDashboardSnapshot(for: request)
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
+        try await dashboardQueryWorker.performanceDashboardSnapshot(for: request)
+    }
+
+    func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
+        try await writer.databaseInfo()
+    }
+
+    func exportBackup(to destinationURL: URL) async throws {
+        try await writer.exportBackup(to: destinationURL)
+    }
+
+    func importBackup(from sourceURL: URL) async throws {
+        try await writer.importBackup(from: sourceURL)
+    }
+
+    func clearHistory() async throws {
+        try await writer.clearHistory()
+    }
+
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry] {
+        try await writer.tokenProjectCatalogEntries()
+    }
+
+    func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry] {
+        try await writer.tokenDimensionCatalogEntries()
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws {
+        try await writer.updateTokenProjectDisplayName(projectPath: projectPath, displayName: displayName)
+    }
+
+    func importTokenHistory(
+        importer: CodexSessionTokenBackfillImporting,
+        request: CodexSessionTokenBackfillRequest
+    ) async throws -> CodexSessionTokenBackfillSummary {
+        try await writer.importTokenHistory(importer: importer, request: request)
+    }
+}
+
 @MainActor
 final class CodexBackgroundMetadataCaptureCoordinator {
     typealias Sleeper = @Sendable (TimeInterval) async throws -> Void
@@ -427,125 +757,15 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     }
 
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) throws -> UsageHistoryLoadResult {
-        let store = try store()
-        let points: [UsageHistoryPoint]
-        let tokenComponentBucketPoints: [TokenHistoryComponentBucketPoint]
-        let series: [UsageHistorySeries]
-        let historyBounds: UsageHistoryBounds?
-
-        switch request.chartKind {
-        case .capacity, .usage:
-            points = try store.points(
-                range: request.range,
-                window: request.window,
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            )
-            tokenComponentBucketPoints = []
-            series = try store.availableSeries(window: request.window)
-            historyBounds = try store.historyBounds(
-                window: request.window,
-                granularity: request.range.storageGranularity
-            )
-        case .tokens:
-            points = []
-            tokenComponentBucketPoints = try store.tokenComponentBucketPoints(
-                range: request.range,
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd,
-                now: request.now,
-                calendar: request.calendar
-            )
-            series = try store.availableTokenComponentSeries()
-                .filter { $0.kind == .aggregate }
-            historyBounds = try store.tokenComponentHistoryBounds()
-        }
-
-        return UsageHistoryLoadResult(
-            points: points,
-            tokenPoints: [],
-            tokenComponentPoints: [],
-            tokenComponentBucketPoints: tokenComponentBucketPoints,
-            series: series,
-            historyBounds: historyBounds,
-            hasAnyHistory: try store.hasAnyHistory()
-        )
+        try UsageHistorySnapshotReader.usageHistorySnapshot(store: store(), request: request)
     }
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
-        let store = try store()
-        let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
-            periodStart: request.periodStart,
-            periodEnd: request.periodEnd
-        )
-        return TokenDashboardLoadResult(
-            points: try store.tokenDashboardPoints(
-                breakdownDimension: request.breakdownDimension,
-                range: request.range,
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
-            series: try store.tokenDashboardSeries(
-                breakdownDimension: request.breakdownDimension,
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
-            attributionCoverageRows: try store.tokenAttributionCoverageRows(
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd
-            ),
-            availableBreakdownDimensions: availableBreakdownDimensions,
-            historyBounds: try store.tokenDashboardBounds()
-        )
+        try UsageHistorySnapshotReader.tokenDashboardSnapshot(store: store(), request: request)
     }
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
-        let store = try store()
-
-        switch request.mode {
-        case .performance:
-            let presentation = try store.performanceDashboardPresentation(
-                breakdownDimension: request.breakdownDimension,
-                range: request.range,
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd,
-                calendar: request.calendar
-            )
-            return PerformanceDashboardLoadResult(
-                timingSamples: [],
-                reliabilitySamples: [],
-                efficiencyTokenSamples: [],
-                modelCapabilities: [],
-                durationPoints: presentation.durationPoints,
-                reliabilityPoints: presentation.reliabilityPoints,
-                breakdownRows: presentation.breakdownRows,
-                efficiencyPoints: [],
-                efficiencyRows: [],
-                series: presentation.series,
-                historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: false)
-            )
-        case .efficiency:
-            let presentation = try store.performanceDashboardEfficiencyPresentation(
-                breakdownDimension: request.breakdownDimension,
-                range: request.range,
-                periodStart: request.periodStart,
-                periodEnd: request.periodEnd,
-                calendar: request.calendar
-            )
-            return PerformanceDashboardLoadResult(
-                timingSamples: [],
-                reliabilitySamples: [],
-                efficiencyTokenSamples: [],
-                modelCapabilities: [],
-                durationPoints: [],
-                reliabilityPoints: [],
-                breakdownRows: [],
-                efficiencyPoints: presentation.points,
-                efficiencyRows: presentation.rows,
-                series: presentation.series,
-                historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: true)
-            )
-        }
+        try UsageHistorySnapshotReader.performanceDashboardSnapshot(store: store(), request: request)
     }
 
     func databaseInfo() throws -> UsageHistoryDatabaseInfo {

@@ -3260,6 +3260,198 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testReadOnlyDashboardQueryWorkerMatchesWriterSnapshots() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        try store.record(
+            snapshot: usageSnapshot(aggregateSevenDay: 20, modelSevenDay: 7),
+            at: date("2026-05-02T12:00:00Z")
+        )
+        try seedPerformanceDashboardFixture(in: store)
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "readonly-token",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 1_000,
+                    lastCached: 200,
+                    lastOutput: 300,
+                    lastReasoning: 50,
+                    lastTotal: 1_300,
+                    totalInput: 1_000,
+                    totalCached: 200,
+                    totalOutput: 300,
+                    totalReasoning: 50,
+                    totalTotal: 1_300
+                ),
+                receivedAt: date("2026-05-02T12:00:03Z")
+            ),
+        ])
+
+        let readOnlyStore = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar,
+            openMode: .readOnly
+        )
+        let writer = UsageHistoryDatabaseWorker(store: store)
+        let queryWorker = UsageHistoryDashboardQueryWorker(store: readOnlyStore)
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let usageRequest = UsageHistoryLoadRequest(
+            chartKind: .capacity,
+            range: .month,
+            window: .sevenDay,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            now: date("2026-05-03T00:00:00Z"),
+            calendar: calendar
+        )
+        let tokenRequest = TokenDashboardLoadRequest(
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd
+        )
+        let performanceRequest = PerformanceDashboardLoadRequest(
+            mode: .performance,
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+
+        let readOnlyUsageSnapshot = try await queryWorker.usageHistorySnapshot(for: usageRequest)
+        let writerUsageSnapshot = try await writer.usageHistorySnapshot(for: usageRequest)
+        let readOnlyTokenSnapshot = try await queryWorker.tokenDashboardSnapshot(for: tokenRequest)
+        let writerTokenSnapshot = try await writer.tokenDashboardSnapshot(for: tokenRequest)
+        let readOnlyPerformanceSnapshot = try await queryWorker.performanceDashboardSnapshot(for: performanceRequest)
+        let writerPerformanceSnapshot = try await writer.performanceDashboardSnapshot(for: performanceRequest)
+
+        XCTAssertEqual(readOnlyUsageSnapshot, writerUsageSnapshot)
+        XCTAssertEqual(readOnlyTokenSnapshot, writerTokenSnapshot)
+        XCTAssertEqual(readOnlyPerformanceSnapshot, writerPerformanceSnapshot)
+        XCTAssertThrowsError(
+            try readOnlyStore.record(
+                snapshot: CodexUsageSnapshot.aggregateOnly(
+                    displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 99)
+                ),
+                at: date("2026-05-02T12:10:00Z")
+            )
+        )
+    }
+
+    func testDashboardQueryWorkerMissingDatabaseReturnsEmptySnapshot() async throws {
+        let currentCalendar = try XCTUnwrap(calendar)
+        let queryWorker = UsageHistoryDashboardQueryWorker(
+            storeFactory: {
+                throw UsageHistoryStoreError.databaseOpenFailed("missing fixture")
+            },
+            fallbackStoreFactory: {
+                try UsageHistoryStore.inMemory(
+                    notificationCenter: NotificationCenter(),
+                    calendar: currentCalendar
+                )
+            }
+        )
+        let result = try await queryWorker.usageHistorySnapshot(
+            for: UsageHistoryLoadRequest(
+                chartKind: .capacity,
+                range: .day,
+                window: .sevenDay,
+                periodStart: date("2026-05-02T00:00:00Z"),
+                periodEnd: date("2026-05-03T00:00:00Z"),
+                now: date("2026-05-02T12:00:00Z"),
+                calendar: calendar
+            )
+        )
+
+        XCTAssertFalse(result.hasAnyHistory)
+        XCTAssertTrue(result.points.isEmpty)
+        XCTAssertTrue(result.series.isEmpty)
+    }
+
+    func testDatabaseRouterRoutesSnapshotsToQueryWorkerAndWritesToWriter() async throws {
+        let writer = DashboardRoutingWriterSpy()
+        let query = DashboardRoutingQuerySpy()
+        let router = UsageHistoryDatabaseRouter(writer: writer, dashboardQueryWorker: query)
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+
+        _ = try await router.usageHistorySnapshot(
+            for: UsageHistoryLoadRequest(
+                chartKind: .capacity,
+                range: .month,
+                window: .sevenDay,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                now: date("2026-05-02T12:00:00Z"),
+                calendar: calendar
+            )
+        )
+        _ = try await router.tokenDashboardSnapshot(
+            for: TokenDashboardLoadRequest(
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
+        )
+        _ = try await router.performanceDashboardSnapshot(
+            for: PerformanceDashboardLoadRequest(
+                mode: .performance,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                calendar: calendar
+            )
+        )
+        _ = await router.captureTurnPerformanceIfNeeded(
+            at: date("2026-05-02T12:05:00Z"),
+            calendar: calendar,
+            force: true
+        )
+
+        let queryEvents = await query.eventsSnapshot()
+        let writerEvents = await writer.eventsSnapshot()
+
+        XCTAssertEqual(queryEvents, [.usageHistory, .tokenDashboard, .performanceDashboard])
+        XCTAssertEqual(writerEvents, [.turnPerformance(force: true)])
+    }
+
+    func testRouterSnapshotCompletesWhileWriterCaptureIsBlocked() async throws {
+        let writer = BlockingDashboardRoutingWriterSpy()
+        let query = DashboardRoutingQuerySpy()
+        let router = UsageHistoryDatabaseRouter(writer: writer, dashboardQueryWorker: query)
+        let captureDate = date("2026-05-02T12:05:00Z")
+        let currentCalendar = try XCTUnwrap(calendar)
+        let captureTask = Task {
+            await router.captureTurnPerformanceIfNeeded(
+                at: captureDate,
+                calendar: currentCalendar,
+                force: true
+            )
+        }
+
+        await writer.waitForCaptureStart()
+        let snapshot = try await router.usageHistorySnapshot(
+            for: UsageHistoryLoadRequest(
+                chartKind: .capacity,
+                range: .month,
+                window: .sevenDay,
+                periodStart: date("2026-05-01T00:00:00Z"),
+                periodEnd: date("2026-06-01T00:00:00Z"),
+                now: date("2026-05-02T12:00:00Z"),
+                calendar: calendar
+            )
+        )
+
+        await writer.releaseCapture()
+        _ = await captureTask.value
+        let queryEvents = await query.eventsSnapshot()
+
+        XCTAssertFalse(snapshot.hasAnyHistory)
+        XCTAssertEqual(queryEvents, [.usageHistory])
+    }
+
     @MainActor
     func testBackgroundMetadataCaptureCoordinatorDelaysAndStaggersNonForcedCaptures() async throws {
         let database = BackgroundMetadataCaptureSpyDatabase(failTurnPerformance: true)
@@ -3985,6 +4177,407 @@ private final class DashboardMetadataImporterSpy: @unchecked Sendable {
         lock.lock()
         events.append(Event(kind: kind, force: force))
         lock.unlock()
+    }
+}
+
+private actor DashboardRoutingQuerySpy: UsageHistoryDashboardQueryWorking {
+    enum Event: Equatable {
+        case usageHistory
+        case tokenDashboard
+        case performanceDashboard
+    }
+
+    private var events: [Event] = []
+
+    func eventsSnapshot() -> [Event] {
+        events
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        events.append(.usageHistory)
+        return UsageHistoryLoadResult(
+            points: [],
+            tokenPoints: [],
+            tokenComponentPoints: [],
+            tokenComponentBucketPoints: [],
+            series: [],
+            historyBounds: nil,
+            hasAnyHistory: false
+        )
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        events.append(.tokenDashboard)
+        return TokenDashboardLoadResult(
+            points: [],
+            series: [],
+            attributionCoverageRows: [],
+            availableBreakdownDimensions: [.model],
+            historyBounds: nil
+        )
+    }
+
+    func performanceDashboardSnapshot(
+        for request: PerformanceDashboardLoadRequest
+    ) async throws -> PerformanceDashboardLoadResult {
+        events.append(.performanceDashboard)
+        return PerformanceDashboardLoadResult(
+            timingSamples: [],
+            reliabilitySamples: [],
+            efficiencyTokenSamples: [],
+            modelCapabilities: [],
+            durationPoints: [],
+            reliabilityPoints: [],
+            breakdownRows: [],
+            efficiencyPoints: [],
+            efficiencyRows: [],
+            series: [],
+            historyBounds: nil
+        )
+    }
+}
+
+private actor DashboardRoutingWriterSpy: UsageHistoryDatabaseWorking {
+    enum Event: Equatable {
+        case recordUsage
+        case recordTokens
+        case liveTokenCapture(force: Bool)
+        case turnPerformance(force: Bool)
+        case sessionTaskTiming(force: Bool)
+        case threadCatalog(force: Bool)
+        case modelCapabilities(force: Bool)
+        case databaseInfo
+        case exportBackup
+        case importBackup
+        case clearHistory
+        case projectCatalog
+        case dimensionCatalog
+        case renameProject
+        case importTokenHistory
+    }
+
+    private enum SpyError: Error {
+        case unexpectedSnapshot
+    }
+
+    private var events: [Event] = []
+
+    func eventsSnapshot() -> [Event] {
+        events
+    }
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {
+        events.append(.recordUsage)
+    }
+
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        events.append(.recordTokens)
+        return nil
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        nil
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        events.append(.liveTokenCapture(force: force))
+        return CodexLiveTokenCaptureState(status: .noNewEvents)
+    }
+
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .noNewEvents)
+    }
+
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexTurnPerformanceCaptureState {
+        events.append(.turnPerformance(force: force))
+        return CodexTurnPerformanceCaptureState(status: .noNewEvents)
+    }
+
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .noNewEvents)
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexSessionTaskTimingCaptureState {
+        events.append(.sessionTaskTiming(force: force))
+        return CodexSessionTaskTimingCaptureState(status: .noNewEvents)
+    }
+
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .noNewEvents)
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexThreadCatalogCaptureState {
+        events.append(.threadCatalog(force: force))
+        return CodexThreadCatalogCaptureState(status: .noNewEvents)
+    }
+
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .noNewEvents)
+    }
+
+    func captureModelCapabilitiesIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexModelCapabilitiesCaptureState {
+        events.append(.modelCapabilities(force: force))
+        return CodexModelCapabilitiesCaptureState(status: .noNewEvents)
+    }
+
+    func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .noNewEvents)
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        throw SpyError.unexpectedSnapshot
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        throw SpyError.unexpectedSnapshot
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
+        throw SpyError.unexpectedSnapshot
+    }
+
+    func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
+        events.append(.databaseInfo)
+        throw SpyError.unexpectedSnapshot
+    }
+
+    func exportBackup(to destinationURL: URL) async throws {
+        events.append(.exportBackup)
+    }
+
+    func importBackup(from sourceURL: URL) async throws {
+        events.append(.importBackup)
+    }
+
+    func clearHistory() async throws {
+        events.append(.clearHistory)
+    }
+
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry] {
+        events.append(.projectCatalog)
+        return []
+    }
+
+    func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry] {
+        events.append(.dimensionCatalog)
+        return []
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws {
+        events.append(.renameProject)
+    }
+
+    func importTokenHistory(
+        importer: CodexSessionTokenBackfillImporting,
+        request: CodexSessionTokenBackfillRequest
+    ) async throws -> CodexSessionTokenBackfillSummary {
+        events.append(.importTokenHistory)
+        return CodexSessionTokenBackfillSummary(
+            request: request,
+            filesScanned: 0,
+            tokenEventsImported: 0,
+            duplicateEventsSkipped: 0,
+            failedLinesSkipped: 0
+        )
+    }
+}
+
+private actor BlockingDashboardRoutingWriterSpy: UsageHistoryDatabaseWorking {
+    private var captureStarted = false
+    private var captureStartContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func waitForCaptureStart() async {
+        if captureStarted {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            captureStartContinuation = continuation
+        }
+    }
+
+    func releaseCapture() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
+
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        nil
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .noNewEvents)
+    }
+
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .noNewEvents)
+    }
+
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexTurnPerformanceCaptureState {
+        captureStarted = true
+        captureStartContinuation?.resume()
+        captureStartContinuation = nil
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+        return CodexTurnPerformanceCaptureState(status: .noNewEvents)
+    }
+
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .noNewEvents)
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .noNewEvents)
+    }
+
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .noNewEvents)
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .noNewEvents)
+    }
+
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .noNewEvents)
+    }
+
+    func captureModelCapabilitiesIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .noNewEvents)
+    }
+
+    func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .noNewEvents)
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        XCTFail("Writer should not serve dashboard snapshots")
+        return UsageHistoryLoadResult(
+            points: [],
+            tokenPoints: [],
+            tokenComponentPoints: [],
+            tokenComponentBucketPoints: [],
+            series: [],
+            historyBounds: nil,
+            hasAnyHistory: false
+        )
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        XCTFail("Writer should not serve dashboard snapshots")
+        return TokenDashboardLoadResult(
+            points: [],
+            series: [],
+            attributionCoverageRows: [],
+            availableBreakdownDimensions: [],
+            historyBounds: nil
+        )
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
+        XCTFail("Writer should not serve dashboard snapshots")
+        return PerformanceDashboardLoadResult(
+            timingSamples: [],
+            reliabilitySamples: [],
+            efficiencyTokenSamples: [],
+            modelCapabilities: [],
+            durationPoints: [],
+            reliabilityPoints: [],
+            breakdownRows: [],
+            efficiencyPoints: [],
+            efficiencyRows: [],
+            series: [],
+            historyBounds: nil
+        )
+    }
+
+    func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
+        throw UsageHistoryStoreError.databaseUnavailable
+    }
+
+    func exportBackup(to destinationURL: URL) async throws {}
+
+    func importBackup(from sourceURL: URL) async throws {}
+
+    func clearHistory() async throws {}
+
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry] {
+        []
+    }
+
+    func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry] {
+        []
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws {}
+
+    func importTokenHistory(
+        importer: CodexSessionTokenBackfillImporting,
+        request: CodexSessionTokenBackfillRequest
+    ) async throws -> CodexSessionTokenBackfillSummary {
+        CodexSessionTokenBackfillSummary(
+            request: request,
+            filesScanned: 0,
+            tokenEventsImported: 0,
+            duplicateEventsSkipped: 0,
+            failedLinesSkipped: 0
+        )
     }
 }
 
