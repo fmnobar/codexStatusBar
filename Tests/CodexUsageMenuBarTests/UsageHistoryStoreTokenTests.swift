@@ -1797,12 +1797,257 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(instrumentationStore.events.first?.status, .success)
         XCTAssertEqual(instrumentationStore.events.first?.metadata["dashboard"], "token")
         XCTAssertEqual(instrumentationStore.events.first?.metadata["range"], "month")
+        XCTAssertEqual(instrumentationStore.events.first?.metadata["cacheHit"], "false")
 
         viewModel.selectedBreakdownDimension = .effort
         currentDate = currentDate.addingTimeInterval(0.1)
         await viewModel.reload()
 
         XCTAssertEqual(instrumentationStore.events.last?.kind, .tokenDashboardBreakdownChange)
+        XCTAssertEqual(instrumentationStore.events.last?.metadata["cacheHit"], "false")
+    }
+
+    @MainActor
+    func testTokenDashboardSnapshotCacheReusesBreakdownAndPeriodResults() async throws {
+        var currentDate = date("2026-05-17T12:00:00Z")
+        let database = TokenDashboardCacheSpyDatabase()
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { currentDate },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 1_000)
+
+        currentDate = currentDate.addingTimeInterval(30)
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        viewModel.sortBreakdownRows(by: .total)
+        viewModel.selectSeries("model:gpt-5.5")
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        viewModel.selectedBreakdownDimension = .effort
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 2_000)
+
+        viewModel.selectedBreakdownDimension = .model
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 1_000)
+    }
+
+    @MainActor
+    func testTokenDashboardViewModelRecordsWorkerAndCacheReloadTimings() async throws {
+        var currentDate = date("2026-05-17T12:00:00Z")
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let instrumentationStore = AppPerformanceInstrumentationStore(
+            fileURL: diagnosticsURL,
+            now: { currentDate }
+        )
+        let database = TokenDashboardCacheSpyDatabase()
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            performanceInstrumentationStore: instrumentationStore,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        currentDate = currentDate.addingTimeInterval(0.2)
+        await viewModel.reload()
+        currentDate = currentDate.addingTimeInterval(0.1)
+        await viewModel.reload()
+
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(instrumentationStore.events.map(\.kind), [.tokenDashboardReload, .tokenDashboardReload])
+        XCTAssertEqual(instrumentationStore.events.map(\.status), [.success, .success])
+        XCTAssertEqual(instrumentationStore.events[0].metadata["cacheHit"], "false")
+        XCTAssertEqual(instrumentationStore.events[1].metadata["cacheHit"], "true")
+        XCTAssertEqual(instrumentationStore.events[0].metadata["dashboard"], "token")
+        XCTAssertEqual(instrumentationStore.events[0].metadata["range"], "month")
+
+        viewModel.selectedBreakdownDimension = .effort
+        currentDate = currentDate.addingTimeInterval(0.3)
+        await viewModel.reload()
+
+        XCTAssertEqual(instrumentationStore.events.last?.kind, .tokenDashboardBreakdownChange)
+        XCTAssertEqual(instrumentationStore.events.last?.metadata["breakdown"], "Effort")
+        XCTAssertEqual(instrumentationStore.events.last?.metadata["cacheHit"], "false")
+    }
+
+    @MainActor
+    func testTokenDashboardSnapshotCacheReusesRevisitedPeriods() async throws {
+        let database = TokenDashboardCacheSpyDatabase()
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+
+        viewModel.goToPreviousPeriod()
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-04-01T00:00:00Z"))
+
+        viewModel.goToNextPeriod()
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.selectedPeriod.start, date("2026-05-01T00:00:00Z"))
+    }
+
+    @MainActor
+    func testTokenDashboardSnapshotCacheDoesNotCacheFailures() async throws {
+        let database = TokenDashboardCacheSpyDatabase(stubs: [
+            .failure,
+            .success(value: 42),
+        ])
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        let failed = await viewModel.reload()
+        XCTAssertFalse(failed)
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(viewModel.errorMessage, "Token dashboard could not be loaded.")
+
+        let succeeded = await viewModel.reload()
+        XCTAssertTrue(succeeded)
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 42_000)
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testTokenDashboardSnapshotCacheInvalidationClearsEntriesAndReloads() async throws {
+        let database = TokenDashboardCacheSpyDatabase(stubs: [
+            .success(value: 7),
+            .success(value: 8),
+        ])
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 7_000)
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 1)
+
+        await viewModel.reload()
+        var requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 1)
+
+        viewModel.invalidateSnapshotCache()
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 0)
+
+        await viewModel.reload()
+        requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 8_000)
+    }
+
+    @MainActor
+    func testTokenDashboardSnapshotCacheResetsUnavailableBreakdownToModel() async throws {
+        let database = TokenDashboardCacheSpyDatabase(
+            stubs: [
+                .success(value: 1, availableDimensions: [.model]),
+                .success(value: 2, availableDimensions: [.model]),
+            ]
+        )
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        viewModel.selectedBreakdownDimension = .effort
+        let applied = await viewModel.reload()
+        XCTAssertFalse(applied)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .model)
+        XCTAssertTrue(viewModel.series.isEmpty)
+
+        let modelApplied = await viewModel.reload()
+        XCTAssertTrue(modelApplied)
+        let requests = await database.requestsSnapshot()
+        XCTAssertEqual(requests.map(\.breakdownDimension), [.effort, .model])
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 2_000)
+    }
+
+    @MainActor
+    func testTokenDashboardStaleAsyncResultIsIgnoredAfterBreakdownChange() async throws {
+        let database = TokenDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1, delayNanoseconds: 150_000_000),
+            .success(value: 2),
+        ])
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        let firstReload = Task { await viewModel.reload() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        viewModel.selectedBreakdownDimension = .effort
+        let secondResult = await viewModel.reload()
+        let firstResult = await firstReload.value
+
+        XCTAssertTrue(secondResult)
+        XCTAssertFalse(firstResult)
+        let requestCount = await database.requestCount()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .effort)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 2_000)
+    }
+
+    @MainActor
+    func testTokenDashboardSnapshotCachePrunesToBoundedEntryCount() async throws {
+        let database = TokenDashboardCacheSpyDatabase()
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        for range in UsageHistoryRange.allCases {
+            viewModel.selectedRange = range
+            for breakdownDimension in TokenDashboardBreakdownDimension.allCases {
+                viewModel.selectedBreakdownDimension = breakdownDimension
+                await viewModel.reload()
+            }
+        }
+
+        let requestCount = await database.requestCount()
+        XCTAssertGreaterThan(requestCount, 24)
+        XCTAssertEqual(viewModel.snapshotCacheEntryCount, 24)
     }
 
     @MainActor
@@ -4748,6 +4993,293 @@ private actor BackgroundMetadataCaptureSpyDatabase: UsageHistoryDatabaseWorking 
         request: CodexSessionTokenBackfillRequest
     ) async throws -> CodexSessionTokenBackfillSummary {
         throw SpyError.unused
+    }
+}
+
+private actor TokenDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
+    struct Stub {
+        let resultValue: Int?
+        let delayNanoseconds: UInt64
+        let error: Error?
+        let availableDimensions: [TokenDashboardBreakdownDimension]
+
+        static func success(
+            value: Int,
+            delayNanoseconds: UInt64 = 0,
+            availableDimensions: [TokenDashboardBreakdownDimension] = TokenDashboardBreakdownDimension.allCases
+        ) -> Stub {
+            Stub(
+                resultValue: value,
+                delayNanoseconds: delayNanoseconds,
+                error: nil,
+                availableDimensions: availableDimensions
+            )
+        }
+
+        static var failure: Stub {
+            Stub(
+                resultValue: nil,
+                delayNanoseconds: 0,
+                error: TokenDashboardCacheSpyError.configuredFailure,
+                availableDimensions: TokenDashboardBreakdownDimension.allCases
+            )
+        }
+    }
+
+    private enum TokenDashboardCacheSpyError: Error {
+        case configuredFailure
+        case unused
+    }
+
+    private var stubs: [Stub]
+    private var tokenRequests: [TokenDashboardLoadRequest] = []
+
+    init(stubs: [Stub] = []) {
+        self.stubs = stubs
+    }
+
+    func requestCount() -> Int {
+        tokenRequests.count
+    }
+
+    func requestsSnapshot() -> [TokenDashboardLoadRequest] {
+        tokenRequests
+    }
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
+
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        nil
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .neverChecked)
+    }
+
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .neverChecked)
+    }
+
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .neverChecked)
+    }
+
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .neverChecked)
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .neverChecked)
+    }
+
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .neverChecked)
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .neverChecked)
+    }
+
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .neverChecked)
+    }
+
+    func captureModelCapabilitiesIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .neverChecked)
+    }
+
+    func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .neverChecked)
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        let callIndex = tokenRequests.count
+        tokenRequests.append(request)
+
+        if callIndex < stubs.count {
+            let stub = stubs[callIndex]
+            if stub.delayNanoseconds > 0 {
+                try await Task.sleep(nanoseconds: stub.delayNanoseconds)
+            }
+            if let error = stub.error {
+                throw error
+            }
+            return Self.result(
+                for: request,
+                value: stub.resultValue ?? callIndex + 1,
+                availableDimensions: stub.availableDimensions
+            )
+        }
+
+        return Self.result(
+            for: request,
+            value: callIndex + 1,
+            availableDimensions: TokenDashboardBreakdownDimension.allCases
+        )
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func exportBackup(to destinationURL: URL) async throws {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func importBackup(from sourceURL: URL) async throws {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func clearHistory() async throws {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry] {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry] {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    func importTokenHistory(
+        importer: CodexSessionTokenBackfillImporting,
+        request: CodexSessionTokenBackfillRequest
+    ) async throws -> CodexSessionTokenBackfillSummary {
+        throw TokenDashboardCacheSpyError.unused
+    }
+
+    private static func result(
+        for request: TokenDashboardLoadRequest,
+        value: Int,
+        availableDimensions: [TokenDashboardBreakdownDimension]
+    ) -> TokenDashboardLoadResult {
+        let aggregate = TokenDashboardSeries(
+            id: TokenDashboardSeries.aggregateID,
+            name: "All captured",
+            kind: .aggregate,
+            contextID: "all"
+        )
+        let child = childSeries(for: request.breakdownDimension)
+        let bucketEnd = request.periodStart.addingTimeInterval(60 * 60)
+        let tokenCount = Int64(value * 1_000)
+        let series = [aggregate, child]
+        let points = series.map {
+            TokenDashboardComponentPoint(
+                bucketStart: request.periodStart,
+                bucketEnd: bucketEnd,
+                seriesID: $0.id,
+                seriesName: $0.name,
+                seriesKind: $0.kind,
+                component: .input,
+                tokenCount: tokenCount
+            )
+        }
+        let coverageRows = availableDimensions.map { dimension in
+            TokenAttributionCoverageRow(
+                id: dimension.dimensionKey.map { "dimension:\($0.rawValue)" } ?? dimension.rawValue,
+                title: dimension.displayTitle,
+                attributedTokenCount: tokenCount,
+                missingTokenCount: 0,
+                distinctValueCount: 1,
+                dimensionKey: dimension.dimensionKey
+            )
+        }
+        let historyBounds = UsageHistoryBounds(
+            earliest: request.periodStart.addingTimeInterval(-90 * 24 * 60 * 60),
+            latest: request.periodEnd
+        )
+
+        return TokenDashboardLoadResult(
+            points: points,
+            series: series,
+            attributionCoverageRows: coverageRows,
+            availableBreakdownDimensions: availableDimensions,
+            historyBounds: historyBounds
+        )
+    }
+
+    private static func childSeries(for dimension: TokenDashboardBreakdownDimension) -> TokenDashboardSeries {
+        switch dimension {
+        case .model:
+            return TokenDashboardSeries(id: "model:gpt-5.5", name: "gpt-5.5", kind: .model, contextID: "gpt-5.5")
+        case .effort:
+            return TokenDashboardSeries(id: "effort:high", name: "high", kind: .effort, contextID: "high")
+        case .project:
+            return TokenDashboardSeries(
+                id: "project:/Users/example/Projects/codex_codex",
+                name: "codex_codex",
+                kind: .project,
+                contextID: "/Users/example/Projects/codex_codex",
+                projectPath: "/Users/example/Projects/codex_codex"
+            )
+        case .originator,
+             .sourceKind,
+             .threadSource,
+             .cliVersion,
+             .modelProvider,
+             .memoryMode,
+             .approvalPolicy,
+             .sandboxType,
+             .permissionProfile,
+             .realtimeActive,
+             .truncationPolicy,
+             .isSubagent,
+             .subagentParentThreadID,
+             .subagentDepth,
+             .agentRole,
+             .agentNickname,
+             .usageMode:
+            let dimensionKey = dimension.dimensionKey
+            let value = dimension == .realtimeActive || dimension == .isSubagent ? "false" : "captured"
+            return TokenDashboardSeries(
+                id: "dimension:\(dimension.rawValue):\(value)",
+                name: value,
+                kind: .dimension,
+                contextID: value,
+                dimensionKey: dimensionKey
+            )
+        }
     }
 }
 

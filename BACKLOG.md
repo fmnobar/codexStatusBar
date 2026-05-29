@@ -9,17 +9,10 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
-| 2 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
-| 3 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
+| 1 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
+| 2 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
 
 ## Performance Recommendation Details
-
-- Cache or precompute Token Dashboard period snapshots
-  - Observed evidence: first Token Dashboard month reload took 2.7s despite a small presentation result; repeated warm reloads fell to about 0.63s.
-  - Likely code path/root cause: Token Dashboard lacks the view-model snapshot cache already added to Performance Dashboard and still recomputes period/breakdown data on repeated toggles.
-  - Proposed implementation shape: add a bounded view-model cache keyed by period, range, breakdown, selected filters, and calendar/time zone; invalidate on history-change notifications; optionally prewarm the current month only after launch capture work is idle.
-  - Verification plan: spy-worker tests for cache hit/miss/invalidation; installed-app timing for cold first open, close/reopen, period revisit, breakdown revisit, sort, and CSV export.
 
 - Optimize Performance Dashboard reliability-heavy SQL paths
   - Observed evidence: Performance Dashboard month reloads remain multi-second after mode-aware loading, presentation pre-aggregation, caching, and indexed task timing timestamps.
@@ -41,6 +34,13 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Cache or precompute Token Dashboard period snapshots
+  - Added bounded Token Dashboard view-model snapshot caching by breakdown dimension, range, clipped query period, and calendar/time zone.
+  - Cache hits now apply already-loaded Token Dashboard points, rows, attribution coverage, available dimensions, and bounds without calling the dashboard query worker.
+  - Sorting and row selection remain UI-only and do not invalidate or miss the snapshot cache.
+  - History-change notifications clear cached snapshots and reload the current dashboard selection.
+  - Added cache hit/miss, revisit, failure, invalidation, stale-result, unavailable-breakdown reset, pruning, and instrumentation tests.
 
 - Fix performance diagnostics accuracy and retention
   - Added deterministic popover open-to-content span tracking so close/cancel paths discard pending popover spans instead of recording misleading cancelled open-to-content outliers.
@@ -371,4 +371,4 @@
 
 ## Next Candidates
 
-Next item to plan: `Cache or precompute Token Dashboard period snapshots`.
+Next item to plan: `Optimize Performance Dashboard reliability-heavy SQL paths`.

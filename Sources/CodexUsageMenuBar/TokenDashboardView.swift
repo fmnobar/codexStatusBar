@@ -218,6 +218,28 @@ struct TokenDashboardSortState<Column: Equatable>: Equatable {
     let ascending: Bool
 }
 
+struct TokenDashboardSnapshotCacheKey: Hashable {
+    let breakdownDimension: String
+    let range: String
+    let periodStart: Date
+    let periodEnd: Date
+    let calendarIdentifier: Calendar.Identifier
+    let timeZoneIdentifier: String
+
+    init(request: TokenDashboardLoadRequest, calendar: Calendar) {
+        breakdownDimension = request.breakdownDimension.rawValue
+        range = request.range.rawValue
+        periodStart = request.periodStart
+        periodEnd = UsageHistoryRange.bucketStart(
+            for: request.periodEnd,
+            component: request.range.chartBucketComponent,
+            calendar: calendar
+        )
+        calendarIdentifier = calendar.identifier
+        timeZoneIdentifier = calendar.timeZone.identifier
+    }
+}
+
 struct TokenDashboardEmptyState: Equatable {
     let title: String
     let message: String
@@ -267,6 +289,9 @@ final class TokenDashboardViewModel: ObservableObject {
     private let calendar: Calendar
     private var reloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
+    private var snapshotCache: [TokenDashboardSnapshotCacheKey: TokenDashboardLoadResult] = [:]
+    private var snapshotCacheOrder: [TokenDashboardSnapshotCacheKey] = []
+    private let snapshotCacheLimit = 24
     private var nextReloadInstrumentationKind: AppPerformanceEventKind = .tokenDashboardReload
 
     init(
@@ -575,12 +600,23 @@ final class TokenDashboardViewModel: ObservableObject {
             periodStart: queryPeriod.start,
             periodEnd: queryPeriod.end
         )
+        let cacheKey = TokenDashboardSnapshotCacheKey(request: request, calendar: calendar)
         let instrumentationKind = nextReloadInstrumentationKind
         nextReloadInstrumentationKind = .tokenDashboardReload
         let instrumentationSpan = performanceInstrumentationStore?.begin(
             instrumentationKind,
-            metadata: dashboardInstrumentationMetadata()
+            metadata: dashboardInstrumentationMetadata(cacheHit: false)
         )
+
+        if let cachedResult = cachedSnapshot(for: cacheKey) {
+            let applied = applyLoadResult(cachedResult)
+            performanceInstrumentationStore?.finish(
+                instrumentationSpan,
+                status: applied && hasTokenData ? .success : .noData,
+                metadata: instrumentationResultMetadata(cacheHit: true)
+            )
+            return applied
+        }
 
         do {
             let result = try await database.tokenDashboardSnapshot(for: request)
@@ -588,38 +624,14 @@ final class TokenDashboardViewModel: ObservableObject {
                 return false
             }
 
-            availableBreakdownDimensions = result.availableBreakdownDimensions
-            guard result.availableBreakdownDimensions.contains(selectedBreakdownDimension) else {
-                points = []
-                series = []
-                attributionCoverageRows = []
-                historyBounds = result.historyBounds
-                selectedSeriesIDs = []
-                selectedBreakdownDimension = .model
-                performanceInstrumentationStore?.finish(
-                    instrumentationSpan,
-                    status: .noData,
-                    metadata: ["rowCount": "0", "pointCount": "0", "seriesCount": "0"]
-                )
-                return false
-            }
-
-            points = result.points
-            series = result.series
-            attributionCoverageRows = result.attributionCoverageRows
-            historyBounds = result.historyBounds
-            reconcileSelection()
-            errorMessage = nil
+            cacheSnapshot(result, for: cacheKey)
+            let applied = applyLoadResult(result)
             performanceInstrumentationStore?.finish(
                 instrumentationSpan,
-                status: hasTokenData ? .success : .noData,
-                metadata: [
-                    "pointCount": "\(points.count)",
-                    "rowCount": "\(series.count)",
-                    "seriesCount": "\(series.count)",
-                ]
+                status: applied && hasTokenData ? .success : .noData,
+                metadata: instrumentationResultMetadata(cacheHit: false)
             )
-            return true
+            return applied
         } catch {
             guard generation == reloadGeneration, !Task.isCancelled else {
                 return false
@@ -637,6 +649,16 @@ final class TokenDashboardViewModel: ObservableObject {
         }
     }
 
+    func invalidateSnapshotCache() {
+        snapshotCache.removeAll()
+        snapshotCacheOrder.removeAll()
+    }
+
+    func invalidateSnapshotCacheAndReload() {
+        invalidateSnapshotCache()
+        scheduleReload(trigger: .tokenDashboardPeriodChange)
+    }
+
     func scheduleReload(trigger: AppPerformanceEventKind = .tokenDashboardReload) {
         nextReloadInstrumentationKind = trigger
         reloadTask?.cancel()
@@ -648,6 +670,59 @@ final class TokenDashboardViewModel: ObservableObject {
     private func nextReloadGeneration() -> Int {
         reloadGeneration += 1
         return reloadGeneration
+    }
+
+    var snapshotCacheEntryCount: Int {
+        snapshotCache.count
+    }
+
+    private func cachedSnapshot(for key: TokenDashboardSnapshotCacheKey) -> TokenDashboardLoadResult? {
+        guard let result = snapshotCache[key] else {
+            return nil
+        }
+
+        markSnapshotCacheKeyRecentlyUsed(key)
+        return result
+    }
+
+    private func cacheSnapshot(_ result: TokenDashboardLoadResult, for key: TokenDashboardSnapshotCacheKey) {
+        snapshotCache[key] = result
+        markSnapshotCacheKeyRecentlyUsed(key)
+
+        while snapshotCacheOrder.count > snapshotCacheLimit {
+            let removedKey = snapshotCacheOrder.removeFirst()
+            snapshotCache.removeValue(forKey: removedKey)
+        }
+    }
+
+    private func markSnapshotCacheKeyRecentlyUsed(_ key: TokenDashboardSnapshotCacheKey) {
+        snapshotCacheOrder.removeAll { $0 == key }
+        snapshotCacheOrder.append(key)
+    }
+
+    @discardableResult
+    private func applyLoadResult(_ result: TokenDashboardLoadResult) -> Bool {
+        availableBreakdownDimensions = result.availableBreakdownDimensions
+        guard result.availableBreakdownDimensions.contains(selectedBreakdownDimension) else {
+            points = []
+            series = []
+            attributionCoverageRows = []
+            historyBounds = result.historyBounds
+            selectedSeriesIDs = []
+            errorMessage = nil
+            if selectedBreakdownDimension != .model {
+                selectedBreakdownDimension = .model
+            }
+            return false
+        }
+
+        points = result.points
+        series = result.series
+        attributionCoverageRows = result.attributionCoverageRows
+        historyBounds = result.historyBounds
+        reconcileSelection()
+        errorMessage = nil
+        return true
     }
 
     func goToPreviousPeriod() {
@@ -788,12 +863,22 @@ final class TokenDashboardViewModel: ObservableObject {
         }
     }
 
-    private func dashboardInstrumentationMetadata() -> [String: String] {
+    private func dashboardInstrumentationMetadata(cacheHit: Bool) -> [String: String] {
         [
             "dashboard": "token",
             "range": selectedRange.rawValue,
             "breakdown": selectedBreakdownDimension.displayTitle,
+            "cacheHit": cacheHit ? "true" : "false",
         ]
+    }
+
+    private func instrumentationResultMetadata(cacheHit: Bool) -> [String: String] {
+        var metadata = dashboardInstrumentationMetadata(cacheHit: cacheHit)
+        metadata["pointCount"] = "\(points.count)"
+        metadata["rowCount"] = "\(series.count)"
+        metadata["seriesCount"] = "\(series.count)"
+        metadata["coverageRowCount"] = "\(attributionCoverageRows.count)"
+        return metadata
     }
 
     func compactSeriesTitle(_ name: String) -> String {
@@ -1242,7 +1327,7 @@ struct TokenDashboardView: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
-            viewModel.scheduleReload()
+            viewModel.invalidateSnapshotCacheAndReload()
         }
         .onAppear {
             DispatchQueue.main.async {
