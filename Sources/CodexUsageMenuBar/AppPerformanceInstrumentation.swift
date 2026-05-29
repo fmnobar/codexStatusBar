@@ -112,6 +112,64 @@ struct AppPerformanceInstrumentationSummary: Equatable, Sendable {
 }
 
 @MainActor
+final class AppPerformanceSpanTracker {
+    private let kind: AppPerformanceEventKind
+    private let instrumentationStore: AppPerformanceInstrumentationStore
+    private let baseMetadata: [String: String]
+    private var pendingSpan: AppPerformanceSpan?
+
+    init(
+        kind: AppPerformanceEventKind,
+        instrumentationStore: AppPerformanceInstrumentationStore,
+        baseMetadata: [String: String] = [:]
+    ) {
+        self.kind = kind
+        self.instrumentationStore = instrumentationStore
+        self.baseMetadata = baseMetadata
+    }
+
+    var hasPendingSpan: Bool {
+        pendingSpan != nil
+    }
+
+    func begin(metadata: [String: String] = [:]) {
+        discardPendingSpan()
+        pendingSpan = instrumentationStore.begin(
+            kind,
+            metadata: mergedMetadata(metadata)
+        )
+    }
+
+    func finish(
+        status: AppPerformanceEventStatus = .success,
+        metadata: [String: String] = [:]
+    ) {
+        guard let span = pendingSpan else {
+            return
+        }
+
+        pendingSpan = nil
+        instrumentationStore.finish(
+            span,
+            status: status,
+            metadata: metadata
+        )
+    }
+
+    func discardPendingSpan() {
+        pendingSpan = nil
+    }
+
+    private func mergedMetadata(_ metadata: [String: String]) -> [String: String] {
+        var merged = baseMetadata
+        for (key, value) in metadata {
+            merged[key] = value
+        }
+        return merged
+    }
+}
+
+@MainActor
 final class AppPerformanceInstrumentationStore: ObservableObject {
     static let defaultRetentionLimit = 500
     static let defaultRetentionAge: TimeInterval = 7 * 24 * 60 * 60
@@ -273,15 +331,71 @@ final class AppPerformanceInstrumentationStore: ObservableObject {
     }
 
     private func pruned(_ events: [AppPerformanceEvent], now: Date) -> [AppPerformanceEvent] {
+        guard retentionLimit > 0 else {
+            return []
+        }
+
         let cutoff = now.addingTimeInterval(-retentionAge)
         let retainedByAge = events
             .filter { $0.endedAt >= cutoff }
-            .sorted { $0.endedAt < $1.endedAt }
+            .sorted(by: Self.eventSortPrecedes)
         guard retainedByAge.count > retentionLimit else {
             return retainedByAge
         }
 
-        return Array(retainedByAge.suffix(retentionLimit))
+        return representativelyRetained(retainedByAge, limit: retentionLimit)
+    }
+
+    private func representativelyRetained(
+        _ events: [AppPerformanceEvent],
+        limit: Int
+    ) -> [AppPerformanceEvent] {
+        let activeKinds = Set(events.map(\.kind))
+        guard activeKinds.count < limit else {
+            return Array(events.suffix(limit))
+        }
+
+        let perKindReserve = max(1, limit / max(AppPerformanceEventKind.allCases.count, 1))
+        let groupedEvents = Dictionary(grouping: events, by: \.kind)
+        var selectedIDs = Set<UUID>()
+        var selectedEvents: [AppPerformanceEvent] = []
+
+        for kind in AppPerformanceEventKind.allCases {
+            guard let kindEvents = groupedEvents[kind] else {
+                continue
+            }
+
+            for event in kindEvents.suffix(perKindReserve) {
+                guard selectedIDs.insert(event.id).inserted else {
+                    continue
+                }
+                selectedEvents.append(event)
+            }
+        }
+
+        if selectedEvents.count < limit {
+            let fillCount = limit - selectedEvents.count
+            let fillEvents = events
+                .reversed()
+                .filter { !selectedIDs.contains($0.id) }
+                .prefix(fillCount)
+
+            selectedEvents.append(contentsOf: fillEvents)
+        }
+
+        return selectedEvents.sorted(by: Self.eventSortPrecedes)
+    }
+
+    private static func eventSortPrecedes(_ lhs: AppPerformanceEvent, _ rhs: AppPerformanceEvent) -> Bool {
+        if lhs.endedAt != rhs.endedAt {
+            return lhs.endedAt < rhs.endedAt
+        }
+
+        if lhs.startedAt != rhs.startedAt {
+            return lhs.startedAt < rhs.startedAt
+        }
+
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 
     private func persist() {

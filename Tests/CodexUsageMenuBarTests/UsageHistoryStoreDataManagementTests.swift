@@ -858,6 +858,105 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testPerformanceInstrumentationStoreRetainsRepresentativeSamplesByKind() throws {
+        var currentDate = date("2026-05-20T12:00:00Z")
+        var uuidIndex = 0
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let store = AppPerformanceInstrumentationStore(
+            fileURL: diagnosticsURL,
+            now: { currentDate },
+            makeUUID: {
+                uuidIndex += 1
+                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", uuidIndex))!
+            },
+            retentionLimit: 12,
+            retentionAge: 3_600
+        )
+
+        for index in 0..<40 {
+            store.record(kind: .historyReload, durationMilliseconds: Double(index))
+            currentDate = currentDate.addingTimeInterval(1)
+        }
+
+        store.record(kind: .tokenDashboardReload, durationMilliseconds: 20)
+        currentDate = currentDate.addingTimeInterval(1)
+        store.record(kind: .performanceDashboardReload, durationMilliseconds: 30)
+        currentDate = currentDate.addingTimeInterval(1)
+
+        for index in 0..<20 {
+            store.record(kind: .historyReload, durationMilliseconds: Double(index))
+            currentDate = currentDate.addingTimeInterval(1)
+        }
+
+        XCTAssertEqual(store.events.count, 12)
+        XCTAssertTrue(store.events.contains { $0.kind == .historyReload })
+        XCTAssertTrue(store.events.contains { $0.kind == .tokenDashboardReload })
+        XCTAssertTrue(store.events.contains { $0.kind == .performanceDashboardReload })
+        XCTAssertEqual(store.events, store.events.sorted { $0.endedAt < $1.endedAt })
+    }
+
+    @MainActor
+    func testPerformanceInstrumentationStorePrunesExpiredSamplesBeforeRepresentativeRetention() throws {
+        var currentDate = date("2026-05-20T12:00:00Z")
+        var uuidIndex = 0
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let store = AppPerformanceInstrumentationStore(
+            fileURL: diagnosticsURL,
+            now: { currentDate },
+            makeUUID: {
+                uuidIndex += 1
+                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", uuidIndex))!
+            },
+            retentionLimit: 12,
+            retentionAge: 60
+        )
+
+        store.record(kind: .tokenDashboardReload, durationMilliseconds: 20)
+        currentDate = currentDate.addingTimeInterval(61)
+        store.record(kind: .historyReload, durationMilliseconds: 10)
+
+        XCTAssertEqual(store.events.map(\.kind), [.historyReload])
+    }
+
+    @MainActor
+    func testPerformanceSpanTrackerDiscardsCancelledSpansWithoutRecordingOutliers() throws {
+        var currentDate = date("2026-05-20T12:00:00Z")
+        var uuidIndex = 0
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
+        let store = AppPerformanceInstrumentationStore(
+            fileURL: diagnosticsURL,
+            now: { currentDate },
+            makeUUID: {
+                uuidIndex += 1
+                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", uuidIndex))!
+            }
+        )
+        let tracker = AppPerformanceSpanTracker(
+            kind: .menuPopoverOpenToContent,
+            instrumentationStore: store,
+            baseMetadata: ["surface": "menuPopover"]
+        )
+
+        tracker.begin()
+        currentDate = currentDate.addingTimeInterval(129)
+        tracker.discardPendingSpan()
+        tracker.finish(status: .success)
+
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertFalse(tracker.hasPendingSpan)
+
+        tracker.begin()
+        currentDate = currentDate.addingTimeInterval(0.125)
+        tracker.finish(status: .success)
+
+        XCTAssertEqual(store.events.count, 1)
+        XCTAssertEqual(store.events[0].kind, .menuPopoverOpenToContent)
+        XCTAssertEqual(store.events[0].status, .success)
+        XCTAssertEqual(store.events[0].metadata["surface"], "menuPopover")
+        XCTAssertEqual(store.events[0].durationMilliseconds, 125, accuracy: 0.1)
+    }
+
+    @MainActor
     func testPerformanceInstrumentationStoreWriteFailureDoesNotBlockRecording() throws {
         let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("performance-diagnostics.json")
         try FileManager.default.createDirectory(at: diagnosticsURL, withIntermediateDirectories: true)

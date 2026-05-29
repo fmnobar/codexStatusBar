@@ -9,18 +9,11 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Fix performance diagnostics accuracy and retention | Diagnostics captured useful dashboard reload timings, but `menuPopoverOpenToContent` has cancelled outliers of 16s, 31s, 55s, and 129s, and 491/500 retained events were History reloads, evicting dashboard evidence quickly. | Can be planned as a small implementation item. |
-| 2 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
-| 3 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
-| 4 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
+| 1 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
+| 2 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
+| 3 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
 
 ## Performance Recommendation Details
-
-- Fix performance diagnostics accuracy and retention
-  - Observed evidence: popover timing has cancelled spans far longer than real user-visible open times, while dashboard open/reload samples are under-retained because History reload events dominate the 500-event store.
-  - Likely code path/root cause: `StatusItemController.togglePopover` can leave long-lived cancelled `menuPopoverOpenToContent` spans depending on popover state and close path. `AppPerformanceInstrumentationStore` uses one global bounded ring rather than per-flow retention.
-  - Proposed implementation shape: finish or discard popover spans on every close/cancel path; distinguish popover window-visible from content-loaded; keep per-kind bounded samples plus aggregate summaries so dashboard evidence survives frequent History reloads.
-  - Verification plan: open/close popover repeatedly and confirm no multi-second cancelled popover spans; verify Settings Data still exports diagnostics; add retention tests proving dashboard events are not evicted by History-only churn.
 
 - Cache or precompute Token Dashboard period snapshots
   - Observed evidence: first Token Dashboard month reload took 2.7s despite a small presentation result; repeated warm reloads fell to about 0.63s.
@@ -48,6 +41,12 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Fix performance diagnostics accuracy and retention
+  - Added deterministic popover open-to-content span tracking so close/cancel paths discard pending popover spans instead of recording misleading cancelled open-to-content outliers.
+  - Updated performance diagnostics retention to age-prune first, then reserve representative recent samples by event kind before filling remaining capacity with newest events.
+  - Added tests for representative retention under History reload churn, age pruning, and discarded cancelled popover spans.
+  - Verified with the full macOS Xcode test suite, release install, relaunch process check, and installed build fingerprint; final visible surface inspection requires an unlocked macOS session.
 
 - Add a dedicated read-only dashboard query worker or connection
   - Added read-only SQLite open support with `PRAGMA query_only=ON` for persisted dashboard/history snapshots.
@@ -372,4 +371,4 @@
 
 ## Next Candidates
 
-Next item to plan: `Fix performance diagnostics accuracy and retention`.
+Next item to plan: `Cache or precompute Token Dashboard period snapshots`.

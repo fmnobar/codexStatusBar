@@ -8,6 +8,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let historyDatabase: UsageHistoryDatabaseWorking
     private let updateMonitor: AppUpdateMonitor
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    private let popoverOpenInstrumentation: AppPerformanceSpanTracker
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private lazy var tokenDashboardWindowController = TokenDashboardWindowController(
@@ -26,7 +27,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
-    private var pendingPopoverOpenSpan: AppPerformanceSpan?
     private var pendingLaunchToMenuTitleSpan: AppPerformanceSpan?
 
     init(
@@ -40,6 +40,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.historyDatabase = historyDatabase
         self.updateMonitor = updateMonitor
         self.performanceInstrumentationStore = performanceInstrumentationStore
+        self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
+            kind: .menuPopoverOpenToContent,
+            instrumentationStore: performanceInstrumentationStore,
+            baseMetadata: ["surface": "menuPopover"]
+        )
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.autosaveName = "CodexStatusBarStatusItem"
         self.pendingLaunchToMenuTitleSpan = launchToMenuTitleSpan
@@ -151,20 +156,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         case .leftMouseUp:
             togglePopover(relativeTo: sender)
         default:
-            break
+            togglePopover(relativeTo: sender)
         }
     }
 
     private func togglePopover(relativeTo button: NSStatusBarButton) {
         if popover.isShown {
+            popoverOpenInstrumentation.discardPendingSpan()
             popover.performClose(nil)
             return
         }
 
-        pendingPopoverOpenSpan = performanceInstrumentationStore.begin(
-            .menuPopoverOpenToContent,
-            metadata: ["surface": "menuPopover"]
-        )
+        popoverOpenInstrumentation.begin()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         startOutsideClickMonitors()
 
@@ -210,6 +213,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func showContextMenu() {
+        popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         statusItem.menu = contextMenu
         statusItem.button?.performClick(nil)
@@ -218,17 +222,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func openTokenDashboard() {
         tokenDashboardWindowController.prepareOpenInstrumentation()
+        popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         tokenDashboardWindowController.showWindow()
     }
 
     private func openPerformanceDashboard() {
         performanceDashboardWindowController.prepareOpenInstrumentation()
+        popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         performanceDashboardWindowController.showWindow()
     }
 
     private func openUpdatesSettings() {
+        popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         SettingsTabSelectionStore.select(.updates)
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
@@ -241,28 +248,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        if pendingPopoverOpenSpan != nil {
-            performanceInstrumentationStore.finish(
-                pendingPopoverOpenSpan,
-                status: .cancelled,
-                metadata: ["surface": "menuPopover"]
-            )
-            pendingPopoverOpenSpan = nil
-        }
+        popoverOpenInstrumentation.discardPendingSpan()
         stopOutsideClickMonitors()
     }
 
     private func recordPopoverContentRendered() {
-        guard pendingPopoverOpenSpan != nil else {
+        guard popoverOpenInstrumentation.hasPendingSpan else {
             return
         }
 
-        performanceInstrumentationStore.finish(
-            pendingPopoverOpenSpan,
-            status: .success,
-            metadata: ["surface": "menuPopover"]
-        )
-        pendingPopoverOpenSpan = nil
+        popoverOpenInstrumentation.finish()
     }
 
     private func startOutsideClickMonitors() {
