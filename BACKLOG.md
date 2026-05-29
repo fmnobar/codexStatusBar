@@ -8,21 +8,13 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Decouple dashboard reads from live capture/import work | Performance Dashboard reloads measured at 5.4s, 7.1s, and 9.8s; Token Dashboard first month reload measured at 2.7s; History reloads spiked to 2.1s-3.9s while dashboard work was in flight. Snapshot code still performs capture/import checks on the same database worker before serving dashboard reads, including a performance import on the Token Dashboard path. | Needs a separate planning prompt. |
-| 2 | Add a dedicated read-only dashboard query worker or connection | Slow dashboard/capture work on the serial history database worker appears to delay unrelated History and Token Dashboard reads. A separate read path would reduce head-of-line blocking while preserving one writer/importer path. | Needs a separate planning prompt. |
-| 3 | Fix performance diagnostics accuracy and retention | Diagnostics captured useful dashboard reload timings, but `menuPopoverOpenToContent` has cancelled outliers of 16s, 31s, 55s, and 129s, and 491/500 retained events were History reloads, evicting dashboard evidence quickly. | Can be planned as a small implementation item. |
-| 4 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
-| 5 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
-| 6 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
-| 7 | Make launch-time capture work budgeted and lazy | App launch to first menu-bar title was acceptable at roughly 0.9s-1.1s, but launch immediately schedules forced OTEL, session timing, thread catalog, and model capability captures on the shared database worker, which can slow the first dashboard interaction. | Fold into priority 1 unless it needs separate rollout. |
+| 1 | Add a dedicated read-only dashboard query worker or connection | Slow dashboard/capture work on the serial history database worker appears to delay unrelated History and Token Dashboard reads. A separate read path would reduce head-of-line blocking while preserving one writer/importer path. | Needs a separate planning prompt. |
+| 2 | Fix performance diagnostics accuracy and retention | Diagnostics captured useful dashboard reload timings, but `menuPopoverOpenToContent` has cancelled outliers of 16s, 31s, 55s, and 129s, and 491/500 retained events were History reloads, evicting dashboard evidence quickly. | Can be planned as a small implementation item. |
+| 3 | Cache or precompute Token Dashboard period snapshots | Token Dashboard open was fast, but the first month reload still took 2.7s for only 336 chart points and 7 rows; warm reload was about 0.63s. The UI can briefly show an empty state while data is loading. | Needs a separate planning prompt. |
+| 4 | Optimize Performance Dashboard reliability-heavy SQL paths | The live database has about 179k turn-performance events. Month Performance reloads still took 5s-10s after prior timestamp indexing, suggesting reliability grouping/top-error aggregation and broad period joins remain expensive. | Needs a separate planning prompt after query-plan inspection. |
+| 5 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
 
 ## Performance Recommendation Details
-
-- Decouple dashboard reads from live capture/import work
-  - Observed evidence: Performance Dashboard worker-backed reloads recorded 5.4s, 7.1s, and 9.8s. Token Dashboard first month reload recorded 2.7s. History reloads recorded 2.1s-3.9s near dashboard work even though normal History reloads are usually single-digit milliseconds.
-  - Likely code path/root cause: `UsageHistoryDatabaseWorker.performanceDashboardSnapshot(for:)` runs turn-performance and session-task capture checks before querying dashboard data. `UsageHistoryDatabaseWorker.tokenDashboardSnapshot(for:)` also runs a turn-performance import even though Token Dashboard does not need OTEL data. Launch capture work is scheduled on the same database worker.
-  - Proposed implementation shape: make dashboard snapshots read-only and capture-free; move capture refreshes into a bounded background coordinator and explicit Settings diagnostics refresh; keep capture health visible but never block dashboard snapshots on importer work. Remove the Token Dashboard dependency on turn-performance capture.
-  - Verification plan: compare cold-ish and warm Token/Performance Dashboard opens before/after; assert Token Dashboard snapshot no longer calls OTEL capture; assert Performance snapshot can load from existing rows when capture source is slow/unavailable; verify token totals, charts, diagnostics, and capture health are unchanged.
 
 - Add a dedicated read-only dashboard query worker or connection
   - Observed evidence: slow History reloads appeared at the same time as dashboard period/mode reloads, indicating serial database-worker head-of-line blocking.
@@ -54,12 +46,6 @@
   - Proposed implementation shape: keep the previous successful snapshot visible or show an explicit loading state until the first reload completes; distinguish no captured data from no data for the selected period.
   - Verification plan: UI/view-model tests for first load, period changes, filtered-out data, and no-data periods; visual verification at default window size.
 
-- Make launch-time capture work budgeted and lazy
-  - Observed evidence: first menu-bar title was roughly 0.9s-1.1s, but forced capture tasks begin immediately after launch and can occupy the shared worker before the first dashboard open.
-  - Likely code path/root cause: `CodexUsageMenuBarApp.applicationDidFinishLaunching` schedules forced turn-performance, session timing, thread catalog, and model capability captures at launch.
-  - Proposed implementation shape: make launch capture staggered, budgeted, and cancelable; prioritize menu title and user-requested dashboard reads; let diagnostics show stale capture state instead of blocking reads.
-  - Verification plan: launch timing, first popover timing, first dashboard timing, and Settings diagnostics freshness before/after; confirm capture still runs eventually and app relaunch/fingerprint checks pass.
-
 ## Conditional Watchlist
 
 - Review live token payload audit sample
@@ -68,6 +54,12 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Decouple dashboard reads from live capture/import work
+  - Removed metadata capture/import calls from Token Dashboard and Performance Dashboard snapshot reads so dashboard opens and toggles read already persisted rows.
+  - Added a delayed background metadata capture coordinator owned by the app delegate.
+  - Staggered turn performance, session task timing, thread catalog, and model capability captures with `force: false` while keeping Settings diagnostics refreshes and live token capture behavior unchanged.
+  - Added tests proving dashboard snapshots do not invoke metadata importers and the background coordinator delays, staggers, continues after failures, and does not call live token capture.
 
 - Comprehensive performance audit and backlog update
   - Measured installed-app latency using the local performance diagnostics store, wall-clock UI automation where reliable, visual verification, and direct SQLite inspection.
@@ -380,4 +372,4 @@
 
 ## Next Candidates
 
-No next candidates. Do a product/backlog review before planning more implementation work.
+Next item to plan: `Add a dedicated read-only dashboard query worker or connection`.

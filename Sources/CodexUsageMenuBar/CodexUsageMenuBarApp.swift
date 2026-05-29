@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
     private var liveTokenCaptureCoordinator: CodexLiveTokenCaptureCoordinator?
+    private var backgroundMetadataCaptureCoordinator: CodexBackgroundMetadataCaptureCoordinator?
     private var launchToMenuTitleSpan: AppPerformanceSpan?
 
     override init() {
@@ -74,26 +75,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             _ = try? await historyDatabase.databaseInfo()
-            _ = await historyDatabase.captureTurnPerformanceIfNeeded(
-                at: Date(),
-                calendar: .autoupdatingCurrent,
-                force: true
-            )
-            _ = await historyDatabase.captureSessionTaskTimingIfNeeded(
-                at: Date(),
-                calendar: .autoupdatingCurrent,
-                force: true
-            )
-            _ = await historyDatabase.captureThreadCatalogIfNeeded(
-                at: Date(),
-                calendar: .autoupdatingCurrent,
-                force: true
-            )
-            _ = await historyDatabase.captureModelCapabilitiesIfNeeded(
-                at: Date(),
-                calendar: .autoupdatingCurrent,
-                force: true
-            )
         }
 
         Task {
@@ -115,6 +96,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         liveTokenCaptureCoordinator?.start()
+
+        backgroundMetadataCaptureCoordinator = CodexBackgroundMetadataCaptureCoordinator(
+            database: historyDatabase
+        )
+        backgroundMetadataCaptureCoordinator?.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

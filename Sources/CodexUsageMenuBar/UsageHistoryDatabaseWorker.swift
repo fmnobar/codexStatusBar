@@ -78,6 +78,108 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     ) async throws -> CodexSessionTokenBackfillSummary
 }
 
+@MainActor
+final class CodexBackgroundMetadataCaptureCoordinator {
+    typealias Sleeper = @Sendable (TimeInterval) async throws -> Void
+
+    private let database: UsageHistoryDatabaseWorking
+    private let initialDelay: TimeInterval
+    private let staggerDelay: TimeInterval
+    private let now: () -> Date
+    private let sleeper: Sleeper
+    private var task: Task<Void, Never>?
+
+    init(
+        database: UsageHistoryDatabaseWorking,
+        initialDelay: TimeInterval = 10,
+        staggerDelay: TimeInterval = 5,
+        now: @escaping () -> Date = Date.init,
+        sleeper: @escaping Sleeper = CodexBackgroundMetadataCaptureCoordinator.sleep
+    ) {
+        self.database = database
+        self.initialDelay = initialDelay
+        self.staggerDelay = staggerDelay
+        self.now = now
+        self.sleeper = sleeper
+    }
+
+    deinit {
+        task?.cancel()
+    }
+
+    func start() {
+        guard task == nil else {
+            return
+        }
+
+        task = Task { [weak self] in
+            await self?.runOnce()
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+
+    func runOnce() async {
+        guard await sleep(for: initialDelay) else {
+            return
+        }
+
+        _ = await database.captureTurnPerformanceIfNeeded(
+            at: now(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+        guard await sleep(for: staggerDelay) else {
+            return
+        }
+
+        _ = await database.captureSessionTaskTimingIfNeeded(
+            at: now(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+        guard await sleep(for: staggerDelay) else {
+            return
+        }
+
+        _ = await database.captureThreadCatalogIfNeeded(
+            at: now(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+        guard await sleep(for: staggerDelay) else {
+            return
+        }
+
+        _ = await database.captureModelCapabilitiesIfNeeded(
+            at: now(),
+            calendar: .autoupdatingCurrent,
+            force: false
+        )
+    }
+
+    private func sleep(for interval: TimeInterval) async -> Bool {
+        do {
+            try await sleeper(interval)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func sleep(for interval: TimeInterval) async throws {
+        guard interval > 0 else {
+            return
+        }
+
+        let nanoseconds = UInt64((interval * 1_000_000_000).rounded())
+        try await Task.sleep(nanoseconds: nanoseconds)
+    }
+}
+
 actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
     typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexLiveTokenCaptureState
@@ -372,9 +474,6 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
         let store = try store()
-        if isApplicationSupportStore(store) {
-            _ = importTurnPerformanceIfNeeded(store: store, at: Date(), calendar: .autoupdatingCurrent)
-        }
         let availableBreakdownDimensions = try store.tokenDashboardAvailableBreakdownDimensions(
             periodStart: request.periodStart,
             periodEnd: request.periodEnd
@@ -402,11 +501,6 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
         let store = try store()
-        if isApplicationSupportStore(store) {
-            let now = Date()
-            _ = importTurnPerformanceIfNeeded(store: store, at: now, calendar: .autoupdatingCurrent)
-            _ = importSessionTaskTimingIfNeeded(store: store, at: now, calendar: .autoupdatingCurrent)
-        }
 
         switch request.mode {
         case .performance:

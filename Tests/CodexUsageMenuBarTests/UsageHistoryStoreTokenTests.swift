@@ -3180,6 +3180,120 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(efficiencyResult.historyBounds?.earliest, date("2026-05-01T09:00:00Z"))
     }
 
+    func testDashboardSnapshotsDoNotRunMetadataCaptureImporters() async throws {
+        let directory = try makeTemporaryDirectory()
+        let appSupportDirectory = directory.appendingPathComponent(
+            "Library/Application Support/CodexStatusBar",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        let store = try UsageHistoryStore(
+            databaseURL: appSupportDirectory.appendingPathComponent("usage-history.sqlite3"),
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        try seedPerformanceDashboardFixture(in: store)
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "token-dashboard",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 1_000,
+                    lastCached: 200,
+                    lastOutput: 300,
+                    lastReasoning: 50,
+                    lastTotal: 1_300,
+                    totalInput: 1_000,
+                    totalCached: 200,
+                    totalOutput: 300,
+                    totalReasoning: 50,
+                    totalTotal: 1_300
+                ),
+                receivedAt: date("2026-05-02T12:00:00Z")
+            ),
+        ])
+        let importerSpy = DashboardMetadataImporterSpy()
+        let worker = UsageHistoryDatabaseWorker(
+            store: store,
+            turnPerformanceImporter: { store, date, calendar, force in
+                importerSpy.captureTurnPerformance(store: store, date: date, calendar: calendar, force: force)
+            },
+            sessionTaskTimingImporter: { store, date, calendar, force in
+                importerSpy.captureSessionTaskTiming(store: store, date: date, calendar: calendar, force: force)
+            }
+        )
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+
+        let tokenResult = try await worker.tokenDashboardSnapshot(
+            for: TokenDashboardLoadRequest(
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
+        )
+        XCTAssertFalse(tokenResult.points.isEmpty)
+
+        let performanceResult = try await worker.performanceDashboardSnapshot(
+            for: PerformanceDashboardLoadRequest(
+                mode: .performance,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd
+            )
+        )
+        XCTAssertFalse(performanceResult.durationPoints.isEmpty)
+        XCTAssertFalse(performanceResult.reliabilityPoints.isEmpty)
+
+        XCTAssertEqual(importerSpy.eventsSnapshot(), [])
+
+        _ = await worker.captureTurnPerformanceIfNeeded(at: date("2026-05-02T12:05:00Z"), calendar: calendar, force: false)
+        _ = await worker.captureSessionTaskTimingIfNeeded(at: date("2026-05-02T12:06:00Z"), calendar: calendar, force: false)
+
+        XCTAssertEqual(
+            importerSpy.eventsSnapshot(),
+            [
+                DashboardMetadataImporterSpy.Event(kind: .turnPerformance, force: false),
+                DashboardMetadataImporterSpy.Event(kind: .sessionTaskTiming, force: false),
+            ]
+        )
+    }
+
+    @MainActor
+    func testBackgroundMetadataCaptureCoordinatorDelaysAndStaggersNonForcedCaptures() async throws {
+        let database = BackgroundMetadataCaptureSpyDatabase(failTurnPerformance: true)
+        let delayRecorder = BackgroundMetadataCaptureDelayRecorder()
+        let now = date("2026-05-02T12:00:00Z")
+        let coordinator = CodexBackgroundMetadataCaptureCoordinator(
+            database: database,
+            initialDelay: 10,
+            staggerDelay: 5,
+            now: { now },
+            sleeper: { interval in
+                await delayRecorder.record(interval)
+            }
+        )
+
+        await coordinator.runOnce()
+
+        let recordedDelays = await delayRecorder.intervalsSnapshot()
+        let captureEvents = await database.eventsSnapshot()
+        let liveTokenCaptureCount = await database.liveTokenCaptureCount()
+
+        XCTAssertEqual(recordedDelays, [10, 5, 5, 5])
+        XCTAssertEqual(
+            captureEvents,
+            [
+                .turnPerformance(force: false),
+                .sessionTaskTiming(force: false),
+                .threadCatalog(force: false),
+                .modelCapabilities(force: false),
+            ]
+        )
+        XCTAssertEqual(liveTokenCaptureCount, 0)
+    }
+
     func testPerformanceDashboardEfficiencyAggregatesTokensTimingReliabilityAndContext() async throws {
         let store = try makeStore()
         try seedPerformanceDashboardFixture(in: store)
@@ -3825,6 +3939,223 @@ extension UsageHistoryStoreTests {
         )
     }
 
+}
+
+private final class DashboardMetadataImporterSpy: @unchecked Sendable {
+    enum Kind: Equatable {
+        case turnPerformance
+        case sessionTaskTiming
+    }
+
+    struct Event: Equatable {
+        let kind: Kind
+        let force: Bool
+    }
+
+    private let lock = NSLock()
+    private var events: [Event] = []
+
+    func captureTurnPerformance(
+        store: UsageHistoryStore,
+        date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) -> CodexTurnPerformanceCaptureState {
+        record(kind: .turnPerformance, force: force)
+        return CodexTurnPerformanceCaptureState(lastCheckedAt: date, status: .imported, insertedCount: 1)
+    }
+
+    func captureSessionTaskTiming(
+        store: UsageHistoryStore,
+        date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) -> CodexSessionTaskTimingCaptureState {
+        record(kind: .sessionTaskTiming, force: force)
+        return CodexSessionTaskTimingCaptureState(lastCheckedAt: date, status: .imported, insertedCount: 1)
+    }
+
+    func eventsSnapshot() -> [Event] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+
+    private func record(kind: Kind, force: Bool) {
+        lock.lock()
+        events.append(Event(kind: kind, force: force))
+        lock.unlock()
+    }
+}
+
+private actor BackgroundMetadataCaptureDelayRecorder {
+    private var intervals: [TimeInterval] = []
+
+    func record(_ interval: TimeInterval) {
+        intervals.append(interval)
+    }
+
+    func intervalsSnapshot() -> [TimeInterval] {
+        intervals
+    }
+}
+
+private actor BackgroundMetadataCaptureSpyDatabase: UsageHistoryDatabaseWorking {
+    enum Event: Equatable {
+        case turnPerformance(force: Bool)
+        case sessionTaskTiming(force: Bool)
+        case threadCatalog(force: Bool)
+        case modelCapabilities(force: Bool)
+    }
+
+    private enum SpyError: Error {
+        case unused
+    }
+
+    private let failTurnPerformance: Bool
+    private var events: [Event] = []
+    private var liveTokenCaptures = 0
+
+    init(failTurnPerformance: Bool = false) {
+        self.failTurnPerformance = failTurnPerformance
+    }
+
+    func eventsSnapshot() -> [Event] {
+        events
+    }
+
+    func liveTokenCaptureCount() -> Int {
+        liveTokenCaptures
+    }
+
+    func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
+
+    func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
+        nil
+    }
+
+    func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
+        nil
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        liveTokenCaptures += 1
+        return CodexLiveTokenCaptureState(status: .noNewEvents)
+    }
+
+    func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
+        CodexLiveTokenCaptureState(status: .noNewEvents)
+    }
+
+    func captureTurnPerformanceIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexTurnPerformanceCaptureState {
+        events.append(.turnPerformance(force: force))
+        if failTurnPerformance {
+            return CodexTurnPerformanceCaptureState(lastCheckedAt: date, status: .failed, lastErrorText: "configured failure")
+        }
+        return CodexTurnPerformanceCaptureState(lastCheckedAt: date, status: .imported, insertedCount: 1)
+    }
+
+    func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
+        CodexTurnPerformanceCaptureState(status: .neverChecked)
+    }
+
+    func captureSessionTaskTimingIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexSessionTaskTimingCaptureState {
+        events.append(.sessionTaskTiming(force: force))
+        return CodexSessionTaskTimingCaptureState(lastCheckedAt: date, status: .imported, insertedCount: 1)
+    }
+
+    func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState {
+        CodexSessionTaskTimingCaptureState(status: .neverChecked)
+    }
+
+    func captureThreadCatalogIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexThreadCatalogCaptureState {
+        events.append(.threadCatalog(force: force))
+        return CodexThreadCatalogCaptureState(lastCheckedAt: date, status: .imported, threadsInsertedCount: 1)
+    }
+
+    func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState {
+        CodexThreadCatalogCaptureState(status: .neverChecked)
+    }
+
+    func captureModelCapabilitiesIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool
+    ) async -> CodexModelCapabilitiesCaptureState {
+        events.append(.modelCapabilities(force: force))
+        return CodexModelCapabilitiesCaptureState(lastCheckedAt: date, status: .imported, modelsInsertedCount: 1)
+    }
+
+    func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState {
+        CodexModelCapabilitiesCaptureState(status: .neverChecked)
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult {
+        throw SpyError.unused
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult {
+        throw SpyError.unused
+    }
+
+    func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
+        throw SpyError.unused
+    }
+
+    func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
+        throw SpyError.unused
+    }
+
+    func exportBackup(to destinationURL: URL) async throws {
+        throw SpyError.unused
+    }
+
+    func importBackup(from sourceURL: URL) async throws {
+        throw SpyError.unused
+    }
+
+    func clearHistory() async throws {
+        throw SpyError.unused
+    }
+
+    func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry] {
+        throw SpyError.unused
+    }
+
+    func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry] {
+        throw SpyError.unused
+    }
+
+    func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws {
+        throw SpyError.unused
+    }
+
+    func importTokenHistory(
+        importer: CodexSessionTokenBackfillImporting,
+        request: CodexSessionTokenBackfillRequest
+    ) async throws -> CodexSessionTokenBackfillSummary {
+        throw SpyError.unused
+    }
 }
 
 private actor PerformanceDashboardCacheSpyDatabase: UsageHistoryDatabaseWorking {
