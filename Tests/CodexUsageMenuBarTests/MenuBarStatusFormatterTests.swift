@@ -194,6 +194,55 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.sevenDayRow.detailText, "Resets --")
     }
 
+    func testPresentationShowsExplicitTextWhenAllLimitWindowsAreMissing() {
+        let snapshot = CodexRateLimitSnapshot(primary: nil, secondary: nil)
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: Date(timeIntervalSince1970: 0),
+            selectedMenuBarDisplayWindow: .tightest,
+            calendar: Calendar(identifier: .gregorian),
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "No limit data")
+        XCTAssertEqual(presentation.fiveHourRow.remainingPercentText, "--% left")
+        XCTAssertEqual(presentation.sevenDayRow.remainingPercentText, "--% left")
+        XCTAssertEqual(presentation.tightestRow.title, "Tightest: --")
+    }
+
+    func testPresentationKeepsTokenTotalWhenAllLimitWindowsAreMissing() {
+        let snapshot = CodexRateLimitSnapshot(primary: nil, secondary: nil)
+        let tokenTotals = TokenCategoryTotals(
+            inputTokens: 3_125_000,
+            cachedInputTokens: 1_400_000,
+            outputTokens: 240_400,
+            reasoningOutputTokens: 18_400,
+            totalTokens: 4_783_800
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: Date(timeIntervalSince1970: 0),
+            selectedMenuBarDisplayWindow: .tightest,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: false,
+                showsResetTime: false,
+                showsTokens: true
+            ),
+            todayTokenTotals: tokenTotals,
+            calendar: Calendar(identifier: .gregorian),
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "No limit data · 4.8M")
+        XCTAssertEqual(
+            presentation.menuBarToolTipText,
+            "Today's captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+        )
+    }
+
     func testPresentationKeepsSevenDayLineWhenFiveHourWindowIsMissing() {
         let snapshot = CodexRateLimitSnapshot(
             primary: nil,

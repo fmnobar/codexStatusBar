@@ -40,15 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let payloadAuditDiagnosticsStore = CodexAppServerAuditDiagnosticsStore.applicationSupportStore()
         let performanceInstrumentationStore = AppPerformanceInstrumentationStore.shared
         codexClient.onTokenUsagePayloadAudit = { audit in
-            switch payloadAuditStore.record(audit) {
-            case .success:
-                payloadAuditDiagnosticsStore.record(.auditPersistAttempt(success: true, errorText: nil))
-            case .failure(let error):
-                payloadAuditDiagnosticsStore.record(.auditPersistAttempt(success: false, errorText: error.localizedDescription))
+            Task { @MainActor in
+                switch payloadAuditStore.record(audit) {
+                case .success:
+                    payloadAuditDiagnosticsStore.record(.auditPersistAttempt(success: true, errorText: nil))
+                case .failure(let error):
+                    payloadAuditDiagnosticsStore.record(.auditPersistAttempt(success: false, errorText: error.localizedDescription))
+                }
             }
         }
         codexClient.onAppServerAuditDiagnosticEvent = { event in
-            payloadAuditDiagnosticsStore.record(event)
+            Task { @MainActor in
+                payloadAuditDiagnosticsStore.record(event)
+            }
         }
         historyDatabase = resolvedHistoryDatabase
         updateMonitor = AppUpdateMonitor()

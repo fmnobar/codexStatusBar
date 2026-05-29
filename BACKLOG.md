@@ -3,6 +3,7 @@
 ## Delivery Rule
 
 - After every app or source update, run `./install.sh` and verify the installed app is relaunched from `/Users/farzadmahmoodinobar/Applications/CodexStatusBar.app` before calling the work complete.
+- Verification must include a direct visible app check, not just process/fingerprint checks: the menu-bar title should be useful and not a silent `--` fallback unless `--` is the explicitly expected state, and any touched window should open and render.
 
 ## Remaining Work
 

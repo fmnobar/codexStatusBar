@@ -177,6 +177,7 @@ enum MenuBarStatusFormatter {
             menuBarPercentText: menuBarPercentText(
                 for: menuBarWindow.window,
                 sourceTitle: menuBarWindow.sourceTitle,
+                hasAnyLimitWindow: snapshot?.primary != nil || snapshot?.secondary != nil,
                 options: menuBarDisplayOptions,
                 todayTokenTotals: todayTokenTotals,
                 now: now,
@@ -215,13 +216,23 @@ enum MenuBarStatusFormatter {
     static func menuBarPercentText(
         for window: CodexRateLimitWindow?,
         sourceTitle: String? = nil,
+        hasAnyLimitWindow: Bool = true,
         options: MenuBarDisplayOptions = .defaultValue,
         todayTokenTotals: TokenCategoryTotals? = nil,
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
         guard let window else {
-            return "--"
+            guard !hasAnyLimitWindow else {
+                return "--"
+            }
+
+            var components = ["No limit data"]
+            if options.showsTokens {
+                components.append("· \(compactMenuBarTokenText(todayTokenTotals?.totalTokens))")
+            }
+
+            return components.joined(separator: " ")
         }
 
         var components = [String]()
