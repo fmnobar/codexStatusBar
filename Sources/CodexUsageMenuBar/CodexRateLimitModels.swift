@@ -686,6 +686,261 @@ struct WhamUsageResponse: Decodable {
     }
 }
 
+struct CodexProfileTokenDailyBucket: Codable, Equatable, Identifiable {
+    let date: String
+    let tokens: Int64
+
+    var id: String { date }
+}
+
+struct CodexProfileTokenUsageSnapshot: Codable, Equatable {
+    let fetchedAt: Date
+    let lifetimeTokens: Int64?
+    let peakDailyTokens: Int64?
+    let dailyBuckets: [CodexProfileTokenDailyBucket]
+
+    func bounded(to limit: Int) -> CodexProfileTokenUsageSnapshot {
+        guard dailyBuckets.count > limit else {
+            return self
+        }
+
+        return CodexProfileTokenUsageSnapshot(
+            fetchedAt: fetchedAt,
+            lifetimeTokens: lifetimeTokens,
+            peakDailyTokens: peakDailyTokens,
+            dailyBuckets: Array(dailyBuckets.sorted { $0.date < $1.date }.suffix(limit))
+        )
+    }
+}
+
+struct CodexProfileTokenComparisonRow: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let profileTokens: Int64?
+    let localCapturedTokens: Int64
+
+    var deltaTokens: Int64? {
+        profileTokens.map { localCapturedTokens - $0 }
+    }
+
+    var localToProfileRatio: Double? {
+        guard let profileTokens, profileTokens > 0 else {
+            return nil
+        }
+
+        return Double(localCapturedTokens) / Double(profileTokens)
+    }
+}
+
+struct CodexProfileTokenComparisonSummary: Equatable {
+    let generatedAt: Date
+    let profileSnapshot: CodexProfileTokenUsageSnapshot?
+    let localTotals: LocalTokenComparisonTotals
+    let rows: [CodexProfileTokenComparisonRow]
+
+    static func make(
+        profileSnapshot: CodexProfileTokenUsageSnapshot?,
+        localTotals: LocalTokenComparisonTotals,
+        now: Date
+    ) -> CodexProfileTokenComparisonSummary {
+        let utcDay = Self.utcDayString(for: now)
+        let utcMonthPrefix = String(utcDay.prefix(7)) + "-"
+        let profileDayTokens = profileSnapshot?.dailyBuckets
+            .filter { $0.date == utcDay }
+            .reduce(Int64(0)) { $0 + $1.tokens }
+        let profileMonthTokens = profileSnapshot?.dailyBuckets
+            .filter { $0.date.hasPrefix(utcMonthPrefix) }
+            .reduce(Int64(0)) { $0 + $1.tokens }
+
+        return CodexProfileTokenComparisonSummary(
+            generatedAt: now,
+            profileSnapshot: profileSnapshot,
+            localTotals: localTotals,
+            rows: [
+                CodexProfileTokenComparisonRow(
+                    id: "all_time",
+                    title: "All time",
+                    profileTokens: profileSnapshot?.lifetimeTokens,
+                    localCapturedTokens: localTotals.allTimeTokens
+                ),
+                CodexProfileTokenComparisonRow(
+                    id: "utc_month",
+                    title: "Current UTC month",
+                    profileTokens: profileMonthTokens,
+                    localCapturedTokens: localTotals.currentUTCMonthTokens
+                ),
+                CodexProfileTokenComparisonRow(
+                    id: "utc_day",
+                    title: "Current UTC day",
+                    profileTokens: profileDayTokens,
+                    localCapturedTokens: localTotals.currentUTCDayTokens
+                ),
+            ]
+        )
+    }
+
+    private static func utcDayString(for date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 1970,
+            components.month ?? 1,
+            components.day ?? 1
+        )
+    }
+}
+
+struct LocalTokenComparisonTotals: Codable, Equatable {
+    let generatedAt: Date
+    let allTimeTokens: Int64
+    let currentUTCMonthTokens: Int64
+    let currentUTCDayTokens: Int64
+}
+
+struct CodexProfileTokenUsageResponse: Decodable {
+    let stats: Stats?
+
+    struct Stats: Decodable {
+        let lifetimeTokens: Int64?
+        let peakDailyTokens: Int64?
+        let dailyUsageBuckets: [DailyUsageBucket]?
+
+        enum CodingKeys: String, CodingKey {
+            case lifetimeTokens = "lifetime_tokens"
+            case peakDailyTokens = "peak_daily_tokens"
+            case dailyUsageBuckets = "daily_usage_buckets"
+        }
+    }
+
+    struct DailyUsageBucket: Decodable {
+        let startDate: String?
+        let tokens: Int64?
+
+        enum CodingKeys: String, CodingKey {
+            case startDate = "start_date"
+            case tokens
+        }
+
+        func domainBucket() -> CodexProfileTokenDailyBucket? {
+            guard let startDate = Self.safeUTCDateString(startDate),
+                  let tokens
+            else {
+                return nil
+            }
+
+            return CodexProfileTokenDailyBucket(date: startDate, tokens: max(tokens, 0))
+        }
+
+        private static func safeUTCDateString(_ value: String?) -> String? {
+            guard let value, value.count == 10 else {
+                return nil
+            }
+
+            let scalars = Array(value.unicodeScalars)
+            guard scalars.indices.contains(9),
+                  scalars[4] == "-",
+                  scalars[7] == "-"
+            else {
+                return nil
+            }
+
+            let digitIndices = [0, 1, 2, 3, 5, 6, 8, 9]
+            guard digitIndices.allSatisfy({ CharacterSet.decimalDigits.contains(scalars[$0]) }) else {
+                return nil
+            }
+
+            return value
+        }
+    }
+
+    func domainSnapshot(fetchedAt: Date) -> CodexProfileTokenUsageSnapshot {
+        CodexProfileTokenUsageSnapshot(
+            fetchedAt: fetchedAt,
+            lifetimeTokens: stats?.lifetimeTokens.map { max($0, 0) },
+            peakDailyTokens: stats?.peakDailyTokens.map { max($0, 0) },
+            dailyBuckets: (stats?.dailyUsageBuckets ?? [])
+                .compactMap { $0.domainBucket() }
+                .sorted { $0.date < $1.date }
+        )
+    }
+}
+
+enum CodexProfileTokenUsageFetchError: LocalizedError, Equatable {
+    case unauthorized
+    case unexpectedStatusCode(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized:
+            return "Codex Profile token usage is not authorized."
+        case .unexpectedStatusCode:
+            return "Codex Profile token usage returned an unexpected response."
+        }
+    }
+}
+
+struct CodexProfileTokenUsageHTTPClient {
+    typealias ResponseLoader = (URLRequest) async throws -> (Data, URLResponse)
+    typealias AuthTokenProvider = @MainActor (Bool) async throws -> String?
+
+    let endpoint: URL
+    let responseLoader: ResponseLoader
+    let now: () -> Date
+
+    init(
+        endpoint: URL = URL(string: "https://chatgpt.com/backend-api/wham/profiles/me")!,
+        responseLoader: @escaping ResponseLoader = { request in
+            try await URLSession.shared.data(for: request)
+        },
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.endpoint = endpoint
+        self.responseLoader = responseLoader
+        self.now = now
+    }
+
+    @MainActor
+    func fetch(authTokenProvider: AuthTokenProvider) async throws -> CodexProfileTokenUsageSnapshot {
+        do {
+            return try await fetch(refreshToken: false, authTokenProvider: authTokenProvider)
+        } catch CodexProfileTokenUsageFetchError.unauthorized {
+            return try await fetch(refreshToken: true, authTokenProvider: authTokenProvider)
+        }
+    }
+
+    @MainActor
+    private func fetch(
+        refreshToken: Bool,
+        authTokenProvider: AuthTokenProvider
+    ) async throws -> CodexProfileTokenUsageSnapshot {
+        guard let authToken = try await authTokenProvider(refreshToken), !authToken.isEmpty else {
+            throw CodexClientError.authTokenUnavailable
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("CodexStatusBar/1.0", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await responseLoader(request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexClientError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200..<300:
+            return try JSONDecoder()
+                .decode(CodexProfileTokenUsageResponse.self, from: data)
+                .domainSnapshot(fetchedAt: now())
+        case 401:
+            throw CodexProfileTokenUsageFetchError.unauthorized
+        default:
+            throw CodexProfileTokenUsageFetchError.unexpectedStatusCode(httpResponse.statusCode)
+        }
+    }
+}
+
 struct WhamRateLimitPayload: Decodable {
     let primaryWindow: WhamRateLimitWindowPayload?
     let secondaryWindow: WhamRateLimitWindowPayload?

@@ -169,6 +169,64 @@ extension UsageHistoryStore {
         }
     }
 
+    func localTokenComparisonTotals(now: Date) throws -> LocalTokenComparisonTotals {
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let monthInterval = utcCalendar.dateInterval(of: .month, for: now)
+        let dayInterval = utcCalendar.dateInterval(of: .day, for: now)
+
+        return LocalTokenComparisonTotals(
+            generatedAt: now,
+            allTimeTokens: try componentTokenTotal(),
+            currentUTCMonthTokens: try componentTokenTotal(
+                periodStart: monthInterval?.start,
+                periodEnd: monthInterval?.end
+            ),
+            currentUTCDayTokens: try componentTokenTotal(
+                periodStart: dayInterval?.start,
+                periodEnd: dayInterval?.end
+            )
+        )
+    }
+
+    private func componentTokenTotal(periodStart: Date? = nil, periodEnd: Date? = nil) throws -> Int64 {
+        let hasBounds = periodStart != nil && periodEnd != nil
+        let statement = try prepare(
+            """
+            SELECT IFNULL(SUM(
+                IFNULL(observed_input_tokens, 0)
+                + IFNULL(observed_cached_input_tokens, 0)
+                + IFNULL(observed_output_tokens, 0)
+                + IFNULL(observed_reasoning_output_tokens, 0)
+            ), 0)
+            FROM token_usage_samples
+            WHERE (
+                observed_input_tokens IS NOT NULL
+                OR observed_cached_input_tokens IS NOT NULL
+                OR observed_output_tokens IS NOT NULL
+                OR observed_reasoning_output_tokens IS NOT NULL
+            )
+            \(hasBounds ? "AND received_at >= ? AND received_at < ?" : "")
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        if let periodStart, let periodEnd {
+            sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+            sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+        }
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return 0
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     func tokenPoints(
         category: TokenHistoryCategory,
         range: UsageHistoryRange,

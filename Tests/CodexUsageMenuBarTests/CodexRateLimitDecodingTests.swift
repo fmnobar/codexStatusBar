@@ -544,6 +544,109 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         })
     }
 
+    func testProfileTokenUsageResponseDecodesSanitizedStatsOnly() throws {
+        let response = try JSONDecoder().decode(
+            CodexProfileTokenUsageResponse.self,
+            from: Data(
+                """
+                {
+                  "profile": {
+                    "display_name": "Do Not Store",
+                    "username": "private-user",
+                    "profile_picture_url": "https://example.com/private.png"
+                  },
+                  "stats": {
+                    "lifetime_tokens": 17220508070,
+                    "peak_daily_tokens": 987654321,
+                    "daily_usage_buckets": [
+                      {"start_date": "2026-05-29", "tokens": 123},
+                      {"start_date": "2026-05-30", "tokens": 456},
+                      {"start_date": "bad value", "tokens": 999}
+                    ]
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        let snapshot = response.domainSnapshot(fetchedAt: Date(timeIntervalSince1970: 1_800_000_000))
+
+        XCTAssertEqual(snapshot.lifetimeTokens, 17_220_508_070)
+        XCTAssertEqual(snapshot.peakDailyTokens, 987_654_321)
+        XCTAssertEqual(snapshot.dailyBuckets, [
+            CodexProfileTokenDailyBucket(date: "2026-05-29", tokens: 123),
+            CodexProfileTokenDailyBucket(date: "2026-05-30", tokens: 456),
+        ])
+
+        let encodedSnapshot = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8) ?? ""
+        XCTAssertFalse(encodedSnapshot.contains("Do Not Store"))
+        XCTAssertFalse(encodedSnapshot.contains("private-user"))
+        XCTAssertFalse(encodedSnapshot.contains("profile_picture_url"))
+    }
+
+    func testProfileTokenUsageResponseAllowsMissingStats() throws {
+        let response = try JSONDecoder().decode(
+            CodexProfileTokenUsageResponse.self,
+            from: Data(#"{"profile":{"display_name":"Private"}}"#.utf8)
+        )
+
+        let snapshot = response.domainSnapshot(fetchedAt: Date(timeIntervalSince1970: 1_800_000_000))
+
+        XCTAssertNil(snapshot.lifetimeTokens)
+        XCTAssertNil(snapshot.peakDailyTokens)
+        XCTAssertTrue(snapshot.dailyBuckets.isEmpty)
+    }
+
+    @MainActor
+    func testProfileTokenUsageHTTPClientRetriesUnauthorizedWithRefreshedAuth() async throws {
+        let endpoint = URL(string: "https://example.com/wham/profiles/me")!
+        var refreshRequests: [Bool] = []
+        var authorizationHeaders: [String?] = []
+        var loadCount = 0
+        let client = CodexProfileTokenUsageHTTPClient(
+            endpoint: endpoint,
+            responseLoader: { request in
+                loadCount += 1
+                authorizationHeaders.append(request.value(forHTTPHeaderField: "Authorization"))
+                if loadCount == 1 {
+                    return (
+                        Data(),
+                        HTTPURLResponse(url: endpoint, statusCode: 401, httpVersion: nil, headerFields: nil)!
+                    )
+                }
+
+                return (
+                    Data(
+                        """
+                        {
+                          "stats": {
+                            "lifetime_tokens": 1000,
+                            "peak_daily_tokens": 250,
+                            "daily_usage_buckets": [
+                              {"start_date": "2026-05-30", "tokens": 10}
+                            ]
+                          }
+                        }
+                        """.utf8
+                    ),
+                    HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                )
+            },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+
+        let snapshot = try await client.fetch { refreshToken in
+            refreshRequests.append(refreshToken)
+            return refreshToken ? "new-token" : "old-token"
+        }
+
+        XCTAssertEqual(refreshRequests, [false, true])
+        XCTAssertEqual(authorizationHeaders, ["Bearer old-token", "Bearer new-token"])
+        XCTAssertEqual(snapshot.lifetimeTokens, 1_000)
+        XCTAssertEqual(snapshot.peakDailyTokens, 250)
+        XCTAssertEqual(snapshot.dailyBuckets.map(\.tokens), [10])
+    }
+
     private func decodeTokenUsageModel(
         extraRoot: String = "",
         extraTokenUsage: String = ""

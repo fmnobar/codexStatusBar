@@ -477,6 +477,126 @@ final class CodexTokenPayloadAuditStore: ObservableObject {
     }
 }
 
+enum CodexProfileTokenUsageSyncStatus: String, Codable, Equatable {
+    case neverSynced = "never_synced"
+    case succeeded
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverSynced:
+            return "Not synced"
+        case .succeeded:
+            return "Synced"
+        case .failed:
+            return "Failed"
+        }
+    }
+}
+
+struct CodexProfileTokenUsageState: Codable, Equatable {
+    var snapshot: CodexProfileTokenUsageSnapshot?
+    var status: CodexProfileTokenUsageSyncStatus
+    var lastSyncedAt: Date?
+    var lastErrorText: String?
+
+    init(
+        snapshot: CodexProfileTokenUsageSnapshot? = nil,
+        status: CodexProfileTokenUsageSyncStatus = .neverSynced,
+        lastSyncedAt: Date? = nil,
+        lastErrorText: String? = nil
+    ) {
+        self.snapshot = snapshot
+        self.status = status
+        self.lastSyncedAt = lastSyncedAt
+        self.lastErrorText = lastErrorText
+    }
+
+    func isStale(now: Date, staleAfter: TimeInterval) -> Bool {
+        guard let lastSyncedAt else {
+            return true
+        }
+
+        return now.timeIntervalSince(lastSyncedAt) >= staleAfter
+    }
+}
+
+@MainActor
+final class CodexProfileTokenUsageStore: ObservableObject {
+    static let defaultDailyBucketLimit = 400
+    static let defaultCacheDuration: TimeInterval = 6 * 60 * 60
+
+    @Published private(set) var state: CodexProfileTokenUsageState
+
+    private let fileURL: URL
+    private let fileManager: FileManager
+    private let dailyBucketLimit: Int
+
+    init(
+        fileURL: URL,
+        fileManager: FileManager = .default,
+        dailyBucketLimit: Int = CodexProfileTokenUsageStore.defaultDailyBucketLimit
+    ) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+        self.dailyBucketLimit = dailyBucketLimit
+        state = (try? Self.loadState(from: fileURL)) ?? CodexProfileTokenUsageState()
+    }
+
+    static func applicationSupportStore() -> CodexProfileTokenUsageStore {
+        let directoryURL = (try? UsageHistoryStore.applicationSupportDirectoryURL())
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("CodexStatusBar", isDirectory: true)
+        return CodexProfileTokenUsageStore(
+            fileURL: directoryURL.appendingPathComponent("profile-token-usage.json")
+        )
+    }
+
+    func recordSuccess(_ snapshot: CodexProfileTokenUsageSnapshot) {
+        let boundedSnapshot = snapshot.bounded(to: dailyBucketLimit)
+        state = CodexProfileTokenUsageState(
+            snapshot: boundedSnapshot,
+            status: .succeeded,
+            lastSyncedAt: boundedSnapshot.fetchedAt,
+            lastErrorText: nil
+        )
+        persist()
+    }
+
+    func recordFailure(_ errorText: String) {
+        state = CodexProfileTokenUsageState(
+            snapshot: state.snapshot,
+            status: .failed,
+            lastSyncedAt: state.lastSyncedAt,
+            lastErrorText: errorText
+        )
+        persist()
+    }
+
+    func clear() {
+        state = CodexProfileTokenUsageState()
+        try? fileManager.removeItem(at: fileURL)
+    }
+
+    private func persist() {
+        do {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(state).write(to: fileURL, options: .atomic)
+        } catch {
+            // Profile diagnostics must never affect menu-bar or dashboard behavior.
+        }
+    }
+
+    private static func loadState(from fileURL: URL) throws -> CodexProfileTokenUsageState {
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(CodexProfileTokenUsageState.self, from: data)
+    }
+}
+
 enum CodexTokenPayloadAuditor {
     private struct FieldSpec {
         let keyPath: String

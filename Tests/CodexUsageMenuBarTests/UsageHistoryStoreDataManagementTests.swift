@@ -1194,6 +1194,145 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testProfileTokenUsageStorePersistsBoundsAndFailureState() throws {
+        let fileURL = try makeTemporaryDirectory().appendingPathComponent("profile-token-usage.json")
+        let store = CodexProfileTokenUsageStore(fileURL: fileURL, dailyBucketLimit: 2)
+        let snapshot = CodexProfileTokenUsageSnapshot(
+            fetchedAt: date("2026-05-30T12:00:00Z"),
+            lifetimeTokens: 1_000,
+            peakDailyTokens: 500,
+            dailyBuckets: [
+                CodexProfileTokenDailyBucket(date: "2026-05-28", tokens: 100),
+                CodexProfileTokenDailyBucket(date: "2026-05-29", tokens: 200),
+                CodexProfileTokenDailyBucket(date: "2026-05-30", tokens: 300),
+            ]
+        )
+
+        store.recordSuccess(snapshot)
+
+        XCTAssertEqual(store.state.status, .succeeded)
+        XCTAssertEqual(store.state.snapshot?.dailyBuckets.map(\.date), ["2026-05-29", "2026-05-30"])
+
+        let reloadedStore = CodexProfileTokenUsageStore(fileURL: fileURL, dailyBucketLimit: 2)
+        XCTAssertEqual(reloadedStore.state.snapshot?.lifetimeTokens, 1_000)
+        XCTAssertEqual(reloadedStore.state.snapshot?.dailyBuckets.map(\.tokens), [200, 300])
+
+        reloadedStore.recordFailure("Profile refresh failed.")
+
+        XCTAssertEqual(reloadedStore.state.status, .failed)
+        XCTAssertEqual(reloadedStore.state.lastErrorText, "Profile refresh failed.")
+        XCTAssertEqual(reloadedStore.state.snapshot?.dailyBuckets.map(\.tokens), [200, 300])
+    }
+
+    @MainActor
+    func testSettingsViewModelRefreshesProfileTokensAndComparesLocalCapturedTotals() async throws {
+        let (store, _) = try makeTemporaryStore()
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                lastInput: 100,
+                lastCached: 50,
+                lastOutput: 7,
+                lastReasoning: 3,
+                lastTotal: 107,
+                totalInput: 100,
+                totalCached: 50,
+                totalOutput: 7,
+                totalReasoning: 3,
+                totalTotal: 107
+            ),
+            at: date("2026-05-30T01:00:00Z")
+        )
+        let profileStore = CodexProfileTokenUsageStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("profile-token-usage.json")
+        )
+        let profileClient = StubProfileTokenUsageClient(
+            result: .success(
+                CodexProfileTokenUsageSnapshot(
+                    fetchedAt: date("2026-05-30T12:00:00Z"),
+                    lifetimeTokens: 1_000,
+                    peakDailyTokens: 500,
+                    dailyBuckets: [
+                        CodexProfileTokenDailyBucket(date: "2026-05-30", tokens: 120),
+                    ]
+                )
+            )
+        )
+        let viewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            profileTokenUsageStore: profileStore,
+            profileTokenClient: profileClient,
+            now: { self.date("2026-05-30T12:00:00Z") }
+        )
+
+        await viewModel.refreshProfileTokens()
+
+        XCTAssertEqual(profileClient.requestCount, 1)
+        XCTAssertEqual(viewModel.profileTokenStatusText, "Synced")
+        XCTAssertEqual(viewModel.profileTokenPeakDailyText, "500")
+        XCTAssertEqual(viewModel.profileTokenBucketCountText, "1")
+        XCTAssertEqual(viewModel.profileTokenComparisonRows.map(\.profileTokens), [1_000, 120, 120])
+        XCTAssertEqual(viewModel.profileTokenComparisonRows.map(\.localCapturedTokens), [160, 160, 160])
+        XCTAssertEqual(viewModel.profileTokenComparisonRows.map(\.deltaTokens), [-840, 40, 40])
+        XCTAssertEqual(viewModel.statusMessage, "Codex Profile tokens refreshed.")
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testSettingsViewModelDoesNotAutoRefreshProfileTokensUnlessEnabled() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let profileStore = CodexProfileTokenUsageStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("profile-token-usage.json")
+        )
+        let profileClient = StubProfileTokenUsageClient(
+            result: .failure(CodexClientError.authTokenUnavailable)
+        )
+        let viewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            profileTokenUsageStore: profileStore,
+            profileTokenClient: profileClient,
+            autoRefreshProfileTokens: false,
+            now: { self.date("2026-05-30T12:00:00Z") }
+        )
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(profileClient.requestCount, 0)
+        XCTAssertEqual(viewModel.profileTokenStatusText, "Not synced")
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsProfileTokenRefreshFailure() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let profileStore = CodexProfileTokenUsageStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("profile-token-usage.json")
+        )
+        let profileClient = StubProfileTokenUsageClient(
+            result: .failure(CodexClientError.authTokenUnavailable)
+        )
+        let viewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            profileTokenUsageStore: profileStore,
+            profileTokenClient: profileClient
+        )
+
+        await viewModel.refreshProfileTokens()
+
+        XCTAssertEqual(viewModel.profileTokenStatusText, "Failed")
+        XCTAssertEqual(viewModel.profileTokenLastErrorText, "Codex auth is unavailable.")
+        XCTAssertEqual(
+            viewModel.errorMessage,
+            "Codex Profile tokens could not be refreshed because Codex auth is unavailable."
+        )
+        XCTAssertNil(viewModel.statusMessage)
+    }
+
+    @MainActor
     func testSettingsViewModelLoadsRenamesAndResetsProjectNames() async throws {
         let (store, _) = try makeTemporaryStore()
         _ = try store.importTokenUsageSamples([
@@ -1342,4 +1481,19 @@ extension UsageHistoryStoreTests {
         )
     }
 
+}
+
+@MainActor
+private final class StubProfileTokenUsageClient: CodexProfileTokenUsageFetching {
+    private let result: Result<CodexProfileTokenUsageSnapshot, Error>
+    private(set) var requestCount = 0
+
+    init(result: Result<CodexProfileTokenUsageSnapshot, Error>) {
+        self.result = result
+    }
+
+    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        requestCount += 1
+        return try result.get()
+    }
 }

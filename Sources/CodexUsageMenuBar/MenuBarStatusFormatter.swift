@@ -383,11 +383,11 @@ enum MenuBarStatusFormatter {
         }
 
         guard let totals = todayTokenTotals else {
-            return "No token data captured today."
+            return "No local captured token data today."
         }
 
         return [
-            "Today's captured tokens:",
+            "Today's local captured tokens:",
             "input \(compactTokenText(totals.inputTokens)),",
             "cached input \(compactTokenText(totals.cachedInputTokens)),",
             "output \(compactTokenText(totals.outputTokens)),",

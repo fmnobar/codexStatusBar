@@ -12,7 +12,10 @@ struct CodexUsageMenuBarApp: App {
                 updateMonitor: appDelegate.updateMonitor,
                 tokenPayloadAuditStore: appDelegate.tokenPayloadAuditStore,
                 tokenPayloadAuditDiagnosticsStore: appDelegate.tokenPayloadAuditDiagnosticsStore,
-                performanceInstrumentationStore: appDelegate.performanceInstrumentationStore
+                performanceInstrumentationStore: appDelegate.performanceInstrumentationStore,
+                profileTokenUsageStore: appDelegate.profileTokenUsageStore,
+                profileTokenClient: appDelegate.codexClient,
+                autoRefreshProfileTokens: true
             )
         }
     }
@@ -25,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    let profileTokenUsageStore: CodexProfileTokenUsageStore
+    let codexClient: CodexAppServerClient
     private let historyWriteDatabase: UsageHistoryDatabaseWorker
     private let viewModel: MenuBarStatusViewModel
     private var statusItemController: StatusItemController?
@@ -45,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let payloadAuditStore = CodexTokenPayloadAuditStore.applicationSupportStore()
         let payloadAuditDiagnosticsStore = CodexAppServerAuditDiagnosticsStore.applicationSupportStore()
         let performanceInstrumentationStore = AppPerformanceInstrumentationStore.shared
+        let profileTokenUsageStore = CodexProfileTokenUsageStore.applicationSupportStore()
         codexClient.onTokenUsagePayloadAudit = { audit in
             Task { @MainActor in
                 switch payloadAuditStore.record(audit) {
@@ -66,6 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tokenPayloadAuditStore = payloadAuditStore
         tokenPayloadAuditDiagnosticsStore = payloadAuditDiagnosticsStore
         self.performanceInstrumentationStore = performanceInstrumentationStore
+        self.profileTokenUsageStore = profileTokenUsageStore
+        self.codexClient = codexClient
         launchToMenuTitleSpan = performanceInstrumentationStore.begin(.appLaunchToFirstMenuBarTitle)
         viewModel = MenuBarStatusViewModel(
             client: codexClient,

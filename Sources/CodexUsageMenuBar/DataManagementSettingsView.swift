@@ -21,6 +21,13 @@ enum SettingsTabSelectionStore {
 }
 
 @MainActor
+private final class UnavailableCodexProfileTokenUsageClient: CodexProfileTokenUsageFetching {
+    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        throw CodexClientError.authTokenUnavailable
+    }
+}
+
+@MainActor
 final class DataManagementSettingsViewModel: ObservableObject {
     @Published var selectedRetention: UsageHistoryRawRetention {
         didSet {
@@ -49,6 +56,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var threadCatalogCaptureState = CodexThreadCatalogCaptureState()
     @Published private(set) var modelCapabilitiesCaptureState = CodexModelCapabilitiesCaptureState()
     @Published private(set) var performanceInstrumentationSummary: AppPerformanceInstrumentationSummary
+    @Published private(set) var profileTokenUsageState: CodexProfileTokenUsageState
+    @Published private(set) var profileTokenComparisonSummary: CodexProfileTokenComparisonSummary?
+    @Published private(set) var isRefreshingProfileTokens = false
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -57,6 +67,10 @@ final class DataManagementSettingsViewModel: ObservableObject {
     private let tokenPayloadAuditStore: CodexTokenPayloadAuditStore
     private let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    private let profileTokenUsageStore: CodexProfileTokenUsageStore
+    private let profileTokenClient: CodexProfileTokenUsageFetching
+    private let autoRefreshProfileTokens: Bool
+    private let now: () -> Date
     private var databaseInfo: UsageHistoryDatabaseInfo?
     private var tokenPayloadAuditCancellable: AnyCancellable?
     private var tokenPayloadAuditDiagnosticsCancellable: AnyCancellable?
@@ -70,7 +84,11 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
         tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
-        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        profileTokenUsageStore: CodexProfileTokenUsageStore = .applicationSupportStore(),
+        profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
+        autoRefreshProfileTokens: Bool = false,
+        now: @escaping () -> Date = Date.init
     ) {
         self.database = database
         self.defaults = defaults
@@ -79,10 +97,15 @@ final class DataManagementSettingsViewModel: ObservableObject {
         self.tokenPayloadAuditStore = tokenPayloadAuditStore
         self.tokenPayloadAuditDiagnosticsStore = tokenPayloadAuditDiagnosticsStore
         self.performanceInstrumentationStore = performanceInstrumentationStore
+        self.profileTokenUsageStore = profileTokenUsageStore
+        self.profileTokenClient = profileTokenClient
+        self.autoRefreshProfileTokens = autoRefreshProfileTokens
+        self.now = now
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
         tokenPayloadAudit = tokenPayloadAuditStore.latestAudit
         tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
         performanceInstrumentationSummary = performanceInstrumentationStore.summary()
+        profileTokenUsageState = profileTokenUsageStore.state
         tokenPayloadAuditCancellable = tokenPayloadAuditStore.$latestAudit.sink { [weak self] audit in
             self?.tokenPayloadAudit = audit
         }
@@ -104,7 +127,11 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenBackfillImporter: CodexSessionTokenBackfillImporting = CodexSessionTokenBackfillImporter(),
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
         tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
-        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        profileTokenUsageStore: CodexProfileTokenUsageStore = .applicationSupportStore(),
+        profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
+        autoRefreshProfileTokens: Bool = false,
+        now: @escaping () -> Date = Date.init
     ) {
         let testSafeWorker = UsageHistoryDatabaseWorker(
             store: store,
@@ -128,7 +155,11 @@ final class DataManagementSettingsViewModel: ObservableObject {
             tokenBackfillImporter: tokenBackfillImporter,
             tokenPayloadAuditStore: tokenPayloadAuditStore,
             tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore,
-            performanceInstrumentationStore: performanceInstrumentationStore
+            performanceInstrumentationStore: performanceInstrumentationStore,
+            profileTokenUsageStore: profileTokenUsageStore,
+            profileTokenClient: profileTokenClient,
+            autoRefreshProfileTokens: autoRefreshProfileTokens,
+            now: now
         )
     }
 
@@ -337,6 +368,63 @@ final class DataManagementSettingsViewModel: ObservableObject {
         performanceInstrumentationSummary.lastErrorText ?? "None"
     }
 
+    var profileTokenStatusText: String {
+        profileTokenUsageState.status.displayText
+    }
+
+    var profileTokenLastSyncText: String {
+        guard let lastSyncedAt = profileTokenUsageState.lastSyncedAt else {
+            return "Not synced yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastSyncedAt)
+    }
+
+    var profileTokenLastErrorText: String {
+        profileTokenUsageState.lastErrorText ?? "None"
+    }
+
+    var profileTokenPeakDailyText: String {
+        tokenCountText(profileTokenUsageState.snapshot?.peakDailyTokens)
+    }
+
+    var profileTokenBucketCountText: String {
+        guard let snapshot = profileTokenUsageState.snapshot else {
+            return "--"
+        }
+
+        return "\(snapshot.dailyBuckets.count)"
+    }
+
+    var profileTokenComparisonRows: [CodexProfileTokenComparisonRow] {
+        profileTokenComparisonSummary?.rows ?? []
+    }
+
+    func tokenCountText(_ count: Int64?) -> String {
+        guard let count else {
+            return "--"
+        }
+
+        return Self.tokenCountFormatter.string(from: NSNumber(value: max(count, 0))) ?? "\(max(count, 0))"
+    }
+
+    func profileTokenDeltaText(for row: CodexProfileTokenComparisonRow) -> String {
+        guard let delta = row.deltaTokens else {
+            return "--"
+        }
+
+        let sign = delta > 0 ? "+" : ""
+        let magnitude = Self.tokenCountFormatter.string(from: NSNumber(value: abs(delta))) ?? "\(abs(delta))"
+        let ratioText: String
+        if let ratio = row.localToProfileRatio {
+            ratioText = String(format: " · %.0f%%", ratio * 100)
+        } else {
+            ratioText = ""
+        }
+
+        return "\(sign)\(delta < 0 ? "-" : "")\(magnitude)\(ratioText)"
+    }
+
     func refreshDatabaseInfo() async {
         do {
             let info = try await database.databaseInfo()
@@ -398,6 +486,66 @@ final class DataManagementSettingsViewModel: ObservableObject {
         performanceInstrumentationSummary = performanceInstrumentationStore.summary()
     }
 
+    func refreshProfileTokenComparison(autoRefreshIfStale: Bool = true) async {
+        profileTokenUsageState = profileTokenUsageStore.state
+        await refreshProfileTokenComparisonSummary()
+
+        guard autoRefreshIfStale,
+              autoRefreshProfileTokens,
+              !isRefreshingProfileTokens,
+              profileTokenUsageState.isStale(now: now(), staleAfter: CodexProfileTokenUsageStore.defaultCacheDuration)
+        else {
+            return
+        }
+
+        await refreshProfileTokens()
+    }
+
+    func refreshProfileTokens() async {
+        guard !isRefreshingProfileTokens else {
+            return
+        }
+
+        isRefreshingProfileTokens = true
+        defer {
+            isRefreshingProfileTokens = false
+        }
+
+        do {
+            let snapshot = try await profileTokenClient.profileTokenUsageSnapshot()
+            profileTokenUsageStore.recordSuccess(snapshot)
+            profileTokenUsageState = profileTokenUsageStore.state
+            statusMessage = "Codex Profile tokens refreshed."
+            errorMessage = nil
+        } catch CodexClientError.authTokenUnavailable {
+            profileTokenUsageStore.recordFailure("Codex auth is unavailable.")
+            profileTokenUsageState = profileTokenUsageStore.state
+            statusMessage = nil
+            errorMessage = "Codex Profile tokens could not be refreshed because Codex auth is unavailable."
+        } catch {
+            profileTokenUsageStore.recordFailure("Codex Profile tokens could not be refreshed.")
+            profileTokenUsageState = profileTokenUsageStore.state
+            statusMessage = nil
+            errorMessage = "Codex Profile tokens could not be refreshed."
+        }
+
+        await refreshProfileTokenComparisonSummary()
+    }
+
+    private func refreshProfileTokenComparisonSummary() async {
+        do {
+            let currentDate = now()
+            let localTotals = try await database.localTokenComparisonTotals(now: currentDate)
+            profileTokenComparisonSummary = CodexProfileTokenComparisonSummary.make(
+                profileSnapshot: profileTokenUsageState.snapshot,
+                localTotals: localTotals,
+                now: currentDate
+            )
+        } catch {
+            profileTokenComparisonSummary = nil
+        }
+    }
+
     func refreshData() async {
         await refreshDatabaseInfo()
         await refreshProjectEntries()
@@ -406,6 +554,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         await refreshSessionTaskTimingCaptureState()
         await refreshThreadCatalogCaptureState()
         await refreshModelCapabilitiesCaptureState()
+        await refreshProfileTokenComparison()
         refreshPerformanceInstrumentationSummary()
     }
 
@@ -598,6 +747,13 @@ final class DataManagementSettingsViewModel: ObservableObject {
         return formatter
     }()
 
+    private static let tokenCountFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
+
     private static func durationText(milliseconds: Double) -> String {
         if milliseconds >= 1_000 {
             return String(format: "%.1fs", milliseconds / 1_000)
@@ -621,14 +777,20 @@ struct DataManagementSettingsView: View {
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
         tokenPayloadAuditStore: CodexTokenPayloadAuditStore = .applicationSupportStore(),
         tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
-        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        profileTokenUsageStore: CodexProfileTokenUsageStore = .applicationSupportStore(),
+        profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
+        autoRefreshProfileTokens: Bool = false
     ) {
         _viewModel = StateObject(
             wrappedValue: DataManagementSettingsViewModel(
                 database: database,
                 tokenPayloadAuditStore: tokenPayloadAuditStore,
                 tokenPayloadAuditDiagnosticsStore: tokenPayloadAuditDiagnosticsStore,
-                performanceInstrumentationStore: performanceInstrumentationStore
+                performanceInstrumentationStore: performanceInstrumentationStore,
+                profileTokenUsageStore: profileTokenUsageStore,
+                profileTokenClient: profileTokenClient,
+                autoRefreshProfileTokens: autoRefreshProfileTokens
             )
         )
         self.updateMonitor = updateMonitor
@@ -640,6 +802,7 @@ struct DataManagementSettingsView: View {
                 databaseSection
                 retentionSection
                 tokenHistorySection
+                profileTokenSection
                 liveTokenPayloadSection
                 projectsSection
                 feedbackSection
@@ -788,6 +951,86 @@ struct DataManagementSettingsView: View {
                 Text(tokenImportSummaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var profileTokenSection: some View {
+        Section("Codex Profile Tokens") {
+            HStack {
+                Button(viewModel.isRefreshingProfileTokens ? "Refreshing..." : "Refresh Profile Tokens") {
+                    Task {
+                        await viewModel.refreshProfileTokens()
+                    }
+                }
+                .disabled(viewModel.isRefreshingProfileTokens)
+
+                Spacer()
+
+                Text(viewModel.profileTokenStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Codex Profile tokens are server/account counts. Local captured tokens are component totals from this Mac: input + cached input + output + reasoning.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+                GridRow {
+                    Text("Last sync")
+                    Text(viewModel.profileTokenLastSyncText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Peak day")
+                    Text(viewModel.profileTokenPeakDailyText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Daily buckets")
+                    Text(viewModel.profileTokenBucketCountText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Last error")
+                    Text(viewModel.profileTokenLastErrorText)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+            .font(.caption)
+
+            if viewModel.profileTokenComparisonRows.isEmpty {
+                Text("No comparison is available yet. Refresh Codex Profile tokens to compare account counts with local captured tokens.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Period")
+                            .fontWeight(.semibold)
+                        Text("Profile")
+                            .fontWeight(.semibold)
+                        Text("Local captured")
+                            .fontWeight(.semibold)
+                        Text("Delta")
+                            .fontWeight(.semibold)
+                    }
+
+                    ForEach(viewModel.profileTokenComparisonRows) { row in
+                        GridRow {
+                            Text(row.title)
+                            Text(viewModel.tokenCountText(row.profileTokens))
+                                .monospacedDigit()
+                            Text(viewModel.tokenCountText(row.localCapturedTokens))
+                                .monospacedDigit()
+                            Text(viewModel.profileTokenDeltaText(for: row))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                .font(.caption)
             }
         }
     }

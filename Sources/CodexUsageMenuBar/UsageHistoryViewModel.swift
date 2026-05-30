@@ -527,7 +527,7 @@ final class UsageHistoryViewModel: ObservableObject {
         case .capacity, .usage:
             return "Choose a different range or limit window to inspect recorded samples."
         case .tokens:
-            return "Choose a different range to inspect captured tokens."
+            return "Choose a different range to inspect local captured tokens."
         }
     }
 

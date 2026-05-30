@@ -493,7 +493,7 @@ final class TokenDashboardViewModel: ObservableObject {
     var loadingState: TokenDashboardLoadingState {
         TokenDashboardLoadingState(
             title: "Loading token dashboard",
-            message: "Reading local token samples for \(periodTitle).",
+            message: "Reading local captured token samples for \(periodTitle).",
             systemImage: "chart.bar.doc.horizontal"
         )
     }
@@ -505,7 +505,7 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         return [
-            TokenDashboardSummaryTile(id: "total", title: "Total", tokenCount: total, component: nil),
+            TokenDashboardSummaryTile(id: "total", title: "Local captured", tokenCount: total, component: nil),
             TokenDashboardSummaryTile(id: TokenHistoryComponent.input.rawValue, title: "Input", tokenCount: totals[.input] ?? 0, component: .input),
             TokenDashboardSummaryTile(id: TokenHistoryComponent.cached.rawValue, title: "Cache", tokenCount: totals[.cached] ?? 0, component: .cached),
             TokenDashboardSummaryTile(id: TokenHistoryComponent.output.rawValue, title: "Output", tokenCount: totals[.output] ?? 0, component: .output),

@@ -27,7 +27,12 @@ enum CodexClientError: LocalizedError {
 }
 
 @MainActor
-final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
+protocol CodexProfileTokenUsageFetching: AnyObject {
+    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot
+}
+
+@MainActor
+final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexProfileTokenUsageFetching {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)?
     var onTokenUsage: ((CodexTokenUsageNotification) -> Void)?
     var onTokenUsagePayloadAudit: ((CodexTokenUsagePayloadAudit) -> Void)?
@@ -87,6 +92,17 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
             resetSocketState()
             try await ensureConnected()
             return try await fetchUsageDiagnostics()
+        }
+    }
+
+    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        do {
+            try await ensureConnected()
+            return try await fetchProfileTokenUsageSnapshot()
+        } catch {
+            resetSocketState()
+            try await ensureConnected()
+            return try await fetchProfileTokenUsageSnapshot()
         }
     }
 
@@ -338,6 +354,21 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol {
             throw WhamUsageFetchError.unauthorized
         default:
             throw WhamUsageFetchError.unexpectedStatusCode(httpResponse.statusCode)
+        }
+    }
+
+    private func fetchProfileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        let profileClient = CodexProfileTokenUsageHTTPClient(responseLoader: { [urlSession] request in
+            try await urlSession.data(for: request)
+        })
+
+        return try await profileClient.fetch { [weak self] refreshToken in
+            guard let self else {
+                throw CodexClientError.appServerUnavailable
+            }
+
+            let authStatus = try await self.fetchAuthStatus(includeToken: true, refreshToken: refreshToken)
+            return authStatus.authToken
         }
     }
 

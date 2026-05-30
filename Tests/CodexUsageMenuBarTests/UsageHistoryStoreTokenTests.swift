@@ -2669,6 +2669,97 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testLocalTokenComparisonTotalsUseUTCComponentSums() async throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-april",
+                turnID: "turn-a",
+                lastInput: 10,
+                lastCached: 20,
+                lastOutput: 3,
+                lastReasoning: 2,
+                lastTotal: 13,
+                totalInput: 10,
+                totalCached: 20,
+                totalOutput: 3,
+                totalReasoning: 2,
+                totalTotal: 13
+            ),
+            at: date("2026-04-30T23:30:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-may-29",
+                turnID: "turn-a",
+                lastInput: 100,
+                lastCached: 50,
+                lastOutput: 7,
+                lastReasoning: 3,
+                lastTotal: 107,
+                totalInput: 100,
+                totalCached: 50,
+                totalOutput: 7,
+                totalReasoning: 3,
+                totalTotal: 107
+            ),
+            at: date("2026-05-29T23:30:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-may-30",
+                turnID: "turn-a",
+                lastInput: 200,
+                lastCached: 60,
+                lastOutput: 11,
+                lastReasoning: 4,
+                lastTotal: 211,
+                totalInput: 200,
+                totalCached: 60,
+                totalOutput: 11,
+                totalReasoning: 4,
+                totalTotal: 211
+            ),
+            at: date("2026-05-30T00:30:00Z")
+        )
+
+        let totals = try store.localTokenComparisonTotals(now: date("2026-05-30T12:00:00Z"))
+
+        XCTAssertEqual(totals.allTimeTokens, 35 + 160 + 275)
+        XCTAssertEqual(totals.currentUTCMonthTokens, 160 + 275)
+        XCTAssertEqual(totals.currentUTCDayTokens, 275)
+    }
+
+    func testProfileTokenComparisonSummaryKeepsServerAndLocalTotalsSeparate() {
+        let snapshot = CodexProfileTokenUsageSnapshot(
+            fetchedAt: date("2026-05-30T12:00:00Z"),
+            lifetimeTokens: 1_000,
+            peakDailyTokens: 400,
+            dailyBuckets: [
+                CodexProfileTokenDailyBucket(date: "2026-05-29", tokens: 100),
+                CodexProfileTokenDailyBucket(date: "2026-05-30", tokens: 200),
+            ]
+        )
+        let localTotals = LocalTokenComparisonTotals(
+            generatedAt: date("2026-05-30T12:00:00Z"),
+            allTimeTokens: 1_500,
+            currentUTCMonthTokens: 450,
+            currentUTCDayTokens: 275
+        )
+
+        let summary = CodexProfileTokenComparisonSummary.make(
+            profileSnapshot: snapshot,
+            localTotals: localTotals,
+            now: date("2026-05-30T12:00:00Z")
+        )
+
+        XCTAssertEqual(summary.rows.map(\.title), ["All time", "Current UTC month", "Current UTC day"])
+        XCTAssertEqual(summary.rows.map(\.profileTokens), [1_000, 300, 200])
+        XCTAssertEqual(summary.rows.map(\.localCapturedTokens), [1_500, 450, 275])
+        XCTAssertEqual(summary.rows.map(\.deltaTokens), [500, 150, 75])
+    }
+
     func testTokenCategoryTotalsForDayReturnsNilWithoutSamples() async throws {
         let store = try makeStore()
 

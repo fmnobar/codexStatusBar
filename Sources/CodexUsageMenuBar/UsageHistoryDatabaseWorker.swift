@@ -102,6 +102,7 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
+    func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
     func exportBackup(to destinationURL: URL) async throws
@@ -120,6 +121,7 @@ protocol UsageHistoryDashboardQueryWorking: Sendable {
     func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
+    func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
 }
 
@@ -127,11 +129,19 @@ extension UsageHistoryDatabaseWorking {
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
         throw UsageHistoryStoreError.databaseOperationFailed("Token attribution coverage is unavailable.")
     }
+
+    func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals {
+        throw UsageHistoryStoreError.databaseOperationFailed("Local token comparison totals are unavailable.")
+    }
 }
 
 extension UsageHistoryDashboardQueryWorking {
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
         throw UsageHistoryStoreError.databaseOperationFailed("Token attribution coverage is unavailable.")
+    }
+
+    func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals {
+        throw UsageHistoryStoreError.databaseOperationFailed("Local token comparison totals are unavailable.")
     }
 }
 
@@ -351,6 +361,10 @@ actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
         try store().tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
     }
 
+    func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals {
+        try store().localTokenComparisonTotals(now: now)
+    }
+
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
         try UsageHistorySnapshotReader.performanceDashboardSnapshot(store: store(), request: request)
     }
@@ -460,6 +474,10 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
 
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
         try await dashboardQueryWorker.tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
+    }
+
+    func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals {
+        try await dashboardQueryWorker.localTokenComparisonTotals(now: now)
     }
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
@@ -860,6 +878,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
         try store().tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
+    }
+
+    func localTokenComparisonTotals(now: Date) throws -> LocalTokenComparisonTotals {
+        try store().localTokenComparisonTotals(now: now)
     }
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
