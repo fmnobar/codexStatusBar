@@ -2548,7 +2548,7 @@ extension UsageHistoryStoreTests {
                 cachedInputTokens: 55,
                 outputTokens: 90,
                 reasoningOutputTokens: 20,
-                totalTokens: 320
+                totalTokens: 415
             )
         )
     }
@@ -2631,7 +2631,7 @@ extension UsageHistoryStoreTests {
                 cachedInputTokens: 145_280,
                 outputTokens: 37,
                 reasoningOutputTokens: 0,
-                totalTokens: 146_096
+                totalTokens: 291_376
             )
         )
         XCTAssertEqual(samples.map(\.model), ["gpt-5.5"])
@@ -2898,6 +2898,7 @@ extension UsageHistoryStoreTests {
         let worker = UsageHistoryDatabaseWorker(store: store)
 
         let totals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+        let totalTokens = await worker.todayTotalTokens(at: timestamp, calendar: calendar)
 
         XCTAssertEqual(
             totals,
@@ -2906,9 +2907,10 @@ extension UsageHistoryStoreTests {
                 cachedInputTokens: 80,
                 outputTokens: 5,
                 reasoningOutputTokens: 1,
-                totalTokens: 105
+                totalTokens: 186
             )
         )
+        XCTAssertEqual(totalTokens, 186)
     }
 
     func testCodexLogTokenImporterExtractsDottedContextAndSafeDimensions() async throws {
@@ -3123,7 +3125,7 @@ extension UsageHistoryStoreTests {
                 cachedInputTokens: 800,
                 outputTokens: 20,
                 reasoningOutputTokens: 5,
-                totalTokens: 1020
+                totalTokens: 1825
             )
         )
         XCTAssertEqual(
@@ -3232,7 +3234,7 @@ extension UsageHistoryStoreTests {
                 cachedInputTokens: 800,
                 outputTokens: 20,
                 reasoningOutputTokens: 5,
-                totalTokens: 1_020
+                totalTokens: 1_825
             )
         )
     }

@@ -530,13 +530,13 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             )
         )
         await waitUntil {
-            await tokenRecorder.recordCount == 1 && viewModel.menuBarPercentText == "7d: 80% · 1.2k"
+            await tokenRecorder.recordCount == 1 && viewModel.menuBarPercentText == "7d: 80% · 1.3k"
         }
         let records = await tokenRecorder.recordsSnapshot()
 
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(client.refreshCallCount, 0)
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · 1.2k")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 80% · 1.3k")
 
         viewModel.stop()
     }
@@ -803,12 +803,16 @@ private actor MockTokenUsageRecorder: TokenUsageRecording {
     }
 
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
+        let componentTotal = tokenUsage.tokenUsage.last.inputTokens
+            + tokenUsage.tokenUsage.last.cachedInputTokens
+            + tokenUsage.tokenUsage.last.outputTokens
+            + tokenUsage.tokenUsage.last.reasoningOutputTokens
         let totals = TokenCategoryTotals(
             inputTokens: tokenUsage.tokenUsage.last.inputTokens,
             cachedInputTokens: tokenUsage.tokenUsage.last.cachedInputTokens,
             outputTokens: tokenUsage.tokenUsage.last.outputTokens,
             reasoningOutputTokens: tokenUsage.tokenUsage.last.reasoningOutputTokens,
-            totalTokens: tokenUsage.tokenUsage.last.totalTokens
+            totalTokens: componentTotal
         )
         records.append((tokenUsage, date))
         todayTotals = totals

@@ -114,8 +114,7 @@ extension UsageHistoryStore {
                 IFNULL(SUM(observed_input_tokens), 0),
                 IFNULL(SUM(observed_cached_input_tokens), 0),
                 IFNULL(SUM(observed_output_tokens), 0),
-                IFNULL(SUM(observed_reasoning_output_tokens), 0),
-                IFNULL(SUM(observed_total_tokens), 0)
+                IFNULL(SUM(observed_reasoning_output_tokens), 0)
             FROM token_usage_samples
             WHERE received_at >= ? AND received_at < ?
             """
@@ -135,12 +134,17 @@ extension UsageHistoryStore {
                 return nil
             }
 
+            let inputTokens = sqlite3_column_int64(statement, 2)
+            let cachedInputTokens = sqlite3_column_int64(statement, 3)
+            let outputTokens = sqlite3_column_int64(statement, 4)
+            let reasoningOutputTokens = sqlite3_column_int64(statement, 5)
+
             return TokenCategoryTotals(
-                inputTokens: sqlite3_column_int64(statement, 2),
-                cachedInputTokens: sqlite3_column_int64(statement, 3),
-                outputTokens: sqlite3_column_int64(statement, 4),
-                reasoningOutputTokens: sqlite3_column_int64(statement, 5),
-                totalTokens: sqlite3_column_int64(statement, 6)
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedInputTokens,
+                outputTokens: outputTokens,
+                reasoningOutputTokens: reasoningOutputTokens,
+                totalTokens: inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens
             )
         case SQLITE_DONE:
             return nil
