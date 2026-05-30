@@ -1890,6 +1890,76 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testTokenDashboardFirstLoadShowsPrimaryLoadingState() async throws {
+        let database = TokenDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1, delayNanoseconds: 150_000_000),
+        ])
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        let reloadTask = Task { await viewModel.reload() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loading)
+        XCTAssertTrue(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertFalse(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertFalse(viewModel.shouldShowTokenContent)
+        XCTAssertEqual(viewModel.loadingState.title, "Loading token dashboard")
+        XCTAssertFalse(viewModel.canExportCSV)
+
+        let didLoad = await reloadTask.value
+        XCTAssertTrue(didLoad)
+        await viewModel.waitForAttributionCoverageLoad()
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loaded)
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertFalse(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertTrue(viewModel.shouldShowTokenContent)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 1_000)
+        XCTAssertTrue(viewModel.canExportCSV)
+    }
+
+    @MainActor
+    func testTokenDashboardBreakdownChangeShowsLoadingInsteadOfStaleCurrentData() async throws {
+        let database = TokenDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1),
+            .success(value: 2, delayNanoseconds: 150_000_000),
+        ])
+        let viewModel = TokenDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        await viewModel.waitForAttributionCoverageLoad()
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 1_000)
+
+        viewModel.selectedBreakdownDimension = .effort
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loading)
+        XCTAssertFalse(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertTrue(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertFalse(viewModel.shouldShowTokenContent)
+        XCTAssertFalse(viewModel.canExportCSV)
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+        await viewModel.waitForAttributionCoverageLoad()
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loaded)
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertEqual(viewModel.selectedBreakdownDimension, .effort)
+        XCTAssertEqual(viewModel.summaryTiles.first?.tokenCount, 2_000)
+        XCTAssertTrue(viewModel.canExportCSV)
+    }
+
+    @MainActor
     func testTokenDashboardCoverageCacheReusesPeriodAcrossBreakdowns() async throws {
         let database = TokenDashboardCacheSpyDatabase()
         let viewModel = TokenDashboardViewModel(
@@ -2369,6 +2439,10 @@ extension UsageHistoryStoreTests {
         await emptyViewModel.reload()
 
         XCTAssertEqual(emptyViewModel.emptyState.title, "No token data yet")
+        XCTAssertEqual(emptyViewModel.primaryLoadState, .loaded)
+        XCTAssertFalse(emptyViewModel.shouldShowPrimaryLoadingState)
+        XCTAssertTrue(emptyViewModel.isDisplayingCurrentSnapshot)
+        XCTAssertFalse(emptyViewModel.hasVisiblePoints)
         XCTAssertFalse(emptyViewModel.canGoToPreviousPeriod)
 
         let store = try makeStore()
@@ -4227,6 +4301,107 @@ extension UsageHistoryStoreTests {
         await viewModel.reload()
         requestCount = await database.requestCount()
         XCTAssertEqual(requestCount, 3)
+    }
+
+    @MainActor
+    func testPerformanceDashboardFirstLoadShowsPrimaryLoadingState() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1, delayNanoseconds: 150_000_000),
+        ])
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        let reloadTask = Task { await viewModel.reload() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loading)
+        XCTAssertTrue(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertFalse(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertFalse(viewModel.hasVisibleData)
+        XCTAssertEqual(viewModel.loadingState.title, "Loading performance data")
+        XCTAssertFalse(viewModel.canExportCSV)
+
+        let didLoad = await reloadTask.value
+        XCTAssertTrue(didLoad)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loaded)
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertFalse(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertTrue(viewModel.hasVisibleData)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+        XCTAssertTrue(viewModel.canExportCSV)
+    }
+
+    @MainActor
+    func testPerformanceDashboardModeChangeShowsLoadingInsteadOfStaleRows() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1),
+            .success(value: 2, delayNanoseconds: 150_000_000),
+        ])
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+
+        viewModel.selectedMode = .efficiency
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loading)
+        XCTAssertFalse(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertTrue(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertFalse(viewModel.hasVisibleData)
+        XCTAssertEqual(viewModel.loadingState.title, "Loading efficiency data")
+        XCTAssertFalse(viewModel.canExportCSV)
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loaded)
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertEqual(viewModel.selectedMode, .efficiency)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "2.0k")
+        XCTAssertTrue(viewModel.canExportCSV)
+    }
+
+    @MainActor
+    func testPerformanceDashboardSameSelectionRefreshKeepsContentWithRefreshingState() async throws {
+        let database = PerformanceDashboardCacheSpyDatabase(stubs: [
+            .success(value: 1),
+            .success(value: 2, delayNanoseconds: 150_000_000),
+        ])
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+
+        viewModel.invalidateSnapshotCacheAndReload()
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loading)
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertFalse(viewModel.shouldShowPrimaryLoadingState)
+        XCTAssertTrue(viewModel.isRefreshingCurrentSnapshot)
+        XCTAssertTrue(viewModel.hasVisibleData)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        XCTAssertEqual(viewModel.primaryLoadState, .loaded)
+        XCTAssertFalse(viewModel.isRefreshingCurrentSnapshot)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "2")
     }
 
     @MainActor

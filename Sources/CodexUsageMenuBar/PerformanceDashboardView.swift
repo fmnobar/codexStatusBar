@@ -611,6 +611,19 @@ struct PerformanceDashboardEmptyState: Equatable {
     let systemImage: String
 }
 
+enum PerformanceDashboardPrimaryLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed
+}
+
+struct PerformanceDashboardLoadingState: Equatable {
+    let title: String
+    let message: String
+    let systemImage: String
+}
+
 enum PerformanceDashboardStatistics {
     static func median(_ values: [Int64]) -> Double? {
         guard !values.isEmpty else {
@@ -705,6 +718,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var breakdownSortState: PerformanceDashboardSortState<PerformanceDashboardBreakdownSortColumn>?
     @Published private(set) var efficiencySortState: PerformanceDashboardSortState<PerformanceDashboardEfficiencySortColumn>?
+    @Published private(set) var primaryLoadState: PerformanceDashboardPrimaryLoadState = .idle
 
     private let database: UsageHistoryDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
@@ -715,6 +729,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private var historyBoundsByMode: [PerformanceDashboardMode: UsageHistoryBounds] = [:]
     private var snapshotCache: [PerformanceDashboardSnapshotCacheKey: PerformanceDashboardLoadResult] = [:]
     private var snapshotCacheOrder: [PerformanceDashboardSnapshotCacheKey] = []
+    private var displayedSnapshotCacheKey: PerformanceDashboardSnapshotCacheKey?
     private let snapshotCacheLimit = 24
     private var nextReloadInstrumentationKind: AppPerformanceEventKind = .performanceDashboardReload
 
@@ -808,11 +823,44 @@ final class PerformanceDashboardViewModel: ObservableObject {
     var hasVisibleData: Bool {
         switch selectedMode {
         case .performance:
-            return visibleSummaryRow.turnCount > 0 || visibleSummaryRow.eventCount > 0
+            return isDisplayingCurrentSnapshot && (visibleSummaryRow.turnCount > 0 || visibleSummaryRow.eventCount > 0)
         case .efficiency:
-            return visibleEfficiencySummaryRow.totalTokens > 0
+            return isDisplayingCurrentSnapshot && (visibleEfficiencySummaryRow.totalTokens > 0
                 || visibleEfficiencySummaryRow.turnCount > 0
-                || visibleEfficiencySummaryRow.eventCount > 0
+                || visibleEfficiencySummaryRow.eventCount > 0)
+        }
+    }
+
+    var isDisplayingCurrentSnapshot: Bool {
+        displayedSnapshotCacheKey == currentSnapshotCacheKey()
+    }
+
+    var shouldShowPrimaryLoadingState: Bool {
+        primaryLoadState == .loading && !isDisplayingCurrentSnapshot
+    }
+
+    var isRefreshingCurrentSnapshot: Bool {
+        primaryLoadState == .loading && isDisplayingCurrentSnapshot
+    }
+
+    var canExportCSV: Bool {
+        isDisplayingCurrentSnapshot && hasVisibleData && errorMessage == nil
+    }
+
+    var loadingState: PerformanceDashboardLoadingState {
+        switch selectedMode {
+        case .performance:
+            return PerformanceDashboardLoadingState(
+                title: "Loading performance data",
+                message: "Reading local timing and reliability data for \(periodTitle).",
+                systemImage: "speedometer"
+            )
+        case .efficiency:
+            return PerformanceDashboardLoadingState(
+                title: "Loading efficiency data",
+                message: "Reading local token, timing, and reliability data for \(periodTitle).",
+                systemImage: "chart.xyaxis.line"
+            )
         }
     }
 
@@ -1286,6 +1334,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
     func scheduleReload(trigger: AppPerformanceEventKind = .performanceDashboardReload) {
         nextReloadInstrumentationKind = trigger
+        markLoadingIfCacheMiss()
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.performReload()
@@ -1318,6 +1367,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
         if let cachedResult = cachedSnapshot(for: cacheKey) {
             applyLoadResult(cachedResult, for: request.mode)
+            displayedSnapshotCacheKey = cacheKey
+            primaryLoadState = .loaded
             errorMessage = nil
             performanceInstrumentationStore?.finish(
                 instrumentationSpan,
@@ -1327,6 +1378,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             return true
         }
 
+        primaryLoadState = .loading
         do {
             let result = try await database.performanceDashboardSnapshot(for: request)
             guard generation == reloadGeneration, !Task.isCancelled else {
@@ -1335,6 +1387,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
 
             cacheSnapshot(result, for: cacheKey)
             applyLoadResult(result, for: request.mode)
+            displayedSnapshotCacheKey = cacheKey
+            primaryLoadState = .loaded
             errorMessage = nil
             performanceInstrumentationStore?.finish(
                 instrumentationSpan,
@@ -1361,6 +1415,8 @@ final class PerformanceDashboardViewModel: ObservableObject {
             historyBoundsByMode = [:]
             historyBounds = nil
             errorMessage = "Performance dashboard could not be loaded."
+            displayedSnapshotCacheKey = nil
+            primaryLoadState = .failed
             performanceInstrumentationStore?.finish(instrumentationSpan, status: .failed)
             return false
         }
@@ -1380,6 +1436,25 @@ final class PerformanceDashboardViewModel: ObservableObject {
     private func nextReloadGeneration() -> Int {
         reloadGeneration += 1
         return reloadGeneration
+    }
+
+    private func currentSnapshotCacheKey() -> PerformanceDashboardSnapshotCacheKey {
+        let queryPeriod = periodForQuery()
+        let request = PerformanceDashboardLoadRequest(
+            mode: selectedMode,
+            breakdownDimension: selectedBreakdownDimension,
+            range: selectedRange,
+            periodStart: queryPeriod.start,
+            periodEnd: queryPeriod.end,
+            calendar: calendar
+        )
+        return PerformanceDashboardSnapshotCacheKey(request: request)
+    }
+
+    private func markLoadingIfCacheMiss() {
+        if snapshotCache[currentSnapshotCacheKey()] == nil {
+            primaryLoadState = .loading
+        }
     }
 
     private func cachedSnapshot(
@@ -3040,6 +3115,18 @@ struct PerformanceDashboardView: View {
             )
             .frame(width: 220)
 
+            if viewModel.isRefreshingCurrentSnapshot {
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text("Refreshing")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .transition(.opacity)
+            }
+
             Button {
                 viewModel.exportCSV()
             } label: {
@@ -3048,7 +3135,8 @@ struct PerformanceDashboardView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help("Export CSV")
+            .disabled(!viewModel.canExportCSV)
+            .help(viewModel.canExportCSV ? "Export CSV" : "Export available after dashboard data loads")
         }
         .frame(height: 32)
     }
@@ -3069,7 +3157,7 @@ struct PerformanceDashboardView: View {
                             .minimumScaleFactor(0.8)
                     }
 
-                    Text(tile.value)
+                    Text(viewModel.shouldShowPrimaryLoadingState ? "—" : tile.value)
                         .font(.system(size: 20, weight: .semibold))
                         .monospacedDigit()
                         .lineLimit(1)
@@ -3092,6 +3180,9 @@ struct PerformanceDashboardView: View {
                 description: Text(errorMessage)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.shouldShowPrimaryLoadingState {
+            dashboardLoadingView(viewModel.loadingState)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if !viewModel.hasVisibleData {
             ContentUnavailableView(
                 viewModel.emptyState.title,
@@ -3121,6 +3212,24 @@ struct PerformanceDashboardView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    private func dashboardLoadingView(_ state: PerformanceDashboardLoadingState) -> some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.regular)
+
+            Text(state.title)
+                .font(.headline)
+
+            Text(state.message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var charts: some View {

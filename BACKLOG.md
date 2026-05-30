@@ -9,15 +9,11 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Make dashboard loading and empty states explicit | Token Dashboard can show a no-data surface before the reload finishes, and Performance Month can appear empty when the selected period has sparse timing data. This is visually confusing even when the data path later succeeds. | Can be planned as a small UI item. |
+| - | - | No normal remaining work is currently queued. | Run a backlog/product review before adding the next implementation item. |
 
 ## Performance Recommendation Details
 
-- Make dashboard loading and empty states explicit
-  - Observed evidence: dashboards can render a no-data state before an async reload finishes, which makes a slow load look like missing data.
-  - Likely code path/root cause: first render and reload state are not visually distinct enough from true empty periods in Token Dashboard and Performance Dashboard.
-  - Proposed implementation shape: keep the previous successful snapshot visible or show an explicit loading state until the first reload completes; distinguish no captured data from no data for the selected period.
-  - Verification plan: UI/view-model tests for first load, period changes, filtered-out data, and no-data periods; visual verification at default window size.
+- No active performance recommendation details. Run a backlog/product review before adding the next implementation item.
 
 ## Conditional Watchlist
 
@@ -27,6 +23,13 @@
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
 ## Done
+
+- Make dashboard loading and empty states explicit
+  - Added explicit primary snapshot load state to Token Dashboard and Performance Dashboard view models.
+  - Dashboard views now show loading states for first loads and stale period/mode/breakdown selections instead of premature no-data surfaces.
+  - Same-selection Performance Dashboard refreshes keep current content visible with a small refreshing indicator.
+  - CSV export remains disabled until the current dashboard snapshot, and Token Dashboard attribution coverage, are ready.
+  - Preserved cache-hit behavior so already-loaded selections apply immediately without a loading flash.
 
 - Reduce Token Dashboard reload disk I/O
   - Split Token Dashboard loading into a primary chart/summary/table snapshot and a separate lazy attribution coverage load.

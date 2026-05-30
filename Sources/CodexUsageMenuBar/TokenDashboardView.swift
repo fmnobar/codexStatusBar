@@ -256,6 +256,19 @@ struct TokenDashboardEmptyState: Equatable {
     let systemImage: String
 }
 
+enum TokenDashboardPrimaryLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed
+}
+
+struct TokenDashboardLoadingState: Equatable {
+    let title: String
+    let message: String
+    let systemImage: String
+}
+
 @MainActor
 final class TokenDashboardViewModel: ObservableObject {
     @Published var selectedRange: UsageHistoryRange = .month {
@@ -294,6 +307,7 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var attributionCoverageErrorMessage: String?
     @Published private(set) var breakdownSortState: TokenDashboardSortState<TokenDashboardBreakdownSortColumn>?
     @Published private(set) var attributionSortState: TokenDashboardSortState<TokenDashboardAttributionSortColumn>?
+    @Published private(set) var primaryLoadState: TokenDashboardPrimaryLoadState = .idle
 
     private let database: UsageHistoryDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
@@ -308,6 +322,7 @@ final class TokenDashboardViewModel: ObservableObject {
     private var snapshotCacheOrder: [TokenDashboardSnapshotCacheKey] = []
     private var coverageCache: [TokenDashboardCoverageCacheKey: [TokenAttributionCoverageRow]] = [:]
     private var coverageCacheOrder: [TokenDashboardCoverageCacheKey] = []
+    private var displayedSnapshotCacheKey: TokenDashboardSnapshotCacheKey?
     private let snapshotCacheLimit = 24
     private let coverageCacheLimit = 24
     private var nextReloadInstrumentationKind: AppPerformanceEventKind = .tokenDashboardReload
@@ -452,7 +467,35 @@ final class TokenDashboardViewModel: ObservableObject {
     }
 
     var canExportCSV: Bool {
-        hasVisiblePoints && !isAttributionCoverageLoading && attributionCoverageErrorMessage == nil
+        isDisplayingCurrentSnapshot
+            && hasVisiblePoints
+            && !isAttributionCoverageLoading
+            && attributionCoverageErrorMessage == nil
+            && errorMessage == nil
+    }
+
+    var isDisplayingCurrentSnapshot: Bool {
+        displayedSnapshotCacheKey == currentSnapshotCacheKey()
+    }
+
+    var shouldShowPrimaryLoadingState: Bool {
+        primaryLoadState == .loading && !isDisplayingCurrentSnapshot
+    }
+
+    var isRefreshingCurrentSnapshot: Bool {
+        primaryLoadState == .loading && isDisplayingCurrentSnapshot
+    }
+
+    var shouldShowTokenContent: Bool {
+        isDisplayingCurrentSnapshot && hasVisiblePoints
+    }
+
+    var loadingState: TokenDashboardLoadingState {
+        TokenDashboardLoadingState(
+            title: "Loading token dashboard",
+            message: "Reading local token samples for \(periodTitle).",
+            systemImage: "chart.bar.doc.horizontal"
+        )
     }
 
     var summaryTiles: [TokenDashboardSummaryTile] {
@@ -641,6 +684,8 @@ final class TokenDashboardViewModel: ObservableObject {
 
         if let cachedResult = cachedSnapshot(for: cacheKey) {
             let applied = applyLoadResult(cachedResult, updateCoverageRows: false)
+            displayedSnapshotCacheKey = applied ? cacheKey : nil
+            primaryLoadState = applied ? .loaded : (selectedBreakdownDimension == request.breakdownDimension ? .loaded : .loading)
             if applied {
                 prepareAttributionCoverageLoad(
                     coverageKey: coverageKey,
@@ -657,6 +702,7 @@ final class TokenDashboardViewModel: ObservableObject {
             return applied
         }
 
+        primaryLoadState = .loading
         do {
             let result = try await database.tokenDashboardSnapshot(for: request)
             guard generation == reloadGeneration, !Task.isCancelled else {
@@ -665,6 +711,8 @@ final class TokenDashboardViewModel: ObservableObject {
 
             cacheSnapshot(result, for: cacheKey)
             let applied = applyLoadResult(result, updateCoverageRows: false)
+            displayedSnapshotCacheKey = applied ? cacheKey : nil
+            primaryLoadState = applied ? .loaded : (selectedBreakdownDimension == request.breakdownDimension ? .loaded : .loading)
             if applied {
                 prepareAttributionCoverageLoad(
                     coverageKey: coverageKey,
@@ -695,6 +743,8 @@ final class TokenDashboardViewModel: ObservableObject {
             historyBounds = nil
             selectedSeriesIDs = []
             errorMessage = "Token dashboard could not be loaded."
+            displayedSnapshotCacheKey = nil
+            primaryLoadState = .failed
             performanceInstrumentationStore?.finish(instrumentationSpan, status: .failed)
             return false
         }
@@ -719,6 +769,7 @@ final class TokenDashboardViewModel: ObservableObject {
     func scheduleReload(trigger: AppPerformanceEventKind = .tokenDashboardReload) {
         cancelPendingHistoryChangeReload(invalidateCaches: true)
         nextReloadInstrumentationKind = trigger
+        markLoadingIfCacheMiss()
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.performReload()
@@ -762,6 +813,24 @@ final class TokenDashboardViewModel: ObservableObject {
     private func nextReloadGeneration() -> Int {
         reloadGeneration += 1
         return reloadGeneration
+    }
+
+    private func currentSnapshotCacheKey() -> TokenDashboardSnapshotCacheKey {
+        let queryPeriod = periodForQuery()
+        let request = TokenDashboardLoadRequest(
+            breakdownDimension: selectedBreakdownDimension,
+            range: selectedRange,
+            periodStart: queryPeriod.start,
+            periodEnd: queryPeriod.end,
+            includeAttributionCoverage: false
+        )
+        return TokenDashboardSnapshotCacheKey(request: request, calendar: calendar)
+    }
+
+    private func markLoadingIfCacheMiss() {
+        if snapshotCache[currentSnapshotCacheKey()] == nil {
+            primaryLoadState = .loading
+        }
     }
 
     var snapshotCacheEntryCount: Int {
@@ -1627,6 +1696,18 @@ struct TokenDashboardView: View {
 
             Spacer(minLength: 16)
 
+            if viewModel.isRefreshingCurrentSnapshot {
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text("Refreshing")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .transition(.opacity)
+            }
+
             Button {
                 viewModel.exportCSV()
             } label: {
@@ -1635,7 +1716,7 @@ struct TokenDashboardView: View {
             }
             .buttonStyle(.bordered)
             .disabled(!viewModel.canExportCSV)
-            .help(viewModel.canExportCSV ? "Export CSV" : "Export available after attribution coverage loads")
+            .help(viewModel.canExportCSV ? "Export CSV" : "Export available after dashboard data and attribution coverage load")
             .accessibilityLabel("Export CSV")
         }
     }
@@ -1689,7 +1770,7 @@ struct TokenDashboardView: View {
                             .lineLimit(1)
                     }
 
-                    Text(viewModel.formattedTokenValue(tile.tokenCount))
+                    Text(viewModel.shouldShowPrimaryLoadingState ? "—" : viewModel.formattedTokenValue(tile.tokenCount))
                         .font(.title3.weight(.semibold))
                         .monospacedDigit()
                         .lineLimit(1)
@@ -1706,7 +1787,10 @@ struct TokenDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             componentLegend
 
-            if viewModel.hasVisiblePoints {
+            if viewModel.shouldShowPrimaryLoadingState {
+                dashboardLoadingView(viewModel.loadingState)
+                    .frame(minHeight: 320, maxHeight: .infinity)
+            } else if viewModel.shouldShowTokenContent {
                 Chart {
                     ForEach(viewModel.chartPoints) { point in
                         BarMark(
@@ -1770,15 +1854,36 @@ struct TokenDashboardView: View {
 
     private var modelBreakdown: some View {
         VStack(alignment: .leading, spacing: 10) {
-            breakdownTable
+            if viewModel.shouldShowPrimaryLoadingState {
+                dashboardLoadingView(viewModel.loadingState)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                breakdownTable
 
-            Divider()
+                Divider()
 
-            attributionCoverage
+                attributionCoverage
+            }
         }
         .padding(14)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func dashboardLoadingView(_ state: TokenDashboardLoadingState) -> some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.regular)
+
+            Text(state.title)
+                .font(.headline)
+
+            Text(state.message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var breakdownTable: some View {
