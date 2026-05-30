@@ -107,7 +107,9 @@ extension UsageHistoryStoreTests {
         let notification = tokenNotification(
             threadID: "thread-a",
             turnID: "turn-a",
+            lastInput: 250,
             lastTotal: 250,
+            totalInput: 2_000,
             totalTotal: 2_000
         )
 
@@ -127,7 +129,9 @@ extension UsageHistoryStoreTests {
                     threadID: "thread-a",
                     turnID: "turn-a",
                     model: nil,
+                    lastInput: 125,
                     lastTotal: 125,
+                    totalInput: 125,
                     totalTotal: 125
                 ),
                 receivedAt: receivedAt
@@ -139,7 +143,9 @@ extension UsageHistoryStoreTests {
                     threadID: "thread-a",
                     turnID: "turn-a",
                     model: " gpt-future-1 ",
+                    lastInput: 125,
                     lastTotal: 125,
+                    totalInput: 125,
                     totalTotal: 125
                 ),
                 receivedAt: receivedAt
@@ -562,11 +568,25 @@ extension UsageHistoryStoreTests {
         let store = try makeStore()
 
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 250, totalTotal: 2_000),
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                lastInput: 250,
+                lastTotal: 250,
+                totalInput: 2_000,
+                totalTotal: 2_000
+            ),
             at: date("2026-04-14T20:00:00Z")
         )
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-b", lastTotal: 400, totalTotal: 2_500),
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-b",
+                lastInput: 400,
+                lastTotal: 400,
+                totalInput: 2_500,
+                totalTotal: 2_500
+            ),
             at: date("2026-04-14T20:10:00Z")
         )
 
@@ -580,7 +600,14 @@ extension UsageHistoryStoreTests {
         let store = try makeStore()
 
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-late", lastTotal: 600, totalTotal: 12_000),
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-late",
+                lastInput: 600,
+                lastTotal: 600,
+                totalInput: 12_000,
+                totalTotal: 12_000
+            ),
             at: date("2026-04-14T20:00:00Z")
         )
 
@@ -596,8 +623,16 @@ extension UsageHistoryStoreTests {
                 threadID: "thread-a",
                 turnID: "turn-a",
                 model: "gpt-5.5",
-                lastTotal: 120,
-                totalTotal: 120
+                lastInput: 70,
+                lastCached: 30,
+                lastOutput: 15,
+                lastReasoning: 5,
+                lastTotal: 100,
+                totalInput: 70,
+                totalCached: 30,
+                totalOutput: 15,
+                totalReasoning: 5,
+                totalTotal: 100
             ),
             at: date("2026-04-14T20:00:00Z")
         )
@@ -630,7 +665,9 @@ extension UsageHistoryStoreTests {
                 threadID: "thread-a",
                 turnID: "turn-a",
                 model: "gpt-5.5",
+                lastInput: 120,
                 lastTotal: 120,
+                totalInput: 120,
                 totalTotal: 120
             ),
             at: date("2026-04-13T20:00:00Z")
@@ -647,6 +684,67 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(emptyCurrentDayPoints, [])
         XCTAssertEqual(availableSeries.map(\.id), ["tokens_all", "model:gpt-5.5"])
         XCTAssertEqual(availableSeries.map(\.name), ["All tokens", "gpt-5.5"])
+    }
+
+    func testTotalTokenSeriesVisibleForNonInputComponentOnlySamples() async throws {
+        let store = try makeStore()
+
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-cached",
+                turnID: "turn-a",
+                model: "cache-only",
+                lastCached: 50,
+                lastTotal: 0,
+                totalCached: 50,
+                totalTotal: 50
+            ),
+            at: date("2026-04-14T20:00:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-output",
+                turnID: "turn-a",
+                model: "output-only",
+                lastOutput: 30,
+                lastTotal: 0,
+                totalOutput: 30,
+                totalTotal: 30
+            ),
+            at: date("2026-04-14T20:05:00Z")
+        )
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread-reasoning",
+                turnID: "turn-a",
+                model: "reasoning-only",
+                lastReasoning: 20,
+                lastTotal: 0,
+                totalReasoning: 20,
+                totalTotal: 20
+            ),
+            at: date("2026-04-14T20:10:00Z")
+        )
+
+        let points = try store.tokenPoints(
+            category: .total,
+            range: .day,
+            periodStart: date("2026-04-14T00:00:00Z"),
+            periodEnd: date("2026-04-15T00:00:00Z")
+        )
+        let availableSeries = try store.availableTokenSeries(category: .total)
+
+        XCTAssertEqual(points.count, 6)
+        XCTAssertEqual(Set(points.map(\.tokenCount)), [20, 30, 50])
+        XCTAssertEqual(
+            Set(availableSeries.map(\.id)),
+            ["tokens_all", "model:cache-only", "model:output-only", "model:reasoning-only"]
+        )
+        XCTAssertEqual(try store.availableTokenSeries(category: .input), [])
+        XCTAssertEqual(
+            try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar),
+            100
+        )
     }
 
     func testTokenModelSeriesTrimWhitespaceAndDeduplicate() async throws {
@@ -2486,11 +2584,25 @@ extension UsageHistoryStoreTests {
         let store = try makeStore()
 
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-a", turnID: "turn-a", lastTotal: 100, totalTotal: 100),
+            tokenUsage: tokenNotification(
+                threadID: "thread-a",
+                turnID: "turn-a",
+                lastInput: 100,
+                lastTotal: 100,
+                totalInput: 100,
+                totalTotal: 100
+            ),
             at: date("2026-04-13T23:00:00Z")
         )
         try store.record(
-            tokenUsage: tokenNotification(threadID: "thread-b", turnID: "turn-a", lastTotal: 200, totalTotal: 200),
+            tokenUsage: tokenNotification(
+                threadID: "thread-b",
+                turnID: "turn-a",
+                lastInput: 200,
+                lastTotal: 200,
+                totalInput: 200,
+                totalTotal: 200
+            ),
             at: date("2026-04-14T20:00:00Z")
         )
 
@@ -2550,6 +2662,10 @@ extension UsageHistoryStoreTests {
                 reasoningOutputTokens: 20,
                 totalTokens: 415
             )
+        )
+        XCTAssertEqual(
+            try store.tokenTotalForDay(containing: date("2026-04-14T22:00:00Z"), calendar: calendar),
+            415
         )
     }
 

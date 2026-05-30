@@ -254,9 +254,9 @@ extension UsageHistoryStoreTests {
         XCTAssertNil(samples.first?.effort)
         XCTAssertEqual(inputPoints.map(\.tokenCount), [120])
         XCTAssertTrue(componentBucketPoints.isEmpty)
-        XCTAssertEqual(try store.availableTokenSeries(category: .total).map(\.id), ["tokens_all"])
+        XCTAssertEqual(try store.availableTokenSeries(category: .total).map(\.id), [])
         XCTAssertEqual(try store.availableTokenComponentSeries(), [])
-        XCTAssertEqual(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar), 200)
+        XCTAssertNil(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
         XCTAssertNil(try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
     }
 

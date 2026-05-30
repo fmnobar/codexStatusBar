@@ -902,7 +902,13 @@ extension UsageHistoryStore {
                     'All tokens' AS series_name,
                     'aggregate' AS series_kind,
                     MAX(received_at) AS seen_at,
-                    MAX(CASE WHEN observed_total_tokens > 0 THEN 1 ELSE 0 END) AS has_total,
+                    MAX(CASE
+                        WHEN observed_input_tokens > 0
+                            OR observed_cached_input_tokens > 0
+                            OR observed_output_tokens > 0
+                            OR observed_reasoning_output_tokens > 0
+                        THEN 1 ELSE 0
+                    END) AS has_total,
                     MAX(CASE WHEN observed_input_tokens > 0 THEN 1 ELSE 0 END) AS has_input,
                     MAX(CASE WHEN observed_cached_input_tokens > 0 THEN 1 ELSE 0 END) AS has_cached,
                     MAX(CASE WHEN observed_output_tokens > 0 THEN 1 ELSE 0 END) AS has_output,
@@ -931,7 +937,13 @@ extension UsageHistoryStore {
                     normalized_model AS series_name,
                     'model' AS series_kind,
                     MAX(received_at) AS seen_at,
-                    MAX(CASE WHEN observed_total_tokens > 0 THEN 1 ELSE 0 END) AS has_total,
+                    MAX(CASE
+                        WHEN observed_input_tokens > 0
+                            OR observed_cached_input_tokens > 0
+                            OR observed_output_tokens > 0
+                            OR observed_reasoning_output_tokens > 0
+                        THEN 1 ELSE 0
+                    END) AS has_total,
                     MAX(CASE WHEN observed_input_tokens > 0 THEN 1 ELSE 0 END) AS has_input,
                     MAX(CASE WHEN observed_cached_input_tokens > 0 THEN 1 ELSE 0 END) AS has_cached,
                     MAX(CASE WHEN observed_output_tokens > 0 THEN 1 ELSE 0 END) AS has_output,
@@ -939,7 +951,6 @@ extension UsageHistoryStore {
                 FROM (
                     SELECT received_at,
                         \(normalizedModelExpression) AS normalized_model,
-                        observed_total_tokens,
                         observed_input_tokens,
                         observed_cached_input_tokens,
                         observed_output_tokens,
@@ -969,7 +980,13 @@ extension UsageHistoryStore {
                     'Unattributed' AS series_name,
                     'unattributed' AS series_kind,
                     MAX(received_at) AS seen_at,
-                    0 AS has_total,
+                    MAX(CASE
+                        WHEN observed_input_tokens > 0
+                            OR observed_cached_input_tokens > 0
+                            OR observed_output_tokens > 0
+                            OR observed_reasoning_output_tokens > 0
+                        THEN 1 ELSE 0
+                    END) AS has_total,
                     MAX(CASE WHEN observed_input_tokens > 0 THEN 1 ELSE 0 END) AS has_input,
                     MAX(CASE WHEN observed_cached_input_tokens > 0 THEN 1 ELSE 0 END) AS has_cached,
                     MAX(CASE WHEN observed_output_tokens > 0 THEN 1 ELSE 0 END) AS has_output,
@@ -985,7 +1002,8 @@ extension UsageHistoryStore {
                 )
                 WHERE normalized_model IS NULL
             )
-            WHERE has_input = 1
+            WHERE has_total = 1
+                OR has_input = 1
                 OR has_cached = 1
                 OR has_output = 1
                 OR has_reasoning = 1

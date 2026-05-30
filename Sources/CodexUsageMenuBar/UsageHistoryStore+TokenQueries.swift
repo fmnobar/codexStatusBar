@@ -72,7 +72,19 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT COUNT(*),
-                IFNULL(SUM(observed_total_tokens), 0)
+                SUM(CASE
+                    WHEN observed_input_tokens IS NULL
+                        OR observed_cached_input_tokens IS NULL
+                        OR observed_output_tokens IS NULL
+                        OR observed_reasoning_output_tokens IS NULL
+                    THEN 1 ELSE 0
+                END),
+                IFNULL(SUM(
+                    IFNULL(observed_input_tokens, 0)
+                    + IFNULL(observed_cached_input_tokens, 0)
+                    + IFNULL(observed_output_tokens, 0)
+                    + IFNULL(observed_reasoning_output_tokens, 0)
+                ), 0)
             FROM token_usage_samples
             WHERE received_at >= ? AND received_at < ?
             """
@@ -88,7 +100,11 @@ extension UsageHistoryStore {
                 return nil
             }
 
-            return sqlite3_column_int64(statement, 1)
+            guard sqlite3_column_int64(statement, 1) == 0 else {
+                return nil
+            }
+
+            return sqlite3_column_int64(statement, 2)
         case SQLITE_DONE:
             return nil
         default:

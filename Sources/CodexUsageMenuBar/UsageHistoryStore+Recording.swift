@@ -1033,12 +1033,11 @@ extension UsageHistoryStore {
         observedTokens: CodexTokenUsageBreakdown
     ) throws {
         let normalizedModel = CodexModelIdentifier.normalized(model)
-        guard observedTokens.totalTokens > 0
-                || observedTokens.inputTokens > 0
-                || observedTokens.cachedInputTokens > 0
-                || observedTokens.outputTokens > 0
-                || observedTokens.reasoningOutputTokens > 0
-        else {
+        let hasComponentTotal = observedTokens.inputTokens > 0
+            || observedTokens.cachedInputTokens > 0
+            || observedTokens.outputTokens > 0
+            || observedTokens.reasoningOutputTokens > 0
+        guard observedTokens.totalTokens > 0 || hasComponentTotal else {
             return
         }
 
@@ -1047,7 +1046,7 @@ extension UsageHistoryStore {
             seriesName: "All tokens",
             seriesKind: "aggregate",
             seenAt: seenAt,
-            hasTotal: observedTokens.totalTokens > 0,
+            hasTotal: hasComponentTotal,
             hasInput: observedTokens.inputTokens > 0,
             hasCached: observedTokens.cachedInputTokens > 0,
             hasOutput: observedTokens.outputTokens > 0,
@@ -1060,7 +1059,7 @@ extension UsageHistoryStore {
                 seriesName: normalizedModel,
                 seriesKind: "model",
                 seenAt: seenAt,
-                hasTotal: observedTokens.totalTokens > 0,
+                hasTotal: hasComponentTotal,
                 hasInput: observedTokens.inputTokens > 0,
                 hasCached: observedTokens.cachedInputTokens > 0,
                 hasOutput: observedTokens.outputTokens > 0,
@@ -1075,7 +1074,7 @@ extension UsageHistoryStore {
                 seriesName: "Unattributed",
                 seriesKind: "unattributed",
                 seenAt: seenAt,
-                hasTotal: false,
+                hasTotal: hasComponentTotal,
                 hasInput: observedTokens.inputTokens > 0,
                 hasCached: observedTokens.cachedInputTokens > 0,
                 hasOutput: observedTokens.outputTokens > 0,
@@ -1202,7 +1201,14 @@ extension UsageHistoryStore {
     func tokenValueExpression(for category: TokenHistoryCategory) -> String {
         switch category {
         case .total:
-            return "observed_total_tokens"
+            return """
+            (
+                IFNULL(observed_input_tokens, 0)
+                + IFNULL(observed_cached_input_tokens, 0)
+                + IFNULL(observed_output_tokens, 0)
+                + IFNULL(observed_reasoning_output_tokens, 0)
+            )
+            """
         case .input:
             return "IFNULL(observed_input_tokens, last_input_tokens)"
         case .cached:

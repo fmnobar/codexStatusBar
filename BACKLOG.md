@@ -9,11 +9,53 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| - | - | No normal remaining work is currently queued. | Run a backlog/product review before adding the next implementation item. |
+| 1 | Add Codex Profile token comparison and local-token labels | Codex Settings Profile now shows server-side account token counts from `/wham/profiles/me`, and those do not match the StatusBar local component totals. On May 30, 2026 the server reported lifetime `17,220,508,070`, May `6,260,075,438`, and May 30 UTC `23,714,051`; local StatusBar data reported all-time component `15,979,420,798`, May component `9,163,337,642`, May 30 UTC component `100,944,203`, and the local-time menu was about `82.7M`. The app currently uses generic token labels, which makes the two different semantics look like a bug. | Yes. Plan a read-only Profile/server metric surface that labels server values as `Codex Profile tokens` or `Account tokens`, labels existing values as `Local captured tokens`, and compares daily UTC server buckets against local captured totals without trying to force the local importer to match unknown server billing semantics. |
+| 2 | Add Codex version and source health diagnostics | The May 30 audit found three version signals on this machine: `/Applications/Codex.app/Contents/Resources/codex` reports `0.135.0-alpha.1`, `~/.codex/models_cache.json` reports client version `0.135.0`, Homebrew `codex` reports `0.128.0`, and `~/.codex/version.json` is stale from May 5. This can explain confusing update state and is low privacy risk. | Yes. Plan a small Settings Data / popover diagnostic that reads only executable path, version strings, models-cache version/fetch time, stale update metadata, and source freshness; no raw config/auth data. |
+| 3 | Add remote-control and app-server health diagnostics | Codex `0.135.0` exposes remote-control status through app-server notifications and `state_5.sqlite` now has `remote_control_enrollments` with one local row. The status app does not currently surface whether remote control is disabled, connecting, connected, or errored. | Yes. Plan capture from `remoteControl/status/changed` plus safe enrollment metadata counts/status only; avoid account ids, websocket URLs, tokens, or server secrets. |
+| 4 | Add safe app-server notification audit v2 | The generated app-server protocol now exposes richer notifications: thread status, turn status, model reroute, warnings, account updates, thread settings, goals, and realtime events. We only handle rate limits and token usage today. | Yes. Diagnostic-first plan: count/presence by method and sanitized enum/status fields only, then decide which notifications should become product data. |
+| 5 | Extend safe OTEL runtime dimensions from Codex 0.135 logs | Recent `logs_2.sqlite` bodies contain safe-looking fields we do not fully capture yet: `auth_mode`, `turn.has_metadata_header`, `websocket.warmup`, `codex.request.reasoning_effort`, connection/request shape counters, and tool-output size metrics. | Yes. Plan an allowlist-only extension with aggregate/count semantics where IDs are involved; preserve prompt/message/tool/auth exclusion rules. |
+| 6 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
 
-## Performance Recommendation Details
+## Codex Update Audit Details
 
-- No active performance recommendation details. Run a backlog/product review before adding the next implementation item.
+- May 30, 2026 local audit evidence:
+  - Installed app is running from `/Users/farzadmahmoodinobar/Applications/CodexStatusBar.app`.
+  - App-bundled Codex binary reports `codex-cli 0.135.0-alpha.1`.
+  - `~/.codex/models_cache.json` reports `client_version = 0.135.0` and contains 7 models.
+  - Homebrew `/opt/homebrew/bin/codex` reports `codex-cli 0.128.0`.
+  - `~/.codex/version.json` still reports `latest_version = 0.128.0` with `last_checked_at = 2026-05-05T02:25:24Z`.
+  - `state_5.sqlite` has 497 threads, 250 spawn edges, 472 dynamic tools, 1 remote-control enrollment, and empty `agent_jobs` / `agent_job_items` tables.
+  - The app history database already has about 73k token samples, 564k token dimensions, 229k turn-performance events, 1.2k session task timing rows, 494 thread catalog rows, and 7 model capability rows.
+  - `codex app-server generate-ts` shows additional safe status surfaces including `remoteControl/status/changed`, `thread/status/changed`, `turn/started`, `turn/completed`, `model/rerouted`, `warning`, `configWarning`, `account/updated`, `thread/goal/updated`, and `permissionProfile/list`.
+- Product direction:
+  - Prefer diagnostic capture first for new app-server notifications and OTEL fields.
+  - Keep privacy boundaries unchanged: do not store prompts, messages, summaries, tool payloads, auth tokens, account ids, email addresses, raw websocket URLs, or arbitrary unknown values.
+  - Any app/source update must still run `./install.sh` and relaunch the installed app before completion.
+
+## Codex Profile Token Mismatch Details
+
+- May 30, 2026 verification:
+  - Installed `CodexStatusBar.app` matched source commit `e287cdcb6daaf13da3c15aac4e11ce27d2b7d82a` and the visible menu-bar token value matched the local component-total path, not Codex Profile.
+  - Codex Settings Profile code in `/Applications/Codex.app/Contents/Resources/app.asar` maps `/wham/profiles/me` into `summary.totalTextTokens = stats.lifetime_tokens`, `summary.peakTokens = stats.peak_daily_tokens`, and daily chart rows from `stats.daily_usage_buckets[].tokens`.
+  - Profile dates are UTC-style day buckets; local StatusBar menu uses the local calendar for "today" and dashboard/history views use local calendar-period navigation unless explicitly changed.
+- Observed count mismatch:
+  - Codex Profile server lifetime: `17,220,508,070`.
+  - Codex Profile May 2026 bucket sum: `6,260,075,438`.
+  - Codex Profile May 30, 2026 UTC bucket: `23,714,051`.
+  - Local StatusBar all-time component total: `15,979,420,798`.
+  - Local StatusBar May 2026 component total: `9,163,337,642`.
+  - Local StatusBar May 30, 2026 UTC component total: `100,944,203`.
+  - Local StatusBar May 30, 2026 local-time/menu component total: about `82.7M`, displayed compactly as about `83M`.
+- Likely root causes:
+  - Codex Profile is server/account-side usage with a single opaque `tokens` value per day; local StatusBar is a local capture/import system.
+  - Local component totals intentionally count `input + cached input + output + reasoning`, while Profile does not equal either that component sum or legacy `observed_total_tokens`.
+  - Local all-time history starts later than the server profile window and can miss server-counted usage, while some local days are higher than server buckets because cached input and repeated local samples are counted under local analytics semantics.
+  - UTC Profile buckets and local-calendar menu/dashboard periods will differ around day boundaries even when the underlying events are the same.
+- Product direction:
+  - Do not rewrite the local token importer to chase the Profile number without an explicit server definition.
+  - If server counts are shown, keep them separate from local captured analytics and label both surfaces clearly.
+  - Fetch/store only bounded, metadata-only server stats needed for display and comparison; do not persist auth tokens, account ids, email addresses, prompts, messages, summaries, or raw server payloads.
+  - Add a diagnostic row showing latest Profile sync time, server bucket count/date range, lifetime, peak daily, and local-vs-server delta for the selected UTC day/month.
 
 ## Conditional Watchlist
 
@@ -22,7 +64,18 @@
   - Keep this blocked until Settings Data or `~/Library/Application Support/CodexStatusBar/live-token-payload-audit.json` shows a real sanitized payload.
   - If a future sample appears with useful fields, plan `Record live token context fields directly`; otherwise keep local log/session capture as the evidence-backed live token source.
 
+- Watch Codex agent-job tables
+  - `state_5.sqlite` now contains `agent_jobs` and `agent_job_items`, but both tables had `0` rows during the May 30 audit.
+  - Do not build UI or storage around these tables until real rows appear.
+  - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
+
 ## Done
+
+- Audit remaining local token total semantics
+  - Updated `tokenTotalForDay` to use the same local component-total definition as the menu bar and Token Dashboard: input + cached input + output + reasoning.
+  - Updated Token History `.total` points and bounds to use component totals instead of legacy `observed_total_tokens`.
+  - Updated token series catalog visibility so `.total` is available when any observed token component exists, including cached-only, output-only, or reasoning-only samples.
+  - Kept `observed_total_tokens` stored/imported for duplicate detection and raw legacy metadata, but removed it from default user-facing local-token totals.
 
 - Make dashboard loading and empty states explicit
   - Added explicit primary snapshot load state to Token Dashboard and Performance Dashboard view models.
