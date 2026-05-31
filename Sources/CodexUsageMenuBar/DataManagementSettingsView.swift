@@ -61,6 +61,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var isRefreshingProfileTokens = false
     @Published private(set) var codexSourceHealthState: CodexSourceHealthState
     @Published private(set) var isRefreshingCodexSourceHealth = false
+    @Published private(set) var isRefreshingRemoteControlHealth = false
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -73,6 +74,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     private let profileTokenClient: CodexProfileTokenUsageFetching
     private let codexSourceHealthStore: CodexSourceHealthStore
     private let codexSourceHealthReader: CodexSourceHealthReading
+    private let remoteControlHealthReader: CodexRemoteControlHealthReading
     private let autoRefreshProfileTokens: Bool
     private let now: () -> Date
     private var databaseInfo: UsageHistoryDatabaseInfo?
@@ -94,6 +96,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
+        remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
         autoRefreshProfileTokens: Bool = false,
         now: @escaping () -> Date = Date.init
     ) {
@@ -108,6 +111,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         self.profileTokenClient = profileTokenClient
         self.codexSourceHealthStore = codexSourceHealthStore
         self.codexSourceHealthReader = codexSourceHealthReader
+        self.remoteControlHealthReader = remoteControlHealthReader
         self.autoRefreshProfileTokens = autoRefreshProfileTokens
         self.now = now
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
@@ -145,6 +149,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
+        remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
         autoRefreshProfileTokens: Bool = false,
         now: @escaping () -> Date = Date.init
     ) {
@@ -175,6 +180,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
             profileTokenClient: profileTokenClient,
             codexSourceHealthStore: codexSourceHealthStore,
             codexSourceHealthReader: codexSourceHealthReader,
+            remoteControlHealthReader: remoteControlHealthReader,
             autoRefreshProfileTokens: autoRefreshProfileTokens,
             now: now
         )
@@ -222,6 +228,50 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
     var tokenPayloadAuditDiagnosticsLastErrorText: String {
         tokenPayloadAuditDiagnostics.lastErrorText
+    }
+
+    var remoteControlNotificationCountText: String {
+        "\(tokenPayloadAuditDiagnostics.remoteControlDiagnostics.notificationCount)"
+    }
+
+    var remoteControlStatusText: String {
+        tokenPayloadAuditDiagnostics.remoteControlDiagnostics.lastStatus?.displayText ?? "No notification yet"
+    }
+
+    var remoteControlLastStatusUpdateText: String {
+        guard let lastStatusUpdatedAt = tokenPayloadAuditDiagnostics.remoteControlDiagnostics.lastStatusUpdatedAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: lastStatusUpdatedAt)
+    }
+
+    var remoteControlEnrollmentHealthText: String {
+        tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentStatus.displayText
+    }
+
+    var remoteControlEnrollmentLastCheckedText: String {
+        guard let enrollmentLastCheckedAt = tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentLastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: enrollmentLastCheckedAt)
+    }
+
+    var remoteControlEnrollmentCountText: String {
+        tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentCount.map(String.init) ?? "--"
+    }
+
+    var remoteControlEnrollmentLatestUpdateText: String {
+        guard let enrollmentLatestUpdatedAt = tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentLatestUpdatedAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: enrollmentLatestUpdatedAt)
+    }
+
+    var remoteControlLastErrorText: String {
+        tokenPayloadAuditDiagnostics.remoteControlDiagnostics.lastErrorText
     }
 
     var localTokenCaptureLastCheckedText: String {
@@ -669,6 +719,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
         await refreshModelCapabilitiesCaptureState()
         await refreshProfileTokenComparison()
         await refreshCodexSourceHealthIfStale()
+        if tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentStatus == .neverChecked {
+            await refreshRemoteControlHealth()
+        }
         refreshPerformanceInstrumentationSummary()
     }
 
@@ -777,6 +830,35 @@ final class DataManagementSettingsViewModel: ObservableObject {
     func clearTokenPayloadAuditDiagnostics() {
         tokenPayloadAuditDiagnosticsStore.clear()
         statusMessage = "Capture diagnostics cleared."
+        errorMessage = nil
+    }
+
+    func refreshRemoteControlHealth() async {
+        guard !isRefreshingRemoteControlHealth else {
+            return
+        }
+
+        isRefreshingRemoteControlHealth = true
+        let diagnostics = await tokenPayloadAuditDiagnosticsStore.refreshRemoteControlHealth(
+            reader: remoteControlHealthReader,
+            now: now()
+        )
+        tokenPayloadAuditDiagnostics = diagnostics
+        isRefreshingRemoteControlHealth = false
+
+        if diagnostics.remoteControlDiagnostics.enrollmentStatus == .failed {
+            statusMessage = nil
+            errorMessage = "Remote-control health could not be refreshed."
+        } else {
+            statusMessage = "Remote-control health refreshed."
+            errorMessage = nil
+        }
+    }
+
+    func clearRemoteControlDiagnostics() {
+        tokenPayloadAuditDiagnosticsStore.clearRemoteControlDiagnostics()
+        tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
+        statusMessage = "Remote-control diagnostics cleared."
         errorMessage = nil
     }
 
@@ -896,6 +978,7 @@ struct DataManagementSettingsView: View {
         profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
+        remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
         autoRefreshProfileTokens: Bool = false
     ) {
         _viewModel = StateObject(
@@ -908,6 +991,7 @@ struct DataManagementSettingsView: View {
                 profileTokenClient: profileTokenClient,
                 codexSourceHealthStore: codexSourceHealthStore,
                 codexSourceHealthReader: codexSourceHealthReader,
+                remoteControlHealthReader: remoteControlHealthReader,
                 autoRefreshProfileTokens: autoRefreshProfileTokens
             )
         )
@@ -922,6 +1006,7 @@ struct DataManagementSettingsView: View {
                 tokenHistorySection
                 profileTokenSection
                 codexSourceHealthSection
+                remoteControlHealthSection
                 liveTokenPayloadSection
                 projectsSection
                 feedbackSection
@@ -1234,6 +1319,85 @@ struct DataManagementSettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var remoteControlHealthSection: some View {
+        Section("Remote Control & App Server") {
+            HStack {
+                Button(viewModel.isRefreshingRemoteControlHealth ? "Refreshing..." : "Refresh Remote Control Health") {
+                    Task {
+                        await viewModel.refreshRemoteControlHealth()
+                    }
+                }
+                .disabled(viewModel.isRefreshingRemoteControlHealth)
+
+                Button("Clear Remote Control Diagnostics") {
+                    viewModel.clearRemoteControlDiagnostics()
+                }
+
+                Spacer()
+
+                Text(viewModel.remoteControlEnrollmentHealthText)
+                    .font(.caption)
+                    .foregroundStyle(
+                        viewModel.tokenPayloadAuditDiagnostics.remoteControlPopoverWarningText == nil
+                            ? Color.secondary
+                            : Color.orange
+                    )
+            }
+
+            Text("This stores only app-server status, safe remote-control status enums, and aggregate enrollment counts from local Codex metadata.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                GridRow {
+                    Text("Connection")
+                    Text(viewModel.tokenPayloadAuditDiagnosticsConnectionText)
+                }
+                GridRow {
+                    Text("Last method")
+                    Text(viewModel.tokenPayloadAuditDiagnosticsLastMethodText)
+                        .monospaced()
+                }
+                GridRow {
+                    Text("Remote notifications")
+                    Text(viewModel.remoteControlNotificationCountText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Remote status")
+                    Text(viewModel.remoteControlStatusText)
+                }
+                GridRow {
+                    Text("Status updated")
+                    Text(viewModel.remoteControlLastStatusUpdateText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Enrollment count")
+                    Text(viewModel.remoteControlEnrollmentCountText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Enrollment update")
+                    Text(viewModel.remoteControlEnrollmentLatestUpdateText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Enrollment check")
+                    Text(viewModel.remoteControlEnrollmentLastCheckedText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Last error")
+                    Text(viewModel.remoteControlLastErrorText)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+            .font(.caption)
         }
     }
 

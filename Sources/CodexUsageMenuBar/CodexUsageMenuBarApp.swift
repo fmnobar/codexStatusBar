@@ -94,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateMonitor: updateMonitor,
             performanceInstrumentationStore: performanceInstrumentationStore,
             codexSourceHealthStore: codexSourceHealthStore,
+            appServerDiagnosticsStore: tokenPayloadAuditDiagnosticsStore,
             launchToMenuTitleSpan: launchToMenuTitleSpan
         )
 
@@ -111,6 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             await codexSourceHealthStore.refreshIfStale()
+        }
+
+        Task {
+            await tokenPayloadAuditDiagnosticsStore.refreshRemoteControlHealth()
         }
 
         liveTokenCaptureCoordinator = CodexLiveTokenCaptureCoordinator(

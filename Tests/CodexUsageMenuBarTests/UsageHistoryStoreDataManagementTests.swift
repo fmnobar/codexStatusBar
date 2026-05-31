@@ -999,6 +999,116 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testAppServerAuditDiagnosticsStoreTracksRemoteControlState() throws {
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        var currentDate = Date(timeIntervalSince1970: 1_777_100_000)
+        let store = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL, now: { currentDate })
+
+        store.record(.connected(mode: .webSocket))
+        store.record(.inboundMethod("remoteControl/status/changed"))
+        store.record(.remoteControlNotification(status: .connected, warningText: nil))
+        currentDate = currentDate.addingTimeInterval(10)
+        store.record(.remoteControlHealth(
+            CodexRemoteControlHealthSnapshot(
+                checkedAt: currentDate,
+                status: .available,
+                enrollmentCount: 1,
+                latestEnrollmentUpdatedAt: Date(timeIntervalSince1970: 1_778_815_115)
+            )
+        ))
+
+        XCTAssertEqual(store.diagnostics.remoteControlDiagnostics.notificationCount, 1)
+        XCTAssertEqual(store.diagnostics.remoteControlDiagnostics.lastStatus, .connected)
+        XCTAssertEqual(store.diagnostics.remoteControlDiagnostics.enrollmentStatus, .available)
+        XCTAssertEqual(store.diagnostics.remoteControlDiagnostics.enrollmentCount, 1)
+        XCTAssertNil(store.diagnostics.remoteControlPopoverWarningText)
+
+        let reloadedStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+        XCTAssertEqual(reloadedStore.diagnostics.remoteControlDiagnostics.lastStatus, .connected)
+        XCTAssertEqual(reloadedStore.diagnostics.remoteControlDiagnostics.enrollmentCount, 1)
+
+        reloadedStore.record(.remoteControlNotification(status: .error, warningText: "Remote control reported error."))
+        XCTAssertEqual(reloadedStore.diagnostics.remoteControlDiagnostics.lastStatus, .error)
+        XCTAssertEqual(reloadedStore.diagnostics.remoteControlPopoverWarningText, "Codex remote control reported error.")
+
+        reloadedStore.clearRemoteControlDiagnostics()
+
+        XCTAssertEqual(reloadedStore.diagnostics.remoteControlDiagnostics.notificationCount, 0)
+        XCTAssertNil(reloadedStore.diagnostics.remoteControlDiagnostics.lastStatus)
+        XCTAssertTrue(reloadedStore.diagnostics.isConnected)
+    }
+
+    @MainActor
+    func testRemoteControlHealthReaderUsesAggregateEnrollmentMetadataOnly() async throws {
+        let directory = try makeTemporaryDirectory()
+        let databaseURL = directory.appendingPathComponent("state_5.sqlite")
+        try createRemoteControlStateDatabase(at: databaseURL, updatedAt: 1_778_815_115)
+        let reader = CodexRemoteControlHealthReader(stateDatabaseURL: databaseURL)
+
+        let snapshot = try await reader.remoteControlHealthSnapshot(now: Date(timeIntervalSince1970: 1_777_100_000))
+
+        XCTAssertEqual(snapshot.status, .available)
+        XCTAssertEqual(snapshot.enrollmentCount, 1)
+        XCTAssertEqual(snapshot.latestEnrollmentUpdatedAt, Date(timeIntervalSince1970: 1_778_815_115))
+        XCTAssertNil(snapshot.errorText)
+    }
+
+    @MainActor
+    func testRemoteControlHealthReaderHandlesMissingDatabaseAndTable() async throws {
+        let directory = try makeTemporaryDirectory()
+        let missingReader = CodexRemoteControlHealthReader(
+            stateDatabaseURL: directory.appendingPathComponent("missing.sqlite")
+        )
+
+        let missingSnapshot = try await missingReader.remoteControlHealthSnapshot(now: Date(timeIntervalSince1970: 1_777_100_000))
+        XCTAssertEqual(missingSnapshot.status, .missingDatabase)
+        XCTAssertNil(missingSnapshot.enrollmentCount)
+
+        let emptyDatabaseURL = directory.appendingPathComponent("empty.sqlite")
+        try createSQLiteDatabase(at: emptyDatabaseURL, sql: "CREATE TABLE unrelated(id INTEGER PRIMARY KEY)")
+        let missingTableReader = CodexRemoteControlHealthReader(stateDatabaseURL: emptyDatabaseURL)
+
+        let missingTableSnapshot = try await missingTableReader.remoteControlHealthSnapshot(now: Date(timeIntervalSince1970: 1_777_100_001))
+        XCTAssertEqual(missingTableSnapshot.status, .missingTable)
+        XCTAssertNil(missingTableSnapshot.enrollmentCount)
+    }
+
+    @MainActor
+    func testSettingsViewModelRefreshesAndClearsRemoteControlHealth() async throws {
+        let (historyStore, _) = try makeTemporaryStore()
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        let diagnosticsStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+        let reader = StubCodexRemoteControlHealthReader(snapshots: [
+            CodexRemoteControlHealthSnapshot(
+                checkedAt: Date(timeIntervalSince1970: 1_777_100_000),
+                status: .available,
+                enrollmentCount: 2,
+                latestEnrollmentUpdatedAt: Date(timeIntervalSince1970: 1_777_099_990)
+            ),
+        ])
+        let viewModel = DataManagementSettingsViewModel(
+            store: historyStore,
+            defaults: makeIsolatedDefaults(),
+            tokenPayloadAuditDiagnosticsStore: diagnosticsStore,
+            remoteControlHealthReader: reader
+        )
+
+        XCTAssertEqual(viewModel.remoteControlEnrollmentHealthText, "Not checked")
+
+        await viewModel.refreshRemoteControlHealth()
+
+        XCTAssertEqual(viewModel.remoteControlEnrollmentHealthText, "Available")
+        XCTAssertEqual(viewModel.remoteControlEnrollmentCountText, "2")
+        XCTAssertEqual(viewModel.statusMessage, "Remote-control health refreshed.")
+
+        viewModel.clearRemoteControlDiagnostics()
+
+        XCTAssertEqual(viewModel.remoteControlEnrollmentHealthText, "Not checked")
+        XCTAssertEqual(viewModel.remoteControlEnrollmentCountText, "--")
+        XCTAssertEqual(viewModel.statusMessage, "Remote-control diagnostics cleared.")
+    }
+
+    @MainActor
     func testSettingsViewModelShowsExportsAndClearsTokenPayloadAudit() async throws {
         let (historyStore, _) = try makeTemporaryStore()
         let auditURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit.json")
@@ -1715,6 +1825,67 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    private func createSQLiteDatabase(at databaseURL: URL, sql: String) throws {
+        var database: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                databaseURL.path,
+                &database,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        guard let database else {
+            XCTFail("Expected SQLite fixture database to open")
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        var errorMessage: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        if result != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail(message)
+        }
+    }
+
+    private func createRemoteControlStateDatabase(at databaseURL: URL, updatedAt: Int64) throws {
+        try createSQLiteDatabase(
+            at: databaseURL,
+            sql: """
+            CREATE TABLE remote_control_enrollments (
+                websocket_url TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                app_server_client_name TEXT NOT NULL,
+                server_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (websocket_url, account_id, app_server_client_name)
+            );
+            INSERT INTO remote_control_enrollments (
+                websocket_url,
+                account_id,
+                app_server_client_name,
+                server_id,
+                environment_id,
+                server_name,
+                updated_at
+            ) VALUES (
+                'wss://example.invalid/app-server',
+                'account-fixture',
+                'CodexStatusBar',
+                'server-fixture',
+                'environment-fixture',
+                'fixture server',
+                \(updatedAt)
+            );
+            """
+        )
+    }
+
 }
 
 @MainActor
@@ -1759,6 +1930,25 @@ private final class StubCodexSourceHealthReader: CodexSourceHealthReading {
     }
 
     func sourceHealthSnapshot(now: Date) async throws -> CodexSourceHealthSnapshot {
+        requestCount += 1
+        if snapshots.count > 1 {
+            return snapshots.removeFirst()
+        }
+
+        return snapshots[0]
+    }
+}
+
+@MainActor
+private final class StubCodexRemoteControlHealthReader: CodexRemoteControlHealthReading {
+    private var snapshots: [CodexRemoteControlHealthSnapshot]
+    private(set) var requestCount = 0
+
+    init(snapshots: [CodexRemoteControlHealthSnapshot]) {
+        self.snapshots = snapshots
+    }
+
+    func remoteControlHealthSnapshot(now: Date) async throws -> CodexRemoteControlHealthSnapshot {
         requestCount += 1
         if snapshots.count > 1 {
             return snapshots.removeFirst()

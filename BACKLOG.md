@@ -9,10 +9,9 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Add remote-control and app-server health diagnostics | Codex `0.135.0` exposes remote-control status through app-server notifications and `state_5.sqlite` now has `remote_control_enrollments` with one local row. The status app does not currently surface whether remote control is disabled, connecting, connected, or errored. | Yes. Plan capture from `remoteControl/status/changed` plus safe enrollment metadata counts/status only; avoid account ids, websocket URLs, tokens, or server secrets. |
-| 2 | Add safe app-server notification audit v2 | The generated app-server protocol now exposes richer notifications: thread status, turn status, model reroute, warnings, account updates, thread settings, goals, and realtime events. We only handle rate limits and token usage today. | Yes. Diagnostic-first plan: count/presence by method and sanitized enum/status fields only, then decide which notifications should become product data. |
-| 3 | Extend safe OTEL runtime dimensions from Codex 0.135 logs | Recent `logs_2.sqlite` bodies contain safe-looking fields we do not fully capture yet: `auth_mode`, `turn.has_metadata_header`, `websocket.warmup`, `codex.request.reasoning_effort`, connection/request shape counters, and tool-output size metrics. | Yes. Plan an allowlist-only extension with aggregate/count semantics where IDs are involved; preserve prompt/message/tool/auth exclusion rules. |
-| 4 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
+| 1 | Add safe app-server notification audit v2 | The generated app-server protocol now exposes richer notifications: thread status, turn status, model reroute, warnings, account updates, thread settings, goals, and realtime events. We only handle rate limits, token usage, and remote-control status today. | Yes. Diagnostic-first plan: count/presence by method and sanitized enum/status fields only, then decide which notifications should become product data. |
+| 2 | Extend safe OTEL runtime dimensions from Codex 0.135 logs | Recent `logs_2.sqlite` bodies contain safe-looking fields we do not fully capture yet: `auth_mode`, `turn.has_metadata_header`, `websocket.warmup`, `codex.request.reasoning_effort`, connection/request shape counters, and tool-output size metrics. | Yes. Plan an allowlist-only extension with aggregate/count semantics where IDs are involved; preserve prompt/message/tool/auth exclusion rules. |
+| 3 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
 
 ## Codex Update Audit Details
 
@@ -68,6 +67,13 @@
   - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
 
 ## Done
+
+- Add remote-control and app-server health diagnostics
+  - Extended app-server diagnostics with safe remote-control status tracking from `remoteControl/status/changed`.
+  - Stored only notification counts, enum-like status values, warning state, connection state, last method, and aggregate enrollment metadata from `state_5.sqlite`.
+  - Read `remote_control_enrollments` defensively as count/latest-update only, excluding websocket URLs, account IDs, environment IDs, server IDs, auth data, payloads, prompts, messages, tools, and row contents.
+  - Added Settings Data refresh/clear UI and compact popover warnings only for disconnected/error/failure states.
+  - Kept token totals, dashboard semantics, capture/import behavior, and the right-click menu unchanged.
 
 - Add Codex version and source health diagnostics
   - Added a read-only JSON-backed Codex source health cache under Application Support.

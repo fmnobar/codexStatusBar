@@ -9,6 +9,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let updateMonitor: AppUpdateMonitor
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private let codexSourceHealthStore: CodexSourceHealthStore
+    private let appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private let popoverOpenInstrumentation: AppPerformanceSpanTracker
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
@@ -36,6 +37,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         updateMonitor: AppUpdateMonitor,
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
+        appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
         launchToMenuTitleSpan: AppPerformanceSpan? = nil
     ) {
         self.viewModel = viewModel
@@ -43,6 +45,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.updateMonitor = updateMonitor
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.codexSourceHealthStore = codexSourceHealthStore
+        self.appServerDiagnosticsStore = appServerDiagnosticsStore
         self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
             kind: .menuPopoverOpenToContent,
             instrumentationStore: performanceInstrumentationStore,
@@ -70,6 +73,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 updateMonitor: updateMonitor,
                 performanceInstrumentationStore: performanceInstrumentationStore,
                 codexSourceHealthStore: codexSourceHealthStore,
+                appServerDiagnosticsStore: appServerDiagnosticsStore,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
                 },

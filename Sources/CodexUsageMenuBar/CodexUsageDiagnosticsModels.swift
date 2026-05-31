@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import SQLite3
 
 enum CodexUsageDiagnosticsClassification: String, Codable, Equatable {
     case comparableCandidate
@@ -221,12 +222,151 @@ enum CodexTokenPayloadAuditPersistenceStatus: String, Codable, Equatable {
     case failed
 }
 
+enum CodexRemoteControlStatus: String, Codable, Equatable, Sendable {
+    case enabled
+    case disabled
+    case connecting
+    case connected
+    case disconnected
+    case error
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .enabled:
+            return "Enabled"
+        case .disabled:
+            return "Disabled"
+        case .connecting:
+            return "Connecting"
+        case .connected:
+            return "Connected"
+        case .disconnected:
+            return "Disconnected"
+        case .error:
+            return "Error"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    var isWarning: Bool {
+        switch self {
+        case .error, .failed:
+            return true
+        case .enabled, .disabled, .connecting, .connected, .disconnected:
+            return false
+        }
+    }
+}
+
+enum CodexRemoteControlHealthStatus: String, Codable, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case available
+    case missingDatabase = "missing_database"
+    case missingTable = "missing_table"
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            return "Not checked"
+        case .available:
+            return "Available"
+        case .missingDatabase:
+            return "No state database"
+        case .missingTable:
+            return "No enrollment table"
+        case .failed:
+            return "Failed"
+        }
+    }
+}
+
+struct CodexRemoteControlHealthSnapshot: Codable, Equatable, Sendable {
+    let checkedAt: Date
+    let status: CodexRemoteControlHealthStatus
+    let enrollmentCount: Int?
+    let latestEnrollmentUpdatedAt: Date?
+    let errorText: String?
+
+    init(
+        checkedAt: Date,
+        status: CodexRemoteControlHealthStatus,
+        enrollmentCount: Int? = nil,
+        latestEnrollmentUpdatedAt: Date? = nil,
+        errorText: String? = nil
+    ) {
+        self.checkedAt = checkedAt
+        self.status = status
+        self.enrollmentCount = enrollmentCount
+        self.latestEnrollmentUpdatedAt = latestEnrollmentUpdatedAt
+        self.errorText = errorText
+    }
+}
+
+struct CodexRemoteControlDiagnostics: Codable, Equatable, Sendable {
+    var notificationCount: Int
+    var lastStatus: CodexRemoteControlStatus?
+    var lastStatusUpdatedAt: Date?
+    var lastWarningText: String?
+    var enrollmentStatus: CodexRemoteControlHealthStatus
+    var enrollmentLastCheckedAt: Date?
+    var enrollmentCount: Int?
+    var enrollmentLatestUpdatedAt: Date?
+    var enrollmentErrorText: String?
+
+    init(
+        notificationCount: Int = 0,
+        lastStatus: CodexRemoteControlStatus? = nil,
+        lastStatusUpdatedAt: Date? = nil,
+        lastWarningText: String? = nil,
+        enrollmentStatus: CodexRemoteControlHealthStatus = .neverChecked,
+        enrollmentLastCheckedAt: Date? = nil,
+        enrollmentCount: Int? = nil,
+        enrollmentLatestUpdatedAt: Date? = nil,
+        enrollmentErrorText: String? = nil
+    ) {
+        self.notificationCount = notificationCount
+        self.lastStatus = lastStatus
+        self.lastStatusUpdatedAt = lastStatusUpdatedAt
+        self.lastWarningText = lastWarningText
+        self.enrollmentStatus = enrollmentStatus
+        self.enrollmentLastCheckedAt = enrollmentLastCheckedAt
+        self.enrollmentCount = enrollmentCount
+        self.enrollmentLatestUpdatedAt = enrollmentLatestUpdatedAt
+        self.enrollmentErrorText = enrollmentErrorText
+    }
+
+    var lastErrorText: String {
+        enrollmentErrorText ?? lastWarningText ?? "None"
+    }
+
+    var popoverWarningText: String? {
+        if lastStatus?.isWarning == true {
+            return "Codex remote control reported \(lastStatus?.displayText.lowercased() ?? "an error")."
+        }
+
+        if enrollmentStatus == .failed {
+            return "Remote-control diagnostics could not be refreshed."
+        }
+
+        if enrollmentStatus == .missingTable, notificationCount > 0 {
+            return "Remote-control enrollment metadata is unavailable."
+        }
+
+        return nil
+    }
+}
+
 enum CodexAppServerAuditDiagnosticEvent: Equatable {
     case connected(mode: CodexAppServerConnectionMode)
     case disconnected(errorText: String?)
     case inboundMethod(String)
     case rateLimitNotification
     case tokenUsageNotification
+    case remoteControlNotification(status: CodexRemoteControlStatus?, warningText: String?)
+    case remoteControlHealth(CodexRemoteControlHealthSnapshot)
     case auditSanitizeAttempt(success: Bool)
     case auditPersistAttempt(success: Bool, errorText: String?)
     case receiveError(String)
@@ -251,6 +391,7 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
     var lastAuditPersistedAt: Date?
     var lastPersistenceError: String?
     var lastReceiveError: String?
+    var remoteControl: CodexRemoteControlDiagnostics?
 
     init(now: Date = Date()) {
         schemaVersion = 1
@@ -271,6 +412,53 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
         lastAuditPersistedAt = nil
         lastPersistenceError = nil
         lastReceiveError = nil
+        remoteControl = nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case startedAt
+        case lastUpdatedAt
+        case connectionMode
+        case isConnected
+        case lastInboundMethod
+        case inboundNotificationCount
+        case rateLimitNotificationCount
+        case tokenUsageNotificationCount
+        case auditSanitizeAttemptCount
+        case auditSanitizeSuccessCount
+        case auditPersistAttemptCount
+        case auditPersistSuccessCount
+        case auditPersistFailureCount
+        case lastAuditPersistenceStatus
+        case lastAuditPersistedAt
+        case lastPersistenceError
+        case lastReceiveError
+        case remoteControl
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        let now = Date()
+        startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? now
+        lastUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .lastUpdatedAt) ?? startedAt
+        connectionMode = try container.decodeIfPresent(CodexAppServerConnectionMode.self, forKey: .connectionMode) ?? .unknown
+        isConnected = try container.decodeIfPresent(Bool.self, forKey: .isConnected) ?? false
+        lastInboundMethod = try container.decodeIfPresent(String.self, forKey: .lastInboundMethod)
+        inboundNotificationCount = try container.decodeIfPresent(Int.self, forKey: .inboundNotificationCount) ?? 0
+        rateLimitNotificationCount = try container.decodeIfPresent(Int.self, forKey: .rateLimitNotificationCount) ?? 0
+        tokenUsageNotificationCount = try container.decodeIfPresent(Int.self, forKey: .tokenUsageNotificationCount) ?? 0
+        auditSanitizeAttemptCount = try container.decodeIfPresent(Int.self, forKey: .auditSanitizeAttemptCount) ?? 0
+        auditSanitizeSuccessCount = try container.decodeIfPresent(Int.self, forKey: .auditSanitizeSuccessCount) ?? 0
+        auditPersistAttemptCount = try container.decodeIfPresent(Int.self, forKey: .auditPersistAttemptCount) ?? 0
+        auditPersistSuccessCount = try container.decodeIfPresent(Int.self, forKey: .auditPersistSuccessCount) ?? 0
+        auditPersistFailureCount = try container.decodeIfPresent(Int.self, forKey: .auditPersistFailureCount) ?? 0
+        lastAuditPersistenceStatus = try container.decodeIfPresent(CodexTokenPayloadAuditPersistenceStatus.self, forKey: .lastAuditPersistenceStatus) ?? .notAttempted
+        lastAuditPersistedAt = try container.decodeIfPresent(Date.self, forKey: .lastAuditPersistedAt)
+        lastPersistenceError = try container.decodeIfPresent(String.self, forKey: .lastPersistenceError)
+        lastReceiveError = try container.decodeIfPresent(String.self, forKey: .lastReceiveError)
+        remoteControl = try container.decodeIfPresent(CodexRemoteControlDiagnostics.self, forKey: .remoteControl)
     }
 
     var connectionStatusText: String {
@@ -321,6 +509,18 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
         }
 
         return "Token usage notifications arrived and sanitized; audit persistence has not completed yet."
+    }
+
+    var remoteControlDiagnostics: CodexRemoteControlDiagnostics {
+        remoteControl ?? CodexRemoteControlDiagnostics()
+    }
+
+    var remoteControlPopoverWarningText: String? {
+        if !isConnected, connectionMode != .unknown {
+            return "Codex app-server is disconnected."
+        }
+
+        return remoteControlDiagnostics.popoverWarningText
     }
 }
 
@@ -373,6 +573,23 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
             updated.rateLimitNotificationCount += 1
         case .tokenUsageNotification:
             updated.tokenUsageNotificationCount += 1
+        case .remoteControlNotification(let status, let warningText):
+            var remoteControl = updated.remoteControlDiagnostics
+            remoteControl.notificationCount += 1
+            remoteControl.lastStatusUpdatedAt = eventDate
+            remoteControl.lastWarningText = warningText
+            if let status {
+                remoteControl.lastStatus = status
+            }
+            updated.remoteControl = remoteControl
+        case .remoteControlHealth(let snapshot):
+            var remoteControl = updated.remoteControlDiagnostics
+            remoteControl.enrollmentStatus = snapshot.status
+            remoteControl.enrollmentLastCheckedAt = snapshot.checkedAt
+            remoteControl.enrollmentCount = snapshot.enrollmentCount
+            remoteControl.enrollmentLatestUpdatedAt = snapshot.latestEnrollmentUpdatedAt
+            remoteControl.enrollmentErrorText = snapshot.errorText
+            updated.remoteControl = remoteControl
         case .auditSanitizeAttempt(let success):
             updated.auditSanitizeAttemptCount += 1
             if success {
@@ -401,6 +618,34 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
     func clear() {
         diagnostics = CodexAppServerAuditDiagnostics(now: now())
         try? fileManager.removeItem(at: fileURL)
+    }
+
+    @discardableResult
+    func refreshRemoteControlHealth(
+        reader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
+        now: Date? = nil
+    ) async -> CodexAppServerAuditDiagnostics {
+        let snapshot: CodexRemoteControlHealthSnapshot
+        do {
+            snapshot = try await reader.remoteControlHealthSnapshot(now: now ?? self.now())
+        } catch {
+            snapshot = CodexRemoteControlHealthSnapshot(
+                checkedAt: now ?? self.now(),
+                status: .failed,
+                errorText: "Remote-control health could not be refreshed."
+            )
+        }
+
+        record(.remoteControlHealth(snapshot))
+        return diagnostics
+    }
+
+    func clearRemoteControlDiagnostics() {
+        var updated = diagnostics
+        updated.lastUpdatedAt = now()
+        updated.remoteControl = nil
+        diagnostics = updated
+        persist(updated)
     }
 
     private func persist(_ diagnostics: CodexAppServerAuditDiagnostics) {
@@ -1368,6 +1613,240 @@ final class CodexSourceHealthStore: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(CodexSourceHealthState.self, from: data)
+    }
+}
+
+@MainActor
+protocol CodexRemoteControlHealthReading {
+    func remoteControlHealthSnapshot(now: Date) async throws -> CodexRemoteControlHealthSnapshot
+}
+
+struct CodexRemoteControlHealthReader: CodexRemoteControlHealthReading {
+    private let stateDatabaseURL: URL
+    private let fileManager: FileManager
+
+    init(
+        stateDatabaseURL: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("state_5.sqlite"),
+        fileManager: FileManager = .default
+    ) {
+        self.stateDatabaseURL = stateDatabaseURL
+        self.fileManager = fileManager
+    }
+
+    func remoteControlHealthSnapshot(now: Date = Date()) async throws -> CodexRemoteControlHealthSnapshot {
+        guard fileManager.fileExists(atPath: stateDatabaseURL.path) else {
+            return CodexRemoteControlHealthSnapshot(checkedAt: now, status: .missingDatabase)
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(stateDatabaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            let message = database.map { String(cString: sqlite3_errmsg($0)) } ?? "State database could not be opened."
+            if let database {
+                sqlite3_close(database)
+            }
+            return CodexRemoteControlHealthSnapshot(
+                checkedAt: now,
+                status: .failed,
+                errorText: Self.safeErrorText(message)
+            )
+        }
+        defer { sqlite3_close(database) }
+
+        guard tableExists(database: database, name: "remote_control_enrollments") else {
+            return CodexRemoteControlHealthSnapshot(checkedAt: now, status: .missingTable)
+        }
+
+        var statement: OpaquePointer?
+        let sql = "SELECT COUNT(*), MAX(updated_at) FROM remote_control_enrollments"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return CodexRemoteControlHealthSnapshot(
+                checkedAt: now,
+                status: .failed,
+                errorText: "Remote-control enrollment query could not be prepared."
+            )
+        }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return CodexRemoteControlHealthSnapshot(
+                checkedAt: now,
+                status: .failed,
+                errorText: "Remote-control enrollment query failed."
+            )
+        }
+
+        let count = Int(sqlite3_column_int64(statement, 0))
+        let latestUpdatedAt: Date? = if sqlite3_column_type(statement, 1) == SQLITE_NULL {
+            nil
+        } else {
+            Self.date(fromSQLiteTimestamp: sqlite3_column_int64(statement, 1))
+        }
+
+        return CodexRemoteControlHealthSnapshot(
+            checkedAt: now,
+            status: .available,
+            enrollmentCount: count,
+            latestEnrollmentUpdatedAt: latestUpdatedAt
+        )
+    }
+
+    private func tableExists(database: OpaquePointer, name: String) -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK, let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, name, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return false
+        }
+
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    private static func date(fromSQLiteTimestamp timestamp: Int64) -> Date {
+        if timestamp > 4_000_000_000 {
+            return Date(timeIntervalSince1970: TimeInterval(timestamp) / 1_000)
+        }
+
+        return Date(timeIntervalSince1970: TimeInterval(timestamp))
+    }
+
+    private static func safeErrorText(_ message: String) -> String {
+        message.isEmpty ? "State database could not be read." : "State database could not be read."
+    }
+}
+
+enum CodexRemoteControlStatusSanitizer {
+    private static let unsafeKeys: Set<String> = [
+        "account_id", "accountid", "auth", "authorization", "body", "environment_id",
+        "environmentid", "message", "payload", "prompt", "request", "server_id", "serverid",
+        "token", "tool", "url", "websocket_url", "websocketurl",
+    ]
+
+    static func sanitize(params: Any?) -> (status: CodexRemoteControlStatus?, warningText: String?) {
+        guard let params else {
+            return (nil, nil)
+        }
+
+        guard let status = status(in: params, depth: 0) else {
+            return (nil, "Remote-control status payload did not contain a supported status value.")
+        }
+
+        let warningText = status.isWarning ? "Remote control reported \(status.displayText.lowercased())." : nil
+        return (status, warningText)
+    }
+
+    private static func status(in value: Any, depth: Int) -> CodexRemoteControlStatus? {
+        guard depth <= 4 else {
+            return nil
+        }
+
+        if let string = value as? String {
+            return normalizedStatus(from: string)
+        }
+
+        if let dictionary = value as? [String: Any] {
+            var candidates: [CodexRemoteControlStatus] = []
+            for (key, nestedValue) in dictionary {
+                let normalizedKey = normalizedKey(key)
+                guard !unsafeKeys.contains(normalizedKey) else {
+                    continue
+                }
+
+                if let boolValue = nestedValue as? Bool,
+                   let status = status(from: boolValue, key: normalizedKey)
+                {
+                    candidates.append(status)
+                    continue
+                }
+
+                if isStatusKey(normalizedKey), let status = status(in: nestedValue, depth: depth + 1) {
+                    candidates.append(status)
+                    continue
+                }
+
+                if let status = status(in: nestedValue, depth: depth + 1) {
+                    candidates.append(status)
+                }
+            }
+
+            return prioritized(candidates)
+        }
+
+        if let array = value as? [Any] {
+            return prioritized(array.compactMap { status(in: $0, depth: depth + 1) })
+        }
+
+        return nil
+    }
+
+    private static func status(from value: Bool, key: String) -> CodexRemoteControlStatus? {
+        switch key {
+        case "enabled", "isenabled":
+            return value ? .enabled : .disabled
+        case "connected", "isconnected", "active", "isactive":
+            return value ? .connected : .disconnected
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedStatus(from value: String) -> CodexRemoteControlStatus? {
+        let normalized = normalizedKey(value)
+        switch normalized {
+        case "enabled", "on":
+            return .enabled
+        case "disabled", "off":
+            return .disabled
+        case "connecting", "pending":
+            return .connecting
+        case "connected", "ready", "online":
+            return .connected
+        case "disconnected", "offline":
+            return .disconnected
+        case "error", "errored":
+            return .error
+        case "failed", "failure":
+            return .failed
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedKey(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func isStatusKey(_ key: String) -> Bool {
+        key == "status"
+            || key == "state"
+            || key == "connectionstatus"
+            || key == "remotecontrolstatus"
+            || key == "remotecontrolstate"
+    }
+
+    private static func prioritized(_ statuses: [CodexRemoteControlStatus]) -> CodexRemoteControlStatus? {
+        for candidate in [CodexRemoteControlStatus.failed, .error, .connecting, .connected, .enabled, .disconnected, .disabled] {
+            if statuses.contains(candidate) {
+                return candidate
+            }
+        }
+
+        return nil
     }
 }
 

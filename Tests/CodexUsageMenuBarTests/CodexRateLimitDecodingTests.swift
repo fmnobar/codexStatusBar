@@ -544,6 +544,42 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         })
     }
 
+    @MainActor
+    func testAppServerClientEmitsSanitizedRemoteControlDiagnostics() throws {
+        let client = CodexAppServerClient()
+        var diagnosticEvents: [CodexAppServerAuditDiagnosticEvent] = []
+        client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
+
+        try client.handleIncomingMessage(data: Data(
+            """
+            {
+              "method": "remoteControl/status/changed",
+              "params": {
+                "status": "connected",
+                "websocket_url": "wss://secret.example/ws",
+                "account_id": "acct-secret",
+                "server_id": "server-secret",
+                "environment_id": "environment-secret",
+                "message": "do not store this",
+                "auth": "secret-token"
+              }
+            }
+            """.utf8
+        ))
+
+        XCTAssertTrue(diagnosticEvents.contains(.inboundMethod("remoteControl/status/changed")))
+        XCTAssertTrue(diagnosticEvents.contains(.remoteControlNotification(status: .connected, warningText: nil)))
+        XCTAssertFalse(diagnosticEvents.contains { event in
+            if case .receiveError(let text) = event {
+                return text.contains("secret") || text.contains("wss://")
+            }
+            if case .remoteControlNotification(_, let warningText) = event {
+                return warningText?.contains("secret") == true || warningText?.contains("wss://") == true
+            }
+            return false
+        })
+    }
+
     func testProfileTokenUsageResponseDecodesSanitizedStatsOnly() throws {
         let response = try JSONDecoder().decode(
             CodexProfileTokenUsageResponse.self,

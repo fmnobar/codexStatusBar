@@ -529,6 +529,14 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
                 onAppServerAuditDiagnosticEvent?(.receiveError(error.localizedDescription))
                 throw error
             }
+        } else if method == "remoteControl/status/changed" {
+            let remoteControlStatus = CodexRemoteControlStatusSanitizer.sanitize(params: object["params"])
+            onAppServerAuditDiagnosticEvent?(
+                .remoteControlNotification(
+                    status: remoteControlStatus.status,
+                    warningText: remoteControlStatus.warningText
+                )
+            )
         }
     }
 

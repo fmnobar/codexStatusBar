@@ -11,6 +11,7 @@ struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     @ObservedObject var updateMonitor: AppUpdateMonitor
     @ObservedObject var codexSourceHealthStore: CodexSourceHealthStore
+    @ObservedObject var appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     let historyDatabase: UsageHistoryDatabaseWorking
     let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     var onOpenTokenDashboard: () -> Void
@@ -30,6 +31,7 @@ struct MenuBarContentView: View {
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
+        appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
         onOpenTokenDashboard: @escaping () -> Void = {},
         onOpenPerformanceDashboard: @escaping () -> Void = {},
         onOpenUpdatesSettings: @escaping () -> Void = {},
@@ -42,6 +44,7 @@ struct MenuBarContentView: View {
         self.viewModel = viewModel
         self.updateMonitor = updateMonitor
         self.codexSourceHealthStore = codexSourceHealthStore
+        self.appServerDiagnosticsStore = appServerDiagnosticsStore
         self.historyDatabase = historyDatabase
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.onOpenTokenDashboard = onOpenTokenDashboard
@@ -92,6 +95,10 @@ struct MenuBarContentView: View {
                 }
                 if codexSourceHealthStore.state.popoverWarningText != nil {
                     codexSourceHealthWarningRow
+                    Divider()
+                }
+                if appServerDiagnosticsStore.diagnostics.remoteControlPopoverWarningText != nil {
+                    remoteControlHealthWarningRow
                     Divider()
                 }
                 if updateMonitor.promptPresentation != nil {
@@ -522,6 +529,32 @@ struct MenuBarContentView: View {
             .font(.system(size: 11, weight: .semibold))
             .buttonStyle(.borderless)
             .help("Open Codex version and source diagnostics")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var remoteControlHealthWarningRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+
+            Text(appServerDiagnosticsStore.diagnostics.remoteControlPopoverWarningText ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+
+            Button("Details") {
+                onOpenDataSettings()
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .buttonStyle(.borderless)
+            .help("Open remote-control and app-server diagnostics")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
