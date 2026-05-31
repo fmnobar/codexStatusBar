@@ -359,12 +359,501 @@ struct CodexRemoteControlDiagnostics: Codable, Equatable, Sendable {
     }
 }
 
+struct CodexAppServerNotificationAuditRecord: Codable, Equatable, Sendable {
+    let method: String
+    let isSupported: Bool
+    let safeValues: [String: String]
+    let presenceFlags: [String]
+    let rejectedUnsafeFieldCount: Int
+    let unsupportedShapeCount: Int
+
+    init(
+        method: String,
+        isSupported: Bool,
+        safeValues: [String: String] = [:],
+        presenceFlags: [String] = [],
+        rejectedUnsafeFieldCount: Int = 0,
+        unsupportedShapeCount: Int = 0
+    ) {
+        self.method = method
+        self.isSupported = isSupported
+        self.safeValues = safeValues
+        self.presenceFlags = Array(Set(presenceFlags)).sorted()
+        self.rejectedUnsafeFieldCount = rejectedUnsafeFieldCount
+        self.unsupportedShapeCount = unsupportedShapeCount
+    }
+
+    var summaryText: String {
+        if !safeValues.isEmpty {
+            return safeValues
+                .sorted { lhs, rhs in lhs.key < rhs.key }
+                .prefix(4)
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ", ")
+        }
+
+        if !presenceFlags.isEmpty {
+            return "Presence: \(presenceFlags.prefix(4).joined(separator: ", "))"
+        }
+
+        return isSupported ? "Presence counted" : "Unsupported method counted"
+    }
+}
+
+struct CodexAppServerNotificationAuditMethodSummary: Codable, Equatable, Identifiable, Sendable {
+    let method: String
+    var count: Int
+    var supportedCount: Int
+    var unsupportedCount: Int
+    var rejectedUnsafeFieldCount: Int
+    var unsupportedShapeCount: Int
+    var lastSeenAt: Date?
+    var lastSummary: String?
+    var lastSafeValues: [String: String]
+    var lastPresenceFlags: [String]
+
+    var id: String { method }
+
+    init(
+        method: String,
+        count: Int = 0,
+        supportedCount: Int = 0,
+        unsupportedCount: Int = 0,
+        rejectedUnsafeFieldCount: Int = 0,
+        unsupportedShapeCount: Int = 0,
+        lastSeenAt: Date? = nil,
+        lastSummary: String? = nil,
+        lastSafeValues: [String: String] = [:],
+        lastPresenceFlags: [String] = []
+    ) {
+        self.method = method
+        self.count = count
+        self.supportedCount = supportedCount
+        self.unsupportedCount = unsupportedCount
+        self.rejectedUnsafeFieldCount = rejectedUnsafeFieldCount
+        self.unsupportedShapeCount = unsupportedShapeCount
+        self.lastSeenAt = lastSeenAt
+        self.lastSummary = lastSummary
+        self.lastSafeValues = lastSafeValues
+        self.lastPresenceFlags = lastPresenceFlags
+    }
+}
+
+struct CodexAppServerNotificationAuditSummary: Codable, Equatable, Sendable {
+    static let maxMethodSummaries = 40
+
+    var totalCount: Int
+    var supportedCount: Int
+    var unsupportedCount: Int
+    var rejectedUnsafeFieldCount: Int
+    var unsupportedShapeCount: Int
+    var lastMethod: String?
+    var lastAuditedAt: Date?
+    var methods: [CodexAppServerNotificationAuditMethodSummary]
+
+    init(
+        totalCount: Int = 0,
+        supportedCount: Int = 0,
+        unsupportedCount: Int = 0,
+        rejectedUnsafeFieldCount: Int = 0,
+        unsupportedShapeCount: Int = 0,
+        lastMethod: String? = nil,
+        lastAuditedAt: Date? = nil,
+        methods: [CodexAppServerNotificationAuditMethodSummary] = []
+    ) {
+        self.totalCount = totalCount
+        self.supportedCount = supportedCount
+        self.unsupportedCount = unsupportedCount
+        self.rejectedUnsafeFieldCount = rejectedUnsafeFieldCount
+        self.unsupportedShapeCount = unsupportedShapeCount
+        self.lastMethod = lastMethod
+        self.lastAuditedAt = lastAuditedAt
+        self.methods = methods
+    }
+
+    mutating func record(_ record: CodexAppServerNotificationAuditRecord, at date: Date) {
+        totalCount += 1
+        if record.isSupported {
+            supportedCount += 1
+        } else {
+            unsupportedCount += 1
+        }
+        rejectedUnsafeFieldCount += record.rejectedUnsafeFieldCount
+        unsupportedShapeCount += record.unsupportedShapeCount
+        lastMethod = record.method
+        lastAuditedAt = date
+
+        let index = methods.firstIndex { $0.method == record.method }
+        var methodSummary = index.map { methods[$0] }
+            ?? CodexAppServerNotificationAuditMethodSummary(method: record.method)
+        methodSummary.count += 1
+        if record.isSupported {
+            methodSummary.supportedCount += 1
+        } else {
+            methodSummary.unsupportedCount += 1
+        }
+        methodSummary.rejectedUnsafeFieldCount += record.rejectedUnsafeFieldCount
+        methodSummary.unsupportedShapeCount += record.unsupportedShapeCount
+        methodSummary.lastSeenAt = date
+        methodSummary.lastSummary = record.summaryText
+        methodSummary.lastSafeValues = record.safeValues
+        methodSummary.lastPresenceFlags = record.presenceFlags
+
+        if let index {
+            methods[index] = methodSummary
+        } else {
+            methods.append(methodSummary)
+        }
+
+        methods.sort { lhs, rhs in
+            if lhs.lastSeenAt != rhs.lastSeenAt {
+                return (lhs.lastSeenAt ?? .distantPast) > (rhs.lastSeenAt ?? .distantPast)
+            }
+            return lhs.method < rhs.method
+        }
+
+        if methods.count > Self.maxMethodSummaries {
+            methods = Array(methods.prefix(Self.maxMethodSummaries))
+        }
+    }
+}
+
+enum CodexAppServerNotificationAuditSanitizer {
+    private static let skippedMethods: Set<String> = [
+        "account/rateLimits/updated",
+        "remoteControl/status/changed",
+        "thread/tokenUsage/updated",
+    ]
+
+    private static let supportedMethods: Set<String> = [
+        "account/updated",
+        "configWarning",
+        "deprecationNotice",
+        "guardianWarning",
+        "model/rerouted",
+        "model/verification",
+        "thread/goal/updated",
+        "thread/realtime/closed",
+        "thread/realtime/error",
+        "thread/realtime/itemAdded",
+        "thread/realtime/outputAudio/delta",
+        "thread/realtime/sdp",
+        "thread/realtime/started",
+        "thread/realtime/transcript/delta",
+        "thread/realtime/transcript/done",
+        "thread/settings/updated",
+        "thread/status/changed",
+        "turn/completed",
+        "turn/started",
+        "warning",
+    ]
+
+    private static let unsafeKeyFragments = [
+        "accountid",
+        "account_id",
+        "audio",
+        "auth",
+        "authorization",
+        "body",
+        "content",
+        "cwd",
+        "delta",
+        "description",
+        "details",
+        "email",
+        "environmentid",
+        "environment_id",
+        "error",
+        "input",
+        "instructions",
+        "item",
+        "items",
+        "message",
+        "objective",
+        "output",
+        "path",
+        "payload",
+        "preview",
+        "prompt",
+        "request",
+        "response",
+        "schema",
+        "sdp",
+        "serverid",
+        "server_id",
+        "summary",
+        "text",
+        "title",
+        "token",
+        "tool",
+        "url",
+        "userid",
+        "user_id",
+        "writableroots",
+        "websocket",
+    ]
+
+    static func audit(method rawMethod: String, params: Any?) -> CodexAppServerNotificationAuditRecord? {
+        guard let method = normalizedMethod(rawMethod), !skippedMethods.contains(method) else {
+            return nil
+        }
+
+        let rejectedUnsafeFieldCount = rejectedUnsafeFieldCount(in: params)
+        guard supportedMethods.contains(method) else {
+            return CodexAppServerNotificationAuditRecord(
+                method: method,
+                isSupported: false,
+                rejectedUnsafeFieldCount: rejectedUnsafeFieldCount,
+                unsupportedShapeCount: params == nil ? 0 : 1
+            )
+        }
+
+        guard let object = params as? [String: Any] else {
+            return CodexAppServerNotificationAuditRecord(
+                method: method,
+                isSupported: true,
+                rejectedUnsafeFieldCount: rejectedUnsafeFieldCount,
+                unsupportedShapeCount: 1
+            )
+        }
+
+        var safeValues: [String: String] = [:]
+        var presenceFlags: [String] = []
+        var unsupportedShapeCount = 0
+
+        func markPresence(_ key: String, when value: Any?) {
+            if value != nil {
+                presenceFlags.append(key)
+            }
+        }
+
+        switch method {
+        case "thread/status/changed":
+            markPresence("threadId", when: object["threadId"])
+            if let statusObject = object["status"] as? [String: Any] {
+                addSafeIdentifier(statusObject["type"], key: "status", to: &safeValues)
+                if let activeFlags = statusObject["activeFlags"] as? [Any] {
+                    safeValues["activeFlagCount"] = "\(activeFlags.count)"
+                }
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "turn/started", "turn/completed":
+            markPresence("threadId", when: object["threadId"])
+            if let turn = object["turn"] as? [String: Any] {
+                markPresence("turnId", when: turn["id"])
+                addSafeIdentifier(turn["status"], key: "turnStatus", to: &safeValues)
+                if let items = turn["items"] as? [Any] {
+                    safeValues["itemCount"] = "\(items.count)"
+                }
+                addPresenceValue(turn["durationMs"], key: "hasDuration", to: &safeValues)
+                addPresenceValue(turn["startedAt"], key: "hasStartedAt", to: &safeValues)
+                addPresenceValue(turn["completedAt"], key: "hasCompletedAt", to: &safeValues)
+                addPresenceValue(turn["error"], key: "hasError", to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "model/rerouted":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            addModel(object["fromModel"], key: "fromModel", to: &safeValues)
+            addModel(object["toModel"], key: "toModel", to: &safeValues)
+            addSafeIdentifier(object["reason"], key: "reason", to: &safeValues)
+        case "account/updated":
+            addSafeIdentifier(object["authMode"], key: "authMode", to: &safeValues)
+            addSafeIdentifier(object["planType"], key: "planType", to: &safeValues)
+        case "thread/settings/updated":
+            markPresence("threadId", when: object["threadId"])
+            if let settings = object["threadSettings"] as? [String: Any] {
+                addModel(settings["model"], key: "model", to: &safeValues)
+                addDimension(settings["modelProvider"], key: "modelProvider", to: &safeValues)
+                addSafeIdentifier(settings["effort"], key: "effort", to: &safeValues)
+                addEnumLike(settings["approvalPolicy"], key: "approvalPolicy", to: &safeValues)
+                addEnumLike(settings["approvalsReviewer"], key: "approvalsReviewer", to: &safeValues)
+                addEnumLike(settings["sandboxPolicy"], key: "sandboxPolicy", to: &safeValues)
+                if let collaborationMode = settings["collaborationMode"] as? [String: Any] {
+                    addEnumLike(collaborationMode["mode"], key: "collaborationMode", to: &safeValues)
+                }
+                addPresenceValue(settings["cwd"], key: "hasCwd", to: &safeValues)
+                addPresenceValue(settings["serviceTier"], key: "hasServiceTier", to: &safeValues)
+                addPresenceValue(settings["activePermissionProfile"], key: "hasPermissionProfile", to: &safeValues)
+                addPresenceValue(settings["summary"], key: "hasReasoningSummary", to: &safeValues)
+                addPresenceValue(settings["personality"], key: "hasPersonality", to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "thread/goal/updated":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            if let goal = object["goal"] as? [String: Any] {
+                addSafeIdentifier(goal["status"], key: "goalStatus", to: &safeValues)
+                addPresenceValue(goal["tokenBudget"], key: "hasTokenBudget", to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "thread/realtime/started":
+            markPresence("threadId", when: object["threadId"])
+            addSafeIdentifier(object["version"], key: "version", to: &safeValues)
+            addPresenceValue(object["realtimeSessionId"], key: "hasRealtimeSession", to: &safeValues)
+        case "thread/realtime/closed":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["reason"], key: "hasReason", to: &safeValues)
+        case "thread/realtime/error":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["message"], key: "hasMessage", to: &safeValues)
+        case "thread/realtime/itemAdded":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["item"], key: "hasItem", to: &safeValues)
+        case "thread/realtime/transcript/delta", "thread/realtime/transcript/done":
+            markPresence("threadId", when: object["threadId"])
+            addSafeIdentifier(object["role"], key: "role", to: &safeValues)
+            addPresenceValue(object["delta"], key: "hasDelta", to: &safeValues)
+            addPresenceValue(object["text"], key: "hasText", to: &safeValues)
+        case "thread/realtime/outputAudio/delta":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["audio"], key: "hasAudio", to: &safeValues)
+        case "thread/realtime/sdp":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["sdp"], key: "hasSdp", to: &safeValues)
+        case "warning", "guardianWarning":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["message"], key: "hasMessage", to: &safeValues)
+        case "configWarning":
+            addPresenceValue(object["summary"], key: "hasSummary", to: &safeValues)
+            addPresenceValue(object["details"], key: "hasDetails", to: &safeValues)
+            addPresenceValue(object["path"], key: "hasPath", to: &safeValues)
+            addPresenceValue(object["range"], key: "hasRange", to: &safeValues)
+        case "deprecationNotice":
+            addPresenceValue(object["summary"], key: "hasSummary", to: &safeValues)
+            addPresenceValue(object["details"], key: "hasDetails", to: &safeValues)
+        case "model/verification":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            if let verifications = object["verifications"] as? [Any] {
+                safeValues["verificationCount"] = "\(verifications.count)"
+            }
+        default:
+            unsupportedShapeCount += 1
+        }
+
+        return CodexAppServerNotificationAuditRecord(
+            method: method,
+            isSupported: true,
+            safeValues: safeValues,
+            presenceFlags: presenceFlags,
+            rejectedUnsafeFieldCount: rejectedUnsafeFieldCount,
+            unsupportedShapeCount: unsupportedShapeCount
+        )
+    }
+
+    private static func normalizedMethod(_ value: String) -> String? {
+        guard value.count <= 120,
+              !value.isEmpty,
+              value.unicodeScalars.allSatisfy({ scalar in
+                  CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")
+                      .contains(scalar)
+              })
+        else {
+            return nil
+        }
+
+        return value
+    }
+
+    private static func addModel(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let stringValue = value as? String,
+              let normalized = CodexModelIdentifier.normalized(stringValue)
+        else {
+            return
+        }
+
+        safeValues[key] = normalized
+    }
+
+    private static func addDimension(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let stringValue = value as? String,
+              let normalized = CodexTokenContextNormalizer.normalizedDimensionValue(stringValue)
+        else {
+            return
+        }
+
+        safeValues[key] = normalized
+    }
+
+    private static func addSafeIdentifier(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let stringValue = value as? String,
+              let normalized = CodexTokenContextNormalizer.normalizedIdentifier(stringValue)
+        else {
+            return
+        }
+
+        safeValues[key] = normalized
+    }
+
+    private static func addEnumLike(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        if let stringValue = value as? String {
+            safeValues[key] = CodexTokenContextNormalizer.normalizedIdentifier(stringValue)
+            return
+        }
+
+        guard let object = value as? [String: Any] else {
+            return
+        }
+
+        if let typeValue = object["type"] as? String,
+           let normalized = CodexTokenContextNormalizer.normalizedIdentifier(typeValue)
+        {
+            safeValues[key] = normalized
+            return
+        }
+
+        if object["granular"] is [String: Any] {
+            safeValues[key] = "granular"
+        }
+    }
+
+    private static func addPresenceValue(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let value, !(value is NSNull) else {
+            return
+        }
+
+        safeValues[key] = "true"
+    }
+
+    private static func rejectedUnsafeFieldCount(in value: Any?) -> Int {
+        guard let value else {
+            return 0
+        }
+
+        if let object = value as? [String: Any] {
+            return object.reduce(0) { partialResult, pair in
+                let rejectedKeyCount = isUnsafeKey(pair.key) ? 1 : 0
+                return partialResult + rejectedKeyCount + rejectedUnsafeFieldCount(in: pair.value)
+            }
+        }
+
+        if let array = value as? [Any] {
+            return array.reduce(0) { $0 + rejectedUnsafeFieldCount(in: $1) }
+        }
+
+        return 0
+    }
+
+    private static func isUnsafeKey(_ key: String) -> Bool {
+        let normalizedKey = key
+            .replacingOccurrences(of: "-", with: "_")
+            .lowercased()
+        return unsafeKeyFragments.contains { normalizedKey.contains($0) }
+    }
+}
+
 enum CodexAppServerAuditDiagnosticEvent: Equatable {
     case connected(mode: CodexAppServerConnectionMode)
     case disconnected(errorText: String?)
     case inboundMethod(String)
     case rateLimitNotification
     case tokenUsageNotification
+    case notificationAudit(CodexAppServerNotificationAuditRecord)
     case remoteControlNotification(status: CodexRemoteControlStatus?, warningText: String?)
     case remoteControlHealth(CodexRemoteControlHealthSnapshot)
     case auditSanitizeAttempt(success: Bool)
@@ -392,6 +881,7 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
     var lastPersistenceError: String?
     var lastReceiveError: String?
     var remoteControl: CodexRemoteControlDiagnostics?
+    var notificationAudit: CodexAppServerNotificationAuditSummary
 
     init(now: Date = Date()) {
         schemaVersion = 1
@@ -413,6 +903,7 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
         lastPersistenceError = nil
         lastReceiveError = nil
         remoteControl = nil
+        notificationAudit = CodexAppServerNotificationAuditSummary()
     }
 
     enum CodingKeys: String, CodingKey {
@@ -435,6 +926,7 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
         case lastPersistenceError
         case lastReceiveError
         case remoteControl
+        case notificationAudit
     }
 
     init(from decoder: Decoder) throws {
@@ -459,6 +951,10 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
         lastPersistenceError = try container.decodeIfPresent(String.self, forKey: .lastPersistenceError)
         lastReceiveError = try container.decodeIfPresent(String.self, forKey: .lastReceiveError)
         remoteControl = try container.decodeIfPresent(CodexRemoteControlDiagnostics.self, forKey: .remoteControl)
+        notificationAudit = try container.decodeIfPresent(
+            CodexAppServerNotificationAuditSummary.self,
+            forKey: .notificationAudit
+        ) ?? CodexAppServerNotificationAuditSummary()
     }
 
     var connectionStatusText: String {
@@ -522,6 +1018,10 @@ struct CodexAppServerAuditDiagnostics: Codable, Equatable {
 
         return remoteControlDiagnostics.popoverWarningText
     }
+
+    var notificationAuditLastMethodText: String {
+        notificationAudit.lastMethod ?? "--"
+    }
 }
 
 @MainActor
@@ -573,6 +1073,8 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
             updated.rateLimitNotificationCount += 1
         case .tokenUsageNotification:
             updated.tokenUsageNotificationCount += 1
+        case .notificationAudit(let record):
+            updated.notificationAudit.record(record, at: eventDate)
         case .remoteControlNotification(let status, let warningText):
             var remoteControl = updated.remoteControlDiagnostics
             remoteControl.notificationCount += 1
@@ -644,6 +1146,14 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
         var updated = diagnostics
         updated.lastUpdatedAt = now()
         updated.remoteControl = nil
+        diagnostics = updated
+        persist(updated)
+    }
+
+    func clearNotificationAudit() {
+        var updated = diagnostics
+        updated.lastUpdatedAt = now()
+        updated.notificationAudit = CodexAppServerNotificationAuditSummary()
         diagnostics = updated
         persist(updated)
     }

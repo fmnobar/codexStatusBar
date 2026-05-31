@@ -580,6 +580,162 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         })
     }
 
+    func testNotificationAuditSanitizerCapturesSupportedSafeFieldsOnly() throws {
+        let settingsRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "thread/settings/updated",
+            params: [
+                "threadId": "thread-secret",
+                "threadSettings": [
+                    "cwd": "/Users/private/project",
+                    "approvalPolicy": ["granular": ["rules": true, "skill_approval": true]],
+                    "approvalsReviewer": "guardian_subagent",
+                    "sandboxPolicy": [
+                        "type": "workspaceWrite",
+                        "writableRoots": ["/Users/private/project"],
+                        "networkAccess": true,
+                    ],
+                    "activePermissionProfile": ["id": ":workspace", "extends": "default"],
+                    "model": "gpt-5.5 extra text is ignored",
+                    "modelProvider": "openai",
+                    "serviceTier": "priority",
+                    "effort": "xhigh",
+                    "summary": "detailed",
+                    "collaborationMode": ["mode": "plan", "settings": ["reasoning_effort": "xhigh"]],
+                    "personality": "pragmatic",
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertTrue(settingsRecord.isSupported)
+        XCTAssertEqual(settingsRecord.safeValues["model"], "gpt-5.5")
+        XCTAssertEqual(settingsRecord.safeValues["modelProvider"], "openai")
+        XCTAssertEqual(settingsRecord.safeValues["effort"], "xhigh")
+        XCTAssertEqual(settingsRecord.safeValues["approvalPolicy"], "granular")
+        XCTAssertEqual(settingsRecord.safeValues["approvalsReviewer"], "guardian_subagent")
+        XCTAssertEqual(settingsRecord.safeValues["sandboxPolicy"], "workspaceWrite")
+        XCTAssertEqual(settingsRecord.safeValues["collaborationMode"], "plan")
+        XCTAssertEqual(settingsRecord.safeValues["hasCwd"], "true")
+        XCTAssertEqual(settingsRecord.safeValues["hasServiceTier"], "true")
+        XCTAssertEqual(settingsRecord.safeValues["hasPermissionProfile"], "true")
+        XCTAssertNil(settingsRecord.safeValues["cwd"])
+        XCTAssertNil(settingsRecord.safeValues["serviceTier"])
+        XCTAssertGreaterThan(settingsRecord.rejectedUnsafeFieldCount, 0)
+
+        let rerouteRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "model/rerouted",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "fromModel": "gpt-5.4",
+                "toModel": "gpt-5.5",
+                "reason": "highRiskCyberActivity",
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(rerouteRecord.safeValues["fromModel"], "gpt-5.4")
+        XCTAssertEqual(rerouteRecord.safeValues["toModel"], "gpt-5.5")
+        XCTAssertEqual(rerouteRecord.safeValues["reason"], "highRiskCyberActivity")
+        XCTAssertEqual(rerouteRecord.presenceFlags, ["threadId", "turnId"])
+
+        let turnRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "turn/completed",
+            params: [
+                "threadId": "thread-secret",
+                "turn": [
+                    "id": "turn-secret",
+                    "status": "completed",
+                    "items": [["message": "do not store"]],
+                    "startedAt": 1_777_100_000,
+                    "completedAt": 1_777_100_010,
+                    "durationMs": 10_000,
+                    "error": NSNull(),
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(turnRecord.safeValues["turnStatus"], "completed")
+        XCTAssertEqual(turnRecord.safeValues["itemCount"], "1")
+        XCTAssertEqual(turnRecord.safeValues["hasStartedAt"], "true")
+        XCTAssertEqual(turnRecord.safeValues["hasCompletedAt"], "true")
+        XCTAssertEqual(turnRecord.safeValues["hasDuration"], "true")
+        XCTAssertNil(turnRecord.safeValues["items"])
+    }
+
+    func testNotificationAuditSanitizerRejectsContentAndUnknownValues() throws {
+        let warningRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "warning",
+            params: [
+                "threadId": "thread-secret",
+                "message": "do not store this warning",
+                "account_id": "acct-secret",
+                "websocket_url": "wss://secret.example/ws",
+                "auth": "secret-token",
+                "tool": ["payload": "rm -rf"],
+            ] as [String: Any]
+        ))
+
+        XCTAssertTrue(warningRecord.isSupported)
+        XCTAssertEqual(warningRecord.safeValues["hasMessage"], "true")
+        XCTAssertEqual(warningRecord.presenceFlags, ["threadId"])
+        XCTAssertGreaterThanOrEqual(warningRecord.rejectedUnsafeFieldCount, 5)
+
+        let unknownRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "future/notification",
+            params: [
+                "message": "do not store",
+                "account_id": "acct-secret",
+            ] as [String: Any]
+        ))
+
+        XCTAssertFalse(unknownRecord.isSupported)
+        XCTAssertEqual(unknownRecord.unsupportedShapeCount, 1)
+
+        let encoded = try JSONEncoder().encode(warningRecord)
+        let json = String(decoding: encoded, as: UTF8.self)
+        XCTAssertFalse(json.contains("do not store"))
+        XCTAssertFalse(json.contains("acct-secret"))
+        XCTAssertFalse(json.contains("wss://"))
+        XCTAssertFalse(json.contains("secret-token"))
+        XCTAssertFalse(json.contains("rm -rf"))
+        XCTAssertFalse(json.contains("thread-secret"))
+    }
+
+    @MainActor
+    func testAppServerClientEmitsNotificationAuditWithoutDecodingPayload() throws {
+        let client = CodexAppServerClient()
+        var diagnosticEvents: [CodexAppServerAuditDiagnosticEvent] = []
+        client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
+
+        try client.handleIncomingMessage(data: Data(
+            """
+            {
+              "method": "model/rerouted",
+              "params": {
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "fromModel": "gpt-5.4",
+                "toModel": "gpt-5.5",
+                "reason": "highRiskCyberActivity",
+                "message": "do not store"
+              }
+            }
+            """.utf8
+        ))
+
+        XCTAssertTrue(diagnosticEvents.contains(.inboundMethod("model/rerouted")))
+        let auditEvent = try XCTUnwrap(diagnosticEvents.compactMap { event -> CodexAppServerNotificationAuditRecord? in
+            if case .notificationAudit(let record) = event {
+                return record
+            }
+            return nil
+        }.first)
+
+        XCTAssertEqual(auditEvent.method, "model/rerouted")
+        XCTAssertEqual(auditEvent.safeValues["fromModel"], "gpt-5.4")
+        XCTAssertEqual(auditEvent.safeValues["toModel"], "gpt-5.5")
+        XCTAssertGreaterThan(auditEvent.rejectedUnsafeFieldCount, 0)
+    }
+
     func testProfileTokenUsageResponseDecodesSanitizedStatsOnly() throws {
         let response = try JSONDecoder().decode(
             CodexProfileTokenUsageResponse.self,

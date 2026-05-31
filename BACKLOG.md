@@ -9,9 +9,8 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Add safe app-server notification audit v2 | The generated app-server protocol now exposes richer notifications: thread status, turn status, model reroute, warnings, account updates, thread settings, goals, and realtime events. We only handle rate limits, token usage, and remote-control status today. | Yes. Diagnostic-first plan: count/presence by method and sanitized enum/status fields only, then decide which notifications should become product data. |
-| 2 | Extend safe OTEL runtime dimensions from Codex 0.135 logs | Recent `logs_2.sqlite` bodies contain safe-looking fields we do not fully capture yet: `auth_mode`, `turn.has_metadata_header`, `websocket.warmup`, `codex.request.reasoning_effort`, connection/request shape counters, and tool-output size metrics. | Yes. Plan an allowlist-only extension with aggregate/count semantics where IDs are involved; preserve prompt/message/tool/auth exclusion rules. |
-| 3 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
+| 1 | Extend safe OTEL runtime dimensions from Codex 0.135 logs | Recent `logs_2.sqlite` bodies contain safe-looking fields we do not fully capture yet: `auth_mode`, `turn.has_metadata_header`, `websocket.warmup`, `codex.request.reasoning_effort`, connection/request shape counters, and tool-output size metrics. | Yes. Plan an allowlist-only extension with aggregate/count semantics where IDs are involved; preserve prompt/message/tool/auth exclusion rules. |
+| 2 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
 
 ## Codex Update Audit Details
 
@@ -67,6 +66,14 @@
   - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
 
 ## Done
+
+- Add safe app-server notification audit v2
+  - Extended the existing JSON-backed app-server diagnostics with a bounded notification audit summary for newly exposed app-server notification methods.
+  - Audited safe enum/status/presence metadata for thread status, turn start/completion, model reroute, account updates, thread settings, thread goals, realtime events, and warning/config/deprecation/guardian notifications.
+  - Stored method counts, supported/unsupported counts, rejected unsafe-field counts, last safe summaries, and compact per-method rows while excluding prompts, messages, summaries, tool payloads, auth data, account/user IDs, raw thread/turn IDs, raw paths, websocket URLs, transcripts, SDP, audio, schemas, and arbitrary unknown values.
+  - Added Settings Data display and clear controls for the notification audit, with no new popover warning for normal audit data.
+  - Left `permissionProfile/list` out of v2 capture because the generated app-server surface exposes it as request/response, not an inbound notification to audit passively.
+  - Kept token totals, dashboards, capture/import behavior, storage schema, and the right-click menu unchanged.
 
 - Add remote-control and app-server health diagnostics
   - Extended app-server diagnostics with safe remote-control status tracking from `remoteControl/status/changed`.

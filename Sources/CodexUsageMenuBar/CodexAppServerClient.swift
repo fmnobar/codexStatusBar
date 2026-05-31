@@ -483,6 +483,12 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         }
 
         onAppServerAuditDiagnosticEvent?(.inboundMethod(method))
+        if let notificationAudit = CodexAppServerNotificationAuditSanitizer.audit(
+            method: method,
+            params: object["params"]
+        ) {
+            onAppServerAuditDiagnosticEvent?(.notificationAudit(notificationAudit))
+        }
 
         if method == "account/rateLimits/updated", let params = object["params"] {
             onAppServerAuditDiagnosticEvent?(.rateLimitNotification)

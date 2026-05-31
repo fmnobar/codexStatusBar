@@ -274,6 +274,42 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditDiagnostics.remoteControlDiagnostics.lastErrorText
     }
 
+    var notificationAuditTotalText: String {
+        "\(tokenPayloadAuditDiagnostics.notificationAudit.totalCount)"
+    }
+
+    var notificationAuditSupportedText: String {
+        "\(tokenPayloadAuditDiagnostics.notificationAudit.supportedCount)"
+    }
+
+    var notificationAuditUnsupportedText: String {
+        "\(tokenPayloadAuditDiagnostics.notificationAudit.unsupportedCount)"
+    }
+
+    var notificationAuditRejectedText: String {
+        "\(tokenPayloadAuditDiagnostics.notificationAudit.rejectedUnsafeFieldCount)"
+    }
+
+    var notificationAuditUnsupportedShapeText: String {
+        "\(tokenPayloadAuditDiagnostics.notificationAudit.unsupportedShapeCount)"
+    }
+
+    var notificationAuditLastMethodText: String {
+        tokenPayloadAuditDiagnostics.notificationAuditLastMethodText
+    }
+
+    var notificationAuditLastUpdatedText: String {
+        guard let lastAuditedAt = tokenPayloadAuditDiagnostics.notificationAudit.lastAuditedAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: lastAuditedAt)
+    }
+
+    var notificationAuditRows: [CodexAppServerNotificationAuditMethodSummary] {
+        Array(tokenPayloadAuditDiagnostics.notificationAudit.methods.prefix(8))
+    }
+
     var localTokenCaptureLastCheckedText: String {
         guard let lastCheckedAt = localTokenCaptureState.lastCheckedAt else {
             return "Not checked yet"
@@ -862,6 +898,13 @@ final class DataManagementSettingsViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func clearNotificationAudit() {
+        tokenPayloadAuditDiagnosticsStore.clearNotificationAudit()
+        tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
+        statusMessage = "Notification audit cleared."
+        errorMessage = nil
+    }
+
     func exportPerformanceDiagnostics(to destinationURL: URL) {
         do {
             guard let data = try performanceInstrumentationStore.exportData() else {
@@ -1398,6 +1441,99 @@ struct DataManagementSettingsView: View {
                 }
             }
             .font(.caption)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Notification audit")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Button("Clear Notification Audit") {
+                        viewModel.clearNotificationAudit()
+                    }
+                    .disabled(viewModel.tokenPayloadAuditDiagnostics.notificationAudit.totalCount == 0)
+                }
+
+                Text("Counts app-server notification methods and stores only sanitized status, enum, and presence metadata.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Audited")
+                        Text(viewModel.notificationAuditTotalText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Supported")
+                        Text(viewModel.notificationAuditSupportedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Unsupported")
+                        Text(viewModel.notificationAuditUnsupportedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Rejected fields")
+                        Text(viewModel.notificationAuditRejectedText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Unsupported shapes")
+                        Text(viewModel.notificationAuditUnsupportedShapeText)
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Last audited")
+                        Text(viewModel.notificationAuditLastMethodText)
+                            .monospaced()
+                    }
+                    GridRow {
+                        Text("Last update")
+                        Text(viewModel.notificationAuditLastUpdatedText)
+                            .monospacedDigit()
+                    }
+                }
+                .font(.caption)
+
+                if viewModel.notificationAuditRows.isEmpty {
+                    Text("No additional app-server notifications have been audited yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                        GridRow {
+                            Text("Method")
+                                .fontWeight(.semibold)
+                            Text("Count")
+                                .fontWeight(.semibold)
+                            Text("Last safe summary")
+                                .fontWeight(.semibold)
+                        }
+
+                        ForEach(viewModel.notificationAuditRows) { row in
+                            GridRow {
+                                Text(row.method)
+                                    .monospaced()
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text("\(row.count)")
+                                    .monospacedDigit()
+                                Text(row.lastSummary ?? "--")
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                }
+            }
         }
     }
 

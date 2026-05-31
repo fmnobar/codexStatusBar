@@ -1039,6 +1039,86 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testAppServerAuditDiagnosticsStorePersistsAndClearsNotificationAudit() throws {
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        var currentDate = Date(timeIntervalSince1970: 1_777_100_000)
+        let store = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL, now: { currentDate })
+
+        let supportedRecord = CodexAppServerNotificationAuditRecord(
+            method: "model/rerouted",
+            isSupported: true,
+            safeValues: ["fromModel": "gpt-5.4", "toModel": "gpt-5.5"],
+            presenceFlags: ["threadId", "turnId"],
+            rejectedUnsafeFieldCount: 1
+        )
+        let unsupportedRecord = CodexAppServerNotificationAuditRecord(
+            method: "future/notification",
+            isSupported: false,
+            rejectedUnsafeFieldCount: 2,
+            unsupportedShapeCount: 1
+        )
+
+        store.record(.connected(mode: .standardIO))
+        store.record(.notificationAudit(supportedRecord))
+        currentDate = currentDate.addingTimeInterval(10)
+        store.record(.notificationAudit(unsupportedRecord))
+
+        XCTAssertEqual(store.diagnostics.notificationAudit.totalCount, 2)
+        XCTAssertEqual(store.diagnostics.notificationAudit.supportedCount, 1)
+        XCTAssertEqual(store.diagnostics.notificationAudit.unsupportedCount, 1)
+        XCTAssertEqual(store.diagnostics.notificationAudit.rejectedUnsafeFieldCount, 3)
+        XCTAssertEqual(store.diagnostics.notificationAudit.unsupportedShapeCount, 1)
+        XCTAssertEqual(store.diagnostics.notificationAudit.lastMethod, "future/notification")
+        XCTAssertEqual(store.diagnostics.notificationAudit.methods.count, 2)
+
+        let reloadedStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+        XCTAssertEqual(reloadedStore.diagnostics.notificationAudit.totalCount, 2)
+        XCTAssertEqual(
+            reloadedStore.diagnostics.notificationAudit.methods.first(where: { $0.method == "model/rerouted" })?.lastSafeValues["toModel"],
+            "gpt-5.5"
+        )
+
+        reloadedStore.clearNotificationAudit()
+
+        XCTAssertEqual(reloadedStore.diagnostics.notificationAudit.totalCount, 0)
+        XCTAssertTrue(reloadedStore.diagnostics.notificationAudit.methods.isEmpty)
+        XCTAssertTrue(reloadedStore.diagnostics.isConnected)
+    }
+
+    @MainActor
+    func testAppServerAuditDiagnosticsStoreLoadsOldJsonWithoutNotificationAudit() throws {
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        try Data(
+            """
+            {
+              "schemaVersion": 1,
+              "startedAt": "2026-05-30T00:00:00Z",
+              "lastUpdatedAt": "2026-05-30T00:00:00Z",
+              "connectionMode": "standard_io",
+              "isConnected": true,
+              "lastInboundMethod": "thread/tokenUsage/updated",
+              "inboundNotificationCount": 1,
+              "rateLimitNotificationCount": 0,
+              "tokenUsageNotificationCount": 1,
+              "auditSanitizeAttemptCount": 1,
+              "auditSanitizeSuccessCount": 1,
+              "auditPersistAttemptCount": 0,
+              "auditPersistSuccessCount": 0,
+              "auditPersistFailureCount": 0,
+              "lastAuditPersistenceStatus": "not_attempted"
+            }
+            """.utf8
+        ).write(to: diagnosticsURL)
+
+        let store = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+
+        XCTAssertTrue(store.diagnostics.isConnected)
+        XCTAssertEqual(store.diagnostics.tokenUsageNotificationCount, 1)
+        XCTAssertEqual(store.diagnostics.notificationAudit.totalCount, 0)
+        XCTAssertTrue(store.diagnostics.notificationAudit.methods.isEmpty)
+    }
+
+    @MainActor
     func testRemoteControlHealthReaderUsesAggregateEnrollmentMetadataOnly() async throws {
         let directory = try makeTemporaryDirectory()
         let databaseURL = directory.appendingPathComponent("state_5.sqlite")
@@ -1106,6 +1186,49 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.remoteControlEnrollmentHealthText, "Not checked")
         XCTAssertEqual(viewModel.remoteControlEnrollmentCountText, "--")
         XCTAssertEqual(viewModel.statusMessage, "Remote-control diagnostics cleared.")
+    }
+
+    @MainActor
+    func testSettingsViewModelDisplaysAndClearsNotificationAudit() async throws {
+        let (historyStore, _) = try makeTemporaryStore()
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        let diagnosticsStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+        let viewModel = DataManagementSettingsViewModel(
+            store: historyStore,
+            defaults: makeIsolatedDefaults(),
+            tokenPayloadAuditDiagnosticsStore: diagnosticsStore
+        )
+
+        XCTAssertEqual(viewModel.notificationAuditTotalText, "0")
+        XCTAssertEqual(viewModel.notificationAuditLastMethodText, "--")
+        XCTAssertTrue(viewModel.notificationAuditRows.isEmpty)
+
+        diagnosticsStore.record(.notificationAudit(CodexAppServerNotificationAuditRecord(
+            method: "thread/status/changed",
+            isSupported: true,
+            safeValues: ["status": "active"],
+            presenceFlags: ["threadId"]
+        )))
+        diagnosticsStore.record(.notificationAudit(CodexAppServerNotificationAuditRecord(
+            method: "future/notification",
+            isSupported: false,
+            rejectedUnsafeFieldCount: 1,
+            unsupportedShapeCount: 1
+        )))
+
+        XCTAssertEqual(viewModel.notificationAuditTotalText, "2")
+        XCTAssertEqual(viewModel.notificationAuditSupportedText, "1")
+        XCTAssertEqual(viewModel.notificationAuditUnsupportedText, "1")
+        XCTAssertEqual(viewModel.notificationAuditRejectedText, "1")
+        XCTAssertEqual(viewModel.notificationAuditUnsupportedShapeText, "1")
+        XCTAssertEqual(viewModel.notificationAuditLastMethodText, "future/notification")
+        XCTAssertEqual(viewModel.notificationAuditRows.count, 2)
+
+        viewModel.clearNotificationAudit()
+
+        XCTAssertEqual(viewModel.notificationAuditTotalText, "0")
+        XCTAssertTrue(viewModel.notificationAuditRows.isEmpty)
+        XCTAssertEqual(viewModel.statusMessage, "Notification audit cleared.")
     }
 
     @MainActor
