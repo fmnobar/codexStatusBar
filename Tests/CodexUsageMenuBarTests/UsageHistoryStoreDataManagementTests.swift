@@ -1333,6 +1333,194 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testCodexSourceHealthReaderCapturesSafeVersionSignalsAndStaleMetadata() async throws {
+        let homeURL = try makeTemporaryDirectory()
+        let codexDirectory = homeURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try Data(
+            """
+            {
+              "client_version": "0.135.0",
+              "fetched_at": "2026-05-30T19:24:22.281646Z",
+              "models": [
+                {"slug": "gpt-5.5", "base_instructions": "do not store me"},
+                {"slug": "gpt-5.4", "model_messages": ["do not store me"]}
+              ],
+              "base_instructions": "do not store me"
+            }
+            """.utf8
+        ).write(to: codexDirectory.appendingPathComponent("models_cache.json"))
+        try Data(
+            """
+            {
+              "latest_version": "0.128.0",
+              "last_checked_at": "2026-05-05T02:25:24.357406Z",
+              "ignored": "do not store me"
+            }
+            """.utf8
+        ).write(to: codexDirectory.appendingPathComponent("version.json"))
+        let appCodexURL = try makeExecutable("codex-app", in: homeURL)
+        let homebrewCodexURL = try makeExecutable("codex-homebrew", in: homeURL)
+        let runner = StubCodexSourceVersionCommandRunner(outputs: [
+            appCodexURL.path: "codex-cli 0.135.0-alpha.1",
+            homebrewCodexURL.path: "codex-cli 0.128.0",
+        ])
+        let reader = CodexSourceHealthReader(
+            homeDirectory: homeURL,
+            commandRunner: runner,
+            metadataStalenessInterval: 7 * 24 * 60 * 60,
+            executableCandidates: [
+                CodexExecutableCandidate(url: appCodexURL, kind: .appBundled),
+                CodexExecutableCandidate(url: homebrewCodexURL, kind: .homebrew),
+            ],
+            pathCandidates: []
+        )
+
+        let snapshot = try await reader.sourceHealthSnapshot(now: date("2026-05-31T12:00:00Z"))
+
+        XCTAssertEqual(snapshot.status, .mismatch)
+        XCTAssertEqual(snapshot.activeExecutablePath, appCodexURL.path)
+        XCTAssertEqual(snapshot.appBundledSignal?.version, "0.135.0-alpha.1")
+        XCTAssertEqual(snapshot.homebrewSignal?.version, "0.128.0")
+        XCTAssertEqual(snapshot.modelsCacheClientVersion, "0.135.0")
+        XCTAssertEqual(snapshot.modelsCacheModelCount, 2)
+        XCTAssertEqual(snapshot.versionMetadataLatestVersion, "0.128.0")
+        XCTAssertTrue(snapshot.warnings.contains { $0.contains("differ") })
+        XCTAssertTrue(snapshot.warnings.contains { $0.contains("version.json") })
+        XCTAssertFalse(String(data: try JSONEncoder().encode(snapshot), encoding: .utf8)?.contains("do not store me") ?? true)
+    }
+
+    @MainActor
+    func testCodexSourceHealthReaderClassifiesMissingMalformedAndFailedStates() async throws {
+        let homeURL = try makeTemporaryDirectory()
+        let codexDirectory = homeURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try Data("{".utf8).write(to: codexDirectory.appendingPathComponent("models_cache.json"))
+        let missingURL = homeURL.appendingPathComponent("missing-codex")
+        let missingReader = CodexSourceHealthReader(
+            homeDirectory: homeURL,
+            commandRunner: StubCodexSourceVersionCommandRunner(outputs: [:]),
+            executableCandidates: [CodexExecutableCandidate(url: missingURL, kind: .appBundled)],
+            pathCandidates: []
+        )
+
+        let missingSnapshot = try await missingReader.sourceHealthSnapshot(now: date("2026-05-31T12:00:00Z"))
+
+        XCTAssertEqual(missingSnapshot.status, .missing)
+        XCTAssertNil(missingSnapshot.activeExecutablePath)
+
+        let malformedExecutableURL = try makeExecutable("codex-malformed", in: homeURL)
+        let malformedReader = CodexSourceHealthReader(
+            homeDirectory: homeURL,
+            commandRunner: StubCodexSourceVersionCommandRunner(outputs: [
+                malformedExecutableURL.path: "codex-cli 0.135.0",
+            ]),
+            executableCandidates: [CodexExecutableCandidate(url: malformedExecutableURL, kind: .appBundled)],
+            pathCandidates: []
+        )
+
+        let malformedSnapshot = try await malformedReader.sourceHealthSnapshot(now: date("2026-05-31T12:00:00Z"))
+
+        XCTAssertEqual(malformedSnapshot.status, .malformed)
+        XCTAssertEqual(malformedSnapshot.modelsCacheErrorText, "Malformed JSON.")
+
+        try Data(
+            """
+            {"client_version": "0.135.0", "fetched_at": "2026-05-31T12:00:00Z", "models": []}
+            """.utf8
+        ).write(to: codexDirectory.appendingPathComponent("models_cache.json"))
+        let executableURL = try makeExecutable("codex-failing", in: homeURL)
+        let failedReader = CodexSourceHealthReader(
+            homeDirectory: homeURL,
+            commandRunner: StubCodexSourceVersionCommandRunner(errors: [
+                executableURL.path: CodexSourceHealthReaderError.versionCommandTimedOut,
+            ]),
+            executableCandidates: [CodexExecutableCandidate(url: executableURL, kind: .appBundled)],
+            pathCandidates: []
+        )
+
+        let failedSnapshot = try await failedReader.sourceHealthSnapshot(now: date("2026-05-31T12:00:00Z"))
+
+        XCTAssertEqual(failedSnapshot.status, .failed)
+        XCTAssertEqual(failedSnapshot.appBundledSignal?.errorText, "Version command timed out.")
+    }
+
+    @MainActor
+    func testCodexSourceHealthStorePersistsReloadsAndRefreshesOnlyWhenStale() async throws {
+        let fileURL = try makeTemporaryDirectory().appendingPathComponent("codex-source-health.json")
+        let firstSnapshot = codexSourceHealthSnapshot(
+            checkedAt: date("2026-05-30T12:00:00Z"),
+            status: .healthy
+        )
+        let secondSnapshot = codexSourceHealthSnapshot(
+            checkedAt: date("2026-05-30T13:00:00Z"),
+            status: .stale,
+            warnings: ["version.json update metadata is stale."]
+        )
+        let reader = StubCodexSourceHealthReader(snapshots: [firstSnapshot, secondSnapshot])
+        let store = CodexSourceHealthStore(fileURL: fileURL)
+
+        await store.refresh(reader: reader, now: date("2026-05-30T12:00:00Z"))
+
+        XCTAssertEqual(store.state.status, .healthy)
+        XCTAssertEqual(reader.requestCount, 1)
+
+        let reloadedStore = CodexSourceHealthStore(fileURL: fileURL)
+        XCTAssertEqual(reloadedStore.state.status, .healthy)
+        XCTAssertEqual(reloadedStore.state.snapshot?.activeExecutablePath, "/Applications/Codex.app/Contents/Resources/codex")
+
+        await reloadedStore.refreshIfStale(
+            reader: reader,
+            now: date("2026-05-30T13:30:00Z"),
+            staleAfter: 6 * 60 * 60
+        )
+        XCTAssertEqual(reader.requestCount, 1)
+
+        await reloadedStore.refreshIfStale(
+            reader: reader,
+            now: date("2026-05-31T12:00:00Z"),
+            staleAfter: 6 * 60 * 60
+        )
+        XCTAssertEqual(reader.requestCount, 2)
+        XCTAssertEqual(reloadedStore.state.status, .stale)
+        XCTAssertNotNil(reloadedStore.state.popoverWarningText)
+    }
+
+    @MainActor
+    func testSettingsViewModelRefreshesCodexSourceHealth() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let sourceHealthStore = CodexSourceHealthStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("codex-source-health.json")
+        )
+        let reader = StubCodexSourceHealthReader(snapshots: [
+            codexSourceHealthSnapshot(
+                checkedAt: date("2026-05-31T12:00:00Z"),
+                status: .mismatch,
+                warnings: ["Codex version signals differ: App-bundled 0.135.0-alpha.1, Homebrew 0.128.0."]
+            ),
+        ])
+        let viewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            codexSourceHealthStore: sourceHealthStore,
+            codexSourceHealthReader: reader,
+            now: { self.date("2026-05-31T12:00:00Z") }
+        )
+
+        await viewModel.refreshCodexSourceHealth()
+
+        XCTAssertEqual(reader.requestCount, 1)
+        XCTAssertEqual(viewModel.codexSourceHealthStatusText, "Version mismatch")
+        XCTAssertEqual(viewModel.codexSourceHealthActiveVersionText, "0.135.0-alpha.1")
+        XCTAssertEqual(viewModel.codexSourceHealthAppBundledVersionText, "0.135.0-alpha.1")
+        XCTAssertEqual(viewModel.codexSourceHealthHomebrewVersionText, "0.128.0")
+        XCTAssertTrue(viewModel.codexSourceHealthModelsCacheText.contains("0.135.0"))
+        XCTAssertTrue(viewModel.codexSourceHealthVersionMetadataText.contains("0.128.0"))
+        XCTAssertEqual(viewModel.statusMessage, "Codex version and source health refreshed.")
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
     func testSettingsViewModelLoadsRenamesAndResetsProjectNames() async throws {
         let (store, _) = try makeTemporaryStore()
         _ = try store.importTokenUsageSamples([
@@ -1481,6 +1669,52 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    private func makeExecutable(_ name: String, in directoryURL: URL) throws -> URL {
+        let fileURL = directoryURL.appendingPathComponent(name)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: fileURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fileURL.path)
+        return fileURL
+    }
+
+    private func codexSourceHealthSnapshot(
+        checkedAt: Date,
+        status: CodexSourceHealthStatus,
+        warnings: [String] = []
+    ) -> CodexSourceHealthSnapshot {
+        CodexSourceHealthSnapshot(
+            checkedAt: checkedAt,
+            status: status,
+            activeExecutablePath: "/Applications/Codex.app/Contents/Resources/codex",
+            versionSignals: [
+                CodexSourceVersionSignal(
+                    kind: .appBundled,
+                    executablePath: "/Applications/Codex.app/Contents/Resources/codex",
+                    version: "0.135.0-alpha.1",
+                    fileModifiedAt: checkedAt,
+                    errorText: nil
+                ),
+                CodexSourceVersionSignal(
+                    kind: .homebrew,
+                    executablePath: "/opt/homebrew/bin/codex",
+                    version: "0.128.0",
+                    fileModifiedAt: checkedAt,
+                    errorText: nil
+                ),
+            ],
+            modelsCachePath: "/Users/example/.codex/models_cache.json",
+            modelsCacheClientVersion: "0.135.0",
+            modelsCacheFetchedAt: checkedAt,
+            modelsCacheModelCount: 7,
+            modelsCacheErrorText: nil,
+            versionMetadataPath: "/Users/example/.codex/version.json",
+            versionMetadataLatestVersion: "0.128.0",
+            versionMetadataLastCheckedAt: checkedAt,
+            versionMetadataErrorText: nil,
+            warnings: warnings,
+            errorText: nil
+        )
+    }
+
 }
 
 @MainActor
@@ -1495,5 +1729,41 @@ private final class StubProfileTokenUsageClient: CodexProfileTokenUsageFetching 
     func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
         requestCount += 1
         return try result.get()
+    }
+}
+
+private final class StubCodexSourceVersionCommandRunner: CodexSourceVersionCommandRunning {
+    private let outputs: [String: String]
+    private let errors: [String: Error]
+
+    init(outputs: [String: String] = [:], errors: [String: Error] = [:]) {
+        self.outputs = outputs
+        self.errors = errors
+    }
+
+    func versionOutput(for executableURL: URL, timeout: TimeInterval) async throws -> String {
+        if let error = errors[executableURL.path] {
+            throw error
+        }
+
+        return outputs[executableURL.path] ?? "codex-cli 0.135.0"
+    }
+}
+
+private final class StubCodexSourceHealthReader: CodexSourceHealthReading {
+    private var snapshots: [CodexSourceHealthSnapshot]
+    private(set) var requestCount = 0
+
+    init(snapshots: [CodexSourceHealthSnapshot]) {
+        self.snapshots = snapshots
+    }
+
+    func sourceHealthSnapshot(now: Date) async throws -> CodexSourceHealthSnapshot {
+        requestCount += 1
+        if snapshots.count > 1 {
+            return snapshots.removeFirst()
+        }
+
+        return snapshots[0]
     }
 }

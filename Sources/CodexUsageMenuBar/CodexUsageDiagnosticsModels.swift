@@ -597,6 +597,780 @@ final class CodexProfileTokenUsageStore: ObservableObject {
     }
 }
 
+enum CodexSourceVersionKind: String, Codable, CaseIterable, Equatable, Sendable {
+    case appBundled = "app_bundled"
+    case homebrew
+    case usrLocal = "usr_local"
+    case discoveredApp = "discovered_app"
+    case path
+
+    var displayTitle: String {
+        switch self {
+        case .appBundled:
+            return "App-bundled"
+        case .homebrew:
+            return "Homebrew"
+        case .usrLocal:
+            return "/usr/local"
+        case .discoveredApp:
+            return "Codex.app"
+        case .path:
+            return "PATH"
+        }
+    }
+}
+
+struct CodexExecutableCandidate: Equatable, Sendable {
+    let url: URL
+    let kind: CodexSourceVersionKind
+}
+
+enum CodexExecutableCandidateProvider {
+    static func candidates(fileManager: FileManager = .default) -> [CodexExecutableCandidate] {
+        var candidates: [CodexExecutableCandidate] = [
+            CodexExecutableCandidate(
+                url: URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
+                kind: .appBundled
+            ),
+            CodexExecutableCandidate(
+                url: URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
+                kind: .homebrew
+            ),
+            CodexExecutableCandidate(
+                url: URL(fileURLWithPath: "/usr/local/bin/codex"),
+                kind: .usrLocal
+            ),
+        ]
+
+        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        if let appBundleURLs = try? fileManager.contentsOfDirectory(
+            at: applicationsURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            let discoveredCandidates = appBundleURLs
+                .filter { $0.pathExtension == "app" && $0.deletingPathExtension().lastPathComponent.hasPrefix("Codex") }
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                .map {
+                    CodexExecutableCandidate(
+                        url: $0.appending(path: "Contents/Resources/codex", directoryHint: .notDirectory),
+                        kind: .discoveredApp
+                    )
+                }
+
+            candidates.append(contentsOf: discoveredCandidates)
+        }
+
+        return deduplicated(candidates)
+    }
+
+    static func pathCandidates(environment: [String: String] = ProcessInfo.processInfo.environment) -> [CodexExecutableCandidate] {
+        guard let path = environment["PATH"] else {
+            return []
+        }
+
+        return path
+            .split(separator: ":")
+            .map { pathComponent in
+                CodexExecutableCandidate(
+                    url: URL(fileURLWithPath: String(pathComponent)).appendingPathComponent("codex"),
+                    kind: .path
+                )
+            }
+    }
+
+    static func executableURLs(fileManager: FileManager = .default) -> [URL] {
+        candidates(fileManager: fileManager).map(\.url)
+    }
+
+    private static func deduplicated(_ candidates: [CodexExecutableCandidate]) -> [CodexExecutableCandidate] {
+        var deduplicated: [CodexExecutableCandidate] = []
+        var seenPaths = Set<String>()
+
+        for candidate in candidates where seenPaths.insert(candidate.url.path).inserted {
+            deduplicated.append(candidate)
+        }
+
+        return deduplicated
+    }
+}
+
+struct CodexSourceVersionSignal: Codable, Equatable, Identifiable, Sendable {
+    let kind: CodexSourceVersionKind
+    let executablePath: String
+    let version: String?
+    let fileModifiedAt: Date?
+    let errorText: String?
+
+    var id: String {
+        "\(kind.rawValue):\(executablePath)"
+    }
+
+    var displayVersionText: String {
+        version ?? "Unavailable"
+    }
+}
+
+enum CodexSourceHealthStatus: String, Codable, Equatable, Sendable {
+    case neverChecked = "never_checked"
+    case healthy
+    case stale
+    case mismatch
+    case missing
+    case malformed
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverChecked:
+            return "Not checked"
+        case .healthy:
+            return "Healthy"
+        case .stale:
+            return "Stale metadata"
+        case .mismatch:
+            return "Version mismatch"
+        case .missing:
+            return "Missing source"
+        case .malformed:
+            return "Malformed metadata"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    var shouldShowPopoverWarning: Bool {
+        switch self {
+        case .neverChecked, .healthy:
+            return false
+        case .stale, .mismatch, .missing, .malformed, .failed:
+            return true
+        }
+    }
+}
+
+struct CodexSourceHealthSnapshot: Codable, Equatable, Sendable {
+    let schemaVersion: Int
+    let checkedAt: Date
+    let status: CodexSourceHealthStatus
+    let activeExecutablePath: String?
+    let versionSignals: [CodexSourceVersionSignal]
+    let modelsCachePath: String?
+    let modelsCacheClientVersion: String?
+    let modelsCacheFetchedAt: Date?
+    let modelsCacheModelCount: Int?
+    let modelsCacheErrorText: String?
+    let versionMetadataPath: String?
+    let versionMetadataLatestVersion: String?
+    let versionMetadataLastCheckedAt: Date?
+    let versionMetadataErrorText: String?
+    let warnings: [String]
+    let errorText: String?
+
+    init(
+        checkedAt: Date,
+        status: CodexSourceHealthStatus,
+        activeExecutablePath: String?,
+        versionSignals: [CodexSourceVersionSignal],
+        modelsCachePath: String?,
+        modelsCacheClientVersion: String?,
+        modelsCacheFetchedAt: Date?,
+        modelsCacheModelCount: Int?,
+        modelsCacheErrorText: String?,
+        versionMetadataPath: String?,
+        versionMetadataLatestVersion: String?,
+        versionMetadataLastCheckedAt: Date?,
+        versionMetadataErrorText: String?,
+        warnings: [String],
+        errorText: String?
+    ) {
+        schemaVersion = 1
+        self.checkedAt = checkedAt
+        self.status = status
+        self.activeExecutablePath = activeExecutablePath
+        self.versionSignals = versionSignals
+        self.modelsCachePath = modelsCachePath
+        self.modelsCacheClientVersion = modelsCacheClientVersion
+        self.modelsCacheFetchedAt = modelsCacheFetchedAt
+        self.modelsCacheModelCount = modelsCacheModelCount
+        self.modelsCacheErrorText = modelsCacheErrorText
+        self.versionMetadataPath = versionMetadataPath
+        self.versionMetadataLatestVersion = versionMetadataLatestVersion
+        self.versionMetadataLastCheckedAt = versionMetadataLastCheckedAt
+        self.versionMetadataErrorText = versionMetadataErrorText
+        self.warnings = warnings
+        self.errorText = errorText
+    }
+
+    var activeSignal: CodexSourceVersionSignal? {
+        guard let activeExecutablePath else {
+            return nil
+        }
+
+        return versionSignals.first { $0.executablePath == activeExecutablePath && $0.version != nil }
+    }
+
+    var appBundledSignal: CodexSourceVersionSignal? {
+        versionSignals.first { $0.kind == .appBundled }
+    }
+
+    var homebrewSignal: CodexSourceVersionSignal? {
+        versionSignals.first { $0.kind == .homebrew }
+    }
+
+    var popoverWarningText: String? {
+        guard status.shouldShowPopoverWarning else {
+            return nil
+        }
+
+        switch status {
+        case .mismatch:
+            return "Codex versions differ across local sources."
+        case .stale:
+            return "Codex update metadata looks stale."
+        case .missing:
+            return "Codex executable source is missing."
+        case .malformed:
+            return "Codex version metadata could not be read."
+        case .failed:
+            return errorText ?? "Codex source health check failed."
+        case .neverChecked, .healthy:
+            return nil
+        }
+    }
+}
+
+struct CodexSourceHealthState: Codable, Equatable, Sendable {
+    var snapshot: CodexSourceHealthSnapshot?
+    var status: CodexSourceHealthStatus
+    var lastCheckedAt: Date?
+    var lastErrorText: String?
+
+    init(
+        snapshot: CodexSourceHealthSnapshot? = nil,
+        status: CodexSourceHealthStatus = .neverChecked,
+        lastCheckedAt: Date? = nil,
+        lastErrorText: String? = nil
+    ) {
+        self.snapshot = snapshot
+        self.status = status
+        self.lastCheckedAt = lastCheckedAt
+        self.lastErrorText = lastErrorText
+    }
+
+    var popoverWarningText: String? {
+        snapshot?.popoverWarningText
+            ?? (status.shouldShowPopoverWarning ? (lastErrorText ?? status.displayText) : nil)
+    }
+
+    func isStale(now: Date, staleAfter: TimeInterval) -> Bool {
+        guard let lastCheckedAt else {
+            return true
+        }
+
+        return now.timeIntervalSince(lastCheckedAt) >= staleAfter
+    }
+}
+
+@MainActor
+protocol CodexSourceHealthReading {
+    func sourceHealthSnapshot(now: Date) async throws -> CodexSourceHealthSnapshot
+}
+
+@MainActor
+protocol CodexSourceVersionCommandRunning {
+    func versionOutput(for executableURL: URL, timeout: TimeInterval) async throws -> String
+}
+
+enum CodexSourceHealthDefaults {
+    static let cacheDuration: TimeInterval = 6 * 60 * 60
+    static let metadataStalenessInterval: TimeInterval = 7 * 24 * 60 * 60
+}
+
+enum CodexSourceHealthReaderError: LocalizedError, Equatable {
+    case versionCommandTimedOut
+    case versionCommandFailed
+    case versionOutputMalformed
+
+    var errorDescription: String? {
+        switch self {
+        case .versionCommandTimedOut:
+            return "Version command timed out."
+        case .versionCommandFailed:
+            return "Version command failed."
+        case .versionOutputMalformed:
+            return "Version output was malformed."
+        }
+    }
+}
+
+struct ProcessCodexSourceVersionCommandRunner: CodexSourceVersionCommandRunning {
+    func versionOutput(for executableURL: URL, timeout: TimeInterval) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(
+                        returning: try Self.versionOutputSynchronously(
+                            for: executableURL,
+                            timeout: timeout
+                        )
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    nonisolated private static func versionOutputSynchronously(
+        for executableURL: URL,
+        timeout: TimeInterval
+    ) throws -> String {
+        let process = Process()
+        let outputPipe = Pipe()
+        process.executableURL = executableURL
+        process.arguments = ["--version"]
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            semaphore.signal()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            throw CodexSourceHealthReaderError.versionCommandFailed
+        }
+
+        let waitResult = semaphore.wait(timeout: .now() + timeout)
+        if waitResult == .timedOut {
+            if process.isRunning {
+                process.terminate()
+            }
+            throw CodexSourceHealthReaderError.versionCommandTimedOut
+        }
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            throw CodexSourceHealthReaderError.versionCommandFailed
+        }
+
+        return String(decoding: output, as: UTF8.self)
+    }
+}
+
+struct CodexSourceHealthReader: CodexSourceHealthReading {
+    private let fileManager: FileManager
+    private let homeDirectory: URL
+    private let environment: [String: String]
+    private let commandRunner: CodexSourceVersionCommandRunning
+    private let commandTimeout: TimeInterval
+    private let metadataStalenessInterval: TimeInterval
+    private let executableCandidatesOverride: [CodexExecutableCandidate]?
+    private let pathCandidatesOverride: [CodexExecutableCandidate]?
+
+    init(
+        fileManager: FileManager = .default,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        commandRunner: CodexSourceVersionCommandRunning = ProcessCodexSourceVersionCommandRunner(),
+        commandTimeout: TimeInterval = 2,
+        metadataStalenessInterval: TimeInterval = CodexSourceHealthDefaults.metadataStalenessInterval,
+        executableCandidates: [CodexExecutableCandidate]? = nil,
+        pathCandidates: [CodexExecutableCandidate]? = nil
+    ) {
+        self.fileManager = fileManager
+        self.homeDirectory = homeDirectory
+        self.environment = environment
+        self.commandRunner = commandRunner
+        self.commandTimeout = commandTimeout
+        self.metadataStalenessInterval = metadataStalenessInterval
+        self.executableCandidatesOverride = executableCandidates
+        self.pathCandidatesOverride = pathCandidates
+    }
+
+    func sourceHealthSnapshot(now: Date = Date()) async throws -> CodexSourceHealthSnapshot {
+        let fixedCandidates = executableCandidatesOverride ?? CodexExecutableCandidateProvider.candidates(fileManager: fileManager)
+        let pathCandidates = pathCandidatesOverride ?? CodexExecutableCandidateProvider.pathCandidates(environment: environment)
+        let activeCandidate = (fixedCandidates + pathCandidates).first {
+            fileManager.isExecutableFile(atPath: $0.url.path)
+        }
+
+        var signals: [CodexSourceVersionSignal] = []
+        for candidate in fixedCandidates {
+            signals.append(await versionSignal(for: candidate))
+        }
+
+        if let activeCandidate,
+           !signals.contains(where: { $0.executablePath == activeCandidate.url.path })
+        {
+            signals.append(await versionSignal(for: activeCandidate))
+        }
+
+        let modelsCache = readModelsCacheMetadata()
+        let versionMetadata = readVersionMetadata()
+        let warnings = warnings(
+            now: now,
+            activeCandidate: activeCandidate,
+            signals: signals,
+            modelsCache: modelsCache,
+            versionMetadata: versionMetadata
+        )
+        let status = status(
+            activeCandidate: activeCandidate,
+            signals: signals,
+            modelsCache: modelsCache,
+            versionMetadata: versionMetadata,
+            warnings: warnings
+        )
+
+        return CodexSourceHealthSnapshot(
+            checkedAt: now,
+            status: status,
+            activeExecutablePath: activeCandidate?.url.path,
+            versionSignals: signals,
+            modelsCachePath: modelsCache.path,
+            modelsCacheClientVersion: modelsCache.clientVersion,
+            modelsCacheFetchedAt: modelsCache.fetchedAt,
+            modelsCacheModelCount: modelsCache.modelCount,
+            modelsCacheErrorText: modelsCache.errorText,
+            versionMetadataPath: versionMetadata.path,
+            versionMetadataLatestVersion: versionMetadata.latestVersion,
+            versionMetadataLastCheckedAt: versionMetadata.lastCheckedAt,
+            versionMetadataErrorText: versionMetadata.errorText,
+            warnings: warnings,
+            errorText: nil
+        )
+    }
+
+    private func versionSignal(for candidate: CodexExecutableCandidate) async -> CodexSourceVersionSignal {
+        let modifiedAt = (try? candidate.url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        guard fileManager.isExecutableFile(atPath: candidate.url.path) else {
+            return CodexSourceVersionSignal(
+                kind: candidate.kind,
+                executablePath: candidate.url.path,
+                version: nil,
+                fileModifiedAt: modifiedAt,
+                errorText: "Missing or not executable."
+            )
+        }
+
+        do {
+            let output = try await commandRunner.versionOutput(for: candidate.url, timeout: commandTimeout)
+            guard let version = Self.parseVersion(from: output) else {
+                return CodexSourceVersionSignal(
+                    kind: candidate.kind,
+                    executablePath: candidate.url.path,
+                    version: nil,
+                    fileModifiedAt: modifiedAt,
+                    errorText: CodexSourceHealthReaderError.versionOutputMalformed.localizedDescription
+                )
+            }
+
+            return CodexSourceVersionSignal(
+                kind: candidate.kind,
+                executablePath: candidate.url.path,
+                version: version,
+                fileModifiedAt: modifiedAt,
+                errorText: nil
+            )
+        } catch let error as CodexSourceHealthReaderError {
+            return CodexSourceVersionSignal(
+                kind: candidate.kind,
+                executablePath: candidate.url.path,
+                version: nil,
+                fileModifiedAt: modifiedAt,
+                errorText: error.localizedDescription
+            )
+        } catch {
+            return CodexSourceVersionSignal(
+                kind: candidate.kind,
+                executablePath: candidate.url.path,
+                version: nil,
+                fileModifiedAt: modifiedAt,
+                errorText: CodexSourceHealthReaderError.versionCommandFailed.localizedDescription
+            )
+        }
+    }
+
+    private struct ModelsCacheMetadata {
+        let path: String
+        let clientVersion: String?
+        let fetchedAt: Date?
+        let modelCount: Int?
+        let errorText: String?
+    }
+
+    private struct VersionMetadata {
+        let path: String
+        let latestVersion: String?
+        let lastCheckedAt: Date?
+        let errorText: String?
+    }
+
+    private func readModelsCacheMetadata() -> ModelsCacheMetadata {
+        let fileURL = homeDirectory
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("models_cache.json")
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return ModelsCacheMetadata(path: fileURL.path, clientVersion: nil, fetchedAt: nil, modelCount: nil, errorText: "Missing.")
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return ModelsCacheMetadata(path: fileURL.path, clientVersion: nil, fetchedAt: nil, modelCount: nil, errorText: "Malformed JSON.")
+            }
+
+            let clientVersion = root["client_version"] as? String
+            let fetchedAt = (root["fetched_at"] as? String).flatMap(Self.isoDate)
+            let modelCount = (root["models"] as? [[String: Any]])?.count
+            return ModelsCacheMetadata(path: fileURL.path, clientVersion: clientVersion, fetchedAt: fetchedAt, modelCount: modelCount, errorText: nil)
+        } catch {
+            return ModelsCacheMetadata(path: fileURL.path, clientVersion: nil, fetchedAt: nil, modelCount: nil, errorText: "Malformed JSON.")
+        }
+    }
+
+    private func readVersionMetadata() -> VersionMetadata {
+        let fileURL = homeDirectory
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("version.json")
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return VersionMetadata(path: fileURL.path, latestVersion: nil, lastCheckedAt: nil, errorText: "Missing.")
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return VersionMetadata(path: fileURL.path, latestVersion: nil, lastCheckedAt: nil, errorText: "Malformed JSON.")
+            }
+
+            let latestVersion = root["latest_version"] as? String
+            let lastCheckedAt = (root["last_checked_at"] as? String).flatMap(Self.isoDate)
+            return VersionMetadata(path: fileURL.path, latestVersion: latestVersion, lastCheckedAt: lastCheckedAt, errorText: nil)
+        } catch {
+            return VersionMetadata(path: fileURL.path, latestVersion: nil, lastCheckedAt: nil, errorText: "Malformed JSON.")
+        }
+    }
+
+    private func warnings(
+        now: Date,
+        activeCandidate: CodexExecutableCandidate?,
+        signals: [CodexSourceVersionSignal],
+        modelsCache: ModelsCacheMetadata,
+        versionMetadata: VersionMetadata
+    ) -> [String] {
+        var warnings: [String] = []
+
+        if activeCandidate == nil {
+            warnings.append("No executable Codex source was found.")
+        }
+
+        let versionPairs = versionPairs(signals: signals, modelsCache: modelsCache, versionMetadata: versionMetadata)
+        let distinctVersions = Set(versionPairs.map(\.version))
+        if distinctVersions.count > 1 {
+            let sourceList = versionPairs.map { "\($0.label) \($0.version)" }.joined(separator: ", ")
+            warnings.append("Codex version signals differ: \(sourceList).")
+        }
+
+        if isStale(modelsCache.fetchedAt, now: now) {
+            warnings.append("models_cache.json has not been fetched recently.")
+        }
+
+        if isStale(versionMetadata.lastCheckedAt, now: now) {
+            warnings.append("version.json update metadata is stale.")
+        }
+
+        if modelsCache.errorText == "Malformed JSON." || versionMetadata.errorText == "Malformed JSON." {
+            warnings.append("One or more Codex metadata files are malformed.")
+        }
+
+        return warnings
+    }
+
+    private func status(
+        activeCandidate: CodexExecutableCandidate?,
+        signals: [CodexSourceVersionSignal],
+        modelsCache: ModelsCacheMetadata,
+        versionMetadata: VersionMetadata,
+        warnings: [String]
+    ) -> CodexSourceHealthStatus {
+        if activeCandidate == nil {
+            return .missing
+        }
+
+        if let activeCandidate,
+           signals.contains(where: { $0.executablePath == activeCandidate.url.path && $0.version == nil })
+        {
+            return .failed
+        }
+
+        if modelsCache.errorText == "Malformed JSON." || versionMetadata.errorText == "Malformed JSON." {
+            return .malformed
+        }
+
+        if Set(versionPairs(signals: signals, modelsCache: modelsCache, versionMetadata: versionMetadata).map(\.version)).count > 1 {
+            return .mismatch
+        }
+
+        if warnings.contains(where: { $0.contains("stale") || $0.contains("not been fetched recently") }) {
+            return .stale
+        }
+
+        return .healthy
+    }
+
+    private func versionPairs(
+        signals: [CodexSourceVersionSignal],
+        modelsCache: ModelsCacheMetadata,
+        versionMetadata: VersionMetadata
+    ) -> [(label: String, version: String)] {
+        var pairs: [(String, String)] = signals.compactMap { signal in
+            guard let version = signal.version else {
+                return nil
+            }
+            return (signal.kind.displayTitle, version)
+        }
+
+        if let clientVersion = modelsCache.clientVersion.flatMap(Self.parseVersion(from:)) {
+            pairs.append(("models cache", clientVersion))
+        }
+
+        if let latestVersion = versionMetadata.latestVersion.flatMap(Self.parseVersion(from:)) {
+            pairs.append(("version.json", latestVersion))
+        }
+
+        return pairs
+    }
+
+    private func isStale(_ date: Date?, now: Date) -> Bool {
+        guard let date else {
+            return false
+        }
+
+        return now.timeIntervalSince(date) >= metadataStalenessInterval
+    }
+
+    static func parseVersion(from output: String) -> String? {
+        let pattern = #"\d+(?:\.[0-9A-Za-z-]+)+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let range = NSRange(output.startIndex..<output.endIndex, in: output)
+        guard let match = regex.firstMatch(in: output, range: range),
+              let versionRange = Range(match.range, in: output)
+        else {
+            return nil
+        }
+
+        return String(output[versionRange])
+    }
+
+    private static func isoDate(from string: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: string) {
+            return date
+        }
+
+        return ISO8601DateFormatter().date(from: string)
+    }
+}
+
+@MainActor
+final class CodexSourceHealthStore: ObservableObject {
+    static let defaultCacheDuration = CodexSourceHealthDefaults.cacheDuration
+    static let defaultMetadataStalenessInterval = CodexSourceHealthDefaults.metadataStalenessInterval
+
+    @Published private(set) var state: CodexSourceHealthState
+
+    private let fileURL: URL
+    private let fileManager: FileManager
+
+    init(fileURL: URL, fileManager: FileManager = .default) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+        state = (try? Self.loadState(from: fileURL)) ?? CodexSourceHealthState()
+    }
+
+    static let shared = CodexSourceHealthStore.applicationSupportStore()
+
+    static func applicationSupportStore() -> CodexSourceHealthStore {
+        let directoryURL = (try? UsageHistoryStore.applicationSupportDirectoryURL())
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("CodexStatusBar", isDirectory: true)
+        return CodexSourceHealthStore(
+            fileURL: directoryURL.appendingPathComponent("codex-source-health.json")
+        )
+    }
+
+    @discardableResult
+    func refresh(
+        reader: CodexSourceHealthReading = CodexSourceHealthReader(),
+        now: Date = Date()
+    ) async -> CodexSourceHealthState {
+        do {
+            let snapshot = try await reader.sourceHealthSnapshot(now: now)
+            state = CodexSourceHealthState(
+                snapshot: snapshot,
+                status: snapshot.status,
+                lastCheckedAt: snapshot.checkedAt,
+                lastErrorText: snapshot.errorText
+            )
+            persist()
+        } catch {
+            state = CodexSourceHealthState(
+                snapshot: state.snapshot,
+                status: .failed,
+                lastCheckedAt: now,
+                lastErrorText: "Codex source health could not be refreshed."
+            )
+            persist()
+        }
+
+        return state
+    }
+
+    @discardableResult
+    func refreshIfStale(
+        reader: CodexSourceHealthReading = CodexSourceHealthReader(),
+        now: Date = Date(),
+        staleAfter: TimeInterval = defaultCacheDuration
+    ) async -> CodexSourceHealthState {
+        guard state.isStale(now: now, staleAfter: staleAfter) else {
+            return state
+        }
+
+        return await refresh(reader: reader, now: now)
+    }
+
+    func clear() {
+        state = CodexSourceHealthState()
+        try? fileManager.removeItem(at: fileURL)
+    }
+
+    private func persist() {
+        do {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(state).write(to: fileURL, options: .atomic)
+        } catch {
+            // Version/source diagnostics must never affect the menu or dashboards.
+        }
+    }
+
+    private static func loadState(from fileURL: URL) throws -> CodexSourceHealthState {
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(CodexSourceHealthState.self, from: data)
+    }
+}
+
 enum CodexTokenPayloadAuditor {
     private struct FieldSpec {
         let keyPath: String

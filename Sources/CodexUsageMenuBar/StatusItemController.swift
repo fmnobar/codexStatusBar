@@ -8,6 +8,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let historyDatabase: UsageHistoryDatabaseWorking
     private let updateMonitor: AppUpdateMonitor
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    private let codexSourceHealthStore: CodexSourceHealthStore
     private let popoverOpenInstrumentation: AppPerformanceSpanTracker
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
@@ -34,12 +35,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         historyDatabase: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor,
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        codexSourceHealthStore: CodexSourceHealthStore = .shared,
         launchToMenuTitleSpan: AppPerformanceSpan? = nil
     ) {
         self.viewModel = viewModel
         self.historyDatabase = historyDatabase
         self.updateMonitor = updateMonitor
         self.performanceInstrumentationStore = performanceInstrumentationStore
+        self.codexSourceHealthStore = codexSourceHealthStore
         self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
             kind: .menuPopoverOpenToContent,
             instrumentationStore: performanceInstrumentationStore,
@@ -66,6 +69,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 historyDatabase: historyDatabase,
                 updateMonitor: updateMonitor,
                 performanceInstrumentationStore: performanceInstrumentationStore,
+                codexSourceHealthStore: codexSourceHealthStore,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
                 },
@@ -74,6 +78,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 },
                 onOpenUpdatesSettings: { [weak self] in
                     self?.openUpdatesSettings()
+                },
+                onOpenDataSettings: { [weak self] in
+                    self?.openDataSettings()
                 },
                 onFirstRendered: { [weak self] in
                     self?.recordPopoverContentRendered()
@@ -238,6 +245,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         SettingsTabSelectionStore.select(.updates)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func openDataSettings() {
+        popoverOpenInstrumentation.discardPendingSpan()
+        popover.performClose(nil)
+        SettingsTabSelectionStore.select(.data)
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         NSApp.activate(ignoringOtherApps: true)
     }

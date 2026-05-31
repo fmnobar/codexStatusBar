@@ -10,11 +10,13 @@ private enum MenuBarPopoverExpandedSection: Equatable {
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarStatusViewModel
     @ObservedObject var updateMonitor: AppUpdateMonitor
+    @ObservedObject var codexSourceHealthStore: CodexSourceHealthStore
     let historyDatabase: UsageHistoryDatabaseWorking
     let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     var onOpenTokenDashboard: () -> Void
     var onOpenPerformanceDashboard: () -> Void
     var onOpenUpdatesSettings: () -> Void
+    var onOpenDataSettings: () -> Void
     var onFirstRendered: () -> Void
     var onContentSizeChange: (NSSize) -> Void
     var appVersionInfo: AppVersionInfo
@@ -27,9 +29,11 @@ struct MenuBarContentView: View {
         historyDatabase: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor = AppUpdateMonitor(),
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        codexSourceHealthStore: CodexSourceHealthStore = .shared,
         onOpenTokenDashboard: @escaping () -> Void = {},
         onOpenPerformanceDashboard: @escaping () -> Void = {},
         onOpenUpdatesSettings: @escaping () -> Void = {},
+        onOpenDataSettings: @escaping () -> Void = {},
         onFirstRendered: @escaping () -> Void = {},
         onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
         appVersionInfo: AppVersionInfo = .current(),
@@ -37,11 +41,13 @@ struct MenuBarContentView: View {
     ) {
         self.viewModel = viewModel
         self.updateMonitor = updateMonitor
+        self.codexSourceHealthStore = codexSourceHealthStore
         self.historyDatabase = historyDatabase
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.onOpenTokenDashboard = onOpenTokenDashboard
         self.onOpenPerformanceDashboard = onOpenPerformanceDashboard
         self.onOpenUpdatesSettings = onOpenUpdatesSettings
+        self.onOpenDataSettings = onOpenDataSettings
         self.onFirstRendered = onFirstRendered
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
@@ -82,6 +88,10 @@ struct MenuBarContentView: View {
                 Divider()
                 if freshnessViewModel.shouldShowWarning {
                     staleBuildWarningRow
+                    Divider()
+                }
+                if codexSourceHealthStore.state.popoverWarningText != nil {
+                    codexSourceHealthWarningRow
                     Divider()
                 }
                 if updateMonitor.promptPresentation != nil {
@@ -490,6 +500,32 @@ struct MenuBarContentView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var codexSourceHealthWarningRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+
+            Text(codexSourceHealthStore.state.popoverWarningText ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+
+            Button("Details") {
+                onOpenDataSettings()
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .buttonStyle(.borderless)
+            .help("Open Codex version and source diagnostics")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func refreshRotation(at date: Date) -> Angle {

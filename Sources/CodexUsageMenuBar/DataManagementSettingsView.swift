@@ -59,6 +59,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var profileTokenUsageState: CodexProfileTokenUsageState
     @Published private(set) var profileTokenComparisonSummary: CodexProfileTokenComparisonSummary?
     @Published private(set) var isRefreshingProfileTokens = false
+    @Published private(set) var codexSourceHealthState: CodexSourceHealthState
+    @Published private(set) var isRefreshingCodexSourceHealth = false
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -69,6 +71,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private let profileTokenUsageStore: CodexProfileTokenUsageStore
     private let profileTokenClient: CodexProfileTokenUsageFetching
+    private let codexSourceHealthStore: CodexSourceHealthStore
+    private let codexSourceHealthReader: CodexSourceHealthReading
     private let autoRefreshProfileTokens: Bool
     private let now: () -> Date
     private var databaseInfo: UsageHistoryDatabaseInfo?
@@ -76,6 +80,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     private var tokenPayloadAuditDiagnosticsCancellable: AnyCancellable?
     private var performanceInstrumentationCancellable: AnyCancellable?
     private var performanceInstrumentationErrorCancellable: AnyCancellable?
+    private var codexSourceHealthCancellable: AnyCancellable?
 
     init(
         database: UsageHistoryDatabaseWorking,
@@ -87,6 +92,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         profileTokenUsageStore: CodexProfileTokenUsageStore = .applicationSupportStore(),
         profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
+        codexSourceHealthStore: CodexSourceHealthStore = .shared,
+        codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         autoRefreshProfileTokens: Bool = false,
         now: @escaping () -> Date = Date.init
     ) {
@@ -99,6 +106,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.profileTokenUsageStore = profileTokenUsageStore
         self.profileTokenClient = profileTokenClient
+        self.codexSourceHealthStore = codexSourceHealthStore
+        self.codexSourceHealthReader = codexSourceHealthReader
         self.autoRefreshProfileTokens = autoRefreshProfileTokens
         self.now = now
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
@@ -106,6 +115,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
         performanceInstrumentationSummary = performanceInstrumentationStore.summary()
         profileTokenUsageState = profileTokenUsageStore.state
+        codexSourceHealthState = codexSourceHealthStore.state
         tokenPayloadAuditCancellable = tokenPayloadAuditStore.$latestAudit.sink { [weak self] audit in
             self?.tokenPayloadAudit = audit
         }
@@ -117,6 +127,9 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
         performanceInstrumentationErrorCancellable = performanceInstrumentationStore.$lastErrorText.sink { [weak self] _ in
             self?.refreshPerformanceInstrumentationSummary()
+        }
+        codexSourceHealthCancellable = codexSourceHealthStore.$state.sink { [weak self] state in
+            self?.codexSourceHealthState = state
         }
     }
 
@@ -130,6 +143,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         profileTokenUsageStore: CodexProfileTokenUsageStore = .applicationSupportStore(),
         profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
+        codexSourceHealthStore: CodexSourceHealthStore = .shared,
+        codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         autoRefreshProfileTokens: Bool = false,
         now: @escaping () -> Date = Date.init
     ) {
@@ -158,6 +173,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
             performanceInstrumentationStore: performanceInstrumentationStore,
             profileTokenUsageStore: profileTokenUsageStore,
             profileTokenClient: profileTokenClient,
+            codexSourceHealthStore: codexSourceHealthStore,
+            codexSourceHealthReader: codexSourceHealthReader,
             autoRefreshProfileTokens: autoRefreshProfileTokens,
             now: now
         )
@@ -400,6 +417,67 @@ final class DataManagementSettingsViewModel: ObservableObject {
         profileTokenComparisonSummary?.rows ?? []
     }
 
+    var codexSourceHealthStatusText: String {
+        codexSourceHealthState.status.displayText
+    }
+
+    var codexSourceHealthLastCheckedText: String {
+        guard let lastCheckedAt = codexSourceHealthState.lastCheckedAt else {
+            return "Not checked yet"
+        }
+
+        return Self.auditDateFormatter.string(from: lastCheckedAt)
+    }
+
+    var codexSourceHealthActiveExecutableText: String {
+        codexSourceHealthState.snapshot?.activeExecutablePath ?? "--"
+    }
+
+    var codexSourceHealthActiveVersionText: String {
+        codexSourceHealthState.snapshot?.activeSignal?.displayVersionText ?? "--"
+    }
+
+    var codexSourceHealthAppBundledVersionText: String {
+        codexSourceHealthState.snapshot?.appBundledSignal?.displayVersionText ?? "--"
+    }
+
+    var codexSourceHealthHomebrewVersionText: String {
+        codexSourceHealthState.snapshot?.homebrewSignal?.displayVersionText ?? "--"
+    }
+
+    var codexSourceHealthModelsCacheText: String {
+        guard let snapshot = codexSourceHealthState.snapshot else {
+            return "--"
+        }
+
+        let version = snapshot.modelsCacheClientVersion ?? "unavailable"
+        let count = snapshot.modelsCacheModelCount.map { "\($0) models" } ?? "unknown models"
+        let fetched = snapshot.modelsCacheFetchedAt.map(Self.auditDateFormatter.string(from:)) ?? "unknown fetch time"
+        return "\(version) · \(count) · \(fetched)"
+    }
+
+    var codexSourceHealthVersionMetadataText: String {
+        guard let snapshot = codexSourceHealthState.snapshot else {
+            return "--"
+        }
+
+        let latest = snapshot.versionMetadataLatestVersion ?? "unavailable"
+        let checked = snapshot.versionMetadataLastCheckedAt.map(Self.auditDateFormatter.string(from:)) ?? "unknown check time"
+        return "\(latest) · \(checked)"
+    }
+
+    var codexSourceHealthLastErrorText: String {
+        codexSourceHealthState.lastErrorText
+            ?? codexSourceHealthState.snapshot?.errorText
+            ?? codexSourceHealthState.snapshot?.modelsCacheErrorText
+            ?? codexSourceHealthState.snapshot?.versionMetadataErrorText
+            ?? "None"
+    }
+
+    var codexSourceHealthWarnings: [String] {
+        codexSourceHealthState.snapshot?.warnings ?? []
+    }
+
     func tokenCountText(_ count: Int64?) -> String {
         guard let count else {
             return "--"
@@ -532,6 +610,41 @@ final class DataManagementSettingsViewModel: ObservableObject {
         await refreshProfileTokenComparisonSummary()
     }
 
+    func refreshCodexSourceHealth(showStatus: Bool = true) async {
+        guard !isRefreshingCodexSourceHealth else {
+            return
+        }
+
+        isRefreshingCodexSourceHealth = true
+        let refreshedState = await codexSourceHealthStore.refresh(
+            reader: codexSourceHealthReader,
+            now: now()
+        )
+        codexSourceHealthState = refreshedState
+        isRefreshingCodexSourceHealth = false
+
+        if showStatus {
+            if refreshedState.status == .failed {
+                statusMessage = nil
+                errorMessage = "Codex version and source health could not be refreshed."
+            } else {
+                statusMessage = "Codex version and source health refreshed."
+                errorMessage = nil
+            }
+        }
+    }
+
+    func refreshCodexSourceHealthIfStale() async {
+        guard codexSourceHealthState.isStale(
+            now: now(),
+            staleAfter: CodexSourceHealthStore.defaultCacheDuration
+        ) else {
+            return
+        }
+
+        await refreshCodexSourceHealth(showStatus: false)
+    }
+
     private func refreshProfileTokenComparisonSummary() async {
         do {
             let currentDate = now()
@@ -555,6 +668,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         await refreshThreadCatalogCaptureState()
         await refreshModelCapabilitiesCaptureState()
         await refreshProfileTokenComparison()
+        await refreshCodexSourceHealthIfStale()
         refreshPerformanceInstrumentationSummary()
     }
 
@@ -780,6 +894,8 @@ struct DataManagementSettingsView: View {
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         profileTokenUsageStore: CodexProfileTokenUsageStore = .applicationSupportStore(),
         profileTokenClient: CodexProfileTokenUsageFetching = UnavailableCodexProfileTokenUsageClient(),
+        codexSourceHealthStore: CodexSourceHealthStore = .shared,
+        codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         autoRefreshProfileTokens: Bool = false
     ) {
         _viewModel = StateObject(
@@ -790,6 +906,8 @@ struct DataManagementSettingsView: View {
                 performanceInstrumentationStore: performanceInstrumentationStore,
                 profileTokenUsageStore: profileTokenUsageStore,
                 profileTokenClient: profileTokenClient,
+                codexSourceHealthStore: codexSourceHealthStore,
+                codexSourceHealthReader: codexSourceHealthReader,
                 autoRefreshProfileTokens: autoRefreshProfileTokens
             )
         )
@@ -803,6 +921,7 @@ struct DataManagementSettingsView: View {
                 retentionSection
                 tokenHistorySection
                 profileTokenSection
+                codexSourceHealthSection
                 liveTokenPayloadSection
                 projectsSection
                 feedbackSection
@@ -1031,6 +1150,89 @@ struct DataManagementSettingsView: View {
                     }
                 }
                 .font(.caption)
+            }
+        }
+    }
+
+    private var codexSourceHealthSection: some View {
+        Section("Codex Version & Source") {
+            HStack {
+                Button(viewModel.isRefreshingCodexSourceHealth ? "Refreshing..." : "Refresh") {
+                    Task {
+                        await viewModel.refreshCodexSourceHealth()
+                    }
+                }
+                .disabled(viewModel.isRefreshingCodexSourceHealth)
+
+                Spacer()
+
+                Text(viewModel.codexSourceHealthStatusText)
+                    .font(.caption)
+                    .foregroundStyle(viewModel.codexSourceHealthState.status.shouldShowPopoverWarning ? .orange : .secondary)
+            }
+
+            Text("This reads local Codex version signals only: executable paths and versions, models-cache metadata, and update metadata freshness.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+                GridRow {
+                    Text("Last check")
+                    Text(viewModel.codexSourceHealthLastCheckedText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Active")
+                    Text(viewModel.codexSourceHealthActiveVersionText)
+                        .monospaced()
+                }
+                GridRow {
+                    Text("Active path")
+                    Text(viewModel.codexSourceHealthActiveExecutableText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(viewModel.codexSourceHealthActiveExecutableText)
+                }
+                GridRow {
+                    Text("App bundle")
+                    Text(viewModel.codexSourceHealthAppBundledVersionText)
+                        .monospaced()
+                }
+                GridRow {
+                    Text("Homebrew")
+                    Text(viewModel.codexSourceHealthHomebrewVersionText)
+                        .monospaced()
+                }
+                GridRow {
+                    Text("Models cache")
+                    Text(viewModel.codexSourceHealthModelsCacheText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                GridRow {
+                    Text("version.json")
+                    Text(viewModel.codexSourceHealthVersionMetadataText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                GridRow {
+                    Text("Last error")
+                    Text(viewModel.codexSourceHealthLastErrorText)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+            .font(.caption)
+
+            if !viewModel.codexSourceHealthWarnings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(viewModel.codexSourceHealthWarnings, id: \.self) { warning in
+                        Text(warning)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
     }

@@ -657,34 +657,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     }
 
     private func candidateCodexExecutableURLs(fileManager: FileManager) -> [URL] {
-        var candidates: [URL] = [
-            URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
-            URL(fileURLWithPath: "/usr/local/bin/codex"),
-        ]
-
-        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        if let appBundleURLs = try? fileManager.contentsOfDirectory(
-            at: applicationsURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) {
-            let discoveredCandidates = appBundleURLs
-                .filter { $0.pathExtension == "app" && $0.deletingPathExtension().lastPathComponent.hasPrefix("Codex") }
-                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-                .map { $0.appending(path: "Contents/Resources/codex", directoryHint: .notDirectory) }
-
-            candidates.append(contentsOf: discoveredCandidates)
-        }
-
-        var deduplicated: [URL] = []
-        var seenPaths = Set<String>()
-
-        for candidate in candidates where seenPaths.insert(candidate.path).inserted {
-            deduplicated.append(candidate)
-        }
-
-        return deduplicated
+        CodexExecutableCandidateProvider.executableURLs(fileManager: fileManager)
     }
 
     private func makeJSONData(from object: Any) throws -> Data {
