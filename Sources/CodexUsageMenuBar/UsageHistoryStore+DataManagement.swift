@@ -41,6 +41,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM token_dimension_catalog")
             try execute("DELETE FROM codex_live_token_capture_state")
             try execute("DELETE FROM codex_turn_performance_events")
+            try execute("DELETE FROM codex_turn_performance_dimensions")
+            try execute("DELETE FROM codex_turn_performance_dimension_catalog")
             try execute("DELETE FROM codex_turn_performance_capture_state")
             try execute("DELETE FROM codex_session_task_timing_events")
             try execute("DELETE FROM codex_session_task_timing_import_files")
@@ -224,6 +226,14 @@ extension UsageHistoryStore {
             table: "codex_turn_performance_events",
             schema: "imported_usage_history"
         )
+        let importedHasTurnPerformanceDimensions = try tableExists(
+            table: "codex_turn_performance_dimensions",
+            schema: "imported_usage_history"
+        )
+        let importedHasTurnPerformanceDimensionCatalog = try tableExists(
+            table: "codex_turn_performance_dimension_catalog",
+            schema: "imported_usage_history"
+        )
         let importedHasTurnPerformanceCaptureState = try tableExists(
             table: "codex_turn_performance_capture_state",
             schema: "imported_usage_history"
@@ -304,6 +314,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM token_dimension_catalog")
             try execute("DELETE FROM codex_live_token_capture_state")
             try execute("DELETE FROM codex_turn_performance_events")
+            try execute("DELETE FROM codex_turn_performance_dimensions")
+            try execute("DELETE FROM codex_turn_performance_dimension_catalog")
             try execute("DELETE FROM codex_turn_performance_capture_state")
             try execute("DELETE FROM codex_session_task_timing_events")
             try execute("DELETE FROM codex_session_task_timing_import_files")
@@ -412,6 +424,32 @@ extension UsageHistoryStore {
                         project_path, project_name, effort, source, originator, app_version,
                         terminal_type, transport, wire_api, api_path, recorded_at
                     FROM imported_usage_history.codex_turn_performance_events
+                    """
+                )
+            }
+            if importedHasTurnPerformanceDimensions {
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO codex_turn_performance_dimensions (
+                        source_key, source_row_id, dimension_key, dimension_value, seen_at
+                    )
+                    SELECT dimensions.source_key, dimensions.source_row_id,
+                        dimensions.dimension_key, dimensions.dimension_value, dimensions.seen_at
+                    FROM imported_usage_history.codex_turn_performance_dimensions dimensions
+                    INNER JOIN codex_turn_performance_events events
+                        ON events.source_key = dimensions.source_key
+                        AND events.source_row_id = dimensions.source_row_id
+                    """
+                )
+            }
+            if importedHasTurnPerformanceDimensionCatalog {
+                try execute(
+                    """
+                    INSERT OR REPLACE INTO codex_turn_performance_dimension_catalog (
+                        dimension_key, dimension_value, first_seen_at, last_seen_at
+                    )
+                    SELECT dimension_key, dimension_value, first_seen_at, last_seen_at
+                    FROM imported_usage_history.codex_turn_performance_dimension_catalog
                     """
                 )
             }
@@ -635,6 +673,7 @@ extension UsageHistoryStore {
             }
         }
 
+        try rebuildTurnPerformanceRuntimeDimensionCatalog()
         _ = try cleanupTokenModelLabels()
         _ = try cleanupTokenContextValues()
         _ = try cleanupTokenDimensions()

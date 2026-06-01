@@ -93,6 +93,7 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func liveTokenCaptureState() async -> CodexLiveTokenCaptureState
     func captureTurnPerformanceIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexTurnPerformanceCaptureState
     func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState
+    func turnPerformanceRuntimeDimensionSummary() async -> CodexOtelRuntimeDimensionSummary
     func captureSessionTaskTimingIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexSessionTaskTimingCaptureState
     func sessionTaskTimingCaptureState() async -> CodexSessionTaskTimingCaptureState
     func captureThreadCatalogIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexThreadCatalogCaptureState
@@ -126,6 +127,10 @@ protocol UsageHistoryDashboardQueryWorking: Sendable {
 }
 
 extension UsageHistoryDatabaseWorking {
+    func turnPerformanceRuntimeDimensionSummary() async -> CodexOtelRuntimeDimensionSummary {
+        .empty
+    }
+
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow] {
         throw UsageHistoryStoreError.databaseOperationFailed("Token attribution coverage is unavailable.")
     }
@@ -426,6 +431,10 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
 
     func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState {
         await writer.turnPerformanceCaptureState()
+    }
+
+    func turnPerformanceRuntimeDimensionSummary() async -> CodexOtelRuntimeDimensionSummary {
+        await writer.turnPerformanceRuntimeDimensionSummary()
     }
 
     func captureSessionTaskTimingIfNeeded(
@@ -799,6 +808,14 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             return try store.codexTurnPerformanceCaptureState()
         } catch {
             return CodexTurnPerformanceCaptureState(status: .failed, lastErrorText: error.localizedDescription)
+        }
+    }
+
+    func turnPerformanceRuntimeDimensionSummary() -> CodexOtelRuntimeDimensionSummary {
+        do {
+            return try store().turnPerformanceRuntimeDimensionSummary()
+        } catch {
+            return .empty
         }
     }
 

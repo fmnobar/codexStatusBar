@@ -3574,6 +3574,119 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(String(describing: event).contains("private@example.com"))
     }
 
+    func testCodexOtelTurnPerformanceImporterCapturesRuntimeDimensionsOnly() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let body = """
+        event.name="codex.sse_event" event.kind=response.completed event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation auth_mode=chatgpt turn.has_metadata_header=true websocket.warmup=connected codex.request.reasoning_effort=high request.item_count=7 connection.retry_count=2 tool_output_size_bytes=20480 prompt="do not store this" message="do not store this" tool_output="private tool result" request_body="private request" response_body="private response" user.email=private@example.com
+        """
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rowsWithTargets: [(timestamp, "codex_otel.log_only", body)]
+        )
+        let importer = CodexOtelTurnPerformanceImporter(logsDatabaseURL: databaseURL)
+
+        let result = try importer.importTurnPerformanceEvents(
+            into: store,
+            afterLogRowID: 0,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let event = try XCTUnwrap(store.turnPerformanceEvents().first)
+        let dimensions = event.runtimeDimensions.map { "\($0.key.rawValue)=\($0.value)" }
+
+        XCTAssertEqual(result.importResult.insertedCount, 1)
+        XCTAssertEqual(result.importResult.runtimeDimensionInsertedCount, 7)
+        XCTAssertEqual(event.effort, "high")
+        XCTAssertEqual(
+            dimensions,
+            [
+                "auth_mode=chatgpt",
+                "connection_retry_count_bucket=2-5",
+                "request_item_count_bucket=6-20",
+                "request_reasoning_effort=high",
+                "tool_output_size_bucket=10k-100k",
+                "turn_has_metadata_header=true",
+                "websocket_warmup=connected",
+            ]
+        )
+        XCTAssertFalse(String(describing: event).contains("private@example.com"))
+        XCTAssertFalse(String(describing: event).contains("private tool result"))
+        XCTAssertFalse(String(describing: event).contains("private request"))
+        XCTAssertFalse(String(describing: event).contains("private response"))
+        XCTAssertEqual(try store.turnPerformanceRuntimeDimensionSummary().rowCount, 7)
+        XCTAssertEqual(try store.turnPerformanceRuntimeDimensionCatalogEntries().count, 7)
+    }
+
+    func testCodexOtelTurnPerformanceDuplicateImportRepairsRuntimeDimensions() async throws {
+        let store = try makeStore()
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let baseEvent = CodexTurnPerformanceEvent(
+            sourceKey: "codex-otel-logs",
+            sourceRowID: 10,
+            target: "codex_otel.trace_safe",
+            eventTimestamp: timestamp,
+            eventName: "codex.sse_event",
+            eventKind: "response.completed",
+            durationMilliseconds: 100,
+            success: true,
+            errorSummary: nil,
+            threadID: "conversation",
+            turnID: "turn-a",
+            model: "gpt-5.5",
+            sessionID: "conversation",
+            projectPath: "/Users/example/Projects/otel",
+            effort: "high",
+            source: "desktop",
+            originator: nil,
+            appVersion: nil,
+            terminalType: nil,
+            transport: nil,
+            wireAPI: nil,
+            apiPath: nil
+        )
+        let repairedEvent = CodexTurnPerformanceEvent(
+            sourceKey: "codex-otel-logs",
+            sourceRowID: 10,
+            target: "codex_otel.trace_safe",
+            eventTimestamp: timestamp,
+            eventName: "codex.sse_event",
+            eventKind: "response.completed",
+            durationMilliseconds: 100,
+            success: true,
+            errorSummary: nil,
+            threadID: "conversation",
+            turnID: "turn-a",
+            model: "gpt-5.5",
+            sessionID: "conversation",
+            projectPath: "/Users/example/Projects/otel",
+            effort: "high",
+            source: "desktop",
+            originator: nil,
+            appVersion: nil,
+            terminalType: nil,
+            transport: nil,
+            wireAPI: nil,
+            apiPath: nil,
+            runtimeDimensions: [
+                try XCTUnwrap(CodexOtelRuntimeDimension(.authMode, "chatgpt")),
+                try XCTUnwrap(CodexOtelRuntimeDimension.boolean(.turnHasMetadataHeader, "true")),
+            ]
+        )
+
+        let firstResult = try store.importTurnPerformanceEvents([baseEvent])
+        let secondResult = try store.importTurnPerformanceEvents([repairedEvent])
+
+        XCTAssertEqual(firstResult, CodexTurnPerformanceImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(secondResult.insertedCount, 0)
+        XCTAssertEqual(secondResult.duplicateCount, 1)
+        XCTAssertEqual(secondResult.runtimeDimensionInsertedCount, 2)
+        XCTAssertEqual(try store.turnPerformanceEvents().count, 1)
+        XCTAssertEqual(try store.turnPerformanceEvents().first?.runtimeDimensions.count, 2)
+        XCTAssertEqual(try store.turnPerformanceRuntimeDimensionSummary().distinctKeyCount, 2)
+    }
+
     func testCodexOtelTurnPerformanceCaptureIsIncrementalAndRecordsState() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")

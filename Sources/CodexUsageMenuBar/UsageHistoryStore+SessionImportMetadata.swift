@@ -422,6 +422,7 @@ extension UsageHistoryStore {
 
         var insertedCount = 0
         var duplicateCount = 0
+        var runtimeDimensionInsertedCount = 0
 
         try transaction {
             for event in events {
@@ -430,10 +431,20 @@ extension UsageHistoryStore {
                 } else {
                     duplicateCount += 1
                 }
+                runtimeDimensionInsertedCount += try upsertTurnPerformanceRuntimeDimensions(
+                    event.runtimeDimensions,
+                    sourceKey: event.sourceKey,
+                    sourceRowID: event.sourceRowID,
+                    seenAt: event.eventTimestamp
+                )
             }
         }
 
-        return CodexTurnPerformanceImportResult(insertedCount: insertedCount, duplicateCount: duplicateCount)
+        return CodexTurnPerformanceImportResult(
+            insertedCount: insertedCount,
+            duplicateCount: duplicateCount,
+            runtimeDimensionInsertedCount: runtimeDimensionInsertedCount
+        )
     }
 
     func turnPerformanceEvents() throws -> [CodexTurnPerformanceEvent] {
@@ -478,6 +489,10 @@ extension UsageHistoryStore {
                         transport: optionalColumnText(statement, index: 19),
                         wireAPI: optionalColumnText(statement, index: 20),
                         apiPath: optionalColumnText(statement, index: 21),
+                        runtimeDimensions: try turnPerformanceRuntimeDimensions(
+                            sourceKey: columnText(statement, index: 0),
+                            sourceRowID: sqlite3_column_int64(statement, 1)
+                        ),
                         recordedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 22)))
                     )
                 )
@@ -535,6 +550,199 @@ extension UsageHistoryStore {
 
         try step(statement)
         return sqlite3_changes(database) > 0
+    }
+
+    @discardableResult
+    func upsertTurnPerformanceRuntimeDimensions(
+        _ dimensions: [CodexOtelRuntimeDimension],
+        sourceKey: String,
+        sourceRowID: Int64,
+        seenAt: Date
+    ) throws -> Int {
+        let uniqueDimensions = CodexOtelRuntimeDimension.unique(dimensions)
+        guard !uniqueDimensions.isEmpty else {
+            return 0
+        }
+
+        var insertedCount = 0
+        for dimension in uniqueDimensions {
+            if try insertTurnPerformanceRuntimeDimension(
+                dimension,
+                sourceKey: sourceKey,
+                sourceRowID: sourceRowID,
+                seenAt: seenAt
+            ) {
+                insertedCount += 1
+            }
+            try upsertTurnPerformanceRuntimeDimensionCatalog(dimension, seenAt: seenAt)
+        }
+        return insertedCount
+    }
+
+    private func insertTurnPerformanceRuntimeDimension(
+        _ dimension: CodexOtelRuntimeDimension,
+        sourceKey: String,
+        sourceRowID: Int64,
+        seenAt: Date
+    ) throws -> Bool {
+        let statement = try prepare(
+            """
+            INSERT OR IGNORE INTO codex_turn_performance_dimensions (
+                source_key, source_row_id, dimension_key, dimension_value, seen_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(sourceKey, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, sourceRowID)
+        bindText(dimension.key.rawValue, to: 3, in: statement)
+        bindText(dimension.value, to: 4, in: statement)
+        sqlite3_bind_int64(statement, 5, seenAt.timeIntervalSince1970Int)
+
+        try step(statement)
+        return sqlite3_changes(database) > 0
+    }
+
+    private func upsertTurnPerformanceRuntimeDimensionCatalog(
+        _ dimension: CodexOtelRuntimeDimension,
+        seenAt: Date
+    ) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO codex_turn_performance_dimension_catalog (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(dimension_key, dimension_value) DO UPDATE SET
+                first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(last_seen_at, excluded.last_seen_at)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(dimension.key.rawValue, to: 1, in: statement)
+        bindText(dimension.value, to: 2, in: statement)
+        sqlite3_bind_int64(statement, 3, seenAt.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 4, seenAt.timeIntervalSince1970Int)
+
+        try step(statement)
+    }
+
+    func turnPerformanceRuntimeDimensions(
+        sourceKey: String,
+        sourceRowID: Int64
+    ) throws -> [CodexOtelRuntimeDimension] {
+        let statement = try prepare(
+            """
+            SELECT dimension_key, dimension_value
+            FROM codex_turn_performance_dimensions
+            WHERE source_key = ? AND source_row_id = ?
+            ORDER BY dimension_key ASC, dimension_value ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        bindText(sourceKey, to: 1, in: statement)
+        sqlite3_bind_int64(statement, 2, sourceRowID)
+
+        var dimensions: [CodexOtelRuntimeDimension] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let key = CodexOtelRuntimeDimensionKey(rawValue: columnText(statement, index: 0)),
+                   let dimension = CodexOtelRuntimeDimension(storedKey: key, storedValue: columnText(statement, index: 1)) {
+                    dimensions.append(dimension)
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+
+        return dimensions
+    }
+
+    func turnPerformanceRuntimeDimensionSummary() throws -> CodexOtelRuntimeDimensionSummary {
+        let statement = try prepare(
+            """
+            SELECT COUNT(*), COUNT(DISTINCT dimension_key), MAX(seen_at)
+            FROM codex_turn_performance_dimensions
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            let latestSeenAt: Date?
+            if sqlite3_column_type(statement, 2) == SQLITE_NULL {
+                latestSeenAt = nil
+            } else {
+                latestSeenAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 2)))
+            }
+            return CodexOtelRuntimeDimensionSummary(
+                rowCount: Int(sqlite3_column_int64(statement, 0)),
+                distinctKeyCount: Int(sqlite3_column_int64(statement, 1)),
+                latestSeenAt: latestSeenAt
+            )
+        case SQLITE_DONE:
+            return .empty
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    func turnPerformanceRuntimeDimensionCatalogEntries() throws -> [CodexOtelRuntimeDimensionCatalogEntry] {
+        let statement = try prepare(
+            """
+            SELECT dimension_key, dimension_value, first_seen_at, last_seen_at
+            FROM codex_turn_performance_dimension_catalog
+            ORDER BY dimension_key ASC, last_seen_at DESC, dimension_value ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var entries: [CodexOtelRuntimeDimensionCatalogEntry] = []
+        rowLoop:
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                if let key = CodexOtelRuntimeDimensionKey(rawValue: columnText(statement, index: 0)) {
+                    entries.append(
+                        CodexOtelRuntimeDimensionCatalogEntry(
+                            key: key,
+                            value: columnText(statement, index: 1),
+                            firstSeenAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 2))),
+                            lastSeenAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 3)))
+                        )
+                    )
+                }
+            case SQLITE_DONE:
+                break rowLoop
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+
+        return entries
+    }
+
+    func rebuildTurnPerformanceRuntimeDimensionCatalog() throws {
+        try execute("DELETE FROM codex_turn_performance_dimension_catalog")
+        try execute(
+            """
+            INSERT INTO codex_turn_performance_dimension_catalog (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            )
+            SELECT dimension_key,
+                dimension_value,
+                MIN(seen_at) AS first_seen_at,
+                MAX(seen_at) AS last_seen_at
+            FROM codex_turn_performance_dimensions
+            GROUP BY dimension_key, dimension_value
+            """
+        )
     }
 
     func codexLiveTokenCaptureState(

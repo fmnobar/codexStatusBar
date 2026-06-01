@@ -52,6 +52,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics
     @Published private(set) var localTokenCaptureState = CodexLiveTokenCaptureState()
     @Published private(set) var turnPerformanceCaptureState = CodexTurnPerformanceCaptureState()
+    @Published private(set) var turnPerformanceRuntimeDimensionSummary = CodexOtelRuntimeDimensionSummary.empty
     @Published private(set) var sessionTaskTimingCaptureState = CodexSessionTaskTimingCaptureState()
     @Published private(set) var threadCatalogCaptureState = CodexThreadCatalogCaptureState()
     @Published private(set) var modelCapabilitiesCaptureState = CodexModelCapabilitiesCaptureState()
@@ -359,6 +360,22 @@ final class DataManagementSettingsViewModel: ObservableObject {
         turnPerformanceCaptureState.lastErrorText ?? "None"
     }
 
+    var turnPerformanceRuntimeDimensionRowCountText: String {
+        "\(turnPerformanceRuntimeDimensionSummary.rowCount)"
+    }
+
+    var turnPerformanceRuntimeDimensionKeyCountText: String {
+        "\(turnPerformanceRuntimeDimensionSummary.distinctKeyCount)"
+    }
+
+    var turnPerformanceRuntimeDimensionLatestSeenText: String {
+        guard let latestSeenAt = turnPerformanceRuntimeDimensionSummary.latestSeenAt else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: latestSeenAt)
+    }
+
     var sessionTaskTimingCaptureLastCheckedText: String {
         guard let lastCheckedAt = sessionTaskTimingCaptureState.lastCheckedAt else {
             return "Not checked yet"
@@ -620,6 +637,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
             calendar: .autoupdatingCurrent,
             force: false
         )
+        turnPerformanceRuntimeDimensionSummary = await database.turnPerformanceRuntimeDimensionSummary()
     }
 
     func refreshSessionTaskTimingCaptureState() async {
@@ -1717,6 +1735,16 @@ struct DataManagementSettingsView: View {
                     GridRow {
                         Text("Last result")
                         Text(viewModel.turnPerformanceCaptureResultText)
+                    }
+                    GridRow {
+                        Text("Runtime dimensions")
+                        Text("\(viewModel.turnPerformanceRuntimeDimensionRowCountText) rows, \(viewModel.turnPerformanceRuntimeDimensionKeyCountText) keys")
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("Latest dimension")
+                        Text(viewModel.turnPerformanceRuntimeDimensionLatestSeenText)
+                            .monospacedDigit()
                     }
                     GridRow {
                         Text("Last error")

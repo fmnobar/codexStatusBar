@@ -648,6 +648,100 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testBackupImportPreservesTurnPerformanceRuntimeDimensions() async throws {
+        let (sourceStore, _) = try makeTemporaryStore()
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let event = CodexTurnPerformanceEvent(
+            sourceKey: "codex-otel-logs",
+            sourceRowID: 20,
+            target: "codex_otel.trace_safe",
+            eventTimestamp: timestamp,
+            eventName: "codex.sse_event",
+            eventKind: "response.completed",
+            durationMilliseconds: 100,
+            success: true,
+            errorSummary: nil,
+            threadID: "conversation",
+            turnID: "turn-a",
+            model: "gpt-5.5",
+            sessionID: "conversation",
+            projectPath: "/Users/example/Projects/otel",
+            effort: "high",
+            source: "desktop",
+            originator: nil,
+            appVersion: nil,
+            terminalType: nil,
+            transport: nil,
+            wireAPI: nil,
+            apiPath: nil,
+            runtimeDimensions: [
+                try XCTUnwrap(CodexOtelRuntimeDimension(.authMode, "chatgpt")),
+                try XCTUnwrap(CodexOtelRuntimeDimension.boolean(.turnHasMetadataHeader, "true")),
+            ]
+        )
+        _ = try sourceStore.importTurnPerformanceEvents([event])
+        let backupURL = try makeTemporaryDirectory().appendingPathComponent("backup.sqlite3")
+        try sourceStore.exportBackup(to: backupURL)
+        let (destinationStore, databaseURL) = try makeTemporaryStore()
+
+        try destinationStore.importBackup(from: backupURL)
+
+        XCTAssertEqual(try destinationStore.turnPerformanceRuntimeDimensionSummary().rowCount, 2)
+        XCTAssertEqual(
+            try destinationStore.turnPerformanceRuntimeDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
+            ["auth_mode=chatgpt", "turn_has_metadata_header=true"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT dimension_key || '=' || dimension_value FROM codex_turn_performance_dimensions ORDER BY dimension_key"
+            ),
+            ["auth_mode=chatgpt", "turn_has_metadata_header=true"]
+        )
+    }
+
+    func testClearHistoryRemovesTurnPerformanceRuntimeDimensions() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let event = CodexTurnPerformanceEvent(
+            sourceKey: "codex-otel-logs",
+            sourceRowID: 21,
+            target: "codex_otel.trace_safe",
+            eventTimestamp: date("2026-05-17T12:48:13Z"),
+            eventName: "codex.sse_event",
+            eventKind: "response.completed",
+            durationMilliseconds: 100,
+            success: true,
+            errorSummary: nil,
+            threadID: "conversation",
+            turnID: "turn-a",
+            model: "gpt-5.5",
+            sessionID: "conversation",
+            projectPath: nil,
+            effort: nil,
+            source: nil,
+            originator: nil,
+            appVersion: nil,
+            terminalType: nil,
+            transport: nil,
+            wireAPI: nil,
+            apiPath: nil,
+            runtimeDimensions: [try XCTUnwrap(CodexOtelRuntimeDimension(.authMode, "chatgpt"))]
+        )
+        _ = try store.importTurnPerformanceEvents([event])
+
+        try store.clearHistory()
+
+        XCTAssertEqual(try store.turnPerformanceRuntimeDimensionSummary(), .empty)
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM codex_turn_performance_dimensions"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM codex_turn_performance_dimension_catalog"),
+            ["0"]
+        )
+    }
+
     func testBackupImportCleansMalformedTokenModelLabelsAndRebuildsCatalogs() async throws {
         let sourceDirectoryURL = try makeTemporaryDirectory()
         let sourceURL = sourceDirectoryURL.appendingPathComponent("source.sqlite3")
@@ -1341,6 +1435,60 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.localTokenCaptureState.lastLogRowID, 42)
         XCTAssertEqual(viewModel.localTokenCaptureResultText, "2 imported, 3 duplicate, 3 repaired")
         XCTAssertEqual(viewModel.localTokenCaptureLastErrorText, "None")
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsTurnPerformanceRuntimeDimensionSummary() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let timestamp = date("2026-05-17T12:48:13Z")
+        try store.recordCodexTurnPerformanceCaptureState(
+            CodexTurnPerformanceCaptureState(
+                lastCheckedAt: timestamp,
+                lastImportedEventAt: timestamp,
+                lastLogRowID: 42,
+                status: .imported,
+                insertedCount: 1,
+                duplicateCount: 0
+            )
+        )
+        _ = try store.importTurnPerformanceEvents([
+            CodexTurnPerformanceEvent(
+                sourceKey: "codex-otel-logs",
+                sourceRowID: 22,
+                target: "codex_otel.trace_safe",
+                eventTimestamp: timestamp,
+                eventName: "codex.sse_event",
+                eventKind: "response.completed",
+                durationMilliseconds: 100,
+                success: true,
+                errorSummary: nil,
+                threadID: "conversation",
+                turnID: "turn-a",
+                model: "gpt-5.5",
+                sessionID: "conversation",
+                projectPath: nil,
+                effort: nil,
+                source: nil,
+                originator: nil,
+                appVersion: nil,
+                terminalType: nil,
+                transport: nil,
+                wireAPI: nil,
+                apiPath: nil,
+                runtimeDimensions: [
+                    try XCTUnwrap(CodexOtelRuntimeDimension(.authMode, "chatgpt")),
+                    try XCTUnwrap(CodexOtelRuntimeDimension.boolean(.turnHasMetadataHeader, "true")),
+                ]
+            ),
+        ])
+        let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(viewModel.turnPerformanceCaptureState.status, .imported)
+        XCTAssertEqual(viewModel.turnPerformanceRuntimeDimensionRowCountText, "2")
+        XCTAssertEqual(viewModel.turnPerformanceRuntimeDimensionKeyCountText, "2")
+        XCTAssertNotEqual(viewModel.turnPerformanceRuntimeDimensionLatestSeenText, "--")
     }
 
     @MainActor

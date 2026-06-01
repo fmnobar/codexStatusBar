@@ -187,8 +187,19 @@ struct CodexTurnPerformanceCaptureState: Equatable, Sendable {
 struct CodexTurnPerformanceImportResult: Equatable, Sendable {
     let insertedCount: Int
     let duplicateCount: Int
+    let runtimeDimensionInsertedCount: Int
 
-    static let empty = CodexTurnPerformanceImportResult(insertedCount: 0, duplicateCount: 0)
+    init(insertedCount: Int, duplicateCount: Int, runtimeDimensionInsertedCount: Int = 0) {
+        self.insertedCount = insertedCount
+        self.duplicateCount = duplicateCount
+        self.runtimeDimensionInsertedCount = runtimeDimensionInsertedCount
+    }
+
+    static let empty = CodexTurnPerformanceImportResult(
+        insertedCount: 0,
+        duplicateCount: 0,
+        runtimeDimensionInsertedCount: 0
+    )
 }
 
 struct CodexTurnPerformanceCaptureRunResult: Equatable, Sendable {
@@ -1538,6 +1549,7 @@ struct CodexTurnPerformanceEvent: Equatable, Sendable {
     let transport: String?
     let wireAPI: String?
     let apiPath: String?
+    let runtimeDimensions: [CodexOtelRuntimeDimension]
     let recordedAt: Date
 
     init(
@@ -1563,6 +1575,7 @@ struct CodexTurnPerformanceEvent: Equatable, Sendable {
         transport: String?,
         wireAPI: String?,
         apiPath: String?,
+        runtimeDimensions: [CodexOtelRuntimeDimension] = [],
         recordedAt: Date = Date()
     ) {
         self.sourceKey = sourceKey
@@ -1588,6 +1601,7 @@ struct CodexTurnPerformanceEvent: Equatable, Sendable {
         self.transport = CodexTokenContextNormalizer.normalizedIdentifier(transport)
         self.wireAPI = CodexTokenContextNormalizer.normalizedIdentifier(wireAPI)
         self.apiPath = Self.normalizedAPIPath(apiPath)
+        self.runtimeDimensions = CodexOtelRuntimeDimension.unique(runtimeDimensions)
         self.recordedAt = recordedAt
     }
 
@@ -1609,6 +1623,7 @@ struct CodexTurnPerformanceEvent: Equatable, Sendable {
             || transport != nil
             || wireAPI != nil
             || apiPath != nil
+            || !runtimeDimensions.isEmpty
     }
 
     private static func normalizedAPIPath(_ value: String?) -> String? {
@@ -1626,6 +1641,246 @@ struct CodexTurnPerformanceEvent: Equatable, Sendable {
 
         return trimmedValue
     }
+}
+
+enum CodexOtelRuntimeDimensionKey: String, CaseIterable, Codable, Sendable {
+    case authMode = "auth_mode"
+    case turnHasMetadataHeader = "turn_has_metadata_header"
+    case websocketWarmup = "websocket_warmup"
+    case requestReasoningEffort = "request_reasoning_effort"
+    case requestItemCountBucket = "request_item_count_bucket"
+    case connectionRetryCountBucket = "connection_retry_count_bucket"
+    case toolOutputSizeBucket = "tool_output_size_bucket"
+
+    var displayTitle: String {
+        switch self {
+        case .authMode:
+            return "Auth mode"
+        case .turnHasMetadataHeader:
+            return "Metadata header"
+        case .websocketWarmup:
+            return "WebSocket warmup"
+        case .requestReasoningEffort:
+            return "Request effort"
+        case .requestItemCountBucket:
+            return "Request items"
+        case .connectionRetryCountBucket:
+            return "Connection retries"
+        case .toolOutputSizeBucket:
+            return "Tool output size"
+        }
+    }
+}
+
+struct CodexOtelRuntimeDimension: Hashable, Equatable, Sendable {
+    let key: CodexOtelRuntimeDimensionKey
+    let value: String
+
+    init?(_ key: CodexOtelRuntimeDimensionKey, _ rawValue: String?) {
+        guard let rawValue else {
+            return nil
+        }
+
+        let normalizedValue: String?
+        switch key {
+        case .turnHasMetadataHeader:
+            normalizedValue = Self.normalizedBool(rawValue)
+        case .requestItemCountBucket, .connectionRetryCountBucket:
+            normalizedValue = Self.countBucket(rawValue)
+        case .toolOutputSizeBucket:
+            normalizedValue = Self.sizeBucket(rawValue)
+        default:
+            normalizedValue = Self.normalizedSafeIdentifier(rawValue)
+        }
+
+        guard let normalizedValue else {
+            return nil
+        }
+
+        self.key = key
+        self.value = normalizedValue
+    }
+
+    init?(storedKey key: CodexOtelRuntimeDimensionKey, storedValue: String?) {
+        guard let storedValue else {
+            return nil
+        }
+
+        let normalizedValue: String?
+        switch key {
+        case .turnHasMetadataHeader:
+            normalizedValue = Self.normalizedBool(storedValue)
+        case .requestItemCountBucket, .connectionRetryCountBucket:
+            normalizedValue = Self.normalizedStoredCountBucket(storedValue) ?? Self.countBucket(storedValue)
+        case .toolOutputSizeBucket:
+            normalizedValue = Self.normalizedStoredSizeBucket(storedValue) ?? Self.sizeBucket(storedValue)
+        default:
+            normalizedValue = Self.normalizedSafeIdentifier(storedValue)
+        }
+
+        guard let normalizedValue else {
+            return nil
+        }
+
+        self.key = key
+        self.value = normalizedValue
+    }
+
+    static func boolean(_ key: CodexOtelRuntimeDimensionKey, _ rawValue: String?) -> CodexOtelRuntimeDimension? {
+        guard let normalized = normalizedBool(rawValue) else {
+            return nil
+        }
+
+        return CodexOtelRuntimeDimension(key, normalized)
+    }
+
+    static func unique(_ dimensions: [CodexOtelRuntimeDimension]) -> [CodexOtelRuntimeDimension] {
+        Array(Set(dimensions)).sorted { lhs, rhs in
+            if lhs.key.rawValue != rhs.key.rawValue {
+                return lhs.key.rawValue < rhs.key.rawValue
+            }
+
+            return lhs.value.localizedStandardCompare(rhs.value) == .orderedAscending
+        }
+    }
+
+    private static func normalizedBool(_ rawValue: String?) -> String? {
+        guard let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)).lowercased(),
+              !value.isEmpty
+        else {
+            return nil
+        }
+
+        if ["true", "yes", "1", "enabled", "present"].contains(value) {
+            return "true"
+        }
+        if ["false", "no", "0", "disabled", "absent"].contains(value) {
+            return "false"
+        }
+        return nil
+    }
+
+    private static func countBucket(_ rawValue: String?) -> String? {
+        guard let value = integerValue(rawValue), value >= 0 else {
+            return nil
+        }
+
+        switch value {
+        case 0:
+            return "0"
+        case 1:
+            return "1"
+        case 2...5:
+            return "2-5"
+        case 6...20:
+            return "6-20"
+        case 21...100:
+            return "21-100"
+        default:
+            return "101+"
+        }
+    }
+
+    private static func normalizedStoredCountBucket(_ rawValue: String?) -> String? {
+        let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        let allowedValues = Set(["0", "1", "2-5", "6-20", "21-100", "101+"])
+        return allowedValues.contains(value) ? value : nil
+    }
+
+    private static func sizeBucket(_ rawValue: String?) -> String? {
+        guard let value = integerValue(rawValue), value >= 0 else {
+            return nil
+        }
+
+        switch value {
+        case 0:
+            return "0"
+        case 1..<1_024:
+            return "1-1k"
+        case 1_024..<10_240:
+            return "1k-10k"
+        case 10_240..<102_400:
+            return "10k-100k"
+        case 102_400..<1_048_576:
+            return "100k-1m"
+        default:
+            return "1m+"
+        }
+    }
+
+    private static func normalizedStoredSizeBucket(_ rawValue: String?) -> String? {
+        let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        let allowedValues = Set(["0", "1-1k", "1k-10k", "10k-100k", "100k-1m", "1m+"])
+        return allowedValues.contains(value) ? value : nil
+    }
+
+    private static func integerValue(_ rawValue: String?) -> Int64? {
+        let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !value.isEmpty else {
+            return nil
+        }
+
+        return Int64(value)
+    }
+
+    private static func normalizedSafeIdentifier(_ rawValue: String?) -> String? {
+        let trimmedValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
+        guard !trimmedValue.isEmpty, trimmedValue.count <= 80 else {
+            return nil
+        }
+
+        let lowercased = trimmedValue.lowercased()
+        let unsafeNeedles = [
+            "prompt",
+            "message",
+            "summary",
+            "tool",
+            "request",
+            "response",
+            "authorization",
+            "auth_token",
+            "account_id",
+            "user_id",
+            "user.email",
+            "email",
+            "schema",
+            "title",
+            "preview",
+            "description",
+            "http://",
+            "https://",
+            "/users/",
+        ]
+        guard !unsafeNeedles.contains(where: { lowercased.contains($0) }) else {
+            return nil
+        }
+
+        let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+        guard trimmedValue.unicodeScalars.allSatisfy({ allowedCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return trimmedValue.lowercased()
+    }
+}
+
+struct CodexOtelRuntimeDimensionCatalogEntry: Equatable, Sendable {
+    let key: CodexOtelRuntimeDimensionKey
+    let value: String
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+}
+
+struct CodexOtelRuntimeDimensionSummary: Equatable, Sendable {
+    let rowCount: Int
+    let distinctKeyCount: Int
+    let latestSeenAt: Date?
+
+    static let empty = CodexOtelRuntimeDimensionSummary(
+        rowCount: 0,
+        distinctKeyCount: 0,
+        latestSeenAt: nil
+    )
 }
 
 struct CodexSessionTokenBackfillRequest: Equatable, Sendable {
@@ -2531,6 +2786,13 @@ struct CodexOtelTurnPerformanceImporter {
                 OR feedback_log_body LIKE '%api.path=%'
                 OR feedback_log_body LIKE '%codex.turn.reasoning_effort=%'
                 OR feedback_log_body LIKE '%reasoning_effort=%'
+                OR feedback_log_body LIKE '%auth_mode%'
+                OR feedback_log_body LIKE '%has_metadata_header%'
+                OR feedback_log_body LIKE '%websocket.warmup%'
+                OR feedback_log_body LIKE '%codex.request.reasoning_effort%'
+                OR feedback_log_body LIKE '%request.reasoning_effort%'
+                OR feedback_log_body LIKE '%tool_output%'
+                OR feedback_log_body LIKE '%tool.output.size%'
                 OR feedback_log_body LIKE '%model=%'
                 OR feedback_log_body LIKE '%slug=%'
                 OR feedback_log_body LIKE '%cwd=%'
@@ -2688,7 +2950,7 @@ private struct CodexOtelMetadataExtractor {
             model: metadata.model,
             sessionID: threadID,
             projectPath: metadata.projectPath,
-            effort: metadata.effort,
+            effort: metadata.effort ?? requestReasoningEffort,
             source: metadata.source,
             originator: firstIdentifier(for: [
                 "originator",
@@ -2717,7 +2979,69 @@ private struct CodexOtelMetadataExtractor {
                 "api.path",
                 "api_path",
                 "path",
+            ]),
+            runtimeDimensions: runtimeDimensions
+        )
+    }
+
+    private var requestReasoningEffort: String? {
+        CodexOtelRuntimeDimension(
+            .requestReasoningEffort,
+            firstValue(for: [
+                "codex.request.reasoning_effort",
+                "request.reasoning_effort",
+                "request_reasoning_effort",
             ])
+        )?.value
+    }
+
+    private var runtimeDimensions: [CodexOtelRuntimeDimension] {
+        CodexOtelRuntimeDimension.unique(
+            [
+                CodexOtelRuntimeDimension(.authMode, firstValue(for: [
+                    "auth_mode",
+                    "auth.mode",
+                    "codex.auth_mode",
+                    "codex.request.auth_mode",
+                ])),
+                CodexOtelRuntimeDimension.boolean(.turnHasMetadataHeader, firstValue(for: [
+                    "turn.has_metadata_header",
+                    "codex.turn.has_metadata_header",
+                    "has_metadata_header",
+                ])),
+                CodexOtelRuntimeDimension(.websocketWarmup, firstValue(for: [
+                    "websocket.warmup",
+                    "websocket_warmup",
+                    "codex.websocket.warmup",
+                ])),
+                CodexOtelRuntimeDimension(.requestReasoningEffort, firstValue(for: [
+                    "codex.request.reasoning_effort",
+                    "request.reasoning_effort",
+                    "request_reasoning_effort",
+                ])),
+                CodexOtelRuntimeDimension(.requestItemCountBucket, firstValue(for: [
+                    "request.item_count",
+                    "request.items_count",
+                    "request_item_count",
+                    "codex.request.item_count",
+                    "codex.request.items_count",
+                ])),
+                CodexOtelRuntimeDimension(.connectionRetryCountBucket, firstValue(for: [
+                    "connection.retry_count",
+                    "connection_retry_count",
+                    "websocket.retry_count",
+                    "websocket.reconnect_count",
+                    "request.retry_count",
+                ])),
+                CodexOtelRuntimeDimension(.toolOutputSizeBucket, firstValue(for: [
+                    "tool_output_size",
+                    "tool_output_size_bytes",
+                    "tool_output_bytes",
+                    "tool.output.size",
+                    "tool.output.size_bytes",
+                    "codex.tool_output_size",
+                ])),
+            ].compactMap(\.self)
         )
     }
 

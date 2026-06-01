@@ -9,8 +9,7 @@
 
 | Priority | Item | Why | Planning |
 | --- | --- | --- | --- |
-| 1 | Extend safe OTEL runtime dimensions from Codex 0.135 logs | Recent `logs_2.sqlite` bodies contain safe-looking fields we do not fully capture yet: `auth_mode`, `turn.has_metadata_header`, `websocket.warmup`, `codex.request.reasoning_effort`, connection/request shape counters, and tool-output size metrics. | Yes. Plan an allowlist-only extension with aggregate/count semantics where IDs are involved; preserve prompt/message/tool/auth exclusion rules. |
-| 2 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
+| 1 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
 
 ## Codex Update Audit Details
 
@@ -66,6 +65,13 @@
   - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
 
 ## Done
+
+- Extend safe OTEL runtime dimensions from Codex 0.135 logs
+  - Added a turn-performance runtime-dimension layer for safe Codex 0.135 OTEL metadata in `logs_2.sqlite`.
+  - Captured allowlisted `auth_mode`, metadata-header presence, WebSocket warmup state, request reasoning effort, request/connection count buckets, and tool-output size buckets.
+  - Used `codex.request.reasoning_effort` as an explicit effort fallback only when the event effort is missing, while also storing it as a runtime dimension.
+  - Stored runtime dimensions and catalogs in SQLite, backup/import, clear-history, and Settings Data diagnostics while excluding prompts, messages, summaries, tool payloads, auth data, account/user IDs, emails, URLs, raw paths, request/response bodies, schemas, titles, descriptions, and arbitrary unknown fields.
+  - Preserved token totals, dashboards, History charts, menu-bar behavior, and the right-click menu.
 
 - Add safe app-server notification audit v2
   - Extended the existing JSON-backed app-server diagnostics with a bounded notification audit summary for newly exposed app-server notification methods.

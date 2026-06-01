@@ -42,6 +42,8 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(tables.contains("codex_session_task_timing_events"))
         XCTAssertTrue(tables.contains("codex_session_task_timing_import_files"))
         XCTAssertTrue(tables.contains("codex_session_task_timing_capture_state"))
+        XCTAssertTrue(tables.contains("codex_turn_performance_dimensions"))
+        XCTAssertTrue(tables.contains("codex_turn_performance_dimension_catalog"))
         XCTAssertTrue(tables.contains("codex_thread_catalog"))
         XCTAssertTrue(tables.contains("codex_thread_spawn_edges"))
         XCTAssertTrue(tables.contains("codex_thread_dynamic_tools"))
@@ -67,6 +69,23 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_sample"))
         XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_key_value_seen"))
         XCTAssertTrue(indexes.contains("idx_token_dimension_catalog_key_seen"))
+        XCTAssertTrue(indexes.contains("idx_codex_turn_performance_dimensions_event"))
+        XCTAssertTrue(indexes.contains("idx_codex_turn_performance_dimensions_key_value_seen"))
+        XCTAssertTrue(indexes.contains("idx_codex_turn_performance_dimension_catalog_key_seen"))
+        XCTAssertTrue(
+            try sqliteQueryPlanDetails(
+                at: databaseURL,
+                sql: """
+                EXPLAIN QUERY PLAN
+                SELECT dimension_value
+                FROM codex_turn_performance_dimension_catalog INDEXED BY idx_codex_turn_performance_dimension_catalog_key_seen
+                WHERE dimension_key = 'auth_mode'
+                ORDER BY last_seen_at DESC
+                """
+            )
+            .joined(separator: "\n")
+            .contains("idx_codex_turn_performance_dimension_catalog_key_seen")
+        )
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_started_at"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_completed_at"))
         XCTAssertTrue(indexes.contains("idx_codex_session_task_timing_event_timestamp"))
@@ -258,6 +277,37 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.availableTokenComponentSeries(), [])
         XCTAssertNil(try store.tokenTotalForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
         XCTAssertNil(try store.tokenCategoryTotalsForDay(containing: date("2026-04-14T21:00:00Z"), calendar: calendar))
+    }
+
+    private func sqliteQueryPlanDetails(at databaseURL: URL, sql: String) throws -> [String] {
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let database else {
+            XCTFail("Expected database to open")
+            return []
+        }
+        defer { sqlite3_close(database) }
+
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(database, sql, -1, &statement, nil), SQLITE_OK)
+        guard let statement else {
+            XCTFail("Expected statement to prepare")
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [String] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                rows.append(String(cString: sqlite3_column_text(statement, 3)))
+            case SQLITE_DONE:
+                return rows
+            default:
+                XCTFail("Unexpected SQLite result \(sqlite3_errmsg(database).map { String(cString: $0) } ?? "unknown error")")
+                return rows
+            }
+        }
     }
 
 }

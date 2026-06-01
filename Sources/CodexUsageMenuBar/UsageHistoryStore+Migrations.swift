@@ -233,6 +233,29 @@ extension UsageHistoryStore {
         )
         try execute(
             """
+            CREATE TABLE IF NOT EXISTS codex_turn_performance_dimensions (
+                source_key TEXT NOT NULL,
+                source_row_id INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                dimension_value TEXT NOT NULL,
+                seen_at INTEGER NOT NULL,
+                PRIMARY KEY (source_key, source_row_id, dimension_key, dimension_value)
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_turn_performance_dimension_catalog (
+                dimension_key TEXT NOT NULL,
+                dimension_value TEXT NOT NULL,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                PRIMARY KEY (dimension_key, dimension_value)
+            )
+            """
+        )
+        try execute(
+            """
             CREATE TABLE IF NOT EXISTS codex_session_task_timing_events (
                 session_id TEXT NOT NULL,
                 turn_id TEXT NOT NULL,
@@ -513,6 +536,9 @@ extension UsageHistoryStore {
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_kind_timestamp ON codex_turn_performance_events(event_kind, event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_transport_timestamp ON codex_turn_performance_events(transport, event_timestamp)")
         try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_success_timestamp ON codex_turn_performance_events(success, event_timestamp)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_dimensions_event ON codex_turn_performance_dimensions(source_key, source_row_id)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_dimensions_key_value_seen ON codex_turn_performance_dimensions(dimension_key, dimension_value, seen_at DESC)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_dimension_catalog_key_seen ON codex_turn_performance_dimension_catalog(dimension_key, last_seen_at DESC)")
         try execute(
             """
             CREATE INDEX IF NOT EXISTS idx_codex_turn_performance_events_reliability_cover
