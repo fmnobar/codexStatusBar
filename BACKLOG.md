@@ -64,6 +64,11 @@ _No normal Remaining Work. Keep Conditional Watchlist separate until real eviden
 
 ## Done
 
+- Keep benign Codex version/source mismatch out of the main popover
+  - Root cause: source-health diagnostics correctly detected multiple local Codex version signals, but the popover treated secondary Homebrew/version metadata mismatch as a user-facing warning even when the active bundled Codex executable was usable and current.
+  - Kept mismatch and stale update metadata visible in Settings > Data for diagnostics.
+  - Limited the compact popover warning to actionable source-health failures such as missing, malformed, or failed active Codex source checks.
+
 - Fix Performance Dashboard body empty-state mismatch when summaries have data
   - Stabilized Performance Dashboard display/cache identity so current-period snapshots do not become stale as the clipped query `now()` advances.
   - Kept SQL query requests clipped to the current time while using the selected logical period for cache/display matching.
@@ -102,7 +107,7 @@ _No normal Remaining Work. Keep Conditional Watchlist separate until real eviden
   - Added a read-only JSON-backed Codex source health cache under Application Support.
   - Reused the app-server executable candidate ordering for source diagnostics so the reported active executable matches the app-server path.
   - Captured only safe local version signals: executable paths, `codex --version` strings, file mtimes, models-cache client version/fetch time/model count, and `version.json` latest/check metadata.
-  - Added mismatch, stale, missing, malformed, and failed classifications with Settings Data diagnostics and a compact popover warning only when attention is needed.
+  - Added mismatch, stale, missing, malformed, and failed classifications with Settings Data diagnostics; the popover now stays focused on actionable missing/malformed/failed active-source checks.
   - Kept token totals, dashboards, capture/import behavior, and the right-click menu unchanged.
 
 - Add Codex Profile token comparison and local-token labels

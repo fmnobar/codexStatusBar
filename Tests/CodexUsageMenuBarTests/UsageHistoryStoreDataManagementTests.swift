@@ -1864,7 +1864,51 @@ extension UsageHistoryStoreTests {
         )
         XCTAssertEqual(reader.requestCount, 2)
         XCTAssertEqual(reloadedStore.state.status, .stale)
-        XCTAssertNotNil(reloadedStore.state.popoverWarningText)
+        XCTAssertNil(reloadedStore.state.popoverWarningText)
+        XCTAssertEqual(reloadedStore.state.snapshot?.warnings, ["version.json update metadata is stale."])
+    }
+
+    func testCodexSourceHealthMismatchStaysSettingsOnlyAndActiveFailuresWarnInPopover() {
+        let mismatchSnapshot = codexSourceHealthSnapshot(
+            checkedAt: date("2026-05-31T12:00:00Z"),
+            status: .mismatch,
+            warnings: ["Codex version signals differ: App-bundled 0.135.0-alpha.1, Homebrew 0.128.0."]
+        )
+        let mismatchState = CodexSourceHealthState(
+            snapshot: mismatchSnapshot,
+            status: mismatchSnapshot.status,
+            lastCheckedAt: mismatchSnapshot.checkedAt,
+            lastErrorText: nil
+        )
+
+        XCTAssertNil(mismatchState.popoverWarningText)
+        XCTAssertEqual(mismatchState.snapshot?.warnings.count, 1)
+
+        let missingSnapshot = CodexSourceHealthSnapshot(
+            checkedAt: date("2026-05-31T12:00:00Z"),
+            status: .missing,
+            activeExecutablePath: nil,
+            versionSignals: [],
+            modelsCachePath: nil,
+            modelsCacheClientVersion: nil,
+            modelsCacheFetchedAt: nil,
+            modelsCacheModelCount: nil,
+            modelsCacheErrorText: nil,
+            versionMetadataPath: nil,
+            versionMetadataLatestVersion: nil,
+            versionMetadataLastCheckedAt: nil,
+            versionMetadataErrorText: nil,
+            warnings: ["No executable Codex source was found."],
+            errorText: nil
+        )
+        let missingState = CodexSourceHealthState(
+            snapshot: missingSnapshot,
+            status: missingSnapshot.status,
+            lastCheckedAt: missingSnapshot.checkedAt,
+            lastErrorText: nil
+        )
+
+        XCTAssertEqual(missingState.popoverWarningText, "Codex executable source is missing.")
     }
 
     @MainActor

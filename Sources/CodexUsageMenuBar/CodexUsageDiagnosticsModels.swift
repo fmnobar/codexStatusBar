@@ -1496,9 +1496,9 @@ enum CodexSourceHealthStatus: String, Codable, Equatable, Sendable {
 
     var shouldShowPopoverWarning: Bool {
         switch self {
-        case .neverChecked, .healthy:
+        case .neverChecked, .healthy, .stale, .mismatch:
             return false
-        case .stale, .mismatch, .missing, .malformed, .failed:
+        case .missing, .malformed, .failed:
             return true
         }
     }
