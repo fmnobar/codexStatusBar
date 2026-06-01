@@ -7,9 +7,7 @@
 
 ## Remaining Work
 
-| Priority | Item | Evidence | Plan Needed? |
-| --- | --- | --- | --- |
-| 1 | Fix Performance Dashboard body empty-state mismatch when summaries have data | Installed-app verification after model-capability annotations showed Performance Dashboard Model breakdown for May 2026 with nonzero summary tiles, but the chart/table body rendered `No data for this selection`; Efficiency showed the same mismatch with token summaries. | Yes |
+_No normal Remaining Work. Keep Conditional Watchlist separate until real evidence appears._
 
 ## Codex Update Audit Details
 
@@ -65,6 +63,12 @@
   - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
 
 ## Done
+
+- Fix Performance Dashboard body empty-state mismatch when summaries have data
+  - Stabilized Performance Dashboard display/cache identity so current-period snapshots do not become stale as the clipped query `now()` advances.
+  - Kept SQL query requests clipped to the current time while using the selected logical period for cache/display matching.
+  - Summary tiles now show placeholders when displayed data does not belong to the current selection, preventing stale nonzero summaries from pairing with an empty body.
+  - Preserved Performance/Efficiency metrics, chart/table semantics, sorting, row selection, CSV output, model capability annotations, telemetry capture, and menu-bar behavior.
 
 - Add model/provider capability annotations to dashboards
   - Used already captured `codex_model_capabilities` data to add compact capability annotations to model rows in Token Dashboard and Performance Dashboard.

@@ -4772,6 +4772,7 @@ extension UsageHistoryStoreTests {
         XCTAssertFalse(viewModel.isDisplayingCurrentSnapshot)
         XCTAssertFalse(viewModel.hasVisibleData)
         XCTAssertEqual(viewModel.loadingState.title, "Loading performance data")
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "—")
         XCTAssertFalse(viewModel.canExportCSV)
 
         let didLoad = await reloadTask.value
@@ -4809,6 +4810,7 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(viewModel.shouldShowPrimaryLoadingState)
         XCTAssertFalse(viewModel.hasVisibleData)
         XCTAssertEqual(viewModel.loadingState.title, "Loading efficiency data")
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "—")
         XCTAssertFalse(viewModel.canExportCSV)
 
         try await Task.sleep(nanoseconds: 220_000_000)
@@ -4818,6 +4820,41 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.selectedMode, .efficiency)
         XCTAssertEqual(viewModel.summaryTiles.first?.value, "2.0k")
         XCTAssertTrue(viewModel.canExportCSV)
+    }
+
+    @MainActor
+    func testPerformanceDashboardCurrentPeriodSnapshotIdentitySurvivesClockAdvance() async throws {
+        var currentDate = date("2026-05-17T12:00:00Z")
+        let database = PerformanceDashboardCacheSpyDatabase()
+        let viewModel = PerformanceDashboardViewModel(
+            database: database,
+            now: { currentDate },
+            calendar: calendar,
+            automaticallyReload: false
+        )
+
+        await viewModel.reload()
+
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertTrue(viewModel.hasVisibleData)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+        XCTAssertTrue(viewModel.canExportCSV)
+
+        currentDate = date("2026-05-17T12:05:00Z")
+
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertTrue(viewModel.hasVisibleData)
+        XCTAssertEqual(viewModel.summaryTiles.first?.value, "1")
+        XCTAssertTrue(viewModel.canExportCSV)
+
+        await viewModel.reload()
+
+        let requestCount = await database.requestCount()
+        let requests = await database.requestsSnapshot()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(requests.first?.periodEnd, date("2026-05-17T12:00:00Z"))
+        XCTAssertTrue(viewModel.isDisplayingCurrentSnapshot)
+        XCTAssertTrue(viewModel.hasVisibleData)
     }
 
     @MainActor

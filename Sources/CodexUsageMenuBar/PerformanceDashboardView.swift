@@ -547,13 +547,31 @@ struct PerformanceDashboardSnapshotCacheKey: Hashable {
     let timeZoneIdentifier: String
 
     init(request: PerformanceDashboardLoadRequest) {
-        self.mode = request.mode.rawValue
-        self.breakdownDimension = request.breakdownDimension.rawValue
-        self.range = request.range.rawValue
-        self.periodStart = request.periodStart
-        self.periodEnd = request.periodEnd
-        self.calendarIdentifier = request.calendar.identifier
-        self.timeZoneIdentifier = request.calendar.timeZone.identifier
+        self.init(
+            mode: request.mode,
+            breakdownDimension: request.breakdownDimension,
+            range: request.range,
+            periodStart: request.periodStart,
+            periodEnd: request.periodEnd,
+            calendar: request.calendar
+        )
+    }
+
+    init(
+        mode: PerformanceDashboardMode,
+        breakdownDimension: PerformanceDashboardBreakdownDimension,
+        range: UsageHistoryRange,
+        periodStart: Date,
+        periodEnd: Date,
+        calendar: Calendar
+    ) {
+        self.mode = mode.rawValue
+        self.breakdownDimension = breakdownDimension.rawValue
+        self.range = range.rawValue
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+        self.calendarIdentifier = calendar.identifier
+        self.timeZoneIdentifier = calendar.timeZone.identifier
     }
 }
 
@@ -934,6 +952,10 @@ final class PerformanceDashboardViewModel: ObservableObject {
     }
 
     var performanceSummaryTiles: [PerformanceDashboardSummaryTile] {
+        guard isDisplayingCurrentSnapshot else {
+            return Self.performancePlaceholderSummaryTiles()
+        }
+
         let row = visibleSummaryRow
         return [
             PerformanceDashboardSummaryTile(
@@ -970,6 +992,10 @@ final class PerformanceDashboardViewModel: ObservableObject {
     }
 
     var efficiencySummaryTiles: [PerformanceDashboardSummaryTile] {
+        guard isDisplayingCurrentSnapshot else {
+            return Self.efficiencyPlaceholderSummaryTiles()
+        }
+
         let row = visibleEfficiencySummaryRow
         return [
             PerformanceDashboardSummaryTile(
@@ -1357,7 +1383,7 @@ final class PerformanceDashboardViewModel: ObservableObject {
             periodEnd: queryPeriod.end,
             calendar: calendar
         )
-        let cacheKey = PerformanceDashboardSnapshotCacheKey(request: request)
+        let cacheKey = currentSnapshotCacheKey()
         let instrumentationKind = nextReloadInstrumentationKind
         nextReloadInstrumentationKind = .performanceDashboardReload
         let instrumentationSpan = performanceInstrumentationStore?.begin(
@@ -1439,16 +1465,15 @@ final class PerformanceDashboardViewModel: ObservableObject {
     }
 
     private func currentSnapshotCacheKey() -> PerformanceDashboardSnapshotCacheKey {
-        let queryPeriod = periodForQuery()
-        let request = PerformanceDashboardLoadRequest(
+        let displayPeriod = selectedPeriod
+        return PerformanceDashboardSnapshotCacheKey(
             mode: selectedMode,
             breakdownDimension: selectedBreakdownDimension,
             range: selectedRange,
-            periodStart: queryPeriod.start,
-            periodEnd: queryPeriod.end,
+            periodStart: displayPeriod.start,
+            periodEnd: displayPeriod.end,
             calendar: calendar
         )
-        return PerformanceDashboardSnapshotCacheKey(request: request)
     }
 
     private func markLoadingIfCacheMiss() {
@@ -2180,6 +2205,26 @@ final class PerformanceDashboardViewModel: ObservableObject {
             return String(format: "%.1fk", value / 1_000)
         }
         return integerFormatter.string(from: NSNumber(value: value.rounded())) ?? "\(Int(value.rounded()))"
+    }
+
+    private static func performancePlaceholderSummaryTiles() -> [PerformanceDashboardSummaryTile] {
+        [
+            PerformanceDashboardSummaryTile(id: "turns", title: "Turns", value: "—", tint: .secondary),
+            PerformanceDashboardSummaryTile(id: "median_duration", title: "Median duration", value: "—", tint: .blue),
+            PerformanceDashboardSummaryTile(id: "p95_duration", title: "P95 duration", value: "—", tint: .orange),
+            PerformanceDashboardSummaryTile(id: "median_first_token", title: "First token", value: "—", tint: .green),
+            PerformanceDashboardSummaryTile(id: "failure_rate", title: "Failure rate", value: "—", tint: .secondary),
+        ]
+    }
+
+    private static func efficiencyPlaceholderSummaryTiles() -> [PerformanceDashboardSummaryTile] {
+        [
+            PerformanceDashboardSummaryTile(id: "total_tokens", title: "Total tokens", value: "—", tint: .secondary),
+            PerformanceDashboardSummaryTile(id: "tokens_per_minute", title: "Tokens/min", value: "—", tint: .blue),
+            PerformanceDashboardSummaryTile(id: "output_per_minute", title: "Output/min", value: "—", tint: .orange),
+            PerformanceDashboardSummaryTile(id: "cache_share", title: "Cache %", value: "—", tint: .green),
+            PerformanceDashboardSummaryTile(id: "reasoning_share", title: "Reasoning %", value: "—", tint: .purple),
+        ]
     }
 
     static func csvEscaped(_ value: String) -> String {
