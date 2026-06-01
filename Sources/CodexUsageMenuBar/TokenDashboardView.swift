@@ -299,6 +299,7 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var points: [TokenDashboardComponentPoint] = []
     @Published private(set) var series: [TokenDashboardSeries] = []
     @Published private(set) var attributionCoverageRows: [TokenAttributionCoverageRow] = []
+    @Published private(set) var modelCapabilities: [CodexModelCapability] = []
     @Published private(set) var availableBreakdownDimensions: [TokenDashboardBreakdownDimension] = [.model]
     @Published private(set) var selectedSeriesIDs: Set<String> = []
     @Published private(set) var historyBounds: UsageHistoryBounds?
@@ -735,6 +736,7 @@ final class TokenDashboardViewModel: ObservableObject {
             points = []
             series = []
             attributionCoverageRows = []
+            modelCapabilities = []
             isAttributionCoverageLoading = false
             attributionCoverageErrorMessage = nil
             coverageTask?.cancel()
@@ -872,6 +874,7 @@ final class TokenDashboardViewModel: ObservableObject {
             points = []
             series = []
             attributionCoverageRows = []
+            modelCapabilities = []
             isAttributionCoverageLoading = false
             attributionCoverageErrorMessage = nil
             historyBounds = result.historyBounds
@@ -885,6 +888,7 @@ final class TokenDashboardViewModel: ObservableObject {
 
         points = result.points
         series = result.series
+        modelCapabilities = result.modelCapabilities
         if updateCoverageRows {
             attributionCoverageRows = result.attributionCoverageRows
         }
@@ -1253,6 +1257,19 @@ final class TokenDashboardViewModel: ObservableObject {
         }
 
         return name
+    }
+
+    func modelCapabilityAnnotation(for series: TokenDashboardSeries) -> DashboardModelCapabilityAnnotation? {
+        guard selectedBreakdownDimension == .model,
+              series.kind == .model
+        else {
+            return nil
+        }
+
+        return DashboardModelCapabilityAnnotation.annotation(
+            forModelValue: series.contextID,
+            capabilities: modelCapabilities
+        )
     }
 
     var breakdownColumnTitle: String {
@@ -1912,15 +1929,13 @@ struct TokenDashboardView: View {
                             HStack(spacing: 6) {
                                 NeutralCheckboxMark(isSelected: viewModel.isSelected(row.series), size: 11)
 
-                                Text(viewModel.compactSeriesTitle(row.series.name))
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
+                                tokenSeriesLabel(row.series)
                             }
                             .frame(width: modelColumnWidth, alignment: .leading)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help(row.series.projectPath ?? row.series.name)
+                        .help(tokenSeriesHelpText(row.series))
 
                         Text(viewModel.formattedTokenValue(row.totalTokens))
                             .fontWeight(.semibold)
@@ -2048,6 +2063,29 @@ struct TokenDashboardView: View {
         Color.clear
             .frame(width: width, height: 1)
             .accessibilityHidden(true)
+    }
+
+    private func tokenSeriesLabel(_ series: TokenDashboardSeries) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(viewModel.compactSeriesTitle(series.name))
+                .lineLimit(1)
+
+            if let annotation = viewModel.modelCapabilityAnnotation(for: series) {
+                Text(annotation.compactText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func tokenSeriesHelpText(_ series: TokenDashboardSeries) -> String {
+        if let annotation = viewModel.modelCapabilityAnnotation(for: series) {
+            return annotation.detailText
+        }
+
+        return series.projectPath ?? series.name
     }
 
     private func width(for component: TokenHistoryComponent) -> CGFloat {

@@ -7,9 +7,7 @@
 
 ## Remaining Work
 
-| Priority | Item | Why | Planning |
-| --- | --- | --- | --- |
-| 1 | Add model/provider capability annotations to dashboards | Model capability capture is current and includes 7 models, reasoning levels, input modalities, web-search support, shell/apply-patch tool types, service tiers, context windows, and provider capability schema fields. These are not yet used to explain dashboard rows. | Yes. Plan analytics-only UI annotations for model rows: image/search/tool support, default service tier, context-window pressure, and capability gaps. |
+_No normal Remaining Work. Keep Conditional Watchlist separate until real evidence appears._
 
 ## Codex Update Audit Details
 
@@ -65,6 +63,12 @@
   - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
 
 ## Done
+
+- Add model/provider capability annotations to dashboards
+  - Used already captured `codex_model_capabilities` data to add compact capability annotations to model rows in Token Dashboard and Performance Dashboard.
+  - Shows context-window, reasoning, modality, tool, service/speed tier, API, and visibility context only for real model rows.
+  - Kept aggregate, unattributed, effort, project, generic dimension, transport, and wire API rows uncluttered.
+  - Preserved token totals, dashboard metrics, chart semantics, CSV output, telemetry capture/import behavior, storage schema, and the right-click menu.
 
 - Extend safe OTEL runtime dimensions from Codex 0.135 logs
   - Added a turn-performance runtime-dimension layer for safe Codex 0.135 OTEL metadata in `logs_2.sqlite`.

@@ -1859,6 +1859,128 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testTokenDashboardModelBreakdownCarriesCapabilityAnnotationsOnlyForModelRows() async throws {
+        let store = try makeStore()
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "thread-a",
+                    turnID: "turn-a",
+                    model: "gpt-5.5",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+                receivedAt: date("2026-05-02T10:15:00Z"),
+                context: TokenUsageContext(effort: "high")
+            ),
+        ])
+        try store.importCodexModelCapabilities(
+            CodexModelCapabilitiesImportBatch(
+                models: [
+                    try XCTUnwrap(CodexModelCapability(
+                        slug: "gpt-5.5",
+                        displayName: "GPT-5.5",
+                        visibility: "public",
+                        supportedInAPI: true,
+                        priority: 1,
+                        contextWindow: 100_000,
+                        maxContextWindow: 200_000,
+                        effectiveContextWindowPercent: 50,
+                        defaultReasoningLevel: "high",
+                        supportsReasoningSummaries: true,
+                        defaultReasoningSummary: "auto",
+                        supportsVerbosity: true,
+                        defaultVerbosity: "medium",
+                        shellType: "default_shell",
+                        applyPatchToolType: "apply_patch",
+                        webSearchToolType: "web_search",
+                        supportsParallelToolCalls: true,
+                        supportsImageDetailOriginal: true,
+                        supportsSearchTool: true,
+                        truncationPolicyMode: "auto",
+                        truncationPolicyLimit: nil,
+                        reasoningLevels: [
+                            try XCTUnwrap(CodexModelCapabilityReasoningLevel(position: 0, effort: "low")),
+                            try XCTUnwrap(CodexModelCapabilityReasoningLevel(position: 1, effort: "high")),
+                        ],
+                        serviceTiers: [
+                            try XCTUnwrap(CodexModelCapabilityServiceTier(position: 0, tierID: "priority", tierName: "Priority")),
+                        ],
+                        speedTiers: [
+                            try XCTUnwrap(CodexModelCapabilitySpeedTier(position: 0, tierID: "fast")),
+                        ],
+                        inputModalities: [
+                            try XCTUnwrap(CodexModelCapabilityInputModality(position: 0, modality: "text")),
+                            try XCTUnwrap(CodexModelCapabilityInputModality(position: 1, modality: "image")),
+                        ],
+                        toolIdentifiers: [
+                            try XCTUnwrap(CodexModelCapabilityToolIdentifier(position: 0, toolKind: "shell_type", toolValue: "default_shell")),
+                        ]
+                    )),
+                ],
+                cacheFetchedAt: date("2026-05-02T09:00:00Z"),
+                clientVersion: "1.0.0"
+            )
+        )
+
+        let worker = UsageHistoryDatabaseWorker(store: store)
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let modelSnapshot = try await worker.tokenDashboardSnapshot(
+            for: TokenDashboardLoadRequest(
+                breakdownDimension: .model,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                includeAttributionCoverage: false
+            )
+        )
+        let effortSnapshot = try await worker.tokenDashboardSnapshot(
+            for: TokenDashboardLoadRequest(
+                breakdownDimension: .effort,
+                range: .month,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                includeAttributionCoverage: false
+            )
+        )
+
+        XCTAssertEqual(modelSnapshot.modelCapabilities.map(\.slug), ["gpt-5.5"])
+        XCTAssertTrue(effortSnapshot.modelCapabilities.isEmpty)
+
+        let viewModel = TokenDashboardViewModel(
+            store: store,
+            now: { self.date("2026-05-17T12:00:00Z") },
+            calendar: calendar
+        )
+        await viewModel.reload()
+
+        let modelSeries = try XCTUnwrap(viewModel.series.first { $0.id == "model:gpt-5.5" })
+        let annotation = try XCTUnwrap(viewModel.modelCapabilityAnnotation(for: modelSeries))
+
+        XCTAssertTrue(annotation.compactText.contains("Ctx 200k"))
+        XCTAssertTrue(annotation.compactText.contains("Reason high"))
+        XCTAssertTrue(annotation.compactText.contains("Image"))
+        XCTAssertTrue(annotation.compactText.contains("Web"))
+        XCTAssertTrue(annotation.detailText.contains("Service tiers Priority"))
+        XCTAssertNil(viewModel.modelCapabilityAnnotation(for: try XCTUnwrap(viewModel.series.first { $0.id == TokenDashboardSeries.aggregateID })))
+
+        viewModel.selectedBreakdownDimension = .effort
+        await viewModel.reload()
+
+        XCTAssertTrue(viewModel.modelCapabilities.isEmpty)
+        XCTAssertNil(viewModel.modelCapabilityAnnotation(for: try XCTUnwrap(viewModel.series.first { $0.kind == .effort })))
+    }
+
+    @MainActor
     func testTokenDashboardViewModelRecordsReloadInstrumentation() async throws {
         var currentDate = date("2026-05-17T12:00:00Z")
         let store = try makeStore()
@@ -3948,13 +4070,16 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
         XCTAssertEqual(viewModel.summaryTiles.first?.value, "4")
         XCTAssertTrue(viewModel.efficiencyTokenSamples.isEmpty)
-        XCTAssertTrue(viewModel.modelCapabilities.isEmpty)
+        XCTAssertEqual(viewModel.modelCapabilities.map(\.slug), ["gpt-5.5"])
         XCTAssertEqual(viewModel.exportFilename, "codex-performance-dashboard-month-2026-05.csv")
         XCTAssertEqual(viewModel.formattedDuration(1_250), "1.2s")
         XCTAssertEqual(viewModel.formattedCountAxisValue(1_200_000), "1.2M")
         XCTAssertTrue(viewModel.csvText.contains("duration_bucket,month"))
         XCTAssertTrue(viewModel.csvText.contains("reliability_bucket,month"))
         XCTAssertTrue(viewModel.csvText.contains("breakdown_row,model,performance_all,All,aggregate,all,,4"))
+        let modelSeries = try XCTUnwrap(viewModel.breakdownRows.first { $0.series.id == "model:gpt-5.5" }?.series)
+        XCTAssertEqual(viewModel.modelCapabilityAnnotation(for: modelSeries)?.compactText, "Ctx 100k · Reason high · Image · Web")
+        XCTAssertNil(viewModel.modelCapabilityAnnotation(for: try XCTUnwrap(viewModel.breakdownRows.first { $0.series.id == PerformanceDashboardSeries.aggregateID }?.series)))
 
         viewModel.selectSeries("model:gpt-5.5")
 
@@ -3968,8 +4093,10 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.breakdownColumnTitle, "Transport")
         XCTAssertEqual(viewModel.selectedSeriesIDs, [PerformanceDashboardSeries.aggregateID])
+        XCTAssertTrue(viewModel.modelCapabilities.isEmpty)
         XCTAssertTrue(viewModel.breakdownRows.contains { $0.series.id == "transport:websocket" })
         XCTAssertTrue(viewModel.breakdownRows.contains { $0.series.id == "transport:sse" })
+        XCTAssertNil(viewModel.modelCapabilityAnnotation(for: try XCTUnwrap(viewModel.breakdownRows.first { $0.series.id == "transport:websocket" }?.series)))
 
         viewModel.selectSeries("transport:websocket")
 
@@ -4027,7 +4154,7 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(performanceResult.timingSamples.isEmpty)
         XCTAssertTrue(performanceResult.reliabilitySamples.isEmpty)
         XCTAssertTrue(performanceResult.efficiencyTokenSamples.isEmpty)
-        XCTAssertTrue(performanceResult.modelCapabilities.isEmpty)
+        XCTAssertEqual(performanceResult.modelCapabilities.map(\.slug), ["gpt-5.5"])
         XCTAssertFalse(performanceResult.durationPoints.isEmpty)
         XCTAssertFalse(performanceResult.reliabilityPoints.isEmpty)
         XCTAssertFalse(performanceResult.breakdownRows.isEmpty)
@@ -4047,7 +4174,7 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(efficiencyResult.timingSamples.isEmpty)
         XCTAssertTrue(efficiencyResult.reliabilitySamples.isEmpty)
         XCTAssertTrue(efficiencyResult.efficiencyTokenSamples.isEmpty)
-        XCTAssertTrue(efficiencyResult.modelCapabilities.isEmpty)
+        XCTAssertEqual(efficiencyResult.modelCapabilities.map(\.slug), ["gpt-5.5"])
         XCTAssertTrue(efficiencyResult.durationPoints.isEmpty)
         XCTAssertTrue(efficiencyResult.reliabilityPoints.isEmpty)
         XCTAssertTrue(efficiencyResult.breakdownRows.isEmpty)

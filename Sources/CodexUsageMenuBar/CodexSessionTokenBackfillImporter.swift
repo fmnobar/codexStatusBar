@@ -628,6 +628,181 @@ struct CodexModelCapabilityToolIdentifier: Equatable, Sendable {
     }
 }
 
+struct DashboardModelCapabilityAnnotation: Equatable, Sendable {
+    let modelSlug: String
+    let compactText: String
+    let detailText: String
+
+    init?(_ capability: CodexModelCapability) {
+        var badges: [String] = []
+        var details: [String] = []
+
+        if let contextWindow = capability.maxContextWindow ?? capability.contextWindow,
+           contextWindow > 0
+        {
+            var contextText = "Ctx \(Self.compactCount(contextWindow))"
+            if let effectivePercent = capability.effectiveContextWindowPercent,
+               effectivePercent > 0,
+               effectivePercent < 100
+            {
+                contextText += " @ \(effectivePercent)%"
+            }
+            badges.append(contextText)
+
+            var detail = "Context \(Self.groupedCount(contextWindow))"
+            if let context = capability.contextWindow,
+               let maxContext = capability.maxContextWindow,
+               context != maxContext
+            {
+                detail = "Context \(Self.groupedCount(context)) / max \(Self.groupedCount(maxContext))"
+            }
+            details.append(detail)
+        }
+
+        if let defaultReasoningLevel = capability.defaultReasoningLevel {
+            badges.append("Reason \(defaultReasoningLevel)")
+            details.append("Default reasoning \(defaultReasoningLevel)")
+        } else if !capability.reasoningLevels.isEmpty {
+            badges.append("Reason \(capability.reasoningLevels.count) levels")
+        }
+        if !capability.reasoningLevels.isEmpty {
+            details.append(
+                "Reasoning levels "
+                    + capability.reasoningLevels
+                        .sorted { $0.position < $1.position }
+                        .map(\.effort)
+                        .joined(separator: ", ")
+            )
+        }
+
+        let modalityValues = Set(capability.inputModalities.map(\.modality))
+        if modalityValues.contains("image") || capability.supportsImageDetailOriginal == true {
+            badges.append("Image")
+        }
+        if !modalityValues.isEmpty {
+            details.append("Input \(modalityValues.sorted().joined(separator: ", "))")
+        }
+
+        var tools: [String] = []
+        if capability.supportsSearchTool == true || capability.webSearchToolType != nil {
+            badges.append("Web")
+            tools.append("web search")
+        }
+        if capability.shellType != nil || capability.toolIdentifiers.contains(where: { $0.toolKind == "shell_type" }) {
+            badges.append("Shell")
+            tools.append("shell")
+        }
+        if capability.applyPatchToolType != nil || capability.toolIdentifiers.contains(where: { $0.toolKind == "apply_patch_tool_type" }) {
+            badges.append("Patch")
+            tools.append("apply patch")
+        }
+        if capability.supportsParallelToolCalls == true {
+            badges.append("Parallel")
+            tools.append("parallel tools")
+        }
+        if !tools.isEmpty {
+            details.append("Tools \(tools.joined(separator: ", "))")
+        }
+
+        if let serviceTier = capability.serviceTiers.sorted(by: { $0.position < $1.position }).first {
+            let tierName = serviceTier.tierName ?? serviceTier.tierID
+            badges.append("Tier \(Self.titleCase(tierName))")
+            let allTiers = capability.serviceTiers
+                .sorted { $0.position < $1.position }
+                .map { $0.tierName ?? $0.tierID }
+                .joined(separator: ", ")
+            details.append("Service tiers \(allTiers)")
+        }
+
+        if !capability.speedTiers.isEmpty {
+            details.append(
+                "Speed tiers "
+                    + capability.speedTiers
+                        .sorted { $0.position < $1.position }
+                        .map(\.tierID)
+                        .joined(separator: ", ")
+            )
+        }
+
+        if capability.supportedInAPI == false {
+            badges.append("No API")
+        }
+        if let supportedInAPI = capability.supportedInAPI {
+            details.append("API \(supportedInAPI ? "supported" : "not supported")")
+        }
+        if let visibility = capability.visibility {
+            details.append("Visibility \(visibility)")
+        }
+
+        let compactBadges = Array(badges.prefix(4))
+        guard !compactBadges.isEmpty || !details.isEmpty else {
+            return nil
+        }
+
+        modelSlug = capability.slug
+        compactText = compactBadges.isEmpty ? "Capabilities available" : compactBadges.joined(separator: " · ")
+        detailText = ([capability.displayName ?? capability.slug] + details).joined(separator: "\n")
+    }
+
+    static func annotationsBySlug(
+        from capabilities: [CodexModelCapability]
+    ) -> [String: DashboardModelCapabilityAnnotation] {
+        Dictionary(
+            uniqueKeysWithValues: capabilities.compactMap { capability in
+                guard let annotation = DashboardModelCapabilityAnnotation(capability) else {
+                    return nil
+                }
+                return (capability.slug, annotation)
+            }
+        )
+    }
+
+    static func annotation(
+        forModelValue modelValue: String?,
+        capabilities: [CodexModelCapability]
+    ) -> DashboardModelCapabilityAnnotation? {
+        guard let slug = CodexModelIdentifier.normalized(modelValue) else {
+            return nil
+        }
+        return annotationsBySlug(from: capabilities)[slug]
+    }
+
+    private static func compactCount(_ value: Int64) -> String {
+        let absolute = abs(Double(value))
+        if absolute >= 1_000_000 {
+            let scaled = Double(value) / 1_000_000
+            if scaled == scaled.rounded() {
+                return "\(Int(scaled))M"
+            }
+            return String(format: "%.1fM", scaled)
+        }
+        if absolute >= 1_000 {
+            let scaled = Double(value) / 1_000
+            if scaled == scaled.rounded() {
+                return "\(Int(scaled))k"
+            }
+            return String(format: "%.1fk", scaled)
+        }
+        return "\(value)"
+    }
+
+    private static func groupedCount(_ value: Int64) -> String {
+        value.formatted(.number.grouping(.automatic))
+    }
+
+    private static func titleCase(_ value: String) -> String {
+        value
+            .split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == " " })
+            .map { part in
+                guard let first = part.first else {
+                    return ""
+                }
+                return first.uppercased() + part.dropFirst().lowercased()
+            }
+            .joined(separator: " ")
+    }
+}
+
 struct CodexThreadCatalogImportResult: Equatable, Sendable {
     let threadsInsertedCount: Int
     let threadsUpdatedCount: Int

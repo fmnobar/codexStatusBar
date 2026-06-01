@@ -1696,6 +1696,19 @@ final class PerformanceDashboardViewModel: ObservableObject {
         Self.compactSeriesTitle(name)
     }
 
+    func modelCapabilityAnnotation(for series: PerformanceDashboardSeries) -> DashboardModelCapabilityAnnotation? {
+        guard selectedBreakdownDimension == .model,
+              series.kind == .model
+        else {
+            return nil
+        }
+
+        return DashboardModelCapabilityAnnotation.annotation(
+            forModelValue: series.contextID,
+            capabilities: modelCapabilities
+        )
+    }
+
     func sortBreakdownRows(by column: PerformanceDashboardBreakdownSortColumn) {
         breakdownSortState = nextSortState(current: breakdownSortState, column: column)
     }
@@ -2996,7 +3009,7 @@ private enum PerformanceDashboardLayout {
     static let summaryHeight: CGFloat = 70
     static let tableWidth: CGFloat = 760
     static let tableHeaderHeight: CGFloat = 22
-    static let tableRowHeight: CGFloat = 25
+    static let tableRowHeight: CGFloat = 36
     static let tableGridSpacing: CGFloat = 12
     static let tablePanelPadding: CGFloat = 14
     static let chartPanelPadding: CGFloat = 12
@@ -3604,12 +3617,29 @@ struct PerformanceDashboardView: View {
                     .foregroundStyle(viewModel.isSelected(series) ? .primary : .secondary)
                     .frame(width: 14)
 
-                Text(viewModel.compactSeriesTitle(series.name))
-                    .lineLimit(1)
-                    .help(series.projectPath ?? series.name)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(viewModel.compactSeriesTitle(series.name))
+                        .lineLimit(1)
+
+                    if let annotation = viewModel.modelCapabilityAnnotation(for: series) {
+                        Text(annotation.compactText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .help(performanceSeriesHelpText(series))
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private func performanceSeriesHelpText(_ series: PerformanceDashboardSeries) -> String {
+        if let annotation = viewModel.modelCapabilityAnnotation(for: series) {
+            return annotation.detailText
+        }
+
+        return series.projectPath ?? series.name
     }
 
     private func numericCell(_ value: String, width: CGFloat, isEmphasized: Bool = false) -> some View {

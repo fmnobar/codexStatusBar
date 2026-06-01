@@ -73,7 +73,26 @@ struct TokenDashboardLoadResult: Equatable {
     let attributionCoverageRows: [TokenAttributionCoverageRow]
     let availableBreakdownDimensions: [TokenDashboardBreakdownDimension]
     let historyBounds: UsageHistoryBounds?
+    let modelCapabilities: [CodexModelCapability]
     var queryTimings = TokenDashboardQueryTimings()
+
+    init(
+        points: [TokenDashboardComponentPoint],
+        series: [TokenDashboardSeries],
+        attributionCoverageRows: [TokenAttributionCoverageRow],
+        availableBreakdownDimensions: [TokenDashboardBreakdownDimension],
+        historyBounds: UsageHistoryBounds?,
+        modelCapabilities: [CodexModelCapability] = [],
+        queryTimings: TokenDashboardQueryTimings = TokenDashboardQueryTimings()
+    ) {
+        self.points = points
+        self.series = series
+        self.attributionCoverageRows = attributionCoverageRows
+        self.availableBreakdownDimensions = availableBreakdownDimensions
+        self.historyBounds = historyBounds
+        self.modelCapabilities = modelCapabilities
+        self.queryTimings = queryTimings
+    }
 
     static func == (lhs: TokenDashboardLoadResult, rhs: TokenDashboardLoadResult) -> Bool {
         lhs.points == rhs.points
@@ -81,6 +100,7 @@ struct TokenDashboardLoadResult: Equatable {
             && lhs.attributionCoverageRows == rhs.attributionCoverageRows
             && lhs.availableBreakdownDimensions == rhs.availableBreakdownDimensions
             && lhs.historyBounds == rhs.historyBounds
+            && lhs.modelCapabilities == rhs.modelCapabilities
     }
 }
 
@@ -239,12 +259,16 @@ enum UsageHistorySnapshotReader {
         let historyBounds = try measure(&timings.bounds) {
             try store.tokenDashboardBounds()
         }
+        let modelCapabilities = request.breakdownDimension == .model
+            ? try store.codexModelCapabilities()
+            : []
         return TokenDashboardLoadResult(
             points: points,
             series: series,
             attributionCoverageRows: attributionCoverageRows,
             availableBreakdownDimensions: availableBreakdownDimensions,
             historyBounds: historyBounds,
+            modelCapabilities: modelCapabilities,
             queryTimings: timings
         )
     }
@@ -280,7 +304,7 @@ enum UsageHistorySnapshotReader {
                 timingSamples: [],
                 reliabilitySamples: [],
                 efficiencyTokenSamples: [],
-                modelCapabilities: [],
+                modelCapabilities: request.breakdownDimension == .model ? try store.codexModelCapabilities() : [],
                 durationPoints: presentation.durationPoints,
                 reliabilityPoints: presentation.reliabilityPoints,
                 breakdownRows: presentation.breakdownRows,
@@ -301,7 +325,9 @@ enum UsageHistorySnapshotReader {
                 timingSamples: [],
                 reliabilitySamples: [],
                 efficiencyTokenSamples: [],
-                modelCapabilities: [],
+                modelCapabilities: Self.performanceDashboardShouldLoadModelCapabilities(for: request)
+                    ? try store.codexModelCapabilities()
+                    : [],
                 durationPoints: [],
                 reliabilityPoints: [],
                 breakdownRows: [],
@@ -310,6 +336,22 @@ enum UsageHistorySnapshotReader {
                 series: presentation.series,
                 historyBounds: try store.performanceDashboardBounds(includeEfficiencyTokens: true)
             )
+        }
+    }
+
+    private static func performanceDashboardShouldLoadModelCapabilities(
+        for request: PerformanceDashboardLoadRequest
+    ) -> Bool {
+        switch request.mode {
+        case .performance:
+            return request.breakdownDimension == .model
+        case .efficiency:
+            switch request.breakdownDimension {
+            case .model, .transport, .wireAPI:
+                return true
+            case .effort, .project, .source:
+                return false
+            }
         }
     }
 }
