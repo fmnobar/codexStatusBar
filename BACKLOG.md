@@ -7,7 +7,9 @@
 
 ## Remaining Work
 
-_No normal Remaining Work. Keep Conditional Watchlist separate until real evidence appears._
+| Priority | Item | Evidence | Plan Needed? |
+| --- | --- | --- | --- |
+| 1 | Fix Performance Dashboard body empty-state mismatch when summaries have data | Installed-app verification after model-capability annotations showed Performance Dashboard Model breakdown for May 2026 with nonzero summary tiles, but the chart/table body rendered `No data for this selection`; Efficiency showed the same mismatch with token summaries. | Yes |
 
 ## Codex Update Audit Details
 
