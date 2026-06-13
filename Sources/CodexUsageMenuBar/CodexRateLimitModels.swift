@@ -697,7 +697,28 @@ struct CodexProfileTokenUsageSnapshot: Codable, Equatable {
     let fetchedAt: Date
     let lifetimeTokens: Int64?
     let peakDailyTokens: Int64?
+    let longestRunningTurnSeconds: Int64?
+    let currentStreakDays: Int64?
+    let longestStreakDays: Int64?
     let dailyBuckets: [CodexProfileTokenDailyBucket]
+
+    init(
+        fetchedAt: Date,
+        lifetimeTokens: Int64?,
+        peakDailyTokens: Int64?,
+        longestRunningTurnSeconds: Int64? = nil,
+        currentStreakDays: Int64? = nil,
+        longestStreakDays: Int64? = nil,
+        dailyBuckets: [CodexProfileTokenDailyBucket]
+    ) {
+        self.fetchedAt = fetchedAt
+        self.lifetimeTokens = lifetimeTokens
+        self.peakDailyTokens = peakDailyTokens
+        self.longestRunningTurnSeconds = longestRunningTurnSeconds
+        self.currentStreakDays = currentStreakDays
+        self.longestStreakDays = longestStreakDays
+        self.dailyBuckets = dailyBuckets
+    }
 
     func bounded(to limit: Int) -> CodexProfileTokenUsageSnapshot {
         guard dailyBuckets.count > limit else {
@@ -708,6 +729,9 @@ struct CodexProfileTokenUsageSnapshot: Codable, Equatable {
             fetchedAt: fetchedAt,
             lifetimeTokens: lifetimeTokens,
             peakDailyTokens: peakDailyTokens,
+            longestRunningTurnSeconds: longestRunningTurnSeconds,
+            currentStreakDays: currentStreakDays,
+            longestStreakDays: longestStreakDays,
             dailyBuckets: Array(dailyBuckets.sorted { $0.date < $1.date }.suffix(limit))
         )
     }
@@ -824,34 +848,13 @@ struct CodexProfileTokenUsageResponse: Decodable {
         }
 
         func domainBucket() -> CodexProfileTokenDailyBucket? {
-            guard let startDate = Self.safeUTCDateString(startDate),
+            guard let startDate = CodexTokenUsageDateSanitizer.safeUTCDateString(startDate),
                   let tokens
             else {
                 return nil
             }
 
             return CodexProfileTokenDailyBucket(date: startDate, tokens: max(tokens, 0))
-        }
-
-        private static func safeUTCDateString(_ value: String?) -> String? {
-            guard let value, value.count == 10 else {
-                return nil
-            }
-
-            let scalars = Array(value.unicodeScalars)
-            guard scalars.indices.contains(9),
-                  scalars[4] == "-",
-                  scalars[7] == "-"
-            else {
-                return nil
-            }
-
-            let digitIndices = [0, 1, 2, 3, 5, 6, 8, 9]
-            guard digitIndices.allSatisfy({ CharacterSet.decimalDigits.contains(scalars[$0]) }) else {
-                return nil
-            }
-
-            return value
         }
     }
 
@@ -864,6 +867,71 @@ struct CodexProfileTokenUsageResponse: Decodable {
                 .compactMap { $0.domainBucket() }
                 .sorted { $0.date < $1.date }
         )
+    }
+}
+
+struct CodexAccountTokenUsageResponse: Decodable {
+    let summary: CodexAccountTokenUsageSummary?
+    let dailyUsageBuckets: [CodexAccountTokenUsageDailyBucket]?
+
+    func domainSnapshot(fetchedAt: Date) -> CodexProfileTokenUsageSnapshot {
+        CodexProfileTokenUsageSnapshot(
+            fetchedAt: fetchedAt,
+            lifetimeTokens: summary?.lifetimeTokens.map { max($0, 0) },
+            peakDailyTokens: summary?.peakDailyTokens.map { max($0, 0) },
+            longestRunningTurnSeconds: summary?.longestRunningTurnSec.map { max($0, 0) },
+            currentStreakDays: summary?.currentStreakDays.map { max($0, 0) },
+            longestStreakDays: summary?.longestStreakDays.map { max($0, 0) },
+            dailyBuckets: (dailyUsageBuckets ?? [])
+                .compactMap { $0.domainBucket() }
+                .sorted { $0.date < $1.date }
+        )
+    }
+}
+
+struct CodexAccountTokenUsageSummary: Decodable {
+    let lifetimeTokens: Int64?
+    let peakDailyTokens: Int64?
+    let longestRunningTurnSec: Int64?
+    let currentStreakDays: Int64?
+    let longestStreakDays: Int64?
+}
+
+struct CodexAccountTokenUsageDailyBucket: Decodable {
+    let startDate: String?
+    let tokens: Int64?
+
+    func domainBucket() -> CodexProfileTokenDailyBucket? {
+        guard let startDate = CodexTokenUsageDateSanitizer.safeUTCDateString(startDate),
+              let tokens
+        else {
+            return nil
+        }
+
+        return CodexProfileTokenDailyBucket(date: startDate, tokens: max(tokens, 0))
+    }
+}
+
+enum CodexTokenUsageDateSanitizer {
+    static func safeUTCDateString(_ value: String?) -> String? {
+        guard let value, value.count == 10 else {
+            return nil
+        }
+
+        let scalars = Array(value.unicodeScalars)
+        guard scalars.indices.contains(9),
+              scalars[4] == "-",
+              scalars[7] == "-"
+        else {
+            return nil
+        }
+
+        let digitIndices = [0, 1, 2, 3, 5, 6, 8, 9]
+        guard digitIndices.allSatisfy({ CharacterSet.decimalDigits.contains(scalars[$0]) }) else {
+            return nil
+        }
+
+        return value
     }
 }
 

@@ -789,6 +789,163 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertTrue(snapshot.dailyBuckets.isEmpty)
     }
 
+    func testAccountTokenUsageResponseDecodesSanitizedStatsOnly() throws {
+        let response = try JSONDecoder().decode(
+            CodexAccountTokenUsageResponse.self,
+            from: Data(
+                """
+                {
+                  "account": {
+                    "id": "acct-private",
+                    "email": "private@example.com"
+                  },
+                  "summary": {
+                    "lifetimeTokens": 17220508070,
+                    "peakDailyTokens": 987654321,
+                    "longestRunningTurnSec": 3661,
+                    "currentStreakDays": 3,
+                    "longestStreakDays": 19
+                  },
+                  "dailyUsageBuckets": [
+                    {"startDate": "2026-05-29", "tokens": 123},
+                    {"startDate": "2026-05-30", "tokens": 456},
+                    {"startDate": "bad value", "tokens": 999}
+                  ]
+                }
+                """.utf8
+            )
+        )
+
+        let snapshot = response.domainSnapshot(fetchedAt: Date(timeIntervalSince1970: 1_800_000_000))
+
+        XCTAssertEqual(snapshot.lifetimeTokens, 17_220_508_070)
+        XCTAssertEqual(snapshot.peakDailyTokens, 987_654_321)
+        XCTAssertEqual(snapshot.longestRunningTurnSeconds, 3_661)
+        XCTAssertEqual(snapshot.currentStreakDays, 3)
+        XCTAssertEqual(snapshot.longestStreakDays, 19)
+        XCTAssertEqual(snapshot.dailyBuckets, [
+            CodexProfileTokenDailyBucket(date: "2026-05-29", tokens: 123),
+            CodexProfileTokenDailyBucket(date: "2026-05-30", tokens: 456),
+        ])
+
+        let encodedSnapshot = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8) ?? ""
+        XCTAssertFalse(encodedSnapshot.contains("acct-private"))
+        XCTAssertFalse(encodedSnapshot.contains("private@example.com"))
+        XCTAssertFalse(encodedSnapshot.contains("account"))
+    }
+
+    func testAccountTokenUsageResponseAllowsNullSummaryAndBuckets() throws {
+        let response = try JSONDecoder().decode(
+            CodexAccountTokenUsageResponse.self,
+            from: Data(#"{"summary":null,"dailyUsageBuckets":null}"#.utf8)
+        )
+
+        let snapshot = response.domainSnapshot(fetchedAt: Date(timeIntervalSince1970: 1_800_000_000))
+
+        XCTAssertNil(snapshot.lifetimeTokens)
+        XCTAssertNil(snapshot.peakDailyTokens)
+        XCTAssertNil(snapshot.longestRunningTurnSeconds)
+        XCTAssertNil(snapshot.currentStreakDays)
+        XCTAssertNil(snapshot.longestStreakDays)
+        XCTAssertTrue(snapshot.dailyBuckets.isEmpty)
+    }
+
+    @MainActor
+    func testAppServerClientPrefersAccountUsageReadForProfileTokenSnapshot() async throws {
+        var requestedMethods: [String] = []
+        let client = CodexAppServerClient(
+            ensureConnectedOverride: {},
+            sendRequestOverride: { method, _ in
+                requestedMethods.append(method)
+                XCTAssertEqual(method, "account/usage/read")
+                return [
+                    "summary": [
+                        "lifetimeTokens": Int64(1_000),
+                        "peakDailyTokens": Int64(250),
+                        "longestRunningTurnSec": Int64(90),
+                        "currentStreakDays": Int64(2),
+                        "longestStreakDays": Int64(5),
+                    ],
+                    "dailyUsageBuckets": [
+                        [
+                            "startDate": "2026-05-30",
+                            "tokens": Int64(10),
+                        ],
+                    ],
+                ]
+            }
+        )
+
+        let snapshot = try await client.profileTokenUsageSnapshot()
+
+        XCTAssertEqual(requestedMethods, ["account/usage/read"])
+        XCTAssertEqual(snapshot.lifetimeTokens, 1_000)
+        XCTAssertEqual(snapshot.peakDailyTokens, 250)
+        XCTAssertEqual(snapshot.longestRunningTurnSeconds, 90)
+        XCTAssertEqual(snapshot.currentStreakDays, 2)
+        XCTAssertEqual(snapshot.longestStreakDays, 5)
+        XCTAssertEqual(snapshot.dailyBuckets.map(\.tokens), [10])
+    }
+
+    @MainActor
+    func testAppServerClientFallsBackToProfileHTTPWhenAccountUsageReadFails() async throws {
+        let endpoint = URL(string: "https://example.com/wham/profiles/me")!
+        var requestedMethods: [String] = []
+        var authorizationHeaders: [String?] = []
+        let profileClient = CodexProfileTokenUsageHTTPClient(
+            endpoint: endpoint,
+            responseLoader: { request in
+                authorizationHeaders.append(request.value(forHTTPHeaderField: "Authorization"))
+                return (
+                    Data(
+                        """
+                        {
+                          "stats": {
+                            "lifetime_tokens": 1000,
+                            "peak_daily_tokens": 250,
+                            "daily_usage_buckets": [
+                              {"start_date": "2026-05-30", "tokens": 10}
+                            ]
+                          }
+                        }
+                        """.utf8
+                    ),
+                    HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                )
+            },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+        let client = CodexAppServerClient(
+            ensureConnectedOverride: {},
+            sendRequestOverride: { method, _ in
+                requestedMethods.append(method)
+                if method == "account/usage/read" {
+                    throw CodexClientError.jsonRPCError("Method not found")
+                }
+                if method == "getAuthStatus" {
+                    return [
+                        "authMethod": "chatgpt",
+                        "authToken": "fallback-token",
+                        "requiresOpenaiAuth": true,
+                    ]
+                }
+                throw CodexClientError.invalidResponse
+            },
+            profileTokenUsageHTTPClient: profileClient
+        )
+
+        let snapshot = try await client.profileTokenUsageSnapshot()
+
+        XCTAssertEqual(requestedMethods, ["account/usage/read", "getAuthStatus"])
+        XCTAssertEqual(authorizationHeaders, ["Bearer fallback-token"])
+        XCTAssertEqual(snapshot.lifetimeTokens, 1_000)
+        XCTAssertEqual(snapshot.peakDailyTokens, 250)
+        XCTAssertEqual(snapshot.dailyBuckets.map(\.tokens), [10])
+        XCTAssertNil(snapshot.longestRunningTurnSeconds)
+        XCTAssertNil(snapshot.currentStreakDays)
+        XCTAssertNil(snapshot.longestStreakDays)
+    }
+
     @MainActor
     func testProfileTokenUsageHTTPClientRetriesUnauthorizedWithRefreshedAuth() async throws {
         let endpoint = URL(string: "https://example.com/wham/profiles/me")!

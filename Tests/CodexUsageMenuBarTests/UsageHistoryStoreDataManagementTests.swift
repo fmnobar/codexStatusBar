@@ -1582,6 +1582,9 @@ extension UsageHistoryStoreTests {
             fetchedAt: date("2026-05-30T12:00:00Z"),
             lifetimeTokens: 1_000,
             peakDailyTokens: 500,
+            longestRunningTurnSeconds: 90,
+            currentStreakDays: 2,
+            longestStreakDays: 5,
             dailyBuckets: [
                 CodexProfileTokenDailyBucket(date: "2026-05-28", tokens: 100),
                 CodexProfileTokenDailyBucket(date: "2026-05-29", tokens: 200),
@@ -1596,6 +1599,9 @@ extension UsageHistoryStoreTests {
 
         let reloadedStore = CodexProfileTokenUsageStore(fileURL: fileURL, dailyBucketLimit: 2)
         XCTAssertEqual(reloadedStore.state.snapshot?.lifetimeTokens, 1_000)
+        XCTAssertEqual(reloadedStore.state.snapshot?.longestRunningTurnSeconds, 90)
+        XCTAssertEqual(reloadedStore.state.snapshot?.currentStreakDays, 2)
+        XCTAssertEqual(reloadedStore.state.snapshot?.longestStreakDays, 5)
         XCTAssertEqual(reloadedStore.state.snapshot?.dailyBuckets.map(\.tokens), [200, 300])
 
         reloadedStore.recordFailure("Profile refresh failed.")
@@ -1603,6 +1609,30 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(reloadedStore.state.status, .failed)
         XCTAssertEqual(reloadedStore.state.lastErrorText, "Profile refresh failed.")
         XCTAssertEqual(reloadedStore.state.snapshot?.dailyBuckets.map(\.tokens), [200, 300])
+
+        let legacyFileURL = try makeTemporaryDirectory().appendingPathComponent("legacy-profile-token-usage.json")
+        try Data(
+            """
+            {
+              "snapshot": {
+                "fetchedAt": "2026-05-30T12:00:00Z",
+                "lifetimeTokens": 1000,
+                "peakDailyTokens": 500,
+                "dailyBuckets": [
+                  {"date": "2026-05-30", "tokens": 300}
+                ]
+              },
+              "status": "succeeded",
+              "lastSyncedAt": "2026-05-30T12:00:00Z"
+            }
+            """.utf8
+        ).write(to: legacyFileURL)
+
+        let legacyStore = CodexProfileTokenUsageStore(fileURL: legacyFileURL, dailyBucketLimit: 2)
+        XCTAssertEqual(legacyStore.state.snapshot?.lifetimeTokens, 1_000)
+        XCTAssertNil(legacyStore.state.snapshot?.longestRunningTurnSeconds)
+        XCTAssertNil(legacyStore.state.snapshot?.currentStreakDays)
+        XCTAssertNil(legacyStore.state.snapshot?.longestStreakDays)
     }
 
     @MainActor
@@ -1634,6 +1664,9 @@ extension UsageHistoryStoreTests {
                     fetchedAt: date("2026-05-30T12:00:00Z"),
                     lifetimeTokens: 1_000,
                     peakDailyTokens: 500,
+                    longestRunningTurnSeconds: 90,
+                    currentStreakDays: 2,
+                    longestStreakDays: 5,
                     dailyBuckets: [
                         CodexProfileTokenDailyBucket(date: "2026-05-30", tokens: 120),
                     ]
@@ -1652,12 +1685,16 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(profileClient.requestCount, 1)
         XCTAssertEqual(viewModel.profileTokenStatusText, "Synced")
+        XCTAssertEqual(viewModel.profileTokenLifetimeText, "1,000")
         XCTAssertEqual(viewModel.profileTokenPeakDailyText, "500")
+        XCTAssertEqual(viewModel.profileTokenLongestTurnText, "1m 30s")
+        XCTAssertEqual(viewModel.profileTokenCurrentStreakText, "2 days")
+        XCTAssertEqual(viewModel.profileTokenLongestStreakText, "5 days")
         XCTAssertEqual(viewModel.profileTokenBucketCountText, "1")
         XCTAssertEqual(viewModel.profileTokenComparisonRows.map(\.profileTokens), [1_000, 120, 120])
         XCTAssertEqual(viewModel.profileTokenComparisonRows.map(\.localCapturedTokens), [160, 160, 160])
         XCTAssertEqual(viewModel.profileTokenComparisonRows.map(\.deltaTokens), [-840, 40, 40])
-        XCTAssertEqual(viewModel.statusMessage, "Codex Profile tokens refreshed.")
+        XCTAssertEqual(viewModel.statusMessage, "Codex account tokens refreshed.")
         XCTAssertNil(viewModel.errorMessage)
     }
 
@@ -1708,7 +1745,7 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.profileTokenLastErrorText, "Codex auth is unavailable.")
         XCTAssertEqual(
             viewModel.errorMessage,
-            "Codex Profile tokens could not be refreshed because Codex auth is unavailable."
+            "Codex account tokens could not be refreshed because Codex auth is unavailable."
         )
         XCTAssertNil(viewModel.statusMessage)
     }

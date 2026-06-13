@@ -43,6 +43,9 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     private let portRange: ClosedRange<Int>
     private let readyTimeout: TimeInterval
     private let readyPollInterval: TimeInterval
+    private let ensureConnectedOverride: (@MainActor () async throws -> Void)?
+    private let sendRequestOverride: (@MainActor (String, Any?) async throws -> Any)?
+    private let profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient?
 
     private var process: Process?
     private var ownsProcess = false
@@ -60,12 +63,18 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         urlSession: URLSession = .shared,
         portRange: ClosedRange<Int> = 8877...8881,
         readyTimeout: TimeInterval = 5,
-        readyPollInterval: TimeInterval = 0.25
+        readyPollInterval: TimeInterval = 0.25,
+        ensureConnectedOverride: (@MainActor () async throws -> Void)? = nil,
+        sendRequestOverride: (@MainActor (String, Any?) async throws -> Any)? = nil,
+        profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient? = nil
     ) {
         self.urlSession = urlSession
         self.portRange = portRange
         self.readyTimeout = readyTimeout
         self.readyPollInterval = readyPollInterval
+        self.ensureConnectedOverride = ensureConnectedOverride
+        self.sendRequestOverride = sendRequestOverride
+        self.profileTokenUsageHTTPClient = profileTokenUsageHTTPClient
     }
 
     func start() async throws -> CodexUsageSnapshot {
@@ -112,6 +121,11 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     }
 
     private func ensureConnected() async throws {
+        if let ensureConnectedOverride {
+            try await ensureConnectedOverride()
+            return
+        }
+
         if isInitialized, webSocketTask != nil || standardInputFileHandle != nil {
             return
         }
@@ -358,7 +372,23 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     }
 
     private func fetchProfileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
-        let profileClient = CodexProfileTokenUsageHTTPClient(responseLoader: { [urlSession] request in
+        do {
+            return try await fetchAccountTokenUsageSnapshot()
+        } catch {
+            return try await fetchProfileTokenUsageHTTPSnapshot()
+        }
+    }
+
+    private func fetchAccountTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        let result = try await sendRequest(method: "account/usage/read", params: nil)
+        let data = try makeJSONData(from: result)
+        return try decoder
+            .decode(CodexAccountTokenUsageResponse.self, from: data)
+            .domainSnapshot(fetchedAt: Date())
+    }
+
+    private func fetchProfileTokenUsageHTTPSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        let profileClient = profileTokenUsageHTTPClient ?? CodexProfileTokenUsageHTTPClient(responseLoader: { [urlSession] request in
             try await urlSession.data(for: request)
         })
 
@@ -385,6 +415,10 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     }
 
     private func sendRequest(method: String, params: Any?) async throws -> Any {
+        if let sendRequestOverride {
+            return try await sendRequestOverride(method, params)
+        }
+
         guard webSocketTask != nil || standardInputFileHandle != nil else {
             throw CodexClientError.websocketUnavailable
         }

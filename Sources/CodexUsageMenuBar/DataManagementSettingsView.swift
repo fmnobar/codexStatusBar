@@ -508,6 +508,22 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenCountText(profileTokenUsageState.snapshot?.peakDailyTokens)
     }
 
+    var profileTokenLifetimeText: String {
+        tokenCountText(profileTokenUsageState.snapshot?.lifetimeTokens)
+    }
+
+    var profileTokenLongestTurnText: String {
+        durationSecondsText(profileTokenUsageState.snapshot?.longestRunningTurnSeconds)
+    }
+
+    var profileTokenCurrentStreakText: String {
+        dayCountText(profileTokenUsageState.snapshot?.currentStreakDays)
+    }
+
+    var profileTokenLongestStreakText: String {
+        dayCountText(profileTokenUsageState.snapshot?.longestStreakDays)
+    }
+
     var profileTokenBucketCountText: String {
         guard let snapshot = profileTokenUsageState.snapshot else {
             return "--"
@@ -697,18 +713,18 @@ final class DataManagementSettingsViewModel: ObservableObject {
             let snapshot = try await profileTokenClient.profileTokenUsageSnapshot()
             profileTokenUsageStore.recordSuccess(snapshot)
             profileTokenUsageState = profileTokenUsageStore.state
-            statusMessage = "Codex Profile tokens refreshed."
+            statusMessage = "Codex account tokens refreshed."
             errorMessage = nil
         } catch CodexClientError.authTokenUnavailable {
             profileTokenUsageStore.recordFailure("Codex auth is unavailable.")
             profileTokenUsageState = profileTokenUsageStore.state
             statusMessage = nil
-            errorMessage = "Codex Profile tokens could not be refreshed because Codex auth is unavailable."
+            errorMessage = "Codex account tokens could not be refreshed because Codex auth is unavailable."
         } catch {
-            profileTokenUsageStore.recordFailure("Codex Profile tokens could not be refreshed.")
+            profileTokenUsageStore.recordFailure("Codex account tokens could not be refreshed.")
             profileTokenUsageState = profileTokenUsageStore.state
             statusMessage = nil
-            errorMessage = "Codex Profile tokens could not be refreshed."
+            errorMessage = "Codex account tokens could not be refreshed."
         }
 
         await refreshProfileTokenComparisonSummary()
@@ -1018,6 +1034,36 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
         return "\(Int(milliseconds.rounded()))ms"
     }
+
+    private func durationSecondsText(_ seconds: Int64?) -> String {
+        guard let seconds else {
+            return "--"
+        }
+
+        let clampedSeconds = max(seconds, 0)
+        if clampedSeconds < 60 {
+            return "\(clampedSeconds)s"
+        }
+
+        let minutes = clampedSeconds / 60
+        let remainingSeconds = clampedSeconds % 60
+        if minutes < 60 {
+            return "\(minutes)m \(remainingSeconds)s"
+        }
+
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        return "\(hours)h \(remainingMinutes)m"
+    }
+
+    private func dayCountText(_ days: Int64?) -> String {
+        guard let days else {
+            return "--"
+        }
+
+        let clampedDays = max(days, 0)
+        return clampedDays == 1 ? "1 day" : "\(clampedDays) days"
+    }
 }
 
 struct DataManagementSettingsView: View {
@@ -1221,9 +1267,9 @@ struct DataManagementSettingsView: View {
     }
 
     private var profileTokenSection: some View {
-        Section("Codex Profile Tokens") {
+        Section("Codex Account Tokens") {
             HStack {
-                Button(viewModel.isRefreshingProfileTokens ? "Refreshing..." : "Refresh Profile Tokens") {
+                Button(viewModel.isRefreshingProfileTokens ? "Refreshing..." : "Refresh Account Tokens") {
                     Task {
                         await viewModel.refreshProfileTokens()
                     }
@@ -1237,7 +1283,7 @@ struct DataManagementSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("Codex Profile tokens are server/account counts. Local captured tokens are component totals from this Mac: input + cached input + output + reasoning.")
+            Text("Codex account tokens are server counts. Local captured tokens are component totals from this Mac: input + cached input + output + reasoning.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -1245,6 +1291,11 @@ struct DataManagementSettingsView: View {
                 GridRow {
                     Text("Last sync")
                     Text(viewModel.profileTokenLastSyncText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Server lifetime")
+                    Text(viewModel.profileTokenLifetimeText)
                         .monospacedDigit()
                 }
                 GridRow {
@@ -1258,6 +1309,21 @@ struct DataManagementSettingsView: View {
                         .monospacedDigit()
                 }
                 GridRow {
+                    Text("Longest turn")
+                    Text(viewModel.profileTokenLongestTurnText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Current streak")
+                    Text(viewModel.profileTokenCurrentStreakText)
+                        .monospacedDigit()
+                }
+                GridRow {
+                    Text("Longest streak")
+                    Text(viewModel.profileTokenLongestStreakText)
+                        .monospacedDigit()
+                }
+                GridRow {
                     Text("Last error")
                     Text(viewModel.profileTokenLastErrorText)
                         .lineLimit(2)
@@ -1267,7 +1333,7 @@ struct DataManagementSettingsView: View {
             .font(.caption)
 
             if viewModel.profileTokenComparisonRows.isEmpty {
-                Text("No comparison is available yet. Refresh Codex Profile tokens to compare account counts with local captured tokens.")
+                Text("No comparison is available yet. Refresh Codex account tokens to compare server counts with local captured tokens.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -1275,7 +1341,7 @@ struct DataManagementSettingsView: View {
                     GridRow {
                         Text("Period")
                             .fontWeight(.semibold)
-                        Text("Profile")
+                        Text("Server account")
                             .fontWeight(.semibold)
                         Text("Local captured")
                             .fontWeight(.semibold)
