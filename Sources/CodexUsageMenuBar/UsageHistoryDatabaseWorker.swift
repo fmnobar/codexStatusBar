@@ -125,6 +125,7 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
     func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
+    func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
     func exportBackup(to destinationURL: URL) async throws
     func importBackup(from sourceURL: URL) async throws
@@ -144,6 +145,7 @@ protocol UsageHistoryDashboardQueryWorking: Sendable {
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
     func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
+    func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics
 }
 
 extension UsageHistoryDatabaseWorking {
@@ -158,6 +160,10 @@ extension UsageHistoryDatabaseWorking {
     func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals {
         throw UsageHistoryStoreError.databaseOperationFailed("Local token comparison totals are unavailable.")
     }
+
+    func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics {
+        throw UsageHistoryStoreError.databaseOperationFailed("Local source stored metrics are unavailable.")
+    }
 }
 
 extension UsageHistoryDashboardQueryWorking {
@@ -167,6 +173,10 @@ extension UsageHistoryDashboardQueryWorking {
 
     func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals {
         throw UsageHistoryStoreError.databaseOperationFailed("Local token comparison totals are unavailable.")
+    }
+
+    func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics {
+        throw UsageHistoryStoreError.databaseOperationFailed("Local source stored metrics are unavailable.")
     }
 }
 
@@ -416,6 +426,10 @@ actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
         try UsageHistorySnapshotReader.performanceDashboardSnapshot(store: store(), request: request)
     }
 
+    func localSourceStoredMetrics() throws -> CodexLocalSourceStoredMetrics {
+        try store().localSourceStoredMetrics()
+    }
+
     private func store() throws -> UsageHistoryStore {
         if let cachedStore {
             return cachedStore
@@ -533,6 +547,10 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult {
         try await dashboardQueryWorker.performanceDashboardSnapshot(for: request)
+    }
+
+    func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics {
+        try await dashboardQueryWorker.localSourceStoredMetrics()
     }
 
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
@@ -952,6 +970,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) throws -> PerformanceDashboardLoadResult {
         try UsageHistorySnapshotReader.performanceDashboardSnapshot(store: store(), request: request)
+    }
+
+    func localSourceStoredMetrics() throws -> CodexLocalSourceStoredMetrics {
+        try store().localSourceStoredMetrics()
     }
 
     func databaseInfo() throws -> UsageHistoryDatabaseInfo {

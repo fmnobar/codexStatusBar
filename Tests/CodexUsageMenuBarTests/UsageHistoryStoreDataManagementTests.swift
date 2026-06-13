@@ -1574,6 +1574,217 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.modelCapabilitiesCaptureLastErrorText, "None")
     }
 
+    func testLocalSourceStoredMetricsReportAggregateCountsAndTimestamps() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let timestamp = date("2026-06-13T12:00:00Z")
+
+        try populateLocalSourceCoverageRows(in: store, timestamp: timestamp)
+
+        let metrics = try store.localSourceStoredMetrics()
+
+        XCTAssertEqual(metrics.tokenSamples.rowCount, 1)
+        XCTAssertEqual(metrics.tokenSamples.latestStoredEventAt, timestamp)
+        XCTAssertEqual(metrics.turnPerformanceEvents.rowCount, 1)
+        XCTAssertEqual(metrics.turnPerformanceEvents.latestStoredEventAt, timestamp)
+        XCTAssertEqual(metrics.runtimeDimensions.rowCount, 1)
+        XCTAssertEqual(metrics.runtimeDimensions.latestStoredEventAt, timestamp)
+        XCTAssertEqual(metrics.sessionTaskTimingEvents.rowCount, 1)
+        XCTAssertEqual(metrics.sessionTaskTimingEvents.latestStoredEventAt, timestamp)
+        XCTAssertEqual(metrics.threadCatalog.rowCount, 1)
+        XCTAssertEqual(metrics.threadCatalog.latestStoredEventAt, timestamp)
+        XCTAssertEqual(metrics.modelCapabilities.rowCount, 1)
+        XCTAssertNotNil(metrics.modelCapabilities.latestStoredEventAt)
+    }
+
+    @MainActor
+    func testSettingsViewModelShowsLocalSourceCoverageSummaryAndPassiveAppServerSamples() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let timestamp = date("2026-06-13T12:00:00Z")
+        try populateLocalSourceCoverageRows(in: store, timestamp: timestamp)
+        try recordFreshLocalSourceCoverageCaptureStates(in: store, timestamp: timestamp)
+
+        let diagnosticsURL = try makeTemporaryDirectory().appendingPathComponent("diagnostics.json")
+        let diagnosticsStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL, now: { timestamp })
+        diagnosticsStore.record(.connected(mode: .webSocket))
+        diagnosticsStore.record(.remoteControlHealth(CodexRemoteControlHealthSnapshot(
+            checkedAt: timestamp,
+            status: .available,
+            enrollmentCount: 1,
+            latestEnrollmentUpdatedAt: timestamp
+        )))
+
+        let viewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            tokenPayloadAuditDiagnosticsStore: diagnosticsStore,
+            codexSourceHealthReader: StubCodexSourceHealthReader(snapshots: [.healthyFixture(checkedAt: timestamp)]),
+            localSourceCoverageProbe: StubCodexLocalSourceCoverageProbe(snapshot: .freshFixture(at: timestamp)),
+            now: { timestamp }
+        )
+
+        await viewModel.refreshData()
+
+        XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "token-samples" }?.status, .healthy)
+        XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "runtime-dimensions" }?.status, .healthy)
+        XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "remote-control-enrollment" }?.status, .healthy)
+        XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "app-server-token-notifications" }?.status, .passiveNoSamples)
+        XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "app-server-notification-audit" }?.status, .passiveNoSamples)
+        XCTAssertTrue(viewModel.localSourceCoverageHeadlineText.contains("passive no-sample"))
+    }
+
+    func testLocalSourceCoverageProbeReportsMissingSourcesAndSchemasWithoutRawValues() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let stateDatabaseURL = temporaryDirectory.appendingPathComponent("state_5.sqlite")
+        let modelsCacheURL = temporaryDirectory.appendingPathComponent("models_cache.json")
+        try createSQLiteDatabase(at: stateDatabaseURL, sql: "CREATE TABLE unrelated(id INTEGER);")
+        try #"{"unexpected":true}"#.data(using: .utf8)!.write(to: modelsCacheURL)
+
+        let probe = CodexLocalSourceCoverageProbe(
+            logsDatabaseURL: temporaryDirectory.appendingPathComponent("missing-logs.sqlite"),
+            sessionDirectories: [temporaryDirectory.appendingPathComponent("missing-sessions", isDirectory: true)],
+            stateDatabaseURL: stateDatabaseURL,
+            modelsCacheURL: modelsCacheURL
+        )
+
+        let snapshot = probe.probeSnapshot(now: date("2026-06-13T12:00:00Z"))
+
+        XCTAssertEqual(snapshot.logsDatabase.status, .missingSource)
+        XCTAssertEqual(snapshot.sessionDirectory.status, .missingSource)
+        XCTAssertEqual(snapshot.stateDatabase.status, .schemaMissing)
+        XCTAssertEqual(snapshot.modelsCache.status, .schemaMissing)
+    }
+
+    func testLocalSourceCoverageProbeUsesStateUpdatedAtFallbackWhenMillisecondsAreMissing() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let stateDatabaseURL = temporaryDirectory.appendingPathComponent("state_5.sqlite")
+        let laterDate = date("2026-06-13T12:00:00Z")
+        let earlierDate = date("2026-06-01T12:00:00Z")
+        try createSQLiteDatabase(
+            at: stateDatabaseURL,
+            sql: """
+            CREATE TABLE threads(id TEXT PRIMARY KEY, updated_at_ms INTEGER, updated_at INTEGER);
+            INSERT INTO threads(id, updated_at_ms, updated_at)
+            VALUES ('old', \(Int64(earlierDate.timeIntervalSince1970 * 1000)), \(Int64(earlierDate.timeIntervalSince1970)));
+            INSERT INTO threads(id, updated_at_ms, updated_at)
+            VALUES ('new', NULL, \(Int64(laterDate.timeIntervalSince1970)));
+            """
+        )
+
+        let probe = CodexLocalSourceCoverageProbe(
+            logsDatabaseURL: temporaryDirectory.appendingPathComponent("missing-logs.sqlite"),
+            sessionDirectories: [temporaryDirectory],
+            stateDatabaseURL: stateDatabaseURL,
+            modelsCacheURL: temporaryDirectory.appendingPathComponent("missing-models-cache.json")
+        )
+
+        let snapshot = probe.probeSnapshot(now: date("2026-06-13T13:00:00Z"))
+
+        XCTAssertEqual(snapshot.stateDatabase.status, .available)
+        XCTAssertEqual(snapshot.stateDatabase.sourceRowCount, 2)
+        XCTAssertEqual(snapshot.stateDatabase.latestSourceEventAt, laterDate)
+    }
+
+    func testLocalSourceCoverageProbeParsesFractionalModelsCacheFetchedAt() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let modelsCacheURL = temporaryDirectory.appendingPathComponent("models_cache.json")
+        try """
+        {
+          "fetched_at": "2026-05-30T19:24:22.281646Z",
+          "models": [
+            { "slug": "gpt-5.5" }
+          ]
+        }
+        """.data(using: .utf8)!.write(to: modelsCacheURL)
+
+        let probe = CodexLocalSourceCoverageProbe(
+            logsDatabaseURL: temporaryDirectory.appendingPathComponent("missing-logs.sqlite"),
+            sessionDirectories: [temporaryDirectory],
+            stateDatabaseURL: temporaryDirectory.appendingPathComponent("missing-state.sqlite"),
+            modelsCacheURL: modelsCacheURL
+        )
+
+        let snapshot = probe.probeSnapshot(now: date("2026-06-13T13:00:00Z"))
+
+        XCTAssertEqual(snapshot.modelsCache.status, .available)
+        XCTAssertEqual(snapshot.modelsCache.sourceRowCount, 1)
+        let expectedFetchedAt = date("2026-05-30T19:24:22Z").addingTimeInterval(0.281646)
+        XCTAssertEqual(
+            try XCTUnwrap(snapshot.modelsCache.latestSourceEventAt).timeIntervalSince1970,
+            expectedFetchedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+    }
+
+    func testLocalSourceCoverageSnapshotSurfacesStaleAndSanitizesPrivateErrors() throws {
+        let now = date("2026-06-13T12:00:00Z")
+        let oldDate = date("2026-06-01T12:00:00Z")
+        let snapshot = CodexLocalSourceCoverageSnapshot.make(
+            localTokenCaptureState: CodexLiveTokenCaptureState(
+                lastCheckedAt: now,
+                lastImportedEventAt: now,
+                lastLogRowID: 42,
+                status: .imported,
+                result: TokenUsageImportResult(insertedCount: 1, duplicateCount: 0),
+                lastErrorText: "/Users/private/token.log"
+            ),
+            turnPerformanceCaptureState: CodexTurnPerformanceCaptureState(
+                lastCheckedAt: now,
+                lastImportedEventAt: now,
+                lastLogRowID: 43,
+                status: .imported,
+                insertedCount: 1,
+                duplicateCount: 0
+            ),
+            turnPerformanceRuntimeDimensionSummary: CodexOtelRuntimeDimensionSummary(
+                rowCount: 1,
+                distinctKeyCount: 1,
+                latestSeenAt: now
+            ),
+            sessionTaskTimingCaptureState: CodexSessionTaskTimingCaptureState(
+                lastCheckedAt: oldDate,
+                lastImportedEventAt: oldDate,
+                status: .imported,
+                filesDiscovered: 1,
+                filesScanned: 1,
+                insertedCount: 1
+            ),
+            threadCatalogCaptureState: CodexThreadCatalogCaptureState(
+                lastCheckedAt: now,
+                lastImportedThreadUpdatedAt: now,
+                status: .updated,
+                threadsUpdatedCount: 1,
+                sourcePath: "/Users/private/.codex/state_5.sqlite",
+                lastErrorText: "thread-secret"
+            ),
+            modelCapabilitiesCaptureState: CodexModelCapabilitiesCaptureState(
+                lastCheckedAt: now,
+                cacheFetchedAt: now,
+                status: .malformed,
+                sourcePath: "/Users/private/.codex/models_cache.json",
+                lastErrorText: "model-secret"
+            ),
+            tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics(now: now),
+            storedMetrics: CodexLocalSourceStoredMetrics(
+                tokenSamples: CodexLocalSourceStoredMetric(rowCount: 1, latestStoredEventAt: now),
+                turnPerformanceEvents: CodexLocalSourceStoredMetric(rowCount: 1, latestStoredEventAt: now),
+                runtimeDimensions: CodexLocalSourceStoredMetric(rowCount: 1, latestStoredEventAt: now),
+                sessionTaskTimingEvents: CodexLocalSourceStoredMetric(rowCount: 1, latestStoredEventAt: oldDate),
+                threadCatalog: CodexLocalSourceStoredMetric(rowCount: 1, latestStoredEventAt: now),
+                modelCapabilities: CodexLocalSourceStoredMetric(rowCount: 1, latestStoredEventAt: now)
+            ),
+            sourceProbes: .freshFixture(at: now),
+            now: now
+        )
+
+        XCTAssertEqual(snapshot.rows.first { $0.id == "session-task-timing" }?.status, .stale)
+        XCTAssertEqual(snapshot.rows.first { $0.id == "model-capabilities" }?.status, .schemaMissing)
+
+        let auditText = snapshot.rows.map(\.privacyAuditText).joined(separator: " ")
+        XCTAssertFalse(auditText.contains("/Users/private"))
+        XCTAssertFalse(auditText.contains("thread-secret"))
+        XCTAssertFalse(auditText.contains("model-secret"))
+    }
+
     @MainActor
     func testProfileTokenUsageStorePersistsBoundsAndFailureState() throws {
         let fileURL = try makeTemporaryDirectory().appendingPathComponent("profile-token-usage.json")
@@ -2177,6 +2388,181 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    private func populateLocalSourceCoverageRows(in store: UsageHistoryStore, timestamp: Date) throws {
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "coverage-thread",
+                turnID: "coverage-turn",
+                lastTotal: 120,
+                totalTotal: 120
+            ),
+            at: timestamp
+        )
+
+        _ = try store.importTurnPerformanceEvents([
+            CodexTurnPerformanceEvent(
+                sourceKey: "codex-otel-logs",
+                sourceRowID: 100,
+                target: "codex_otel.trace_safe",
+                eventTimestamp: timestamp,
+                eventName: "codex.sse_event",
+                eventKind: "response.completed",
+                durationMilliseconds: 100,
+                success: true,
+                errorSummary: nil,
+                threadID: "coverage-thread",
+                turnID: "coverage-turn",
+                model: "gpt-5.5",
+                sessionID: "coverage-thread",
+                projectPath: nil,
+                effort: nil,
+                source: nil,
+                originator: nil,
+                appVersion: nil,
+                terminalType: nil,
+                transport: nil,
+                wireAPI: nil,
+                apiPath: nil,
+                runtimeDimensions: [
+                    try XCTUnwrap(CodexOtelRuntimeDimension(.authMode, "chatgpt")),
+                ]
+            ),
+        ])
+
+        _ = try store.importSessionTaskTimingEvents([
+            CodexSessionTaskTimingEvent(
+                sessionID: "coverage-session",
+                turnID: "coverage-turn",
+                startedAt: timestamp,
+                completedAt: timestamp.addingTimeInterval(2),
+                durationMilliseconds: 2_000,
+                timeToFirstTokenMilliseconds: 500,
+                modelContextWindow: 258_400,
+                collaborationModeKind: "agentic",
+                model: "gpt-5.5",
+                projectPath: nil,
+                effort: nil,
+                source: nil,
+                recordedAt: timestamp
+            )!,
+        ])
+
+        _ = try store.importCodexThreadCatalog(
+            CodexThreadCatalogImportBatch(
+                threads: [
+                    try XCTUnwrap(CodexThreadCatalogThread(
+                        threadID: "coverage-thread",
+                        rolloutPath: nil,
+                        createdAt: timestamp,
+                        updatedAt: timestamp,
+                        source: "cli",
+                        modelProvider: "openai",
+                        cwd: nil,
+                        sandboxPolicy: nil,
+                        approvalMode: nil,
+                        tokensUsed: 120,
+                        hasUserEvent: true,
+                        archived: false,
+                        archivedAt: nil,
+                        gitSHA: nil,
+                        gitBranch: nil,
+                        gitOriginURL: nil,
+                        cliVersion: nil,
+                        agentNickname: nil,
+                        agentRole: nil,
+                        agentPath: nil,
+                        memoryMode: nil,
+                        model: "gpt-5.5",
+                        reasoningEffort: nil,
+                        threadSource: "cli"
+                    )),
+                ],
+                spawnEdges: [],
+                dynamicTools: [],
+                pruneThreads: true,
+                pruneSpawnEdges: true,
+                pruneDynamicTools: true
+            )
+        )
+
+        _ = try store.importCodexModelCapabilities(
+            CodexModelCapabilitiesImportBatch(
+                models: [
+                    try XCTUnwrap(CodexModelCapability(
+                        slug: "gpt-5.5",
+                        displayName: "GPT-5.5",
+                        visibility: "stable",
+                        supportedInAPI: true,
+                        priority: 1,
+                        contextWindow: 258_400,
+                        maxContextWindow: 400_000,
+                        effectiveContextWindowPercent: 82,
+                        defaultReasoningLevel: "high",
+                        supportsReasoningSummaries: true,
+                        defaultReasoningSummary: "auto",
+                        supportsVerbosity: true,
+                        defaultVerbosity: "medium",
+                        shellType: "default_shell",
+                        applyPatchToolType: "apply_patch",
+                        webSearchToolType: "web_search",
+                        supportsParallelToolCalls: true,
+                        supportsImageDetailOriginal: false,
+                        supportsSearchTool: true,
+                        truncationPolicyMode: "auto",
+                        truncationPolicyLimit: 12_000,
+                        reasoningLevels: [],
+                        serviceTiers: [],
+                        speedTiers: [],
+                        inputModalities: [],
+                        toolIdentifiers: []
+                    )),
+                ],
+                cacheFetchedAt: timestamp,
+                clientVersion: "0.140.0"
+            )
+        )
+    }
+
+    private func recordFreshLocalSourceCoverageCaptureStates(in store: UsageHistoryStore, timestamp: Date) throws {
+        try store.recordCodexLiveTokenCaptureState(CodexLiveTokenCaptureState(
+            lastCheckedAt: timestamp,
+            lastImportedEventAt: timestamp,
+            lastLogRowID: 100,
+            status: .imported,
+            result: TokenUsageImportResult(insertedCount: 1, duplicateCount: 0)
+        ))
+        try store.recordCodexTurnPerformanceCaptureState(CodexTurnPerformanceCaptureState(
+            lastCheckedAt: timestamp,
+            lastImportedEventAt: timestamp,
+            lastLogRowID: 100,
+            status: .imported,
+            insertedCount: 1,
+            duplicateCount: 0
+        ))
+        try store.recordCodexSessionTaskTimingCaptureState(CodexSessionTaskTimingCaptureState(
+            lastCheckedAt: timestamp,
+            lastImportedEventAt: timestamp,
+            status: .imported,
+            filesDiscovered: 1,
+            filesScanned: 1,
+            insertedCount: 1
+        ))
+        try store.recordCodexThreadCatalogCaptureState(CodexThreadCatalogCaptureState(
+            lastCheckedAt: timestamp,
+            lastImportedThreadUpdatedAt: timestamp,
+            status: .updated,
+            threadsUpdatedCount: 1
+        ))
+        try store.recordCodexModelCapabilitiesCaptureState(CodexModelCapabilitiesCaptureState(
+            lastCheckedAt: timestamp,
+            cacheFetchedAt: timestamp,
+            status: .updated,
+            modelsUpdatedCount: 1,
+            childRowsInsertedCount: 1,
+            clientVersion: "0.140.0"
+        ))
+    }
+
     private func createSQLiteDatabase(at databaseURL: URL, sql: String) throws {
         var database: OpaquePointer?
         XCTAssertEqual(
@@ -2288,6 +2674,53 @@ private final class StubCodexSourceHealthReader: CodexSourceHealthReading {
         }
 
         return snapshots[0]
+    }
+}
+
+private struct StubCodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
+    let snapshot: CodexLocalSourceProbeSnapshot
+
+    func probeSnapshot(now: Date) -> CodexLocalSourceProbeSnapshot {
+        snapshot
+    }
+}
+
+private extension CodexLocalSourceProbeSnapshot {
+    static func freshFixture(at date: Date) -> CodexLocalSourceProbeSnapshot {
+        let probe = CodexLocalSourceProbe(
+            status: .available,
+            checkedAt: date,
+            sourceRowCount: 1,
+            latestSourceEventAt: date
+        )
+        return CodexLocalSourceProbeSnapshot(
+            logsDatabase: probe,
+            sessionDirectory: probe,
+            stateDatabase: probe,
+            modelsCache: probe
+        )
+    }
+}
+
+private extension CodexSourceHealthSnapshot {
+    static func healthyFixture(checkedAt: Date) -> CodexSourceHealthSnapshot {
+        CodexSourceHealthSnapshot(
+            checkedAt: checkedAt,
+            status: .healthy,
+            activeExecutablePath: nil,
+            versionSignals: [],
+            modelsCachePath: nil,
+            modelsCacheClientVersion: nil,
+            modelsCacheFetchedAt: nil,
+            modelsCacheModelCount: nil,
+            modelsCacheErrorText: nil,
+            versionMetadataPath: nil,
+            versionMetadataLatestVersion: nil,
+            versionMetadataLastCheckedAt: nil,
+            versionMetadataErrorText: nil,
+            warnings: [],
+            errorText: nil
+        )
     }
 }
 

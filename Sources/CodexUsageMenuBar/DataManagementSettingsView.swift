@@ -56,6 +56,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var sessionTaskTimingCaptureState = CodexSessionTaskTimingCaptureState()
     @Published private(set) var threadCatalogCaptureState = CodexThreadCatalogCaptureState()
     @Published private(set) var modelCapabilitiesCaptureState = CodexModelCapabilitiesCaptureState()
+    @Published private(set) var localSourceCoverageSnapshot = CodexLocalSourceCoverageSnapshot.empty
     @Published private(set) var performanceInstrumentationSummary: AppPerformanceInstrumentationSummary
     @Published private(set) var profileTokenUsageState: CodexProfileTokenUsageState
     @Published private(set) var profileTokenComparisonSummary: CodexProfileTokenComparisonSummary?
@@ -76,9 +77,12 @@ final class DataManagementSettingsViewModel: ObservableObject {
     private let codexSourceHealthStore: CodexSourceHealthStore
     private let codexSourceHealthReader: CodexSourceHealthReading
     private let remoteControlHealthReader: CodexRemoteControlHealthReading
+    private let localSourceCoverageProbe: CodexLocalSourceCoverageProbing
     private let autoRefreshProfileTokens: Bool
     private let now: () -> Date
     private var databaseInfo: UsageHistoryDatabaseInfo?
+    private var localSourceStoredMetrics = CodexLocalSourceStoredMetrics.empty
+    private var localSourceProbeSnapshot = CodexLocalSourceProbeSnapshot.notChecked
     private var tokenPayloadAuditCancellable: AnyCancellable?
     private var tokenPayloadAuditDiagnosticsCancellable: AnyCancellable?
     private var performanceInstrumentationCancellable: AnyCancellable?
@@ -98,6 +102,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
+        localSourceCoverageProbe: CodexLocalSourceCoverageProbing = CodexLocalSourceCoverageProbe(),
         autoRefreshProfileTokens: Bool = false,
         now: @escaping () -> Date = Date.init
     ) {
@@ -113,6 +118,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         self.codexSourceHealthStore = codexSourceHealthStore
         self.codexSourceHealthReader = codexSourceHealthReader
         self.remoteControlHealthReader = remoteControlHealthReader
+        self.localSourceCoverageProbe = localSourceCoverageProbe
         self.autoRefreshProfileTokens = autoRefreshProfileTokens
         self.now = now
         selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
@@ -126,6 +132,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
         tokenPayloadAuditDiagnosticsCancellable = tokenPayloadAuditDiagnosticsStore.$diagnostics.sink { [weak self] diagnostics in
             self?.tokenPayloadAuditDiagnostics = diagnostics
+            self?.rebuildLocalSourceCoverageSnapshot()
         }
         performanceInstrumentationCancellable = performanceInstrumentationStore.$events.sink { [weak self] _ in
             self?.refreshPerformanceInstrumentationSummary()
@@ -151,6 +158,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
+        localSourceCoverageProbe: CodexLocalSourceCoverageProbing = CodexLocalSourceCoverageProbe(),
         autoRefreshProfileTokens: Bool = false,
         now: @escaping () -> Date = Date.init
     ) {
@@ -182,6 +190,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
             codexSourceHealthStore: codexSourceHealthStore,
             codexSourceHealthReader: codexSourceHealthReader,
             remoteControlHealthReader: remoteControlHealthReader,
+            localSourceCoverageProbe: localSourceCoverageProbe,
             autoRefreshProfileTokens: autoRefreshProfileTokens,
             now: now
         )
@@ -309,6 +318,30 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
     var notificationAuditRows: [CodexAppServerNotificationAuditMethodSummary] {
         Array(tokenPayloadAuditDiagnostics.notificationAudit.methods.prefix(8))
+    }
+
+    var localSourceCoverageRows: [CodexLocalSourceCoverageRow] {
+        localSourceCoverageSnapshot.rows
+    }
+
+    var localSourceCoverageHeadlineText: String {
+        localSourceCoverageSnapshot.headlineText
+    }
+
+    var localSourceCoverageUpdatedText: String {
+        guard !localSourceCoverageSnapshot.rows.isEmpty else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: localSourceCoverageSnapshot.generatedAt)
+    }
+
+    func localSourceCoverageDateText(_ date: Date?) -> String {
+        guard let date else {
+            return "--"
+        }
+
+        return Self.auditDateFormatter.string(from: date)
     }
 
     var localTokenCaptureLastCheckedText: String {
@@ -680,6 +713,31 @@ final class DataManagementSettingsViewModel: ObservableObject {
         )
     }
 
+    func refreshLocalSourceCoverageSnapshot() async {
+        do {
+            localSourceStoredMetrics = try await database.localSourceStoredMetrics()
+        } catch {
+            localSourceStoredMetrics = .empty
+        }
+        localSourceProbeSnapshot = localSourceCoverageProbe.probeSnapshot(now: now())
+        rebuildLocalSourceCoverageSnapshot()
+    }
+
+    private func rebuildLocalSourceCoverageSnapshot() {
+        localSourceCoverageSnapshot = CodexLocalSourceCoverageSnapshot.make(
+            localTokenCaptureState: localTokenCaptureState,
+            turnPerformanceCaptureState: turnPerformanceCaptureState,
+            turnPerformanceRuntimeDimensionSummary: turnPerformanceRuntimeDimensionSummary,
+            sessionTaskTimingCaptureState: sessionTaskTimingCaptureState,
+            threadCatalogCaptureState: threadCatalogCaptureState,
+            modelCapabilitiesCaptureState: modelCapabilitiesCaptureState,
+            tokenPayloadAuditDiagnostics: tokenPayloadAuditDiagnostics,
+            storedMetrics: localSourceStoredMetrics,
+            sourceProbes: localSourceProbeSnapshot,
+            now: now()
+        )
+    }
+
     func refreshPerformanceInstrumentationSummary() {
         performanceInstrumentationSummary = performanceInstrumentationStore.summary()
     }
@@ -792,6 +850,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         if tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentStatus == .neverChecked {
             await refreshRemoteControlHealth()
         }
+        await refreshLocalSourceCoverageSnapshot()
         refreshPerformanceInstrumentationSummary()
     }
 
@@ -901,6 +960,8 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditDiagnosticsStore.clear()
         statusMessage = "Capture diagnostics cleared."
         errorMessage = nil
+        tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
+        rebuildLocalSourceCoverageSnapshot()
     }
 
     func refreshRemoteControlHealth() async {
@@ -923,6 +984,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
             statusMessage = "Remote-control health refreshed."
             errorMessage = nil
         }
+        rebuildLocalSourceCoverageSnapshot()
     }
 
     func clearRemoteControlDiagnostics() {
@@ -930,6 +992,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
         statusMessage = "Remote-control diagnostics cleared."
         errorMessage = nil
+        rebuildLocalSourceCoverageSnapshot()
     }
 
     func clearNotificationAudit() {
@@ -937,6 +1000,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
         statusMessage = "Notification audit cleared."
         errorMessage = nil
+        rebuildLocalSourceCoverageSnapshot()
     }
 
     func exportPerformanceDiagnostics(to destinationURL: URL) {
@@ -1086,6 +1150,7 @@ struct DataManagementSettingsView: View {
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
+        localSourceCoverageProbe: CodexLocalSourceCoverageProbing = CodexLocalSourceCoverageProbe(),
         autoRefreshProfileTokens: Bool = false
     ) {
         _viewModel = StateObject(
@@ -1099,6 +1164,7 @@ struct DataManagementSettingsView: View {
                 codexSourceHealthStore: codexSourceHealthStore,
                 codexSourceHealthReader: codexSourceHealthReader,
                 remoteControlHealthReader: remoteControlHealthReader,
+                localSourceCoverageProbe: localSourceCoverageProbe,
                 autoRefreshProfileTokens: autoRefreshProfileTokens
             )
         )
@@ -1113,6 +1179,7 @@ struct DataManagementSettingsView: View {
                 tokenHistorySection
                 profileTokenSection
                 codexSourceHealthSection
+                localSourceCoverageSection
                 remoteControlHealthSection
                 liveTokenPayloadSection
                 projectsSection
@@ -1449,6 +1516,85 @@ struct DataManagementSettingsView: View {
         }
     }
 
+    private var localSourceCoverageSection: some View {
+        Section("Local Source Coverage") {
+            HStack {
+                Text(viewModel.localSourceCoverageHeadlineText)
+                    .font(.caption)
+                    .foregroundStyle(viewModel.localSourceCoverageSnapshot.attentionCount == 0 ? Color.secondary : Color.orange)
+
+                Spacer()
+
+                Text(viewModel.localSourceCoverageUpdatedText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Text("Aggregate-only freshness across Codex logs, sessions, state metadata, model cache, and app-server diagnostics.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if viewModel.localSourceCoverageRows.isEmpty {
+                Text("No local source coverage snapshot has been built yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(viewModel.localSourceCoverageRows) { row in
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(row.title)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+
+                                Spacer()
+
+                                Text(row.status.displayText)
+                                    .font(.caption)
+                                    .foregroundStyle(localSourceCoverageStatusColor(row.status))
+                            }
+
+                            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 3) {
+                                GridRow {
+                                    Text("Source")
+                                    Text(row.sourceStateText)
+                                }
+                                GridRow {
+                                    Text("Latest source")
+                                    Text(viewModel.localSourceCoverageDateText(row.latestSourceEventAt))
+                                        .monospacedDigit()
+                                }
+                                GridRow {
+                                    Text("Stored")
+                                    Text(row.storedStateText)
+                                }
+                                GridRow {
+                                    Text("Latest stored")
+                                    Text(viewModel.localSourceCoverageDateText(row.latestStoredEventAt))
+                                        .monospacedDigit()
+                                }
+                                GridRow {
+                                    Text("Detail")
+                                    Text(row.detailText)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
+                                if let lastErrorSummary = row.lastErrorSummary {
+                                    GridRow {
+                                        Text("Last error")
+                                        Text(lastErrorSummary)
+                                    }
+                                }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var remoteControlHealthSection: some View {
         Section("Remote Control & App Server") {
             HStack {
@@ -1618,6 +1764,15 @@ struct DataManagementSettingsView: View {
                     .font(.caption)
                 }
             }
+        }
+    }
+
+    private func localSourceCoverageStatusColor(_ status: CodexLocalSourceCoverageStatus) -> Color {
+        switch status {
+        case .healthy, .passiveNoSamples:
+            return .secondary
+        case .stale, .sourceMissing, .schemaMissing, .noMatchedRows, .failed, .notChecked:
+            return .orange
         }
     }
 

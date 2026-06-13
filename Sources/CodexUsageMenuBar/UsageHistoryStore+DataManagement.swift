@@ -94,6 +94,65 @@ extension UsageHistoryStore {
         )
     }
 
+    func localSourceStoredMetrics() throws -> CodexLocalSourceStoredMetrics {
+        CodexLocalSourceStoredMetrics(
+            tokenSamples: try localSourceStoredMetric(
+                table: "token_usage_samples",
+                latestTimestampExpression: "received_at"
+            ),
+            turnPerformanceEvents: try localSourceStoredMetric(
+                table: "codex_turn_performance_events",
+                latestTimestampExpression: "event_timestamp"
+            ),
+            runtimeDimensions: try localSourceStoredMetric(
+                table: "codex_turn_performance_dimensions",
+                latestTimestampExpression: "seen_at"
+            ),
+            sessionTaskTimingEvents: try localSourceStoredMetric(
+                table: "codex_session_task_timing_events",
+                latestTimestampExpression: "COALESCE(event_timestamp, started_at, completed_at, recorded_at)"
+            ),
+            threadCatalog: try localSourceStoredMetric(
+                table: "codex_thread_catalog",
+                latestTimestampExpression: "COALESCE(updated_at, created_at, recorded_at)"
+            ),
+            modelCapabilities: try localSourceStoredMetric(
+                table: "codex_model_capabilities",
+                latestTimestampExpression: "recorded_at"
+            )
+        )
+    }
+
+    private func localSourceStoredMetric(
+        table: String,
+        latestTimestampExpression: String
+    ) throws -> CodexLocalSourceStoredMetric {
+        guard try tableExists(table: table) else {
+            return .missingSchema
+        }
+
+        let statement = try prepare(
+            """
+            SELECT COUNT(*), MAX(\(latestTimestampExpression))
+            FROM \(table)
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return CodexLocalSourceStoredMetric(
+                schemaRecognized: true,
+                rowCount: Int(sqlite3_column_int64(statement, 0)),
+                latestStoredEventAt: optionalColumnDate(statement, index: 1)
+            )
+        case SQLITE_DONE:
+            return .empty
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
     func exportBackup(to destinationURL: URL, fileManager: FileManager = .default) throws {
         guard let databaseURL else {
             throw UsageHistoryStoreError.databaseUnavailable

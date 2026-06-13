@@ -1545,6 +1545,969 @@ enum CodexAppServerNotificationAuditSanitizer {
     }
 }
 
+enum CodexLocalSourceProbeStatus: String, Equatable, Sendable {
+    case notChecked = "not_checked"
+    case available
+    case missingSource = "missing_source"
+    case schemaMissing = "schema_missing"
+    case failed
+
+    var sourceExists: Bool {
+        switch self {
+        case .available, .schemaMissing:
+            return true
+        case .notChecked, .missingSource, .failed:
+            return false
+        }
+    }
+
+    var schemaRecognized: Bool {
+        self == .available
+    }
+}
+
+struct CodexLocalSourceProbe: Equatable, Sendable {
+    let status: CodexLocalSourceProbeStatus
+    let checkedAt: Date?
+    let sourceRowCount: Int?
+    let latestSourceEventAt: Date?
+
+    init(
+        status: CodexLocalSourceProbeStatus = .notChecked,
+        checkedAt: Date? = nil,
+        sourceRowCount: Int? = nil,
+        latestSourceEventAt: Date? = nil
+    ) {
+        self.status = status
+        self.checkedAt = checkedAt
+        self.sourceRowCount = sourceRowCount.map { max($0, 0) }
+        self.latestSourceEventAt = latestSourceEventAt
+    }
+
+    static let notChecked = CodexLocalSourceProbe()
+}
+
+struct CodexLocalSourceProbeSnapshot: Equatable, Sendable {
+    var logsDatabase: CodexLocalSourceProbe
+    var sessionDirectory: CodexLocalSourceProbe
+    var stateDatabase: CodexLocalSourceProbe
+    var modelsCache: CodexLocalSourceProbe
+
+    init(
+        logsDatabase: CodexLocalSourceProbe = .notChecked,
+        sessionDirectory: CodexLocalSourceProbe = .notChecked,
+        stateDatabase: CodexLocalSourceProbe = .notChecked,
+        modelsCache: CodexLocalSourceProbe = .notChecked
+    ) {
+        self.logsDatabase = logsDatabase
+        self.sessionDirectory = sessionDirectory
+        self.stateDatabase = stateDatabase
+        self.modelsCache = modelsCache
+    }
+
+    static let notChecked = CodexLocalSourceProbeSnapshot()
+}
+
+protocol CodexLocalSourceCoverageProbing {
+    func probeSnapshot(now: Date) -> CodexLocalSourceProbeSnapshot
+}
+
+struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
+    let logsDatabaseURL: URL
+    let sessionDirectories: [URL]
+    let stateDatabaseURL: URL
+    let modelsCacheURL: URL
+    let fileManager: FileManager
+
+    init(
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL(),
+        sessionDirectories: [URL] = CodexSessionTokenBackfillImporter.defaultActiveSourceDirectories(),
+        stateDatabaseURL: URL = CodexThreadCatalogImporter.defaultStateDatabaseURL(),
+        modelsCacheURL: URL = CodexModelCapabilitiesImporter.defaultModelsCacheURL(),
+        fileManager: FileManager = .default
+    ) {
+        self.logsDatabaseURL = logsDatabaseURL
+        self.sessionDirectories = sessionDirectories
+        self.stateDatabaseURL = stateDatabaseURL
+        self.modelsCacheURL = modelsCacheURL
+        self.fileManager = fileManager
+    }
+
+    func probeSnapshot(now: Date = Date()) -> CodexLocalSourceProbeSnapshot {
+        CodexLocalSourceProbeSnapshot(
+            logsDatabase: logsDatabaseProbe(now: now),
+            sessionDirectory: sessionDirectoryProbe(now: now),
+            stateDatabase: stateDatabaseProbe(now: now),
+            modelsCache: modelsCacheProbe(now: now)
+        )
+    }
+
+    private func logsDatabaseProbe(now: Date) -> CodexLocalSourceProbe {
+        sqliteProbe(
+            databaseURL: logsDatabaseURL,
+            tableName: "logs",
+            requiredColumns: ["id", "ts", "target", "feedback_log_body"],
+            latestTimestampExpression: "ts",
+            now: now
+        )
+    }
+
+    private func stateDatabaseProbe(now: Date) -> CodexLocalSourceProbe {
+        guard fileManager.fileExists(atPath: stateDatabaseURL.path) else {
+            return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(stateDatabaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return CodexLocalSourceProbe(status: .failed, checkedAt: now)
+        }
+        defer { sqlite3_close(database) }
+
+        guard Self.tableExists("threads", in: database) else {
+            return CodexLocalSourceProbe(status: .schemaMissing, checkedAt: now)
+        }
+
+        let columns = Self.tableColumns("threads", in: database)
+        guard columns.contains("id") else {
+            return CodexLocalSourceProbe(status: .schemaMissing, checkedAt: now)
+        }
+
+        let latestExpression: String? = if columns.contains("updated_at_ms"), columns.contains("updated_at") {
+            "COALESCE(updated_at_ms / 1000, updated_at)"
+        } else if columns.contains("updated_at_ms") {
+            "updated_at_ms / 1000"
+        } else if columns.contains("updated_at") {
+            "updated_at"
+        } else {
+            nil
+        }
+
+        let aggregate = latestExpression.flatMap {
+            Self.countAndLatest(in: database, tableName: "threads", latestTimestampExpression: $0)
+        } ?? Self.countOnly(in: database, tableName: "threads").map { ($0, nil) }
+
+        guard let aggregate else {
+            return CodexLocalSourceProbe(status: .failed, checkedAt: now)
+        }
+
+        return CodexLocalSourceProbe(
+            status: .available,
+            checkedAt: now,
+            sourceRowCount: aggregate.0,
+            latestSourceEventAt: aggregate.1
+        )
+    }
+
+    private func sessionDirectoryProbe(now: Date) -> CodexLocalSourceProbe {
+        for directory in sessionDirectories {
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+               isDirectory.boolValue
+            {
+                return CodexLocalSourceProbe(status: .available, checkedAt: now)
+            }
+        }
+
+        return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
+    }
+
+    private func modelsCacheProbe(now: Date) -> CodexLocalSourceProbe {
+        guard fileManager.fileExists(atPath: modelsCacheURL.path) else {
+            return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
+        }
+
+        guard let data = try? Data(contentsOf: modelsCacheURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = root["models"] as? [[String: Any]]
+        else {
+            return CodexLocalSourceProbe(status: .schemaMissing, checkedAt: now)
+        }
+
+        return CodexLocalSourceProbe(
+            status: .available,
+            checkedAt: now,
+            sourceRowCount: models.count,
+            latestSourceEventAt: Self.date(fromJSONValue: root["fetched_at"])
+        )
+    }
+
+    private func sqliteProbe(
+        databaseURL: URL,
+        tableName: String,
+        requiredColumns: Set<String>,
+        latestTimestampExpression: String,
+        now: Date
+    ) -> CodexLocalSourceProbe {
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
+        }
+
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(databaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return CodexLocalSourceProbe(status: .failed, checkedAt: now)
+        }
+        defer { sqlite3_close(database) }
+
+        guard Self.tableExists(tableName, in: database) else {
+            return CodexLocalSourceProbe(status: .schemaMissing, checkedAt: now)
+        }
+
+        let columns = Self.tableColumns(tableName, in: database)
+        guard requiredColumns.isSubset(of: columns) else {
+            return CodexLocalSourceProbe(status: .schemaMissing, checkedAt: now)
+        }
+
+        guard let aggregate = Self.countAndLatest(
+            in: database,
+            tableName: tableName,
+            latestTimestampExpression: latestTimestampExpression
+        ) else {
+            return CodexLocalSourceProbe(status: .failed, checkedAt: now)
+        }
+
+        return CodexLocalSourceProbe(
+            status: .available,
+            checkedAt: now,
+            sourceRowCount: aggregate.0,
+            latestSourceEventAt: aggregate.1
+        )
+    }
+
+    private static func tableExists(_ name: String, in database: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        let sql = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, name, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return false
+        }
+
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    private static func tableColumns(_ tableName: String, in database: OpaquePointer) -> Set<String> {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(\(tableName))", -1, &statement, nil) == SQLITE_OK,
+              let statement
+        else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let namePointer = sqlite3_column_text(statement, 1) {
+                columns.insert(String(cString: namePointer))
+            }
+        }
+        return columns
+    }
+
+    private static func countAndLatest(
+        in database: OpaquePointer,
+        tableName: String,
+        latestTimestampExpression: String
+    ) -> (Int, Date?)? {
+        var statement: OpaquePointer?
+        let sql = "SELECT COUNT(*), MAX(\(latestTimestampExpression)) FROM \(tableName)"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+
+        let count = Int(sqlite3_column_int64(statement, 0))
+        let latest = sqlite3_column_type(statement, 1) == SQLITE_NULL
+            ? nil
+            : date(fromSQLiteTimestamp: sqlite3_column_int64(statement, 1))
+        return (count, latest)
+    }
+
+    private static func countOnly(in database: OpaquePointer, tableName: String) -> Int? {
+        var statement: OpaquePointer?
+        let sql = "SELECT COUNT(*) FROM \(tableName)"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private static func date(fromJSONValue value: Any?) -> Date? {
+        if let number = value as? NSNumber, !(value is Bool) {
+            return date(fromSQLiteTimestamp: number.int64Value)
+        }
+
+        guard let string = value as? String else {
+            return nil
+        }
+
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: string) {
+            return date
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
+    }
+
+    private static func date(fromSQLiteTimestamp timestamp: Int64) -> Date {
+        if timestamp > 10_000_000_000 {
+            return Date(timeIntervalSince1970: TimeInterval(timestamp) / 1_000)
+        }
+
+        return Date(timeIntervalSince1970: TimeInterval(timestamp))
+    }
+}
+
+enum CodexLocalSourceCoverageStatus: String, Equatable, Sendable {
+    case healthy
+    case stale
+    case sourceMissing = "source_missing"
+    case schemaMissing = "schema_missing"
+    case noMatchedRows = "no_matched_rows"
+    case passiveNoSamples = "passive_no_samples"
+    case failed
+    case notChecked = "not_checked"
+
+    var displayText: String {
+        switch self {
+        case .healthy:
+            return "Fresh"
+        case .stale:
+            return "Stale"
+        case .sourceMissing:
+            return "Source missing"
+        case .schemaMissing:
+            return "Schema missing"
+        case .noMatchedRows:
+            return "No matched rows"
+        case .passiveNoSamples:
+            return "Connected, no samples"
+        case .failed:
+            return "Read failed"
+        case .notChecked:
+            return "Not checked"
+        }
+    }
+
+    var needsAttention: Bool {
+        switch self {
+        case .healthy, .passiveNoSamples:
+            return false
+        case .stale, .sourceMissing, .schemaMissing, .noMatchedRows, .failed, .notChecked:
+            return true
+        }
+    }
+}
+
+struct CodexLocalSourceStoredMetric: Equatable, Sendable {
+    let schemaRecognized: Bool
+    let rowCount: Int
+    let latestStoredEventAt: Date?
+
+    init(schemaRecognized: Bool = true, rowCount: Int = 0, latestStoredEventAt: Date? = nil) {
+        self.schemaRecognized = schemaRecognized
+        self.rowCount = max(rowCount, 0)
+        self.latestStoredEventAt = latestStoredEventAt
+    }
+
+    static let missingSchema = CodexLocalSourceStoredMetric(schemaRecognized: false)
+    static let empty = CodexLocalSourceStoredMetric()
+}
+
+struct CodexLocalSourceStoredMetrics: Equatable, Sendable {
+    var tokenSamples: CodexLocalSourceStoredMetric
+    var turnPerformanceEvents: CodexLocalSourceStoredMetric
+    var runtimeDimensions: CodexLocalSourceStoredMetric
+    var sessionTaskTimingEvents: CodexLocalSourceStoredMetric
+    var threadCatalog: CodexLocalSourceStoredMetric
+    var modelCapabilities: CodexLocalSourceStoredMetric
+
+    init(
+        tokenSamples: CodexLocalSourceStoredMetric = .empty,
+        turnPerformanceEvents: CodexLocalSourceStoredMetric = .empty,
+        runtimeDimensions: CodexLocalSourceStoredMetric = .empty,
+        sessionTaskTimingEvents: CodexLocalSourceStoredMetric = .empty,
+        threadCatalog: CodexLocalSourceStoredMetric = .empty,
+        modelCapabilities: CodexLocalSourceStoredMetric = .empty
+    ) {
+        self.tokenSamples = tokenSamples
+        self.turnPerformanceEvents = turnPerformanceEvents
+        self.runtimeDimensions = runtimeDimensions
+        self.sessionTaskTimingEvents = sessionTaskTimingEvents
+        self.threadCatalog = threadCatalog
+        self.modelCapabilities = modelCapabilities
+    }
+
+    static let empty = CodexLocalSourceStoredMetrics()
+}
+
+struct CodexLocalSourceCoverageRow: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let status: CodexLocalSourceCoverageStatus
+    let sourceStateText: String
+    let storedStateText: String
+    let latestSourceEventAt: Date?
+    let latestStoredEventAt: Date?
+    let detailText: String
+    let lastErrorSummary: String?
+
+    var privacyAuditText: String {
+        [
+            title,
+            status.displayText,
+            sourceStateText,
+            storedStateText,
+            detailText,
+            lastErrorSummary ?? "",
+        ]
+        .joined(separator: " ")
+    }
+}
+
+struct CodexLocalSourceCoverageSnapshot: Equatable, Sendable {
+    let generatedAt: Date
+    let rows: [CodexLocalSourceCoverageRow]
+
+    init(generatedAt: Date, rows: [CodexLocalSourceCoverageRow]) {
+        self.generatedAt = generatedAt
+        self.rows = rows
+    }
+
+    static let empty = CodexLocalSourceCoverageSnapshot(generatedAt: Date(timeIntervalSince1970: 0), rows: [])
+
+    var attentionCount: Int {
+        rows.filter(\.status.needsAttention).count
+    }
+
+    var passiveNoSampleCount: Int {
+        rows.filter { $0.status == .passiveNoSamples }.count
+    }
+
+    var headlineText: String {
+        if rows.isEmpty {
+            return "No source coverage diagnostics yet"
+        }
+
+        if attentionCount == 0 {
+            if passiveNoSampleCount > 0 {
+                return "\(rows.count) sources checked, \(passiveNoSampleCount) passive no-sample"
+            }
+            return "\(rows.count) sources checked, all fresh"
+        }
+
+        return "\(attentionCount) of \(rows.count) sources need attention"
+    }
+
+    static func make(
+        localTokenCaptureState: CodexLiveTokenCaptureState,
+        turnPerformanceCaptureState: CodexTurnPerformanceCaptureState,
+        turnPerformanceRuntimeDimensionSummary: CodexOtelRuntimeDimensionSummary,
+        sessionTaskTimingCaptureState: CodexSessionTaskTimingCaptureState,
+        threadCatalogCaptureState: CodexThreadCatalogCaptureState,
+        modelCapabilitiesCaptureState: CodexModelCapabilitiesCaptureState,
+        tokenPayloadAuditDiagnostics: CodexAppServerAuditDiagnostics,
+        storedMetrics: CodexLocalSourceStoredMetrics,
+        sourceProbes: CodexLocalSourceProbeSnapshot,
+        now: Date,
+        staleAfter: TimeInterval = 7 * 24 * 60 * 60
+    ) -> CodexLocalSourceCoverageSnapshot {
+        let rows = [
+            tokenSamplesRow(
+                state: localTokenCaptureState,
+                sourceProbe: sourceProbes.logsDatabase,
+                storedMetric: storedMetrics.tokenSamples,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            turnPerformanceRow(
+                state: turnPerformanceCaptureState,
+                sourceProbe: sourceProbes.logsDatabase,
+                storedMetric: storedMetrics.turnPerformanceEvents,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            runtimeDimensionsRow(
+                captureState: turnPerformanceCaptureState,
+                runtimeSummary: turnPerformanceRuntimeDimensionSummary,
+                sourceProbe: sourceProbes.logsDatabase,
+                storedMetric: storedMetrics.runtimeDimensions,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            sessionTaskTimingRow(
+                state: sessionTaskTimingCaptureState,
+                sourceProbe: sourceProbes.sessionDirectory,
+                storedMetric: storedMetrics.sessionTaskTimingEvents,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            threadCatalogRow(
+                state: threadCatalogCaptureState,
+                sourceProbe: sourceProbes.stateDatabase,
+                storedMetric: storedMetrics.threadCatalog,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            remoteControlEnrollmentRow(
+                diagnostics: tokenPayloadAuditDiagnostics.remoteControlDiagnostics,
+                sourceProbe: sourceProbes.stateDatabase,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            modelCapabilitiesRow(
+                state: modelCapabilitiesCaptureState,
+                sourceProbe: sourceProbes.modelsCache,
+                storedMetric: storedMetrics.modelCapabilities,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            appServerTokenNotificationRow(
+                diagnostics: tokenPayloadAuditDiagnostics,
+                now: now,
+                staleAfter: staleAfter
+            ),
+            appServerNotificationAuditRow(
+                diagnostics: tokenPayloadAuditDiagnostics,
+                now: now,
+                staleAfter: staleAfter
+            ),
+        ]
+
+        return CodexLocalSourceCoverageSnapshot(generatedAt: now, rows: rows)
+    }
+
+    private static func tokenSamplesRow(
+        state: CodexLiveTokenCaptureState,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        captureRow(
+            id: "token-samples",
+            title: "Token samples",
+            sourceProbe: sourceProbe,
+            storedMetric: storedMetric,
+            lastCheckedAt: state.lastCheckedAt,
+            latestSourceEventAt: sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: storedMetric.latestStoredEventAt ?? state.lastImportedEventAt,
+            captureStatusText: state.status.displayText,
+            detailText: "\(state.result.insertedCount) imported, \(state.result.duplicateCount) duplicate, \(state.result.repairedModelCount + state.result.repairedContextCount + state.result.repairedDimensionCount) repaired",
+            isCaptureFailed: state.status == .failed,
+            isCaptureNeverChecked: state.status == .neverChecked,
+            hasLastError: state.lastErrorText != nil,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func turnPerformanceRow(
+        state: CodexTurnPerformanceCaptureState,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        captureRow(
+            id: "turn-performance",
+            title: "Turn performance",
+            sourceProbe: sourceProbe,
+            storedMetric: storedMetric,
+            lastCheckedAt: state.lastCheckedAt,
+            latestSourceEventAt: sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: storedMetric.latestStoredEventAt ?? state.lastImportedEventAt,
+            captureStatusText: state.status.displayText,
+            detailText: "\(state.insertedCount) imported, \(state.duplicateCount) duplicate",
+            isCaptureFailed: state.status == .failed,
+            isCaptureNeverChecked: state.status == .neverChecked,
+            hasLastError: state.lastErrorText != nil,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func runtimeDimensionsRow(
+        captureState: CodexTurnPerformanceCaptureState,
+        runtimeSummary: CodexOtelRuntimeDimensionSummary,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        let metric = CodexLocalSourceStoredMetric(
+            schemaRecognized: storedMetric.schemaRecognized,
+            rowCount: max(storedMetric.rowCount, runtimeSummary.rowCount),
+            latestStoredEventAt: storedMetric.latestStoredEventAt ?? runtimeSummary.latestSeenAt
+        )
+        return captureRow(
+            id: "runtime-dimensions",
+            title: "Runtime dimensions",
+            sourceProbe: sourceProbe,
+            storedMetric: metric,
+            lastCheckedAt: captureState.lastCheckedAt,
+            latestSourceEventAt: sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: metric.latestStoredEventAt,
+            captureStatusText: captureState.status.displayText,
+            detailText: "\(runtimeSummary.rowCount) rows, \(runtimeSummary.distinctKeyCount) keys",
+            isCaptureFailed: captureState.status == .failed,
+            isCaptureNeverChecked: captureState.status == .neverChecked,
+            hasLastError: captureState.lastErrorText != nil,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func sessionTaskTimingRow(
+        state: CodexSessionTaskTimingCaptureState,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        captureRow(
+            id: "session-task-timing",
+            title: "Session task timing",
+            sourceProbe: sourceProbe,
+            storedMetric: storedMetric,
+            lastCheckedAt: state.lastCheckedAt,
+            latestSourceEventAt: sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: storedMetric.latestStoredEventAt ?? state.lastImportedEventAt,
+            captureStatusText: state.status.displayText,
+            detailText: "\(state.filesScanned) scanned, \(state.filesSkippedUnchanged) skipped, \(state.insertedCount + state.updatedCount) changed",
+            isCaptureFailed: state.status == .failed,
+            isCaptureNeverChecked: state.status == .neverChecked,
+            hasLastError: state.lastErrorText != nil,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func threadCatalogRow(
+        state: CodexThreadCatalogCaptureState,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        captureRow(
+            id: "thread-catalog",
+            title: "Thread catalog",
+            sourceProbe: sourceProbe,
+            storedMetric: storedMetric,
+            lastCheckedAt: state.lastCheckedAt,
+            latestSourceEventAt: sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: storedMetric.latestStoredEventAt ?? state.lastImportedThreadUpdatedAt,
+            captureStatusText: state.status.displayText,
+            detailText: "\(state.threadsInsertedCount + state.threadsUpdatedCount) thread changes, \(state.spawnEdgesInsertedCount + state.spawnEdgesUpdatedCount + state.dynamicToolsInsertedCount + state.dynamicToolsUpdatedCount) relationship changes",
+            isCaptureFailed: state.status == .failed,
+            isCaptureNeverChecked: state.status == .neverChecked,
+            hasLastError: state.lastErrorText != nil,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func modelCapabilitiesRow(
+        state: CodexModelCapabilitiesCaptureState,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        captureRow(
+            id: "model-capabilities",
+            title: "Model capabilities",
+            sourceProbe: sourceProbe,
+            storedMetric: storedMetric,
+            lastCheckedAt: state.lastCheckedAt,
+            latestSourceEventAt: state.cacheFetchedAt ?? sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: storedMetric.latestStoredEventAt ?? state.cacheFetchedAt,
+            captureStatusText: state.status.displayText,
+            detailText: "\(state.modelsInsertedCount + state.modelsUpdatedCount) model changes, \(state.childRowsInsertedCount) detail rows",
+            isCaptureFailed: state.status == .failed,
+            isCaptureNeverChecked: state.status == .neverChecked,
+            sourceMissingByCapture: state.status == .noSource,
+            schemaMissingByCapture: state.status == .malformed,
+            noMatchedByCapture: state.status == .noModels,
+            hasLastError: state.lastErrorText != nil,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func remoteControlEnrollmentRow(
+        diagnostics: CodexRemoteControlDiagnostics,
+        sourceProbe: CodexLocalSourceProbe,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        let status: CodexLocalSourceCoverageStatus
+        switch diagnostics.enrollmentStatus {
+        case .available:
+            if diagnostics.enrollmentCount == 0 {
+                status = .passiveNoSamples
+            } else if isStale(diagnostics.enrollmentLatestUpdatedAt ?? diagnostics.enrollmentLastCheckedAt, now: now, staleAfter: staleAfter) {
+                status = .stale
+            } else {
+                status = .healthy
+            }
+        case .missingDatabase:
+            status = .sourceMissing
+        case .missingTable:
+            status = .schemaMissing
+        case .failed:
+            status = .failed
+        case .neverChecked:
+            status = .notChecked
+        }
+
+        let rowCount = diagnostics.enrollmentCount
+        return CodexLocalSourceCoverageRow(
+            id: "remote-control-enrollment",
+            title: "Remote-control enrollment",
+            status: statusFromSourceProbe(sourceProbe, fallback: status),
+            sourceStateText: sourceText(sourceProbe),
+            storedStateText: rowCount.map { "\($0) enrollments" } ?? "No enrollment count",
+            latestSourceEventAt: sourceProbe.latestSourceEventAt,
+            latestStoredEventAt: diagnostics.enrollmentLatestUpdatedAt,
+            detailText: diagnostics.enrollmentStatus.displayText,
+            lastErrorSummary: diagnostics.enrollmentErrorText == nil ? nil : "Remote-control health error recorded"
+        )
+    }
+
+    private static func appServerTokenNotificationRow(
+        diagnostics: CodexAppServerAuditDiagnostics,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        appServerRow(
+            id: "app-server-token-notifications",
+            title: "App-server token notifications",
+            sampleCount: diagnostics.tokenUsageNotificationCount,
+            sourceStateText: diagnostics.connectionStatusText,
+            storedStateText: "\(diagnostics.tokenUsageNotificationCount) token notifications",
+            detailText: "\(diagnostics.inboundNotificationCount) inbound app-server notifications",
+            diagnostics: diagnostics,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func appServerNotificationAuditRow(
+        diagnostics: CodexAppServerAuditDiagnostics,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        appServerRow(
+            id: "app-server-notification-audit",
+            title: "App-server notification audit",
+            sampleCount: diagnostics.notificationAudit.totalCount,
+            sourceStateText: diagnostics.connectionStatusText,
+            storedStateText: "\(diagnostics.notificationAudit.totalCount) audited methods",
+            detailText: "\(diagnostics.notificationAudit.supportedCount) supported, \(diagnostics.notificationAudit.unsupportedCount) unsupported, \(diagnostics.notificationAudit.rejectedUnsafeFieldCount) rejected fields",
+            diagnostics: diagnostics,
+            now: now,
+            staleAfter: staleAfter
+        )
+    }
+
+    private static func appServerRow(
+        id: String,
+        title: String,
+        sampleCount: Int,
+        sourceStateText: String,
+        storedStateText: String,
+        detailText: String,
+        diagnostics: CodexAppServerAuditDiagnostics,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        let status: CodexLocalSourceCoverageStatus
+        if diagnostics.isConnected {
+            if sampleCount == 0 {
+                status = .passiveNoSamples
+            } else if isStale(diagnostics.lastUpdatedAt, now: now, staleAfter: staleAfter) {
+                status = .stale
+            } else {
+                status = .healthy
+            }
+        } else {
+            status = diagnostics.connectionMode == .unknown ? .notChecked : .failed
+        }
+
+        return CodexLocalSourceCoverageRow(
+            id: id,
+            title: title,
+            status: status,
+            sourceStateText: sourceStateText,
+            storedStateText: storedStateText,
+            latestSourceEventAt: diagnostics.lastUpdatedAt,
+            latestStoredEventAt: diagnostics.notificationAudit.lastAuditedAt ?? diagnostics.lastAuditPersistedAt,
+            detailText: detailText,
+            lastErrorSummary: diagnostics.lastErrorText == "None" ? nil : "App-server diagnostic error recorded"
+        )
+    }
+
+    private static func captureRow(
+        id: String,
+        title: String,
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        lastCheckedAt: Date?,
+        latestSourceEventAt: Date?,
+        latestStoredEventAt: Date?,
+        captureStatusText: String,
+        detailText: String,
+        isCaptureFailed: Bool,
+        isCaptureNeverChecked: Bool,
+        sourceMissingByCapture: Bool = false,
+        schemaMissingByCapture: Bool = false,
+        noMatchedByCapture: Bool = false,
+        hasLastError: Bool,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageRow {
+        let status = coverageStatus(
+            sourceProbe: sourceProbe,
+            storedMetric: storedMetric,
+            lastCheckedAt: lastCheckedAt,
+            latestSourceEventAt: latestSourceEventAt,
+            latestStoredEventAt: latestStoredEventAt,
+            isCaptureFailed: isCaptureFailed,
+            isCaptureNeverChecked: isCaptureNeverChecked,
+            sourceMissingByCapture: sourceMissingByCapture,
+            schemaMissingByCapture: schemaMissingByCapture,
+            noMatchedByCapture: noMatchedByCapture,
+            now: now,
+            staleAfter: staleAfter
+        )
+
+        return CodexLocalSourceCoverageRow(
+            id: id,
+            title: title,
+            status: status,
+            sourceStateText: sourceText(sourceProbe),
+            storedStateText: storedText(storedMetric),
+            latestSourceEventAt: latestSourceEventAt,
+            latestStoredEventAt: latestStoredEventAt,
+            detailText: "\(captureStatusText); \(detailText)",
+            lastErrorSummary: hasLastError ? "Capture error recorded" : nil
+        )
+    }
+
+    private static func coverageStatus(
+        sourceProbe: CodexLocalSourceProbe,
+        storedMetric: CodexLocalSourceStoredMetric,
+        lastCheckedAt: Date?,
+        latestSourceEventAt: Date?,
+        latestStoredEventAt: Date?,
+        isCaptureFailed: Bool,
+        isCaptureNeverChecked: Bool,
+        sourceMissingByCapture: Bool,
+        schemaMissingByCapture: Bool,
+        noMatchedByCapture: Bool,
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> CodexLocalSourceCoverageStatus {
+        if sourceMissingByCapture || sourceProbe.status == .missingSource {
+            return .sourceMissing
+        }
+        if schemaMissingByCapture || sourceProbe.status == .schemaMissing || !storedMetric.schemaRecognized {
+            return .schemaMissing
+        }
+        if sourceProbe.status == .failed || isCaptureFailed {
+            return .failed
+        }
+        if sourceProbe.status == .notChecked || isCaptureNeverChecked {
+            return .notChecked
+        }
+        if noMatchedByCapture || storedMetric.rowCount == 0 {
+            return .noMatchedRows
+        }
+        if [lastCheckedAt, latestSourceEventAt, latestStoredEventAt].contains(where: {
+            isStale($0, now: now, staleAfter: staleAfter)
+        }) {
+            return .stale
+        }
+
+        return .healthy
+    }
+
+    private static func statusFromSourceProbe(
+        _ probe: CodexLocalSourceProbe,
+        fallback: CodexLocalSourceCoverageStatus
+    ) -> CodexLocalSourceCoverageStatus {
+        switch probe.status {
+        case .missingSource:
+            return .sourceMissing
+        case .schemaMissing:
+            return .schemaMissing
+        case .failed:
+            return .failed
+        case .notChecked, .available:
+            return fallback
+        }
+    }
+
+    private static func sourceText(_ probe: CodexLocalSourceProbe) -> String {
+        switch probe.status {
+        case .available:
+            if let sourceRowCount = probe.sourceRowCount {
+                return "Source present, \(sourceRowCount) rows"
+            }
+            return "Source present"
+        case .missingSource:
+            return "Source missing"
+        case .schemaMissing:
+            return "Source present, schema missing"
+        case .failed:
+            return "Source probe failed"
+        case .notChecked:
+            return "Source not checked"
+        }
+    }
+
+    private static func storedText(_ metric: CodexLocalSourceStoredMetric) -> String {
+        guard metric.schemaRecognized else {
+            return "Stored table missing"
+        }
+
+        return "\(metric.rowCount) stored rows"
+    }
+
+    private static func isStale(_ date: Date?, now: Date, staleAfter: TimeInterval) -> Bool {
+        guard let date else {
+            return false
+        }
+
+        return now.timeIntervalSince(date) >= staleAfter
+    }
+}
+
 enum CodexAppServerAuditDiagnosticEvent: Equatable {
     case connected(mode: CodexAppServerConnectionMode)
     case disconnected(errorText: String?)
