@@ -3736,6 +3736,13 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         ]
     }
 
+    static func defaultActiveSourceDirectories(fileManager: FileManager = .default) -> [URL] {
+        let codexDirectory = fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+        return [
+            codexDirectory.appendingPathComponent("sessions", isDirectory: true),
+        ]
+    }
+
     func importTokenHistory(
         into store: UsageHistoryStore,
         request: CodexSessionTokenBackfillRequest

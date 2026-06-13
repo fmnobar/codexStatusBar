@@ -682,7 +682,14 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias ModelCapabilitiesImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexModelCapabilitiesCaptureState
 
     static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
-        store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
+        store.captureLiveCodexLogTokenHistory(
+            at: date,
+            calendar: calendar,
+            force: force,
+            sessionTokenBackfillImporter: CodexSessionTokenBackfillImporter(
+                sourceDirectories: CodexSessionTokenBackfillImporter.defaultActiveSourceDirectories()
+            )
+        )
     }
 
     static let liveTurnPerformanceImporter: TurnPerformanceImporter = { store, date, calendar, force in

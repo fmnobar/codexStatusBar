@@ -77,7 +77,8 @@ extension UsageHistoryStore {
         calendar: Calendar = .autoupdatingCurrent,
         minimumInterval: TimeInterval = 30,
         force: Bool = false,
-        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL(),
+        sessionTokenBackfillImporter: CodexSessionTokenBackfillImporting? = nil
     ) -> CodexLiveTokenCaptureState {
         let importer = CodexLogTokenUsageImporter(logsDatabaseURL: logsDatabaseURL)
         let sourceKey = CodexLiveTokenCaptureState.codexLogSourceKey
@@ -98,14 +99,35 @@ extension UsageHistoryStore {
                 containing: date,
                 calendar: calendar
             )
-            let status = Self.liveTokenCaptureStatus(for: runResult.importResult)
+            var importResult = runResult.importResult
+            var lastImportedEventAt = runResult.lastImportedEventAt ?? existingState.lastImportedEventAt
+
+            if Self.shouldRunSessionTokenFallback(after: importResult),
+               let sessionTokenBackfillImporter
+            {
+                let sessionSummary = try sessionTokenBackfillImporter.importTokenHistory(
+                    into: self,
+                    request: .recent(now: date, forceRescan: force)
+                )
+                importResult = Self.combinedTokenImportResult(
+                    logResult: importResult,
+                    sessionSummary: sessionSummary
+                )
+                if Self.hasMaterialTokenImport(importResult),
+                   let latestSampleReceivedAt = try latestTokenSampleReceivedAt(containing: date, calendar: calendar)
+                {
+                    lastImportedEventAt = latestSampleReceivedAt
+                }
+            }
+
+            let status = Self.liveTokenCaptureStatus(for: importResult)
             let state = CodexLiveTokenCaptureState(
                 sourceKey: sourceKey,
                 lastCheckedAt: date,
-                lastImportedEventAt: runResult.lastImportedEventAt ?? existingState.lastImportedEventAt,
+                lastImportedEventAt: lastImportedEventAt,
                 lastLogRowID: runResult.maxLogRowID,
                 status: status,
-                result: runResult.importResult,
+                result: importResult,
                 lastErrorText: nil
             )
             try recordCodexLiveTokenCaptureState(state)
@@ -122,6 +144,60 @@ extension UsageHistoryStore {
             )
             try? recordCodexLiveTokenCaptureState(state)
             return state
+        }
+    }
+
+    private static func shouldRunSessionTokenFallback(after result: TokenUsageImportResult) -> Bool {
+        !hasMaterialTokenImport(result)
+    }
+
+    private static func hasMaterialTokenImport(_ result: TokenUsageImportResult) -> Bool {
+        result.insertedCount > 0
+            || result.repairedModelCount > 0
+            || result.repairedContextCount > 0
+            || result.repairedDimensionCount > 0
+    }
+
+    private static func combinedTokenImportResult(
+        logResult: TokenUsageImportResult,
+        sessionSummary: CodexSessionTokenBackfillSummary
+    ) -> TokenUsageImportResult {
+        TokenUsageImportResult(
+            insertedCount: logResult.insertedCount + sessionSummary.tokenEventsImported,
+            duplicateCount: logResult.duplicateCount + sessionSummary.duplicateEventsSkipped,
+            repairedModelCount: logResult.repairedModelCount + sessionSummary.modelEventsRepaired,
+            repairedContextCount: logResult.repairedContextCount + sessionSummary.contextEventsRepaired,
+            repairedDimensionCount: logResult.repairedDimensionCount + sessionSummary.dimensionEventsRepaired
+        )
+    }
+
+    private func latestTokenSampleReceivedAt(containing date: Date, calendar: Calendar) throws -> Date? {
+        guard let interval = calendar.dateInterval(of: .day, for: date) else {
+            return nil
+        }
+
+        let statement = try prepare(
+            """
+            SELECT MAX(received_at)
+            FROM token_usage_samples
+            WHERE received_at >= ? AND received_at < ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, interval.end.timeIntervalSince1970Int)
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            guard sqlite3_column_type(statement, 0) != SQLITE_NULL else {
+                return nil
+            }
+            return Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
         }
     }
 

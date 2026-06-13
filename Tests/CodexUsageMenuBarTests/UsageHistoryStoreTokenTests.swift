@@ -3568,6 +3568,72 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testLiveTokenCaptureFallsBackToRecentActiveSessionTokensWhenLogsHaveNoTokenEvents() async throws {
+        let store = try makeStore()
+        let tempDirectory = try makeTemporaryDirectory()
+        let databaseURL = tempDirectory.appendingPathComponent("logs_2.sqlite")
+        let sessionsURL = tempDirectory.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let timestamp = date("2026-06-13T12:48:13Z")
+
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (
+                    timestamp,
+                    """
+                    event.name="codex.session_event" event.kind=heartbeat conversation.id=conversation model=gpt-5.5
+                    """
+                ),
+            ]
+        )
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-06-13T12-00-00-test.jsonl")
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-06-13T12:48:13Z",
+                    lastInput: 100,
+                    lastCached: 80,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 120,
+                    totalInput: 100,
+                    totalCached: 80,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 120,
+                    model: "gpt-5.5"
+                ),
+            ],
+            to: sessionURL
+        )
+        let sessionImporter = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let state = store.captureLiveCodexLogTokenHistory(
+            at: timestamp,
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL,
+            sessionTokenBackfillImporter: sessionImporter
+        )
+        let worker = UsageHistoryDatabaseWorker(store: store)
+        let totals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+
+        XCTAssertEqual(state.status, .imported)
+        XCTAssertEqual(state.result.insertedCount, 1)
+        XCTAssertEqual(state.lastImportedEventAt, timestamp)
+        XCTAssertEqual(
+            totals,
+            TokenCategoryTotals(
+                inputTokens: 100,
+                cachedInputTokens: 80,
+                outputTokens: 20,
+                reasoningOutputTokens: 5,
+                totalTokens: 205
+            )
+        )
+    }
+
     @MainActor
     func testTokenHistoryReloadUsesPreviouslyCapturedCodexDesktopLogs() async throws {
         let store = try makeStore()
