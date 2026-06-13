@@ -700,6 +700,633 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertFalse(json.contains("thread-secret"))
     }
 
+    func testNotificationAuditSanitizerRecognizesCodex0140NotificationMethods() throws {
+        let thread: [String: Any] = [
+            "id": "thread-secret",
+            "sessionId": "session-secret",
+            "forkedFromId": NSNull(),
+            "parentThreadId": NSNull(),
+            "preview": "private prompt preview",
+            "ephemeral": true,
+            "modelProvider": "openai",
+            "createdAt": 1_777_100_000,
+            "updatedAt": 1_777_100_010,
+            "status": "running",
+            "path": "/Users/private/.codex/thread.jsonl",
+            "cwd": "/Users/private/project",
+            "cliVersion": "0.140.0",
+            "source": "app-server",
+            "threadSource": "cli",
+            "agentNickname": "private agent",
+            "agentRole": "private role",
+            "gitInfo": ["branch": "secret-branch"],
+            "name": "private thread name",
+            "turns": [],
+        ]
+        let hookRun: [String: Any] = [
+            "id": "hook-secret",
+            "eventName": "postCommand",
+            "handlerType": "shell",
+            "executionMode": "blocking",
+            "scope": "project",
+            "sourcePath": "/Users/private/.codex/config.toml",
+            "source": "config",
+            "displayOrder": 1,
+            "status": "success",
+            "statusMessage": "private hook output",
+            "startedAt": 1_777_100_000,
+            "completedAt": 1_777_100_010,
+            "durationMs": 10,
+            "entries": [["text": "private hook text"]],
+        ]
+        let item: [String: Any] = [
+            "id": "item-secret",
+            "type": "commandExecution",
+            "command": "print private",
+            "cwd": "/Users/private/project",
+            "processId": "process-secret",
+            "source": "user",
+            "status": "completed",
+            "commandActions": [["type": "command", "command": "print private"]],
+            "aggregatedOutput": "private output",
+            "exitCode": 0,
+            "durationMs": 100,
+        ]
+        let review: [String: Any] = [
+            "status": "approved",
+            "riskLevel": "low",
+            "userAuthorization": "private authorization",
+            "rationale": "private rationale",
+        ]
+        let action: [String: Any] = [
+            "type": "command",
+            "source": "user",
+            "command": "print private",
+            "cwd": "/Users/private/project",
+        ]
+
+        let fixtures: [(String, [String: Any])] = [
+            ("error", ["threadId": "thread-secret", "turnId": "turn-secret", "willRetry": false, "error": ["message": "private error"]]),
+            ("thread/started", ["thread": thread]),
+            ("thread/archived", ["threadId": "thread-secret"]),
+            ("thread/unarchived", ["threadId": "thread-secret"]),
+            ("thread/closed", ["threadId": "thread-secret"]),
+            ("thread/name/updated", ["threadId": "thread-secret", "threadName": "private name"]),
+            ("thread/goal/cleared", ["threadId": "thread-secret"]),
+            ("thread/compacted", ["threadId": "thread-secret", "turnId": "turn-secret"]),
+            ("skills/changed", [:]),
+            ("app/list/updated", ["data": [["id": "app-secret", "name": "Private App", "description": "private", "isAccessible": true]]]),
+            ("hook/started", ["threadId": "thread-secret", "turnId": "turn-secret", "run": hookRun]),
+            ("hook/completed", ["threadId": "thread-secret", "turnId": "turn-secret", "run": hookRun]),
+            ("turn/diff/updated", ["threadId": "thread-secret", "turnId": "turn-secret", "diff": "private diff"]),
+            ("turn/plan/updated", ["threadId": "thread-secret", "turnId": "turn-secret", "explanation": "private", "plan": [["step": "private", "status": "pending"]]]),
+            ("turn/moderationMetadata", ["threadId": "thread-secret", "turnId": "turn-secret", "metadata": ["private": "metadata"]]),
+            ("item/started", ["threadId": "thread-secret", "turnId": "turn-secret", "startedAtMs": 1_777_100_000_000, "item": item]),
+            ("item/completed", ["threadId": "thread-secret", "turnId": "turn-secret", "completedAtMs": 1_777_100_001_000, "item": item]),
+            ("item/autoApprovalReview/started", ["threadId": "thread-secret", "turnId": "turn-secret", "startedAtMs": 1, "reviewId": "review-secret", "targetItemId": "item-secret", "review": review, "action": action]),
+            ("item/autoApprovalReview/completed", ["threadId": "thread-secret", "turnId": "turn-secret", "startedAtMs": 1, "completedAtMs": 2, "reviewId": "review-secret", "targetItemId": "item-secret", "decisionSource": "guardian", "review": review, "action": action]),
+            ("rawResponseItem/completed", ["threadId": "thread-secret", "turnId": "turn-secret", "item": ["type": "message", "role": "assistant", "content": []]]),
+            ("item/agentMessage/delta", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "delta": "private delta"]),
+            ("item/plan/delta", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "delta": "private delta"]),
+            ("item/reasoning/summaryTextDelta", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "summaryIndex": 0, "delta": "private reasoning"]),
+            ("item/reasoning/summaryPartAdded", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "summaryIndex": 0]),
+            ("item/reasoning/textDelta", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "contentIndex": 0, "delta": "private reasoning"]),
+            ("command/exec/outputDelta", ["processId": "process-secret", "stream": "stdout", "deltaBase64": "cHJpdmF0ZQ==", "capReached": false]),
+            ("process/outputDelta", ["processHandle": "process-secret", "stream": "stderr", "deltaBase64": "cHJpdmF0ZQ==", "capReached": true]),
+            ("process/exited", ["processHandle": "process-secret", "exitCode": 1, "stdout": "private stdout", "stdoutCapReached": false, "stderr": "private stderr", "stderrCapReached": true]),
+            ("item/commandExecution/outputDelta", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "delta": "private output"]),
+            ("item/commandExecution/terminalInteraction", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "processId": "process-secret", "stdin": "private input"]),
+            ("item/fileChange/outputDelta", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "delta": "private patch"]),
+            ("item/fileChange/patchUpdated", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "changes": [["path": "/Users/private/file.swift", "kind": "update", "diff": "private diff"]]]),
+            ("serverRequest/resolved", ["threadId": "thread-secret", "requestId": "request-secret"]),
+            ("item/mcpToolCall/progress", ["threadId": "thread-secret", "turnId": "turn-secret", "itemId": "item-secret", "message": "private message"]),
+            ("mcpServer/oauthLogin/completed", ["name": "private server", "success": false, "error": "private error"]),
+            ("mcpServer/startupStatus/updated", ["threadId": "thread-secret", "name": "private server", "status": "failed", "error": "private error"]),
+            ("externalAgentConfig/import/completed", [:]),
+            ("fs/changed", ["watchId": "watch-secret", "changedPaths": ["/Users/private/file.swift"]]),
+            ("account/login/completed", ["loginId": "login-secret", "success": true, "error": NSNull()]),
+            ("fuzzyFileSearch/sessionUpdated", ["sessionId": "session-secret", "query": "private query", "files": [["path": "/Users/private/file.swift"]]]),
+            ("fuzzyFileSearch/sessionCompleted", ["sessionId": "session-secret"]),
+            ("windows/worldWritableWarning", ["samplePaths": ["/Users/private/world"], "extraCount": 2, "failedScan": false]),
+            ("windowsSandbox/setupCompleted", ["mode": "copy", "success": false, "error": "private error"]),
+        ]
+
+        for (method, params) in fixtures {
+            let record = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(method: method, params: params), method)
+            XCTAssertTrue(record.isSupported, method)
+        }
+    }
+
+    func testNotificationAuditSanitizerCapturesCodex0140LifecycleHookAndMetadataSafely() throws {
+        let threadRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "thread/started",
+            params: [
+                "thread": [
+                    "id": "thread-secret",
+                    "sessionId": "session-secret",
+                    "forkedFromId": "fork-secret",
+                    "parentThreadId": "parent-secret",
+                    "preview": "private first prompt",
+                    "ephemeral": true,
+                    "modelProvider": "openai",
+                    "createdAt": 1_777_100_000,
+                    "updatedAt": 1_777_100_010,
+                    "status": "running",
+                    "path": "/Users/private/.codex/session.jsonl",
+                    "cwd": "/Users/private/project",
+                    "source": "app-server",
+                    "threadSource": "cli",
+                    "agentNickname": "private agent",
+                    "agentRole": "private role",
+                    "gitInfo": ["branch": "secret-branch"],
+                    "name": "private thread",
+                    "turns": [["id": "turn-secret"]],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertTrue(threadRecord.isSupported)
+        XCTAssertEqual(threadRecord.safeValues["threadStatus"], "running")
+        XCTAssertEqual(threadRecord.safeValues["modelProvider"], "openai")
+        XCTAssertEqual(threadRecord.safeValues["source"], "app-server")
+        XCTAssertEqual(threadRecord.safeValues["threadSource"], "cli")
+        XCTAssertEqual(threadRecord.safeValues["isEphemeral"], "true")
+        XCTAssertEqual(threadRecord.safeValues["hasPreview"], "true")
+        XCTAssertEqual(threadRecord.safeValues["hasCwd"], "true")
+        XCTAssertEqual(threadRecord.safeValues["hasPath"], "true")
+        XCTAssertEqual(threadRecord.safeValues["hasGitInfo"], "true")
+        XCTAssertEqual(threadRecord.safeValues["hasThreadName"], "true")
+        XCTAssertEqual(threadRecord.safeValues["turnCount"], "1")
+        XCTAssertEqual(threadRecord.presenceFlags, ["threadId"])
+        XCTAssertAuditJSON(try encodedAuditJSON(threadRecord), excludes: [
+            "thread-secret",
+            "session-secret",
+            "private first prompt",
+            "/Users/private",
+            "secret-branch",
+            "private thread",
+            "private agent",
+            "private role",
+        ])
+
+        let hookRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "hook/completed",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "run": [
+                    "id": "hook-secret",
+                    "eventName": "postCommand",
+                    "handlerType": "shell",
+                    "executionMode": "blocking",
+                    "scope": "project",
+                    "sourcePath": "/Users/private/.codex/config.toml",
+                    "source": "config",
+                    "displayOrder": 1,
+                    "status": "success",
+                    "statusMessage": "private status message",
+                    "startedAt": 1_777_100_000,
+                    "completedAt": 1_777_100_010,
+                    "durationMs": 10,
+                    "entries": [["text": "private hook output"]],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(hookRecord.safeValues["hookEvent"], "postCommand")
+        XCTAssertEqual(hookRecord.safeValues["hookHandlerType"], "shell")
+        XCTAssertEqual(hookRecord.safeValues["hookExecutionMode"], "blocking")
+        XCTAssertEqual(hookRecord.safeValues["hookScope"], "project")
+        XCTAssertEqual(hookRecord.safeValues["hookSource"], "config")
+        XCTAssertEqual(hookRecord.safeValues["hookStatus"], "success")
+        XCTAssertEqual(hookRecord.safeValues["hookEntryCount"], "1")
+        XCTAssertEqual(hookRecord.safeValues["hasSourcePath"], "true")
+        XCTAssertEqual(hookRecord.safeValues["hasStatusMessage"], "true")
+        XCTAssertEqual(hookRecord.safeValues["hasDuration"], "true")
+        XCTAssertAuditJSON(try encodedAuditJSON(hookRecord), excludes: [
+            "thread-secret",
+            "turn-secret",
+            "hook-secret",
+            "/Users/private",
+            "private status message",
+            "private hook output",
+        ])
+
+        let appRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "app/list/updated",
+            params: [
+                "data": [
+                    [
+                        "id": "app-secret-1",
+                        "name": "Private App One",
+                        "description": "private description",
+                        "logoUrl": "https://private.example/logo.png",
+                        "installUrl": "https://private.example/install",
+                        "isAccessible": true,
+                        "isEnabled": true,
+                        "pluginDisplayNames": ["Private Plugin"],
+                    ],
+                    [
+                        "id": "app-secret-2",
+                        "name": "Private App Two",
+                        "description": NSNull(),
+                        "isAccessible": false,
+                        "isEnabled": false,
+                        "pluginDisplayNames": [],
+                    ],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(appRecord.safeValues["appCount"], "2")
+        XCTAssertEqual(appRecord.safeValues["accessibleAppCount"], "1")
+        XCTAssertAuditJSON(try encodedAuditJSON(appRecord), excludes: [
+            "app-secret",
+            "Private App",
+            "private description",
+            "https://private.example",
+            "Private Plugin",
+        ])
+
+        let startupRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "mcpServer/startupStatus/updated",
+            params: [
+                "threadId": "thread-secret",
+                "name": "private server",
+                "status": "failed",
+                "error": "private startup error",
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(startupRecord.safeValues["status"], "failed")
+        XCTAssertEqual(startupRecord.safeValues["hasName"], "true")
+        XCTAssertEqual(startupRecord.safeValues["hasError"], "true")
+        XCTAssertEqual(startupRecord.presenceFlags, ["threadId"])
+        XCTAssertAuditJSON(try encodedAuditJSON(startupRecord), excludes: [
+            "thread-secret",
+            "private server",
+            "private startup error",
+        ])
+
+        let windowsRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "windowsSandbox/setupCompleted",
+            params: [
+                "mode": "copy",
+                "success": false,
+                "error": "private setup error",
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(windowsRecord.safeValues["mode"], "copy")
+        XCTAssertEqual(windowsRecord.safeValues["success"], "false")
+        XCTAssertEqual(windowsRecord.safeValues["hasError"], "true")
+        XCTAssertAuditJSON(try encodedAuditJSON(windowsRecord), excludes: ["private setup error"])
+    }
+
+    func testNotificationAuditSanitizerRecordsCodex0140ContentHeavyMethodsAsPresenceOnly() throws {
+        let deltaRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "item/agentMessage/delta",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "itemId": "item-secret",
+                "delta": "private streamed assistant text",
+            ] as [String: Any]
+        ))
+
+        XCTAssertTrue(deltaRecord.isSupported)
+        XCTAssertEqual(deltaRecord.safeValues["hasDelta"], "true")
+        XCTAssertEqual(Set(deltaRecord.presenceFlags), Set(["threadId", "turnId", "itemId"]))
+        XCTAssertAuditJSON(try encodedAuditJSON(deltaRecord), excludes: [
+            "thread-secret",
+            "turn-secret",
+            "item-secret",
+            "private streamed assistant text",
+        ])
+
+        let planRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "turn/plan/updated",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "explanation": "private plan explanation",
+                "plan": [
+                    ["step": "private first step", "status": "pending"],
+                    ["step": "private second step", "status": "in_progress"],
+                    ["step": "private third step", "status": "completed"],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(planRecord.safeValues["hasExplanation"], "true")
+        XCTAssertEqual(planRecord.safeValues["planStepCount"], "3")
+        XCTAssertEqual(planRecord.safeValues["pendingStepCount"], "1")
+        XCTAssertEqual(planRecord.safeValues["inProgressStepCount"], "1")
+        XCTAssertEqual(planRecord.safeValues["completedStepCount"], "1")
+        XCTAssertAuditJSON(try encodedAuditJSON(planRecord), excludes: [
+            "private plan explanation",
+            "private first step",
+            "private second step",
+            "private third step",
+        ])
+
+        let processRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "process/exited",
+            params: [
+                "processHandle": "process-secret",
+                "exitCode": 42,
+                "stdout": "private stdout bytes",
+                "stdoutCapReached": false,
+                "stderr": "private stderr bytes",
+                "stderrCapReached": true,
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(processRecord.safeValues["hasExitCode"], "true")
+        XCTAssertEqual(processRecord.safeValues["hasStdout"], "true")
+        XCTAssertEqual(processRecord.safeValues["hasStderr"], "true")
+        XCTAssertEqual(processRecord.safeValues["stdoutCapReached"], "false")
+        XCTAssertEqual(processRecord.safeValues["stderrCapReached"], "true")
+        XCTAssertEqual(processRecord.presenceFlags, ["processHandle"])
+        XCTAssertAuditJSON(try encodedAuditJSON(processRecord), excludes: [
+            "process-secret",
+            "private stdout bytes",
+            "private stderr bytes",
+            "\"42\"",
+        ])
+
+        let patchRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "item/fileChange/patchUpdated",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "itemId": "item-secret",
+                "changes": [
+                    ["path": "/Users/private/One.swift", "kind": "add", "diff": "private add diff"],
+                    ["path": "/Users/private/Two.swift", "kind": "update", "diff": "private update diff"],
+                    ["path": "/Users/private/Three.swift", "kind": "delete", "diff": "private delete diff"],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(patchRecord.safeValues["changeCount"], "3")
+        XCTAssertEqual(patchRecord.safeValues["addedChangeCount"], "1")
+        XCTAssertEqual(patchRecord.safeValues["updatedChangeCount"], "1")
+        XCTAssertEqual(patchRecord.safeValues["deletedChangeCount"], "1")
+        XCTAssertAuditJSON(try encodedAuditJSON(patchRecord), excludes: [
+            "/Users/private",
+            "private add diff",
+            "private update diff",
+            "private delete diff",
+        ])
+
+        let fuzzyRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "fuzzyFileSearch/sessionUpdated",
+            params: [
+                "sessionId": "session-secret",
+                "query": "private query",
+                "files": [
+                    ["path": "/Users/private/One.swift", "score": 0.9],
+                    ["path": "/Users/private/Two.swift", "score": 0.7],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(fuzzyRecord.safeValues["hasQuery"], "true")
+        XCTAssertEqual(fuzzyRecord.safeValues["fileCount"], "2")
+        XCTAssertEqual(fuzzyRecord.presenceFlags, ["sessionId"])
+        XCTAssertAuditJSON(try encodedAuditJSON(fuzzyRecord), excludes: [
+            "session-secret",
+            "private query",
+            "/Users/private",
+        ])
+    }
+
+    func testNotificationAuditSanitizerRejectsPrivateFieldsForCodex0140ApprovalAndToolMethods() throws {
+        let approvalRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "item/autoApprovalReview/completed",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "startedAtMs": 1_777_100_000_000,
+                "completedAtMs": 1_777_100_001_000,
+                "reviewId": "review-secret",
+                "targetItemId": "item-secret",
+                "decisionSource": "guardian",
+                "review": [
+                    "status": "approved",
+                    "riskLevel": "medium",
+                    "userAuthorization": "private authorization",
+                    "rationale": "private approval rationale",
+                ],
+                "action": [
+                    "type": "command",
+                    "source": "user",
+                    "command": "cat /Users/private/secrets.txt",
+                    "cwd": "/Users/private/project",
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(approvalRecord.safeValues["decisionSource"], "guardian")
+        XCTAssertEqual(approvalRecord.safeValues["reviewStatus"], "approved")
+        XCTAssertEqual(approvalRecord.safeValues["riskLevel"], "medium")
+        XCTAssertEqual(approvalRecord.safeValues["hasUserAuthorization"], "true")
+        XCTAssertEqual(approvalRecord.safeValues["hasRationale"], "true")
+        XCTAssertEqual(approvalRecord.safeValues["actionType"], "command")
+        XCTAssertEqual(approvalRecord.safeValues["actionSource"], "user")
+        XCTAssertEqual(approvalRecord.safeValues["hasCommand"], "true")
+        XCTAssertEqual(approvalRecord.safeValues["hasCwd"], "true")
+        XCTAssertEqual(Set(approvalRecord.presenceFlags), Set(["threadId", "turnId", "reviewId", "targetItemId"]))
+        XCTAssertAuditJSON(try encodedAuditJSON(approvalRecord), excludes: [
+            "thread-secret",
+            "turn-secret",
+            "review-secret",
+            "item-secret",
+            "private authorization",
+            "private approval rationale",
+            "cat /Users/private/secrets.txt",
+            "/Users/private/project",
+        ])
+
+        let networkApprovalRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "item/autoApprovalReview/completed",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "startedAtMs": 1,
+                "completedAtMs": 2,
+                "reviewId": "review-secret",
+                "targetItemId": NSNull(),
+                "decisionSource": "guardian",
+                "review": ["status": "denied", "riskLevel": "high"],
+                "action": [
+                    "type": "networkAccess",
+                    "target": "https://private.example/api",
+                    "host": "private.example",
+                    "protocol": "https",
+                    "port": 443,
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(networkApprovalRecord.safeValues["actionType"], "networkAccess")
+        XCTAssertEqual(networkApprovalRecord.safeValues["protocol"], "https")
+        XCTAssertEqual(networkApprovalRecord.safeValues["hasTarget"], "true")
+        XCTAssertEqual(networkApprovalRecord.safeValues["hasHost"], "true")
+        XCTAssertEqual(networkApprovalRecord.safeValues["hasPort"], "true")
+        XCTAssertEqual(Set(networkApprovalRecord.presenceFlags), Set(["threadId", "turnId", "reviewId"]))
+        XCTAssertAuditJSON(try encodedAuditJSON(networkApprovalRecord), excludes: [
+            "https://private.example",
+            "private.example",
+            "\"443\"",
+        ])
+
+        let progressRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "item/mcpToolCall/progress",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "itemId": "item-secret",
+                "message": "private progress message",
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(progressRecord.safeValues["hasMessage"], "true")
+        XCTAssertEqual(Set(progressRecord.presenceFlags), Set(["threadId", "turnId", "itemId"]))
+        XCTAssertAuditJSON(try encodedAuditJSON(progressRecord), excludes: [
+            "thread-secret",
+            "turn-secret",
+            "item-secret",
+            "private progress message",
+        ])
+
+        let accountLoginRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "account/login/completed",
+            params: [
+                "loginId": "login-secret",
+                "success": false,
+                "error": "private login error",
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(accountLoginRecord.safeValues["success"], "false")
+        XCTAssertEqual(accountLoginRecord.safeValues["hasError"], "true")
+        XCTAssertEqual(accountLoginRecord.presenceFlags, ["loginId"])
+        XCTAssertAuditJSON(try encodedAuditJSON(accountLoginRecord), excludes: [
+            "login-secret",
+            "private login error",
+        ])
+
+        let requestRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "serverRequest/resolved",
+            params: [
+                "threadId": "thread-secret",
+                "requestId": "request-secret",
+            ] as [String: Any]
+        ))
+
+        XCTAssertEqual(requestRecord.safeValues, [:])
+        XCTAssertEqual(Set(requestRecord.presenceFlags), Set(["threadId", "requestId"]))
+        XCTAssertAuditJSON(try encodedAuditJSON(requestRecord), excludes: [
+            "thread-secret",
+            "request-secret",
+        ])
+    }
+
+    func testNotificationAuditSanitizerRejectsUnknownCodex0140ProviderAndEnumValues() throws {
+        let threadRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "thread/started",
+            params: [
+                "thread": [
+                    "id": "thread-secret",
+                    "status": "privateThreadStatus",
+                    "modelProvider": "privateProvider",
+                    "source": "privateSource",
+                    "threadSource": "privateThreadSource",
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertNil(threadRecord.safeValues["threadStatus"])
+        XCTAssertNil(threadRecord.safeValues["modelProvider"])
+        XCTAssertNil(threadRecord.safeValues["source"])
+        XCTAssertNil(threadRecord.safeValues["threadSource"])
+        XCTAssertEqual(threadRecord.safeValues["hasModelProvider"], "true")
+        XCTAssertAuditJSON(try encodedAuditJSON(threadRecord), excludes: [
+            "thread-secret",
+            "privateThreadStatus",
+            "privateProvider",
+            "privateSource",
+            "privateThreadSource",
+        ])
+
+        let hookRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "hook/completed",
+            params: [
+                "threadId": "thread-secret",
+                "turnId": "turn-secret",
+                "run": [
+                    "eventName": "privateHookEvent",
+                    "handlerType": "privateHandler",
+                    "executionMode": "privateMode",
+                    "scope": "privateScope",
+                    "source": "privateSource",
+                    "status": "privateStatus",
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertNil(hookRecord.safeValues["hookEvent"])
+        XCTAssertNil(hookRecord.safeValues["hookHandlerType"])
+        XCTAssertNil(hookRecord.safeValues["hookExecutionMode"])
+        XCTAssertNil(hookRecord.safeValues["hookScope"])
+        XCTAssertNil(hookRecord.safeValues["hookSource"])
+        XCTAssertNil(hookRecord.safeValues["hookStatus"])
+        XCTAssertAuditJSON(try encodedAuditJSON(hookRecord), excludes: [
+            "thread-secret",
+            "turn-secret",
+            "privateHookEvent",
+            "privateHandler",
+            "privateMode",
+            "privateScope",
+            "privateSource",
+            "privateStatus",
+        ])
+
+        let settingsRecord = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "thread/settings/updated",
+            params: [
+                "threadId": "thread-secret",
+                "threadSettings": [
+                    "modelProvider": "privateProvider",
+                    "effort": "privateEffort",
+                    "approvalPolicy": ["type": "privatePolicy"],
+                    "approvalsReviewer": "privateReviewer",
+                    "sandboxPolicy": ["type": "privateSandbox"],
+                    "collaborationMode": ["mode": "privateMode"],
+                ],
+            ] as [String: Any]
+        ))
+
+        XCTAssertNil(settingsRecord.safeValues["modelProvider"])
+        XCTAssertNil(settingsRecord.safeValues["effort"])
+        XCTAssertNil(settingsRecord.safeValues["approvalPolicy"])
+        XCTAssertNil(settingsRecord.safeValues["approvalsReviewer"])
+        XCTAssertNil(settingsRecord.safeValues["sandboxPolicy"])
+        XCTAssertNil(settingsRecord.safeValues["collaborationMode"])
+        XCTAssertEqual(settingsRecord.safeValues["hasModelProvider"], "true")
+        XCTAssertAuditJSON(try encodedAuditJSON(settingsRecord), excludes: [
+            "thread-secret",
+            "privateProvider",
+            "privateEffort",
+            "privatePolicy",
+            "privateReviewer",
+            "privateSandbox",
+            "privateMode",
+        ])
+    }
+
     @MainActor
     func testAppServerClientEmitsNotificationAuditWithoutDecodingPayload() throws {
         let client = CodexAppServerClient()
@@ -1036,6 +1663,21 @@ final class CodexRateLimitDecodingTests: XCTestCase {
 
     private func jsonObject(_ json: String) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    private func encodedAuditJSON(_ record: CodexAppServerNotificationAuditRecord) throws -> String {
+        String(data: try JSONEncoder().encode(record), encoding: .utf8) ?? ""
+    }
+
+    private func XCTAssertAuditJSON(
+        _ json: String,
+        excludes privateValues: [String],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for privateValue in privateValues {
+            XCTAssertFalse(json.contains(privateValue), "Stored private value: \(privateValue)", file: file, line: line)
+        }
     }
 
     private func auditField(_ keyPath: String, in audit: CodexTokenUsagePayloadAudit) throws -> CodexTokenPayloadAuditField {

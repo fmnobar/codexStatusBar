@@ -527,12 +527,48 @@ enum CodexAppServerNotificationAuditSanitizer {
 
     private static let supportedMethods: Set<String> = [
         "account/updated",
+        "account/login/completed",
+        "app/list/updated",
+        "command/exec/outputDelta",
         "configWarning",
         "deprecationNotice",
+        "error",
+        "externalAgentConfig/import/completed",
+        "fs/changed",
+        "fuzzyFileSearch/sessionCompleted",
+        "fuzzyFileSearch/sessionUpdated",
         "guardianWarning",
+        "hook/completed",
+        "hook/started",
+        "item/agentMessage/delta",
+        "item/autoApprovalReview/completed",
+        "item/autoApprovalReview/started",
+        "item/commandExecution/outputDelta",
+        "item/commandExecution/terminalInteraction",
+        "item/completed",
+        "item/fileChange/outputDelta",
+        "item/fileChange/patchUpdated",
+        "item/mcpToolCall/progress",
+        "item/plan/delta",
+        "item/reasoning/summaryPartAdded",
+        "item/reasoning/summaryTextDelta",
+        "item/reasoning/textDelta",
+        "item/started",
+        "mcpServer/oauthLogin/completed",
+        "mcpServer/startupStatus/updated",
         "model/rerouted",
         "model/verification",
+        "process/exited",
+        "process/outputDelta",
+        "rawResponseItem/completed",
+        "serverRequest/resolved",
+        "skills/changed",
+        "thread/archived",
+        "thread/closed",
+        "thread/compacted",
+        "thread/goal/cleared",
         "thread/goal/updated",
+        "thread/name/updated",
         "thread/realtime/closed",
         "thread/realtime/error",
         "thread/realtime/itemAdded",
@@ -542,10 +578,17 @@ enum CodexAppServerNotificationAuditSanitizer {
         "thread/realtime/transcript/delta",
         "thread/realtime/transcript/done",
         "thread/settings/updated",
+        "thread/started",
         "thread/status/changed",
+        "thread/unarchived",
         "turn/completed",
+        "turn/diff/updated",
+        "turn/moderationMetadata",
+        "turn/plan/updated",
         "turn/started",
         "warning",
+        "windows/worldWritableWarning",
+        "windowsSandbox/setupCompleted",
     ]
 
     private static let unsafeKeyFragments = [
@@ -593,6 +636,239 @@ enum CodexAppServerNotificationAuditSanitizer {
         "websocket",
     ]
 
+    private static let knownModelProviders: Set<String> = [
+        "openai",
+    ]
+
+    private static let knownThreadStatuses: Set<String> = [
+        "active",
+        "archived",
+        "closed",
+        "compacted",
+        "created",
+        "idle",
+        "paused",
+        "running",
+        "unarchived",
+    ]
+
+    private static let knownSources: Set<String> = [
+        "app-server",
+        "cli",
+        "codex",
+        "config",
+        "desktop",
+        "extension",
+        "hook",
+        "server",
+        "user",
+        "vscode",
+    ]
+
+    private static let knownThreadSources: Set<String> = [
+        "cli",
+        "desktop",
+        "vscode",
+    ]
+
+    private static let knownHookEvents: Set<String> = [
+        "postCommand",
+        "preCommand",
+        "sessionStart",
+        "turnComplete",
+        "turnStart",
+    ]
+
+    private static let knownHookHandlerTypes: Set<String> = [
+        "command",
+        "shell",
+    ]
+
+    private static let knownHookExecutionModes: Set<String> = [
+        "blocking",
+        "parallel",
+        "serial",
+    ]
+
+    private static let knownHookScopes: Set<String> = [
+        "global",
+        "project",
+        "user",
+        "workspace",
+    ]
+
+    private static let knownStatuses: Set<String> = [
+        "approved",
+        "cancelled",
+        "completed",
+        "denied",
+        "error",
+        "failed",
+        "failure",
+        "inProgress",
+        "in_progress",
+        "pending",
+        "running",
+        "skipped",
+        "started",
+        "success",
+        "succeeded",
+    ]
+
+    private static let knownItemTypes: Set<String> = [
+        "agentMessage",
+        "autoApprovalReview",
+        "commandExecution",
+        "fileChange",
+        "mcpToolCall",
+        "message",
+        "plan",
+        "reasoning",
+        "toolCall",
+    ]
+
+    private static let knownItemPhases: Set<String> = [
+        "completed",
+        "created",
+        "delta",
+        "failed",
+        "started",
+        "streaming",
+    ]
+
+    private static let knownReasoningEfforts: Set<String> = [
+        "high",
+        "low",
+        "medium",
+        "minimal",
+        "none",
+        "xhigh",
+    ]
+
+    private static let knownDecisionSources: Set<String> = [
+        "auto",
+        "guardian",
+        "system",
+        "user",
+    ]
+
+    private static let knownRiskLevels: Set<String> = [
+        "critical",
+        "high",
+        "low",
+        "medium",
+        "none",
+    ]
+
+    private static let knownActionTypes: Set<String> = [
+        "command",
+        "fileChange",
+        "mcpTool",
+        "networkAccess",
+        "openUrl",
+        "tool",
+    ]
+
+    private static let knownProtocols: Set<String> = [
+        "http",
+        "https",
+        "tcp",
+        "udp",
+        "ws",
+        "wss",
+    ]
+
+    private static let knownStreams: Set<String> = [
+        "stderr",
+        "stdout",
+    ]
+
+    private static let knownWindowsSandboxModes: Set<String> = [
+        "copy",
+        "off",
+        "readonly",
+        "readOnly",
+        "workspace",
+        "workspaceWrite",
+    ]
+
+    private static let knownRerouteReasons: Set<String> = [
+        "capacity",
+        "default",
+        "fallback",
+        "highRiskCyberActivity",
+        "modelUnavailable",
+        "policy",
+    ]
+
+    private static let knownAuthModes: Set<String> = [
+        "api_key",
+        "api-key",
+        "chatgpt",
+        "none",
+        "openai",
+    ]
+
+    private static let knownPlanTypes: Set<String> = [
+        "business",
+        "enterprise",
+        "free",
+        "plus",
+        "pro",
+        "team",
+    ]
+
+    private static let knownApprovalPolicies: Set<String> = [
+        "auto",
+        "full-auto",
+        "granular",
+        "never",
+        "on-failure",
+        "on-request",
+        "onFailure",
+        "onRequest",
+        "untrusted",
+    ]
+
+    private static let knownApprovalsReviewers: Set<String> = [
+        "guardian_subagent",
+        "none",
+        "system",
+        "user",
+    ]
+
+    private static let knownSandboxPolicies: Set<String> = [
+        "danger-full-access",
+        "danger_full_access",
+        "read-only",
+        "readOnly",
+        "workspace-write",
+        "workspaceWrite",
+    ]
+
+    private static let knownCollaborationModes: Set<String> = [
+        "act",
+        "agent",
+        "chat",
+        "plan",
+    ]
+
+    private static let knownGoalStatuses: Set<String> = [
+        "active",
+        "blocked",
+        "completed",
+        "done",
+        "inProgress",
+        "in_progress",
+        "pending",
+    ]
+
+    private static let knownRealtimeRoles: Set<String> = [
+        "assistant",
+        "system",
+        "user",
+    ]
+
     static func audit(method rawMethod: String, params: Any?) -> CodexAppServerNotificationAuditRecord? {
         guard let method = normalizedMethod(rawMethod), !skippedMethods.contains(method) else {
             return nil
@@ -622,27 +898,42 @@ enum CodexAppServerNotificationAuditSanitizer {
         var unsupportedShapeCount = 0
 
         func markPresence(_ key: String, when value: Any?) {
-            if value != nil {
+            if let value, !(value is NSNull) {
                 presenceFlags.append(key)
             }
         }
 
         switch method {
+        case "thread/started":
+            if let thread = object["thread"] as? [String: Any] {
+                markPresence("threadId", when: thread["id"])
+                addThreadSummary(thread, to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "thread/archived", "thread/unarchived", "thread/closed", "thread/goal/cleared", "thread/compacted":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+        case "thread/name/updated":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["threadName"], key: "hasThreadName", to: &safeValues)
         case "thread/status/changed":
             markPresence("threadId", when: object["threadId"])
             if let statusObject = object["status"] as? [String: Any] {
-                addSafeIdentifier(statusObject["type"], key: "status", to: &safeValues)
+                addKnownIdentifier(statusObject["type"], key: "status", allowedValues: knownThreadStatuses, to: &safeValues)
                 if let activeFlags = statusObject["activeFlags"] as? [Any] {
                     safeValues["activeFlagCount"] = "\(activeFlags.count)"
                 }
             } else {
                 unsupportedShapeCount += 1
             }
+        case "skills/changed", "externalAgentConfig/import/completed":
+            break
         case "turn/started", "turn/completed":
             markPresence("threadId", when: object["threadId"])
             if let turn = object["turn"] as? [String: Any] {
                 markPresence("turnId", when: turn["id"])
-                addSafeIdentifier(turn["status"], key: "turnStatus", to: &safeValues)
+                addKnownIdentifier(turn["status"], key: "turnStatus", allowedValues: knownStatuses, to: &safeValues)
                 if let items = turn["items"] as? [Any] {
                     safeValues["itemCount"] = "\(items.count)"
                 }
@@ -653,26 +944,167 @@ enum CodexAppServerNotificationAuditSanitizer {
             } else {
                 unsupportedShapeCount += 1
             }
+        case "error":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            addBoolean(object["willRetry"], key: "willRetry", to: &safeValues)
+            addPresenceValue(object["error"], key: "hasError", to: &safeValues)
+            if let error = object["error"] as? [String: Any] {
+                addPresenceValue(error["codexErrorInfo"], key: "hasCodexErrorInfo", to: &safeValues)
+                addPresenceValue(error["additionalDetails"], key: "hasAdditionalDetails", to: &safeValues)
+            }
+        case "hook/started", "hook/completed":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            if let run = object["run"] as? [String: Any] {
+                addHookRunSummary(run, to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "turn/diff/updated":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            addPresenceValue(object["diff"], key: "hasDiff", to: &safeValues)
+        case "turn/plan/updated":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            addPresenceValue(object["explanation"], key: "hasExplanation", to: &safeValues)
+            addPlanSummary(object["plan"], to: &safeValues)
+        case "turn/moderationMetadata":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            addPresenceValue(object["metadata"], key: "hasMetadata", to: &safeValues)
+            addObjectCount(object["metadata"], key: "metadataFieldCount", to: &safeValues)
+        case "item/started", "item/completed":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            addPresenceValue(object["startedAtMs"], key: "hasStartedAt", to: &safeValues)
+            addPresenceValue(object["completedAtMs"], key: "hasCompletedAt", to: &safeValues)
+            if let item = object["item"] as? [String: Any] {
+                markPresence("itemId", when: item["id"])
+                addItemSummary(item, to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "rawResponseItem/completed":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            if let item = object["item"] as? [String: Any] {
+                addItemSummary(item, to: &safeValues)
+            } else {
+                unsupportedShapeCount += 1
+            }
+        case "item/autoApprovalReview/started", "item/autoApprovalReview/completed":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            markPresence("reviewId", when: object["reviewId"])
+            markPresence("targetItemId", when: object["targetItemId"])
+            addPresenceValue(object["startedAtMs"], key: "hasStartedAt", to: &safeValues)
+            addPresenceValue(object["completedAtMs"], key: "hasCompletedAt", to: &safeValues)
+            addKnownIdentifier(object["decisionSource"], key: "decisionSource", allowedValues: knownDecisionSources, to: &safeValues)
+            addApprovalReviewSummary(object["review"], to: &safeValues)
+            addApprovalActionSummary(object["action"], to: &safeValues)
+        case "item/agentMessage/delta", "item/plan/delta", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            markPresence("itemId", when: object["itemId"])
+            addPresenceValue(object["delta"], key: "hasDelta", to: &safeValues)
+            addPresenceValue(object["summaryIndex"], key: "hasSummaryIndex", to: &safeValues)
+            addPresenceValue(object["contentIndex"], key: "hasContentIndex", to: &safeValues)
+        case "item/reasoning/summaryPartAdded":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            markPresence("itemId", when: object["itemId"])
+            addPresenceValue(object["summaryIndex"], key: "hasSummaryIndex", to: &safeValues)
+        case "command/exec/outputDelta":
+            markPresence("processId", when: object["processId"])
+            addKnownIdentifier(object["stream"], key: "stream", allowedValues: knownStreams, to: &safeValues)
+            addBoolean(object["capReached"], key: "capReached", to: &safeValues)
+            addPresenceValue(object["deltaBase64"], key: "hasOutputDelta", to: &safeValues)
+        case "process/outputDelta":
+            markPresence("processHandle", when: object["processHandle"])
+            addKnownIdentifier(object["stream"], key: "stream", allowedValues: knownStreams, to: &safeValues)
+            addBoolean(object["capReached"], key: "capReached", to: &safeValues)
+            addPresenceValue(object["deltaBase64"], key: "hasOutputDelta", to: &safeValues)
+        case "process/exited":
+            markPresence("processHandle", when: object["processHandle"])
+            addPresenceValue(object["exitCode"], key: "hasExitCode", to: &safeValues)
+            addBoolean(object["stdoutCapReached"], key: "stdoutCapReached", to: &safeValues)
+            addBoolean(object["stderrCapReached"], key: "stderrCapReached", to: &safeValues)
+            addPresenceValue(object["stdout"], key: "hasStdout", to: &safeValues)
+            addPresenceValue(object["stderr"], key: "hasStderr", to: &safeValues)
+        case "item/commandExecution/terminalInteraction":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            markPresence("itemId", when: object["itemId"])
+            markPresence("processId", when: object["processId"])
+            addPresenceValue(object["stdin"], key: "hasInput", to: &safeValues)
+        case "item/fileChange/patchUpdated":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            markPresence("itemId", when: object["itemId"])
+            addPatchChangeSummary(object["changes"], to: &safeValues)
+        case "serverRequest/resolved":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("requestId", when: object["requestId"])
+        case "item/mcpToolCall/progress":
+            markPresence("threadId", when: object["threadId"])
+            markPresence("turnId", when: object["turnId"])
+            markPresence("itemId", when: object["itemId"])
+            addPresenceValue(object["message"], key: "hasMessage", to: &safeValues)
+        case "mcpServer/oauthLogin/completed":
+            addPresenceValue(object["name"], key: "hasName", to: &safeValues)
+            addBoolean(object["success"], key: "success", to: &safeValues)
+            addPresenceValue(object["error"], key: "hasError", to: &safeValues)
+        case "mcpServer/startupStatus/updated":
+            markPresence("threadId", when: object["threadId"])
+            addPresenceValue(object["name"], key: "hasName", to: &safeValues)
+            addKnownIdentifier(object["status"], key: "status", allowedValues: knownStatuses, to: &safeValues)
+            addPresenceValue(object["error"], key: "hasError", to: &safeValues)
+        case "app/list/updated":
+            addArrayCount(object["data"], key: "appCount", to: &safeValues)
+            addAccessibleAppCount(object["data"], to: &safeValues)
+        case "fs/changed":
+            markPresence("watchId", when: object["watchId"])
+            addArrayCount(object["changedPaths"], key: "changedPathCount", to: &safeValues)
+        case "fuzzyFileSearch/sessionUpdated":
+            markPresence("sessionId", when: object["sessionId"])
+            addPresenceValue(object["query"], key: "hasQuery", to: &safeValues)
+            addArrayCount(object["files"], key: "fileCount", to: &safeValues)
+        case "fuzzyFileSearch/sessionCompleted":
+            markPresence("sessionId", when: object["sessionId"])
+        case "windows/worldWritableWarning":
+            addArrayCount(object["samplePaths"], key: "samplePathCount", to: &safeValues)
+            addCountValue(object["extraCount"], key: "extraPathCount", to: &safeValues)
+            addBoolean(object["failedScan"], key: "failedScan", to: &safeValues)
+        case "windowsSandbox/setupCompleted":
+            addKnownIdentifier(object["mode"], key: "mode", allowedValues: knownWindowsSandboxModes, to: &safeValues)
+            addBoolean(object["success"], key: "success", to: &safeValues)
+            addPresenceValue(object["error"], key: "hasError", to: &safeValues)
+        case "account/login/completed":
+            markPresence("loginId", when: object["loginId"])
+            addBoolean(object["success"], key: "success", to: &safeValues)
+            addPresenceValue(object["error"], key: "hasError", to: &safeValues)
         case "model/rerouted":
             markPresence("threadId", when: object["threadId"])
             markPresence("turnId", when: object["turnId"])
             addModel(object["fromModel"], key: "fromModel", to: &safeValues)
             addModel(object["toModel"], key: "toModel", to: &safeValues)
-            addSafeIdentifier(object["reason"], key: "reason", to: &safeValues)
+            addKnownIdentifier(object["reason"], key: "reason", allowedValues: knownRerouteReasons, to: &safeValues)
         case "account/updated":
-            addSafeIdentifier(object["authMode"], key: "authMode", to: &safeValues)
-            addSafeIdentifier(object["planType"], key: "planType", to: &safeValues)
+            addKnownIdentifier(object["authMode"], key: "authMode", allowedValues: knownAuthModes, to: &safeValues)
+            addKnownIdentifier(object["planType"], key: "planType", allowedValues: knownPlanTypes, to: &safeValues)
         case "thread/settings/updated":
             markPresence("threadId", when: object["threadId"])
             if let settings = object["threadSettings"] as? [String: Any] {
                 addModel(settings["model"], key: "model", to: &safeValues)
-                addDimension(settings["modelProvider"], key: "modelProvider", to: &safeValues)
-                addSafeIdentifier(settings["effort"], key: "effort", to: &safeValues)
-                addEnumLike(settings["approvalPolicy"], key: "approvalPolicy", to: &safeValues)
-                addEnumLike(settings["approvalsReviewer"], key: "approvalsReviewer", to: &safeValues)
-                addEnumLike(settings["sandboxPolicy"], key: "sandboxPolicy", to: &safeValues)
+                addKnownIdentifierOrPresence(settings["modelProvider"], key: "modelProvider", presenceKey: "hasModelProvider", allowedValues: knownModelProviders, to: &safeValues)
+                addKnownIdentifier(settings["effort"], key: "effort", allowedValues: knownReasoningEfforts, to: &safeValues)
+                addKnownEnumLike(settings["approvalPolicy"], key: "approvalPolicy", allowedValues: knownApprovalPolicies, to: &safeValues)
+                addKnownEnumLike(settings["approvalsReviewer"], key: "approvalsReviewer", allowedValues: knownApprovalsReviewers, to: &safeValues)
+                addKnownEnumLike(settings["sandboxPolicy"], key: "sandboxPolicy", allowedValues: knownSandboxPolicies, to: &safeValues)
                 if let collaborationMode = settings["collaborationMode"] as? [String: Any] {
-                    addEnumLike(collaborationMode["mode"], key: "collaborationMode", to: &safeValues)
+                    addKnownEnumLike(collaborationMode["mode"], key: "collaborationMode", allowedValues: knownCollaborationModes, to: &safeValues)
                 }
                 addPresenceValue(settings["cwd"], key: "hasCwd", to: &safeValues)
                 addPresenceValue(settings["serviceTier"], key: "hasServiceTier", to: &safeValues)
@@ -686,14 +1118,14 @@ enum CodexAppServerNotificationAuditSanitizer {
             markPresence("threadId", when: object["threadId"])
             markPresence("turnId", when: object["turnId"])
             if let goal = object["goal"] as? [String: Any] {
-                addSafeIdentifier(goal["status"], key: "goalStatus", to: &safeValues)
+                addKnownIdentifier(goal["status"], key: "goalStatus", allowedValues: knownGoalStatuses, to: &safeValues)
                 addPresenceValue(goal["tokenBudget"], key: "hasTokenBudget", to: &safeValues)
             } else {
                 unsupportedShapeCount += 1
             }
         case "thread/realtime/started":
             markPresence("threadId", when: object["threadId"])
-            addSafeIdentifier(object["version"], key: "version", to: &safeValues)
+            addPresenceValue(object["version"], key: "hasVersion", to: &safeValues)
             addPresenceValue(object["realtimeSessionId"], key: "hasRealtimeSession", to: &safeValues)
         case "thread/realtime/closed":
             markPresence("threadId", when: object["threadId"])
@@ -706,7 +1138,7 @@ enum CodexAppServerNotificationAuditSanitizer {
             addPresenceValue(object["item"], key: "hasItem", to: &safeValues)
         case "thread/realtime/transcript/delta", "thread/realtime/transcript/done":
             markPresence("threadId", when: object["threadId"])
-            addSafeIdentifier(object["role"], key: "role", to: &safeValues)
+            addKnownIdentifier(object["role"], key: "role", allowedValues: knownRealtimeRoles, to: &safeValues)
             addPresenceValue(object["delta"], key: "hasDelta", to: &safeValues)
             addPresenceValue(object["text"], key: "hasText", to: &safeValues)
         case "thread/realtime/outputAudio/delta":
@@ -760,6 +1192,173 @@ enum CodexAppServerNotificationAuditSanitizer {
         return value
     }
 
+    private static func addThreadSummary(_ thread: [String: Any], to safeValues: inout [String: String]) {
+        addKnownIdentifier(thread["status"], key: "threadStatus", allowedValues: knownThreadStatuses, to: &safeValues)
+        addKnownIdentifierOrPresence(thread["modelProvider"], key: "modelProvider", presenceKey: "hasModelProvider", allowedValues: knownModelProviders, to: &safeValues)
+        addKnownIdentifier(thread["source"], key: "source", allowedValues: knownSources, to: &safeValues)
+        addKnownIdentifier(thread["threadSource"], key: "threadSource", allowedValues: knownThreadSources, to: &safeValues)
+        addBoolean(thread["ephemeral"], key: "isEphemeral", to: &safeValues)
+        addPresenceValue(thread["parentThreadId"], key: "hasParentThread", to: &safeValues)
+        addPresenceValue(thread["forkedFromId"], key: "hasForkSource", to: &safeValues)
+        addPresenceValue(thread["sessionId"], key: "hasSession", to: &safeValues)
+        addPresenceValue(thread["preview"], key: "hasPreview", to: &safeValues)
+        addPresenceValue(thread["name"], key: "hasThreadName", to: &safeValues)
+        addPresenceValue(thread["agentNickname"], key: "hasAgentNickname", to: &safeValues)
+        addPresenceValue(thread["agentRole"], key: "hasAgentRole", to: &safeValues)
+        addPresenceValue(thread["createdAt"], key: "hasCreatedAt", to: &safeValues)
+        addPresenceValue(thread["updatedAt"], key: "hasUpdatedAt", to: &safeValues)
+        addPresenceValue(thread["path"], key: "hasPath", to: &safeValues)
+        addPresenceValue(thread["cwd"], key: "hasCwd", to: &safeValues)
+        addPresenceValue(thread["gitInfo"], key: "hasGitInfo", to: &safeValues)
+        addArrayCount(thread["turns"], key: "turnCount", to: &safeValues)
+    }
+
+    private static func addHookRunSummary(_ run: [String: Any], to safeValues: inout [String: String]) {
+        addKnownIdentifier(run["eventName"], key: "hookEvent", allowedValues: knownHookEvents, to: &safeValues)
+        addKnownIdentifier(run["handlerType"], key: "hookHandlerType", allowedValues: knownHookHandlerTypes, to: &safeValues)
+        addKnownIdentifier(run["executionMode"], key: "hookExecutionMode", allowedValues: knownHookExecutionModes, to: &safeValues)
+        addKnownIdentifier(run["scope"], key: "hookScope", allowedValues: knownHookScopes, to: &safeValues)
+        addKnownIdentifier(run["source"], key: "hookSource", allowedValues: knownSources, to: &safeValues)
+        addKnownIdentifier(run["status"], key: "hookStatus", allowedValues: knownStatuses, to: &safeValues)
+        addArrayCount(run["entries"], key: "hookEntryCount", to: &safeValues)
+        addPresenceValue(run["sourcePath"], key: "hasSourcePath", to: &safeValues)
+        addPresenceValue(run["statusMessage"], key: "hasStatusMessage", to: &safeValues)
+        addPresenceValue(run["startedAt"], key: "hasStartedAt", to: &safeValues)
+        addPresenceValue(run["completedAt"], key: "hasCompletedAt", to: &safeValues)
+        addPresenceValue(run["durationMs"], key: "hasDuration", to: &safeValues)
+    }
+
+    private static func addPlanSummary(_ value: Any?, to safeValues: inout [String: String]) {
+        guard let plan = value as? [[String: Any]] else {
+            addArrayCount(value, key: "planStepCount", to: &safeValues)
+            return
+        }
+
+        safeValues["planStepCount"] = "\(plan.count)"
+        for step in plan {
+            guard let status = normalizedString(from: step["status"]) else {
+                continue
+            }
+
+            switch status {
+            case "pending":
+                incrementCount("pendingStepCount", in: &safeValues)
+            case "inProgress", "in_progress":
+                incrementCount("inProgressStepCount", in: &safeValues)
+            case "completed":
+                incrementCount("completedStepCount", in: &safeValues)
+            default:
+                break
+            }
+        }
+    }
+
+    private static func addItemSummary(_ item: [String: Any], to safeValues: inout [String: String]) {
+        addKnownIdentifier(item["type"], key: "itemType", allowedValues: knownItemTypes, to: &safeValues)
+        addKnownIdentifier(item["status"], key: "itemStatus", allowedValues: knownStatuses, to: &safeValues)
+        addKnownIdentifier(item["phase"], key: "itemPhase", allowedValues: knownItemPhases, to: &safeValues)
+        addKnownIdentifier(item["source"], key: "itemSource", allowedValues: knownSources, to: &safeValues)
+        addKnownIdentifier(item["kind"], key: "itemKind", allowedValues: knownItemTypes, to: &safeValues)
+        addBoolean(item["success"], key: "success", to: &safeValues)
+        addModel(item["model"], key: "model", to: &safeValues)
+        addKnownIdentifier(item["reasoningEffort"], key: "reasoningEffort", allowedValues: knownReasoningEfforts, to: &safeValues)
+        addArrayCount(item["content"], key: "contentCount", to: &safeValues)
+        addArrayCount(item["summary"], key: "summaryCount", to: &safeValues)
+        addArrayCount(item["changes"], key: "changeCount", to: &safeValues)
+        addArrayCount(item["commandActions"], key: "commandActionCount", to: &safeValues)
+        addArrayCount(item["contentItems"], key: "contentItemCount", to: &safeValues)
+        addArrayCount(item["receiverThreadIds"], key: "receiverThreadCount", to: &safeValues)
+        addObjectCount(item["agentsStates"], key: "agentStateCount", to: &safeValues)
+        addPresenceValue(item["durationMs"], key: "hasDuration", to: &safeValues)
+        addPresenceValue(item["exitCode"], key: "hasExitCode", to: &safeValues)
+        addPresenceValue(item["arguments"], key: "hasArguments", to: &safeValues)
+        addPresenceValue(item["result"], key: "hasResult", to: &safeValues)
+        addPresenceValue(item["error"], key: "hasError", to: &safeValues)
+        addPresenceValue(item["prompt"], key: "hasPrompt", to: &safeValues)
+        addPresenceValue(item["query"], key: "hasQuery", to: &safeValues)
+        addPresenceValue(item["path"], key: "hasPath", to: &safeValues)
+        addPresenceValue(item["savedPath"], key: "hasSavedPath", to: &safeValues)
+        addPresenceValue(item["review"], key: "hasReview", to: &safeValues)
+        addPresenceValue(item["aggregatedOutput"], key: "hasAggregatedOutput", to: &safeValues)
+    }
+
+    private static func addApprovalReviewSummary(_ value: Any?, to safeValues: inout [String: String]) {
+        guard let review = value as? [String: Any] else {
+            addPresenceValue(value, key: "hasReview", to: &safeValues)
+            return
+        }
+
+        addKnownIdentifier(review["status"], key: "reviewStatus", allowedValues: knownStatuses, to: &safeValues)
+        addKnownIdentifier(review["riskLevel"], key: "riskLevel", allowedValues: knownRiskLevels, to: &safeValues)
+        addPresenceValue(review["userAuthorization"], key: "hasUserAuthorization", to: &safeValues)
+        addPresenceValue(review["rationale"], key: "hasRationale", to: &safeValues)
+    }
+
+    private static func addApprovalActionSummary(_ value: Any?, to safeValues: inout [String: String]) {
+        guard let action = value as? [String: Any] else {
+            addPresenceValue(value, key: "hasAction", to: &safeValues)
+            return
+        }
+
+        addKnownIdentifier(action["type"], key: "actionType", allowedValues: knownActionTypes, to: &safeValues)
+        addKnownIdentifier(action["source"], key: "actionSource", allowedValues: knownSources, to: &safeValues)
+        addKnownIdentifier(action["protocol"], key: "protocol", allowedValues: knownProtocols, to: &safeValues)
+        addArrayCount(action["argv"], key: "argvCount", to: &safeValues)
+        addArrayCount(action["files"], key: "fileCount", to: &safeValues)
+        addPresenceValue(action["cwd"], key: "hasCwd", to: &safeValues)
+        addPresenceValue(action["command"], key: "hasCommand", to: &safeValues)
+        addPresenceValue(action["program"], key: "hasProgram", to: &safeValues)
+        addPresenceValue(action["target"], key: "hasTarget", to: &safeValues)
+        addPresenceValue(action["host"], key: "hasHost", to: &safeValues)
+        addPresenceValue(action["port"], key: "hasPort", to: &safeValues)
+        addPresenceValue(action["server"], key: "hasServer", to: &safeValues)
+        addPresenceValue(action["toolName"], key: "hasToolName", to: &safeValues)
+        addPresenceValue(action["connectorId"], key: "hasConnectorId", to: &safeValues)
+        addPresenceValue(action["connectorName"], key: "hasConnectorName", to: &safeValues)
+        addPresenceValue(action["toolTitle"], key: "hasToolTitle", to: &safeValues)
+        addPresenceValue(action["reason"], key: "hasReason", to: &safeValues)
+        addPresenceValue(action["permissions"], key: "hasPermissions", to: &safeValues)
+    }
+
+    private static func addPatchChangeSummary(_ value: Any?, to safeValues: inout [String: String]) {
+        guard let changes = value as? [[String: Any]] else {
+            addArrayCount(value, key: "changeCount", to: &safeValues)
+            return
+        }
+
+        safeValues["changeCount"] = "\(changes.count)"
+        for change in changes {
+            guard let kind = normalizedString(from: change["kind"]) else {
+                continue
+            }
+
+            switch kind {
+            case "add", "added":
+                incrementCount("addedChangeCount", in: &safeValues)
+            case "delete", "deleted", "remove", "removed":
+                incrementCount("deletedChangeCount", in: &safeValues)
+            case "update", "updated", "modify", "modified":
+                incrementCount("updatedChangeCount", in: &safeValues)
+            default:
+                break
+            }
+        }
+    }
+
+    private static func addAccessibleAppCount(_ value: Any?, to safeValues: inout [String: String]) {
+        guard let apps = value as? [[String: Any]] else {
+            return
+        }
+
+        let count = apps.filter { app in
+            if let isAccessible = app["isAccessible"] as? Bool {
+                return isAccessible
+            }
+            return false
+        }.count
+        safeValues["accessibleAppCount"] = "\(count)"
+    }
+
     private static func addModel(_ value: Any?, key: String, to safeValues: inout [String: String]) {
         guard let stringValue = value as? String,
               let normalized = CodexModelIdentifier.normalized(stringValue)
@@ -780,9 +1379,15 @@ enum CodexAppServerNotificationAuditSanitizer {
         safeValues[key] = normalized
     }
 
-    private static func addSafeIdentifier(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+    private static func addKnownIdentifier(
+        _ value: Any?,
+        key: String,
+        allowedValues: Set<String>,
+        to safeValues: inout [String: String]
+    ) {
         guard let stringValue = value as? String,
-              let normalized = CodexTokenContextNormalizer.normalizedIdentifier(stringValue)
+              let normalized = CodexTokenContextNormalizer.normalizedIdentifier(stringValue),
+              isKnownIdentifier(normalized, in: allowedValues)
         else {
             return
         }
@@ -790,9 +1395,34 @@ enum CodexAppServerNotificationAuditSanitizer {
         safeValues[key] = normalized
     }
 
-    private static func addEnumLike(_ value: Any?, key: String, to safeValues: inout [String: String]) {
-        if let stringValue = value as? String {
-            safeValues[key] = CodexTokenContextNormalizer.normalizedIdentifier(stringValue)
+    private static func addKnownIdentifierOrPresence(
+        _ value: Any?,
+        key: String,
+        presenceKey: String,
+        allowedValues: Set<String>,
+        to safeValues: inout [String: String]
+    ) {
+        guard let value, !(value is NSNull) else {
+            return
+        }
+
+        addKnownIdentifier(value, key: key, allowedValues: allowedValues, to: &safeValues)
+        if safeValues[key] == nil {
+            safeValues[presenceKey] = "true"
+        }
+    }
+
+    private static func addKnownEnumLike(
+        _ value: Any?,
+        key: String,
+        allowedValues: Set<String>,
+        to safeValues: inout [String: String]
+    ) {
+        if let stringValue = value as? String,
+           let normalized = CodexTokenContextNormalizer.normalizedIdentifier(stringValue),
+           isKnownIdentifier(normalized, in: allowedValues)
+        {
+            safeValues[key] = normalized
             return
         }
 
@@ -801,15 +1431,22 @@ enum CodexAppServerNotificationAuditSanitizer {
         }
 
         if let typeValue = object["type"] as? String,
-           let normalized = CodexTokenContextNormalizer.normalizedIdentifier(typeValue)
+           let normalized = CodexTokenContextNormalizer.normalizedIdentifier(typeValue),
+           isKnownIdentifier(normalized, in: allowedValues)
         {
             safeValues[key] = normalized
             return
         }
 
-        if object["granular"] is [String: Any] {
+        if object["granular"] is [String: Any],
+           allowedValues.contains("granular")
+        {
             safeValues[key] = "granular"
         }
+    }
+
+    private static func isKnownIdentifier(_ value: String, in allowedValues: Set<String>) -> Bool {
+        allowedValues.contains(value) || allowedValues.contains(value.lowercased())
     }
 
     private static func addPresenceValue(_ value: Any?, key: String, to safeValues: inout [String: String]) {
@@ -818,6 +1455,67 @@ enum CodexAppServerNotificationAuditSanitizer {
         }
 
         safeValues[key] = "true"
+    }
+
+    private static func addArrayCount(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let array = value as? [Any] else {
+            return
+        }
+
+        safeValues[key] = "\(array.count)"
+    }
+
+    private static func addObjectCount(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let object = value as? [String: Any] else {
+            return
+        }
+
+        safeValues[key] = "\(object.count)"
+    }
+
+    private static func addBoolean(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let boolValue = value as? Bool else {
+            return
+        }
+
+        safeValues[key] = boolValue ? "true" : "false"
+    }
+
+    private static func addCountValue(_ value: Any?, key: String, to safeValues: inout [String: String]) {
+        guard let count = integerValue(from: value) else {
+            return
+        }
+
+        safeValues[key] = "\(max(count, 0))"
+    }
+
+    private static func incrementCount(_ key: String, in safeValues: inout [String: String]) {
+        let currentValue = Int(safeValues[key] ?? "0") ?? 0
+        safeValues[key] = "\(currentValue + 1)"
+    }
+
+    private static func normalizedString(from value: Any?) -> String? {
+        guard let stringValue = value as? String,
+              let normalized = CodexTokenContextNormalizer.normalizedIdentifier(stringValue)
+        else {
+            return nil
+        }
+
+        return normalized
+    }
+
+    private static func integerValue(from value: Any?) -> Int? {
+        if let intValue = value as? Int {
+            return intValue
+        }
+
+        guard let numberValue = value as? NSNumber,
+              !(value is Bool)
+        else {
+            return nil
+        }
+
+        return numberValue.intValue
     }
 
     private static func rejectedUnsafeFieldCount(in value: Any?) -> Int {
