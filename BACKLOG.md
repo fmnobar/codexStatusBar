@@ -7,9 +7,7 @@
 
 ## Remaining Work
 
-| Priority | Item | Evidence / Timing | Likely Code Path / Root Cause | Proposed Implementation Shape | Verification Plan | Needs Separate Planning? |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | Tighten source-health update metadata and redacted diagnostics paths | Advisory audit noted `version.json.dismissed_version` is ignored, and Settings/source-health diagnostics can expose full local paths. This is useful locally but should be explicit and redacted in exports or shareable diagnostics. | `CodexSourceHealthReader`, `CodexSourceHealthSnapshot`, Settings Data source-health rendering/export paths, and diagnostics JSON models. | Capture/display dismissed-version state, distinguish stale update metadata from intentionally dismissed updates, and add redacted/export-safe variants for path-bearing diagnostics. Keep full local paths only where they are clearly local-only and useful. | Reader/store tests for dismissed version, Settings tests for dismissed/stale states, export/privacy tests for path redaction, full Xcode tests, install/relaunch visible Settings check. | Yes. |
+No normal Remaining Work is currently queued. Keep the Conditional Watchlist below separate until its evidence gates are met.
 
 ## Codex Update Audit Details
 
@@ -77,6 +75,15 @@
   - If rows appear, plan metadata-only capture for job status, timestamps, counts, and assigned thread linkage while excluding instructions, row payloads, outputs, schemas, local file contents, and error details that may contain private content.
 
 ## Done
+
+- Tighten source-health update metadata and redacted diagnostics paths
+  - Captured `version.json.dismissed_version` as safe source-health metadata and display it in Settings Data.
+  - Treated a matching dismissed/latest update version as an acknowledged state, so dismissed update metadata no longer creates noisy version-mismatch behavior by itself.
+  - Kept full local source paths in the local Settings rows where useful, but added redacted/export-safe source-health diagnostics for shareable JSON.
+  - Added `Export Source Health...` in Settings Data, exporting redacted source-health JSON only.
+  - Redacted user, app, Homebrew, usr-local, temp, and private path strings from export-safe source-health snapshots and warnings while preserving useful placeholders such as `<home>/.codex/version.json`.
+  - Preserved the popover warning policy: healthy, dismissed, stale-only, and mismatch-only states stay out of the main popover; missing, malformed, and failed active-source checks remain actionable warnings.
+  - Next recommendation: backlog/product review unless a Conditional Watchlist gate becomes active.
 
 - Add generated app-server surface drift check
   - Added an internal method-surface drift helper that compares accepted generated notification method names against the notification audit sanitizer's supported and intentionally skipped methods.

@@ -212,6 +212,10 @@ final class DataManagementSettingsViewModel: ObservableObject {
         performanceInstrumentationSummary.eventCount > 0
     }
 
+    var canExportCodexSourceHealth: Bool {
+        codexSourceHealthState.snapshot != nil
+    }
+
     var tokenPayloadAuditCapturedAtText: String {
         guard let capturedAt = tokenPayloadAudit?.capturedAt else {
             return "No capture yet"
@@ -613,9 +617,28 @@ final class DataManagementSettingsViewModel: ObservableObject {
             return "--"
         }
 
-        let latest = snapshot.versionMetadataLatestVersion ?? "unavailable"
         let checked = snapshot.versionMetadataLastCheckedAt.map(Self.auditDateFormatter.string(from:)) ?? "unknown check time"
-        return "\(latest) · \(checked)"
+        return "\(snapshot.versionMetadataStateText) · \(checked)"
+    }
+
+    var codexSourceHealthDismissedUpdateText: String {
+        guard let snapshot = codexSourceHealthState.snapshot else {
+            return "--"
+        }
+
+        guard let dismissedVersion = snapshot.versionMetadataDismissedVersion else {
+            return "None"
+        }
+
+        if snapshot.versionMetadataDismissesLatestVersion {
+            return "\(dismissedVersion) acknowledged"
+        }
+
+        return dismissedVersion
+    }
+
+    var codexSourceHealthExportSafeSnapshot: CodexSourceHealthSnapshot? {
+        codexSourceHealthState.snapshot?.redactedForDiagnostics
     }
 
     var codexSourceHealthLastErrorText: String {
@@ -1017,6 +1040,23 @@ final class DataManagementSettingsViewModel: ObservableObject {
         } catch {
             statusMessage = nil
             errorMessage = "Performance diagnostics could not be exported."
+        }
+    }
+
+    func exportCodexSourceHealth(to destinationURL: URL) {
+        do {
+            guard let data = try codexSourceHealthStore.exportRedactedData() else {
+                statusMessage = nil
+                errorMessage = "No Codex version and source health has been captured yet."
+                return
+            }
+
+            try data.write(to: destinationURL, options: .atomic)
+            statusMessage = "Codex version and source health exported."
+            errorMessage = nil
+        } catch {
+            statusMessage = nil
+            errorMessage = "Codex version and source health could not be exported."
         }
     }
 
@@ -1443,6 +1483,11 @@ struct DataManagementSettingsView: View {
                 }
                 .disabled(viewModel.isRefreshingCodexSourceHealth)
 
+                Button("Export Source Health...") {
+                    exportCodexSourceHealth()
+                }
+                .disabled(!viewModel.canExportCodexSourceHealth)
+
                 Spacer()
 
                 Text(viewModel.codexSourceHealthStatusText)
@@ -1450,7 +1495,7 @@ struct DataManagementSettingsView: View {
                     .foregroundStyle(viewModel.codexSourceHealthState.status.shouldShowPopoverWarning ? .orange : .secondary)
             }
 
-            Text("This reads local Codex version signals only: executable paths and versions, models-cache metadata, and update metadata freshness.")
+            Text("This local-only view reads Codex version signals: executable paths and versions, models-cache metadata, and update metadata freshness.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -1491,6 +1536,12 @@ struct DataManagementSettingsView: View {
                 GridRow {
                     Text("version.json")
                     Text(viewModel.codexSourceHealthVersionMetadataText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                GridRow {
+                    Text("Dismissed update")
+                    Text(viewModel.codexSourceHealthDismissedUpdateText)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -2359,6 +2410,19 @@ struct DataManagementSettingsView: View {
         }
 
         viewModel.exportPerformanceDiagnostics(to: url)
+    }
+
+    private func exportCodexSourceHealth() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "codex-source-health-redacted.json"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        viewModel.exportCodexSourceHealth(to: url)
     }
 
     private func presenceText(_ isPresent: Bool) -> String {

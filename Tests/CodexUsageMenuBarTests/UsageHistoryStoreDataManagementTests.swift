@@ -2020,6 +2020,57 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testCodexSourceHealthReaderCapturesDismissedUpdateMetadataWithoutMismatchNoise() async throws {
+        let homeURL = try makeTemporaryDirectory()
+        let codexDirectory = homeURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try Data(
+            """
+            {
+              "client_version": "0.140.0",
+              "fetched_at": "2026-05-31T12:00:00.000000Z",
+              "models": []
+            }
+            """.utf8
+        ).write(to: codexDirectory.appendingPathComponent("models_cache.json"))
+        try Data(
+            """
+            {
+              "latest_version": "0.128.0",
+              "dismissed_version": "0.128.0",
+              "last_checked_at": "2026-05-05T02:25:24.357406Z",
+              "ignored": "do not store me"
+            }
+            """.utf8
+        ).write(to: codexDirectory.appendingPathComponent("version.json"))
+        let appCodexURL = try makeExecutable("codex-app", in: homeURL)
+        let reader = CodexSourceHealthReader(
+            homeDirectory: homeURL,
+            commandRunner: StubCodexSourceVersionCommandRunner(outputs: [
+                appCodexURL.path: "codex-cli 0.140.0",
+            ]),
+            metadataStalenessInterval: 7 * 24 * 60 * 60,
+            executableCandidates: [
+                CodexExecutableCandidate(url: appCodexURL, kind: .appBundled),
+            ],
+            pathCandidates: []
+        )
+
+        let snapshot = try await reader.sourceHealthSnapshot(now: date("2026-05-31T12:00:00Z"))
+
+        XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(snapshot.versionMetadataLatestVersion, "0.128.0")
+        XCTAssertEqual(snapshot.versionMetadataDismissedVersion, "0.128.0")
+        XCTAssertTrue(snapshot.versionMetadataDismissesLatestVersion)
+        XCTAssertEqual(snapshot.versionMetadataStateText, "Dismissed 0.128.0")
+        XCTAssertTrue(snapshot.warnings.contains("version.json latest update 0.128.0 has been dismissed."))
+        XCTAssertTrue(snapshot.warnings.contains("version.json update metadata is stale."))
+        XCTAssertFalse(snapshot.warnings.contains { $0.contains("differ") })
+        XCTAssertNil(CodexSourceHealthState(snapshot: snapshot, status: snapshot.status, lastCheckedAt: snapshot.checkedAt).popoverWarningText)
+        XCTAssertFalse(String(data: try JSONEncoder().encode(snapshot), encoding: .utf8)?.contains("do not store me") ?? true)
+    }
+
+    @MainActor
     func testCodexSourceHealthReaderClassifiesMissingMalformedAndFailedStates() async throws {
         let homeURL = try makeTemporaryDirectory()
         let codexDirectory = homeURL.appendingPathComponent(".codex", isDirectory: true)
@@ -2079,7 +2130,8 @@ extension UsageHistoryStoreTests {
         let fileURL = try makeTemporaryDirectory().appendingPathComponent("codex-source-health.json")
         let firstSnapshot = codexSourceHealthSnapshot(
             checkedAt: date("2026-05-30T12:00:00Z"),
-            status: .healthy
+            status: .healthy,
+            dismissedVersion: "0.128.0"
         )
         let secondSnapshot = codexSourceHealthSnapshot(
             checkedAt: date("2026-05-30T13:00:00Z"),
@@ -2097,6 +2149,7 @@ extension UsageHistoryStoreTests {
         let reloadedStore = CodexSourceHealthStore(fileURL: fileURL)
         XCTAssertEqual(reloadedStore.state.status, .healthy)
         XCTAssertEqual(reloadedStore.state.snapshot?.activeExecutablePath, "/Applications/Codex.app/Contents/Resources/codex")
+        XCTAssertEqual(reloadedStore.state.snapshot?.versionMetadataDismissedVersion, "0.128.0")
 
         await reloadedStore.refreshIfStale(
             reader: reader,
@@ -2132,6 +2185,25 @@ extension UsageHistoryStoreTests {
         XCTAssertNil(mismatchState.popoverWarningText)
         XCTAssertEqual(mismatchState.snapshot?.warnings.count, 1)
 
+        let dismissedSnapshot = codexSourceHealthSnapshot(
+            checkedAt: date("2026-05-31T12:00:00Z"),
+            status: .stale,
+            dismissedVersion: "0.128.0",
+            warnings: [
+                "version.json latest update 0.128.0 has been dismissed.",
+                "version.json update metadata is stale.",
+            ]
+        )
+        let dismissedState = CodexSourceHealthState(
+            snapshot: dismissedSnapshot,
+            status: dismissedSnapshot.status,
+            lastCheckedAt: dismissedSnapshot.checkedAt,
+            lastErrorText: nil
+        )
+
+        XCTAssertNil(dismissedState.popoverWarningText)
+        XCTAssertTrue(dismissedState.snapshot?.versionMetadataDismissesLatestVersion == true)
+
         let missingSnapshot = CodexSourceHealthSnapshot(
             checkedAt: date("2026-05-31T12:00:00Z"),
             status: .missing,
@@ -2157,6 +2229,130 @@ extension UsageHistoryStoreTests {
         )
 
         XCTAssertEqual(missingState.popoverWarningText, "Codex executable source is missing.")
+    }
+
+    func testCodexSourceHealthSnapshotRedactsExportSafePaths() throws {
+        let checkedAt = date("2026-05-31T12:00:00Z")
+        let snapshot = CodexSourceHealthSnapshot(
+            checkedAt: checkedAt,
+            status: .stale,
+            activeExecutablePath: "/Users/synthetic/Applications/Codex.app/Contents/Resources/codex",
+            versionSignals: [
+                CodexSourceVersionSignal(
+                    kind: .appBundled,
+                    executablePath: "/Applications/Codex.app/Contents/Resources/codex",
+                    version: "0.140.0-alpha.2",
+                    fileModifiedAt: checkedAt,
+                    errorText: nil
+                ),
+                CodexSourceVersionSignal(
+                    kind: .homebrew,
+                    executablePath: "/opt/homebrew/bin/codex",
+                    version: "0.128.0",
+                    fileModifiedAt: checkedAt,
+                    errorText: nil
+                ),
+                CodexSourceVersionSignal(
+                    kind: .usrLocal,
+                    executablePath: "/usr/local/bin/codex",
+                    version: nil,
+                    fileModifiedAt: checkedAt,
+                    errorText: "Missing or not executable."
+                ),
+                CodexSourceVersionSignal(
+                    kind: .path,
+                    executablePath: "/Users/synthetic/secret-project/bin/codex",
+                    version: "0.140.0",
+                    fileModifiedAt: checkedAt,
+                    errorText: nil
+                ),
+            ],
+            modelsCachePath: "/Users/synthetic/.codex/models_cache.json",
+            modelsCacheClientVersion: "0.140.0",
+            modelsCacheFetchedAt: checkedAt,
+            modelsCacheModelCount: 5,
+            modelsCacheErrorText: nil,
+            versionMetadataPath: "/Users/synthetic/.codex/version.json",
+            versionMetadataLatestVersion: "0.128.0",
+            versionMetadataDismissedVersion: "0.128.0",
+            versionMetadataLastCheckedAt: checkedAt,
+            versionMetadataErrorText: nil,
+            warnings: [
+                "Local path /Users/synthetic/secret-project/bin/codex is not shareable.",
+                "App path /Applications/Codex.app/Contents/Resources/codex is local-only.",
+            ],
+            errorText: "Failed at /Users/synthetic/secret-project/bin/codex"
+        )
+
+        let redacted = snapshot.redactedForDiagnostics
+        let json = String(data: try JSONEncoder().encode(redacted), encoding: .utf8) ?? ""
+
+        XCTAssertTrue(snapshot.activeExecutablePath?.contains("/Users/synthetic") == true)
+        XCTAssertEqual(redacted.activeExecutablePath, "<applications>/Codex.app/Contents/Resources/codex")
+        XCTAssertEqual(redacted.modelsCachePath, "<home>/.codex/models_cache.json")
+        XCTAssertEqual(redacted.versionMetadataPath, "<home>/.codex/version.json")
+        XCTAssertTrue(redacted.versionSignals.contains { $0.executablePath == "<homebrew>/bin/codex" })
+        XCTAssertTrue(redacted.versionSignals.contains { $0.executablePath == "<usr-local>/bin/codex" })
+        XCTAssertTrue(redacted.versionSignals.contains { $0.executablePath == "<path>/codex" })
+        XCTAssertFalse(json.contains("/Users/"))
+        XCTAssertFalse(json.contains("/Applications/"))
+        XCTAssertFalse(json.contains("/opt/homebrew/"))
+        XCTAssertFalse(json.contains("/usr/local/"))
+        XCTAssertFalse(json.contains("secret-project"))
+    }
+
+    @MainActor
+    func testCodexSourceHealthStoreExportsRedactedDiagnosticsOnly() async throws {
+        let checkedAt = date("2026-05-31T12:00:00Z")
+        let snapshot = CodexSourceHealthSnapshot(
+            checkedAt: checkedAt,
+            status: .failed,
+            activeExecutablePath: "/Users/synthetic/private-project/bin/codex",
+            versionSignals: [
+                CodexSourceVersionSignal(
+                    kind: .path,
+                    executablePath: "/Users/synthetic/private-project/bin/codex",
+                    version: "0.140.0",
+                    fileModifiedAt: checkedAt,
+                    errorText: nil
+                ),
+            ],
+            modelsCachePath: "/Users/synthetic/.codex/models_cache.json",
+            modelsCacheClientVersion: "0.140.0",
+            modelsCacheFetchedAt: checkedAt,
+            modelsCacheModelCount: 5,
+            modelsCacheErrorText: nil,
+            versionMetadataPath: "/Users/synthetic/.codex/version.json",
+            versionMetadataLatestVersion: "0.128.0",
+            versionMetadataDismissedVersion: "0.128.0",
+            versionMetadataLastCheckedAt: checkedAt,
+            versionMetadataErrorText: nil,
+            warnings: ["Failed source at /Users/synthetic/private-project/bin/codex."],
+            errorText: "Could not run /Users/synthetic/private-project/bin/codex."
+        )
+        let store = CodexSourceHealthStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("codex-source-health.json")
+        )
+        await store.refresh(
+            reader: StubCodexSourceHealthReader(snapshots: [snapshot]),
+            now: checkedAt
+        )
+
+        let exportedData = try XCTUnwrap(store.exportRedactedData())
+        let exported = String(data: exportedData, encoding: .utf8) ?? ""
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(CodexSourceHealthState.self, from: exportedData)
+
+        XCTAssertFalse(exported.contains("/Users/"))
+        XCTAssertFalse(exported.contains("/Applications/"))
+        XCTAssertFalse(exported.contains("/opt/homebrew/"))
+        XCTAssertFalse(exported.contains("/usr/local/"))
+        XCTAssertFalse(exported.contains("private-project"))
+        XCTAssertEqual(decoded.snapshot?.modelsCachePath, "<home>/.codex/models_cache.json")
+        XCTAssertEqual(decoded.snapshot?.versionMetadataPath, "<home>/.codex/version.json")
+        XCTAssertEqual(decoded.snapshot?.activeExecutablePath, "<path>/codex")
+        XCTAssertTrue(decoded.snapshot?.warnings.joined().contains("<path>") == true)
     }
 
     @MainActor
@@ -2189,8 +2385,55 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(viewModel.codexSourceHealthHomebrewVersionText, "0.128.0")
         XCTAssertTrue(viewModel.codexSourceHealthModelsCacheText.contains("0.135.0"))
         XCTAssertTrue(viewModel.codexSourceHealthVersionMetadataText.contains("0.128.0"))
+        XCTAssertEqual(viewModel.codexSourceHealthDismissedUpdateText, "None")
         XCTAssertEqual(viewModel.statusMessage, "Codex version and source health refreshed.")
         XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testSettingsViewModelDisplaysDismissedSourceHealthAndRedactedExportSnapshot() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let sourceHealthStore = CodexSourceHealthStore(
+            fileURL: try makeTemporaryDirectory().appendingPathComponent("codex-source-health.json")
+        )
+        let reader = StubCodexSourceHealthReader(snapshots: [
+            codexSourceHealthSnapshot(
+                checkedAt: date("2026-05-31T12:00:00Z"),
+                status: .stale,
+                dismissedVersion: "0.128.0",
+                warnings: ["version.json latest update 0.128.0 has been dismissed."]
+            ),
+        ])
+        let viewModel = DataManagementSettingsViewModel(
+            store: store,
+            defaults: makeIsolatedDefaults(),
+            codexSourceHealthStore: sourceHealthStore,
+            codexSourceHealthReader: reader,
+            now: { self.date("2026-05-31T12:00:00Z") }
+        )
+
+        await viewModel.refreshCodexSourceHealth()
+
+        XCTAssertTrue(viewModel.codexSourceHealthVersionMetadataText.contains("Dismissed 0.128.0"))
+        XCTAssertEqual(viewModel.codexSourceHealthDismissedUpdateText, "0.128.0 acknowledged")
+        XCTAssertEqual(viewModel.codexSourceHealthActiveExecutableText, "/Applications/Codex.app/Contents/Resources/codex")
+        XCTAssertEqual(viewModel.codexSourceHealthExportSafeSnapshot?.activeExecutablePath, "<applications>/Codex.app/Contents/Resources/codex")
+        XCTAssertEqual(viewModel.codexSourceHealthExportSafeSnapshot?.versionMetadataPath, "<home>/.codex/version.json")
+        XCTAssertTrue(viewModel.canExportCodexSourceHealth)
+
+        let exportURL = try makeTemporaryDirectory().appendingPathComponent("codex-source-health-export.json")
+        viewModel.exportCodexSourceHealth(to: exportURL)
+
+        let exportedData = try Data(contentsOf: exportURL)
+        let exported = String(data: exportedData, encoding: .utf8) ?? ""
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(CodexSourceHealthState.self, from: exportedData)
+        XCTAssertEqual(viewModel.statusMessage, "Codex version and source health exported.")
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertFalse(exported.contains("/Users/"))
+        XCTAssertFalse(exported.contains("/Applications/"))
+        XCTAssertEqual(decoded.snapshot?.versionMetadataPath, "<home>/.codex/version.json")
     }
 
     @MainActor
@@ -2352,6 +2595,7 @@ extension UsageHistoryStoreTests {
     private func codexSourceHealthSnapshot(
         checkedAt: Date,
         status: CodexSourceHealthStatus,
+        dismissedVersion: String? = nil,
         warnings: [String] = []
     ) -> CodexSourceHealthSnapshot {
         CodexSourceHealthSnapshot(
@@ -2381,6 +2625,7 @@ extension UsageHistoryStoreTests {
             modelsCacheErrorText: nil,
             versionMetadataPath: "/Users/example/.codex/version.json",
             versionMetadataLatestVersion: "0.128.0",
+            versionMetadataDismissedVersion: dismissedVersion,
             versionMetadataLastCheckedAt: checkedAt,
             versionMetadataErrorText: nil,
             warnings: warnings,

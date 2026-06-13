@@ -3233,6 +3233,81 @@ struct CodexSourceVersionSignal: Codable, Equatable, Identifiable, Sendable {
     var displayVersionText: String {
         version ?? "Unavailable"
     }
+
+    var redactedForDiagnostics: CodexSourceVersionSignal {
+        CodexSourceVersionSignal(
+            kind: kind,
+            executablePath: CodexSourceHealthPathRedactor.redactedExecutablePath(executablePath, kind: kind),
+            version: version,
+            fileModifiedAt: fileModifiedAt,
+            errorText: errorText
+        )
+    }
+}
+
+enum CodexSourceHealthPathRedactor {
+    static func redactedPath(_ path: String?) -> String? {
+        guard let path else {
+            return nil
+        }
+
+        if path.hasSuffix("/.codex/models_cache.json") {
+            return "<home>/.codex/models_cache.json"
+        }
+
+        if path.hasSuffix("/.codex/version.json") {
+            return "<home>/.codex/version.json"
+        }
+
+        return redactedExecutablePath(path, kind: nil)
+    }
+
+    static func redactText(_ text: String) -> String {
+        text
+            .replacingOccurrences(
+                of: #"/Users/[^/\s]+/\.codex/models_cache\.json"#,
+                with: "<home>/.codex/models_cache.json",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"/Users/[^/\s]+/\.codex/version\.json"#,
+                with: "<home>/.codex/version.json",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"/(?:Users/[^/\s]+|var/folders|private/var)[^\s,;)]*"#,
+                with: "<path>",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"/Applications/([^/\s]+\.app[^\s,;)]*)"#,
+                with: "<applications>/$1",
+                options: .regularExpression
+            )
+            .replacingOccurrences(of: "/opt/homebrew/bin/codex", with: "<homebrew>/bin/codex")
+            .replacingOccurrences(of: "/usr/local/bin/codex", with: "<usr-local>/bin/codex")
+    }
+
+    static func redactedExecutablePath(_ path: String, kind: CodexSourceVersionKind?) -> String {
+        let components = path.split(separator: "/").map(String.init)
+        if let appIndex = components.firstIndex(where: { $0.hasSuffix(".app") }) {
+            return (["<applications>"] + components[appIndex...]).joined(separator: "/")
+        }
+
+        switch kind {
+        case .appBundled, .discoveredApp:
+            return "<applications>/Codex.app/Contents/Resources/codex"
+        case .homebrew:
+            return "<homebrew>/bin/codex"
+        case .usrLocal:
+            return "<usr-local>/bin/codex"
+        case .path:
+            return "<path>/codex"
+        case .none:
+            let fileName = URL(fileURLWithPath: path).lastPathComponent
+            return fileName.isEmpty ? "<path>" : "<path>/\(fileName)"
+        }
+    }
 }
 
 enum CodexSourceHealthStatus: String, Codable, Equatable, Sendable {
@@ -3286,6 +3361,7 @@ struct CodexSourceHealthSnapshot: Codable, Equatable, Sendable {
     let modelsCacheErrorText: String?
     let versionMetadataPath: String?
     let versionMetadataLatestVersion: String?
+    let versionMetadataDismissedVersion: String?
     let versionMetadataLastCheckedAt: Date?
     let versionMetadataErrorText: String?
     let warnings: [String]
@@ -3303,6 +3379,7 @@ struct CodexSourceHealthSnapshot: Codable, Equatable, Sendable {
         modelsCacheErrorText: String?,
         versionMetadataPath: String?,
         versionMetadataLatestVersion: String?,
+        versionMetadataDismissedVersion: String? = nil,
         versionMetadataLastCheckedAt: Date?,
         versionMetadataErrorText: String?,
         warnings: [String],
@@ -3320,6 +3397,7 @@ struct CodexSourceHealthSnapshot: Codable, Equatable, Sendable {
         self.modelsCacheErrorText = modelsCacheErrorText
         self.versionMetadataPath = versionMetadataPath
         self.versionMetadataLatestVersion = versionMetadataLatestVersion
+        self.versionMetadataDismissedVersion = versionMetadataDismissedVersion
         self.versionMetadataLastCheckedAt = versionMetadataLastCheckedAt
         self.versionMetadataErrorText = versionMetadataErrorText
         self.warnings = warnings
@@ -3340,6 +3418,53 @@ struct CodexSourceHealthSnapshot: Codable, Equatable, Sendable {
 
     var homebrewSignal: CodexSourceVersionSignal? {
         versionSignals.first { $0.kind == .homebrew }
+    }
+
+    var versionMetadataDismissesLatestVersion: Bool {
+        guard let versionMetadataLatestVersion,
+              let versionMetadataDismissedVersion
+        else {
+            return false
+        }
+
+        return versionMetadataLatestVersion == versionMetadataDismissedVersion
+    }
+
+    var versionMetadataStateText: String {
+        guard let latestVersion = versionMetadataLatestVersion else {
+            return "No latest version"
+        }
+
+        if versionMetadataDismissedVersion == latestVersion {
+            return "Dismissed \(latestVersion)"
+        }
+
+        if let versionMetadataDismissedVersion {
+            return "Latest \(latestVersion), dismissed \(versionMetadataDismissedVersion)"
+        }
+
+        return "Latest \(latestVersion)"
+    }
+
+    var redactedForDiagnostics: CodexSourceHealthSnapshot {
+        CodexSourceHealthSnapshot(
+            checkedAt: checkedAt,
+            status: status,
+            activeExecutablePath: CodexSourceHealthPathRedactor.redactedPath(activeExecutablePath),
+            versionSignals: versionSignals.map(\.redactedForDiagnostics),
+            modelsCachePath: CodexSourceHealthPathRedactor.redactedPath(modelsCachePath),
+            modelsCacheClientVersion: modelsCacheClientVersion,
+            modelsCacheFetchedAt: modelsCacheFetchedAt,
+            modelsCacheModelCount: modelsCacheModelCount,
+            modelsCacheErrorText: modelsCacheErrorText,
+            versionMetadataPath: CodexSourceHealthPathRedactor.redactedPath(versionMetadataPath),
+            versionMetadataLatestVersion: versionMetadataLatestVersion,
+            versionMetadataDismissedVersion: versionMetadataDismissedVersion,
+            versionMetadataLastCheckedAt: versionMetadataLastCheckedAt,
+            versionMetadataErrorText: versionMetadataErrorText,
+            warnings: warnings.map(CodexSourceHealthPathRedactor.redactText),
+            errorText: errorText.map(CodexSourceHealthPathRedactor.redactText)
+        )
     }
 
     var popoverWarningText: String? {
@@ -3562,6 +3687,7 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
             modelsCacheErrorText: modelsCache.errorText,
             versionMetadataPath: versionMetadata.path,
             versionMetadataLatestVersion: versionMetadata.latestVersion,
+            versionMetadataDismissedVersion: versionMetadata.dismissedVersion,
             versionMetadataLastCheckedAt: versionMetadata.lastCheckedAt,
             versionMetadataErrorText: versionMetadata.errorText,
             warnings: warnings,
@@ -3630,8 +3756,17 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
     private struct VersionMetadata {
         let path: String
         let latestVersion: String?
+        let dismissedVersion: String?
         let lastCheckedAt: Date?
         let errorText: String?
+
+        var dismissesLatestVersion: Bool {
+            guard let latestVersion, let dismissedVersion else {
+                return false
+            }
+
+            return latestVersion == dismissedVersion
+        }
     }
 
     private func readModelsCacheMetadata() -> ModelsCacheMetadata {
@@ -3662,20 +3797,27 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
             .appendingPathComponent(".codex", isDirectory: true)
             .appendingPathComponent("version.json")
         guard fileManager.fileExists(atPath: fileURL.path) else {
-            return VersionMetadata(path: fileURL.path, latestVersion: nil, lastCheckedAt: nil, errorText: "Missing.")
+            return VersionMetadata(path: fileURL.path, latestVersion: nil, dismissedVersion: nil, lastCheckedAt: nil, errorText: "Missing.")
         }
 
         do {
             let data = try Data(contentsOf: fileURL)
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return VersionMetadata(path: fileURL.path, latestVersion: nil, lastCheckedAt: nil, errorText: "Malformed JSON.")
+                return VersionMetadata(path: fileURL.path, latestVersion: nil, dismissedVersion: nil, lastCheckedAt: nil, errorText: "Malformed JSON.")
             }
 
             let latestVersion = root["latest_version"] as? String
+            let dismissedVersion = root["dismissed_version"] as? String
             let lastCheckedAt = (root["last_checked_at"] as? String).flatMap(Self.isoDate)
-            return VersionMetadata(path: fileURL.path, latestVersion: latestVersion, lastCheckedAt: lastCheckedAt, errorText: nil)
+            return VersionMetadata(
+                path: fileURL.path,
+                latestVersion: latestVersion,
+                dismissedVersion: dismissedVersion,
+                lastCheckedAt: lastCheckedAt,
+                errorText: nil
+            )
         } catch {
-            return VersionMetadata(path: fileURL.path, latestVersion: nil, lastCheckedAt: nil, errorText: "Malformed JSON.")
+            return VersionMetadata(path: fileURL.path, latestVersion: nil, dismissedVersion: nil, lastCheckedAt: nil, errorText: "Malformed JSON.")
         }
     }
 
@@ -3697,6 +3839,10 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
         if distinctVersions.count > 1 {
             let sourceList = versionPairs.map { "\($0.label) \($0.version)" }.joined(separator: ", ")
             warnings.append("Codex version signals differ: \(sourceList).")
+        }
+
+        if versionMetadata.dismissesLatestVersion, let dismissedVersion = versionMetadata.dismissedVersion {
+            warnings.append("version.json latest update \(dismissedVersion) has been dismissed.")
         }
 
         if isStale(modelsCache.fetchedAt, now: now) {
@@ -3762,7 +3908,9 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
             pairs.append(("models cache", clientVersion))
         }
 
-        if let latestVersion = versionMetadata.latestVersion.flatMap(Self.parseVersion(from:)) {
+        if !versionMetadata.dismissesLatestVersion,
+           let latestVersion = versionMetadata.latestVersion.flatMap(Self.parseVersion(from:))
+        {
             pairs.append(("version.json", latestVersion))
         }
 
@@ -3873,6 +4021,24 @@ final class CodexSourceHealthStore: ObservableObject {
     func clear() {
         state = CodexSourceHealthState()
         try? fileManager.removeItem(at: fileURL)
+    }
+
+    func exportRedactedData() throws -> Data? {
+        guard var snapshot = state.snapshot?.redactedForDiagnostics else {
+            return nil
+        }
+
+        snapshot = snapshot.redactedForDiagnostics
+        let exportState = CodexSourceHealthState(
+            snapshot: snapshot,
+            status: state.status,
+            lastCheckedAt: state.lastCheckedAt,
+            lastErrorText: state.lastErrorText.map(CodexSourceHealthPathRedactor.redactText)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(exportState)
     }
 
     private func persist() {
