@@ -700,6 +700,145 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertFalse(json.contains("thread-secret"))
     }
 
+    func testGeneratedNotificationSurfaceFixtureContainsMethodNamesOnly() throws {
+        let methods = try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            Self.acceptedGeneratedServerNotificationMethodsFixture
+        )
+        let nonEmptyLines = Self.acceptedGeneratedServerNotificationMethodsFixture
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        XCTAssertEqual(methods.count, 66)
+        XCTAssertEqual(methods, nonEmptyLines)
+        XCTAssertEqual(Set(methods).count, methods.count)
+
+        for method in methods {
+            XCTAssertTrue(CodexAppServerNotificationSurfaceMethodFixture.isMethodNameOnly(method), method)
+            XCTAssertFalse(method.contains("://"), method)
+            XCTAssertFalse(method.contains("{"), method)
+            XCTAssertFalse(method.contains("}"), method)
+            XCTAssertFalse(method.contains("\""), method)
+            XCTAssertFalse(method.contains(" "), method)
+        }
+
+        XCTAssertThrowsError(try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            #"{"method":"thread/started","params":{"thread":{"id":"private"}}}"#
+        )) { error in
+            XCTAssertEqual(
+                error as? CodexAppServerNotificationSurfaceMethodFixture.ParseError,
+                .invalidLine(lineNumber: 1)
+            )
+            XCTAssertFalse(String(describing: error).contains("private"))
+            XCTAssertFalse(String(describing: error).contains("thread/started"))
+        }
+
+        XCTAssertThrowsError(try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            "/Users/private/project"
+        )) { error in
+            XCTAssertEqual(
+                error as? CodexAppServerNotificationSurfaceMethodFixture.ParseError,
+                .invalidLine(lineNumber: 1)
+            )
+            XCTAssertFalse(String(describing: error).contains("/Users/private"))
+        }
+
+        XCTAssertThrowsError(try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            "../private"
+        )) { error in
+            XCTAssertEqual(
+                error as? CodexAppServerNotificationSurfaceMethodFixture.ParseError,
+                .invalidLine(lineNumber: 1)
+            )
+            XCTAssertFalse(String(describing: error).contains("../private"))
+        }
+
+        XCTAssertThrowsError(try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            "example.com/account/123"
+        )) { error in
+            XCTAssertEqual(
+                error as? CodexAppServerNotificationSurfaceMethodFixture.ParseError,
+                .invalidLine(lineNumber: 1)
+            )
+            XCTAssertFalse(String(describing: error).contains("example.com"))
+        }
+
+        XCTAssertThrowsError(try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            """
+            thread/started
+            thread/started
+            """
+        )) { error in
+            XCTAssertEqual(
+                error as? CodexAppServerNotificationSurfaceMethodFixture.ParseError,
+                .duplicateMethod("thread/started")
+            )
+        }
+    }
+
+    func testNotificationAuditCoverageMatchesAcceptedGeneratedSurface() throws {
+        let methods = try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            Self.acceptedGeneratedServerNotificationMethodsFixture
+        )
+        let report = CodexAppServerNotificationAuditSanitizer.surfaceCoverageForDriftCheck
+            .driftReport(acceptedGeneratedMethods: methods)
+
+        XCTAssertFalse(
+            report.hasDrift,
+            "Unsupported generated notification methods: \(report.unsupportedGeneratedMethods.joined(separator: ", "))"
+        )
+        XCTAssertEqual(report.acceptedMethodCount, 66)
+        XCTAssertEqual(report.coveredGeneratedMethodCount, 66)
+        XCTAssertEqual(report.skippedGeneratedMethods, [
+            "account/rateLimits/updated",
+            "remoteControl/status/changed",
+            "thread/tokenUsage/updated",
+        ])
+        XCTAssertTrue(report.supportedGeneratedMethods.contains("thread/started"))
+        XCTAssertTrue(report.supportedGeneratedMethods.contains("account/login/completed"))
+    }
+
+    func testNotificationAuditCoverageReportsSyntheticGeneratedDrift() throws {
+        var methods = try CodexAppServerNotificationSurfaceMethodFixture.parseMethodNames(
+            Self.acceptedGeneratedServerNotificationMethodsFixture
+        )
+        methods.append("future/notification")
+        methods.append("/Users/private/project")
+        methods.append("example.com/account/123")
+
+        let report = CodexAppServerNotificationAuditSanitizer.surfaceCoverageForDriftCheck
+            .driftReport(acceptedGeneratedMethods: methods)
+
+        XCTAssertTrue(report.hasDrift)
+        XCTAssertEqual(report.unsupportedGeneratedMethods, ["future/notification"])
+        XCTAssertEqual(report.rejectedGeneratedMethodCount, 2)
+        XCTAssertEqual(report.acceptedMethodCount, 67)
+        XCTAssertEqual(report.coveredGeneratedMethodCount, 66)
+        XCTAssertFalse(report.unsupportedGeneratedMethods.contains("/Users/private/project"))
+        XCTAssertFalse(report.unsupportedGeneratedMethods.contains("example.com/account/123"))
+    }
+
+    func testNotificationAuditUnknownRuntimeMethodRemainsUnsupportedCountOnly() throws {
+        let record = try XCTUnwrap(CodexAppServerNotificationAuditSanitizer.audit(
+            method: "future/notification",
+            params: [
+                "message": "do not store",
+                "threadId": "thread-secret",
+                "path": "/Users/private/project",
+            ] as [String: Any]
+        ))
+
+        XCTAssertFalse(record.isSupported)
+        XCTAssertEqual(record.safeValues, [:])
+        XCTAssertEqual(record.presenceFlags, [])
+        XCTAssertEqual(record.unsupportedShapeCount, 1)
+        XCTAssertAuditJSON(try encodedAuditJSON(record), excludes: [
+            "do not store",
+            "thread-secret",
+            "/Users/private",
+        ])
+    }
+
     func testNotificationAuditSanitizerRecognizesCodex0140NotificationMethods() throws {
         let thread: [String: Any] = [
             "id": "thread-secret",
@@ -1622,6 +1761,75 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.peakDailyTokens, 250)
         XCTAssertEqual(snapshot.dailyBuckets.map(\.tokens), [10])
     }
+
+    private static let acceptedGeneratedServerNotificationMethodsFixture = """
+    error
+    thread/started
+    thread/status/changed
+    thread/archived
+    thread/unarchived
+    thread/closed
+    skills/changed
+    thread/name/updated
+    thread/goal/updated
+    thread/goal/cleared
+    thread/settings/updated
+    thread/tokenUsage/updated
+    turn/started
+    hook/started
+    turn/completed
+    hook/completed
+    turn/diff/updated
+    turn/plan/updated
+    item/started
+    item/autoApprovalReview/started
+    item/autoApprovalReview/completed
+    item/completed
+    rawResponseItem/completed
+    item/agentMessage/delta
+    item/plan/delta
+    command/exec/outputDelta
+    process/outputDelta
+    process/exited
+    item/commandExecution/outputDelta
+    item/commandExecution/terminalInteraction
+    item/fileChange/outputDelta
+    item/fileChange/patchUpdated
+    serverRequest/resolved
+    item/mcpToolCall/progress
+    mcpServer/oauthLogin/completed
+    mcpServer/startupStatus/updated
+    account/updated
+    account/rateLimits/updated
+    app/list/updated
+    remoteControl/status/changed
+    externalAgentConfig/import/completed
+    fs/changed
+    item/reasoning/summaryTextDelta
+    item/reasoning/summaryPartAdded
+    item/reasoning/textDelta
+    thread/compacted
+    model/rerouted
+    model/verification
+    turn/moderationMetadata
+    warning
+    guardianWarning
+    deprecationNotice
+    configWarning
+    fuzzyFileSearch/sessionUpdated
+    fuzzyFileSearch/sessionCompleted
+    thread/realtime/started
+    thread/realtime/itemAdded
+    thread/realtime/transcript/delta
+    thread/realtime/transcript/done
+    thread/realtime/outputAudio/delta
+    thread/realtime/sdp
+    thread/realtime/error
+    thread/realtime/closed
+    windows/worldWritableWarning
+    windowsSandbox/setupCompleted
+    account/login/completed
+    """
 
     private func decodeTokenUsageModel(
         extraRoot: String = "",

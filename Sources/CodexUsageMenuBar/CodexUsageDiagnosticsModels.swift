@@ -518,6 +518,107 @@ struct CodexAppServerNotificationAuditSummary: Codable, Equatable, Sendable {
     }
 }
 
+struct CodexAppServerNotificationSurfaceCoverage: Equatable, Sendable {
+    let supportedMethods: [String]
+    let skippedMethods: [String]
+
+    init(supportedMethods: Set<String>, skippedMethods: Set<String>) {
+        self.supportedMethods = supportedMethods.sorted()
+        self.skippedMethods = skippedMethods.sorted()
+    }
+
+    func driftReport(acceptedGeneratedMethods: [String]) -> CodexAppServerNotificationSurfaceDriftReport {
+        let acceptedCandidates = acceptedGeneratedMethods.filter {
+            CodexAppServerNotificationSurfaceMethodFixture.isMethodNameOnly($0)
+        }
+        let accepted = Set(acceptedCandidates)
+        let supported = Set(supportedMethods)
+        let skipped = Set(skippedMethods)
+        let covered = supported.union(skipped)
+
+        return CodexAppServerNotificationSurfaceDriftReport(
+            acceptedMethodCount: accepted.count,
+            supportedGeneratedMethods: accepted.intersection(supported).sorted(),
+            skippedGeneratedMethods: accepted.intersection(skipped).sorted(),
+            unsupportedGeneratedMethods: accepted.subtracting(covered).sorted(),
+            rejectedGeneratedMethodCount: acceptedGeneratedMethods.count - acceptedCandidates.count
+        )
+    }
+}
+
+struct CodexAppServerNotificationSurfaceDriftReport: Equatable, Sendable {
+    let acceptedMethodCount: Int
+    let supportedGeneratedMethods: [String]
+    let skippedGeneratedMethods: [String]
+    let unsupportedGeneratedMethods: [String]
+    let rejectedGeneratedMethodCount: Int
+
+    var hasDrift: Bool {
+        !unsupportedGeneratedMethods.isEmpty || rejectedGeneratedMethodCount > 0
+    }
+
+    var coveredGeneratedMethodCount: Int {
+        supportedGeneratedMethods.count + skippedGeneratedMethods.count
+    }
+}
+
+enum CodexAppServerNotificationSurfaceMethodFixture {
+    enum ParseError: Error, Equatable {
+        case empty
+        case duplicateMethod(String)
+        case invalidLine(lineNumber: Int)
+    }
+
+    static func parseMethodNames(_ contents: String) throws -> [String] {
+        var methods: [String] = []
+        var seen: Set<String> = []
+
+        for (offset, line) in contents.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                continue
+            }
+            guard isMethodNameOnly(value) else {
+                throw ParseError.invalidLine(lineNumber: offset + 1)
+            }
+            guard seen.insert(value).inserted else {
+                throw ParseError.duplicateMethod(value)
+            }
+            methods.append(value)
+        }
+
+        guard !methods.isEmpty else {
+            throw ParseError.empty
+        }
+
+        return methods
+    }
+
+    static func isMethodNameOnly(_ value: String) -> Bool {
+        guard value.count <= 120,
+              !value.isEmpty,
+              !value.hasPrefix("/"),
+              !value.hasSuffix("/"),
+              !value.contains("//")
+        else {
+            return false
+        }
+
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { component in
+            guard let first = component.unicodeScalars.first,
+                  CharacterSet.letters.contains(first)
+            else {
+                return false
+            }
+
+            return component.unicodeScalars.allSatisfy {
+                CharacterSet.alphanumerics.contains($0)
+            }
+        }
+    }
+}
+
 enum CodexAppServerNotificationAuditSanitizer {
     private static let skippedMethods: Set<String> = [
         "account/rateLimits/updated",
@@ -868,6 +969,13 @@ enum CodexAppServerNotificationAuditSanitizer {
         "system",
         "user",
     ]
+
+    static var surfaceCoverageForDriftCheck: CodexAppServerNotificationSurfaceCoverage {
+        CodexAppServerNotificationSurfaceCoverage(
+            supportedMethods: supportedMethods,
+            skippedMethods: skippedMethods
+        )
+    }
 
     static func audit(method rawMethod: String, params: Any?) -> CodexAppServerNotificationAuditRecord? {
         guard let method = normalizedMethod(rawMethod), !skippedMethods.contains(method) else {
