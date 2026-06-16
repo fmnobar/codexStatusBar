@@ -732,6 +732,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     private let sessionTaskTimingImporter: SessionTaskTimingImporter
     private let threadCatalogImporter: ThreadCatalogImporter
     private let modelCapabilitiesImporter: ModelCapabilitiesImporter
+    private let cacheStoreOnOpen: Bool
     private var cachedStore: UsageHistoryStore?
     private var lastRecentTokenImportAt: Date?
     private var lastTurnPerformanceImportAt: Date?
@@ -753,6 +754,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         self.sessionTaskTimingImporter = sessionTaskTimingImporter
         self.threadCatalogImporter = threadCatalogImporter
         self.modelCapabilitiesImporter = modelCapabilitiesImporter
+        self.cacheStoreOnOpen = true
         self.cachedStore = store
     }
 
@@ -762,7 +764,8 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter,
         sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter,
         threadCatalogImporter: @escaping ThreadCatalogImporter = UsageHistoryDatabaseWorker.liveThreadCatalogImporter,
-        modelCapabilitiesImporter: @escaping ModelCapabilitiesImporter = UsageHistoryDatabaseWorker.liveModelCapabilitiesImporter
+        modelCapabilitiesImporter: @escaping ModelCapabilitiesImporter = UsageHistoryDatabaseWorker.liveModelCapabilitiesImporter,
+        cacheStoreOnOpen: Bool = true
     ) {
         self.storeFactory = storeFactory
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
@@ -770,6 +773,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         self.sessionTaskTimingImporter = sessionTaskTimingImporter
         self.threadCatalogImporter = threadCatalogImporter
         self.modelCapabilitiesImporter = modelCapabilitiesImporter
+        self.cacheStoreOnOpen = cacheStoreOnOpen
     }
 
     static func applicationSupportStore() -> UsageHistoryDatabaseWorker {
@@ -785,7 +789,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             }
 
             return try UsageHistoryStore.inMemory()
-        })
+        }, cacheStoreOnOpen: false)
     }
 
     static func inMemory() throws -> UsageHistoryDatabaseWorker {
@@ -1025,7 +1029,9 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         }
 
         let store = try storeFactory()
-        cachedStore = store
+        if cacheStoreOnOpen {
+            cachedStore = store
+        }
         return store
     }
 

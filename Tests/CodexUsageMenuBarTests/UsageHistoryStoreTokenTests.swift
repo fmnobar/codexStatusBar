@@ -3242,6 +3242,55 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(totalTokens, 186)
     }
 
+    func testApplicationSupportFallbackWorkerDoesNotPermanentlyHideTokenTotals() async throws {
+        let fallbackStore = try makeStore()
+        let recoveredStore = try makeStore()
+        let timestamp = date("2026-05-17T12:00:00Z")
+        try recoveredStore.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread",
+                turnID: "turn",
+                lastInput: 100,
+                lastCached: 80,
+                lastOutput: 5,
+                lastReasoning: 1,
+                lastTotal: 105,
+                totalInput: 100,
+                totalCached: 80,
+                totalOutput: 5,
+                totalReasoning: 1,
+                totalTotal: 105
+            ),
+            at: timestamp
+        )
+        try recoveredStore.recordCodexLiveTokenCaptureState(
+            CodexLiveTokenCaptureState(lastCheckedAt: timestamp, status: .noNewEvents)
+        )
+        let openSequence = StoreOpenSequence(stores: [fallbackStore, recoveredStore])
+        let worker = UsageHistoryDatabaseWorker(
+            storeFactory: {
+                openSequence.nextStore()
+            },
+            cacheStoreOnOpen: false
+        )
+
+        let firstTotals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+        let recoveredTotals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+
+        XCTAssertNil(firstTotals)
+        XCTAssertEqual(
+            recoveredTotals,
+            TokenCategoryTotals(
+                inputTokens: 100,
+                cachedInputTokens: 80,
+                outputTokens: 5,
+                reasoningOutputTokens: 1,
+                totalTokens: 186
+            )
+        )
+        XCTAssertEqual(openSequence.openAttempts, 2)
+    }
+
     func testCodexLogTokenImporterExtractsDottedContextAndSafeDimensions() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
@@ -5481,6 +5530,30 @@ private final class DashboardMetadataImporterSpy: @unchecked Sendable {
         lock.lock()
         events.append(Event(kind: kind, force: force))
         lock.unlock()
+    }
+}
+
+private final class StoreOpenSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private let stores: [UsageHistoryStore]
+    private var index = 0
+
+    init(stores: [UsageHistoryStore]) {
+        self.stores = stores
+    }
+
+    var openAttempts: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return index
+    }
+
+    func nextStore() -> UsageHistoryStore {
+        lock.lock()
+        defer { lock.unlock() }
+        let store = stores[min(index, stores.count - 1)]
+        index += 1
+        return store
     }
 }
 
