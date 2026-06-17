@@ -113,9 +113,13 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(MenuBarStatusFormatter.compactTokenText(1_250), "1.3k tok")
         XCTAssertEqual(MenuBarStatusFormatter.compactTokenText(118_400), "118k tok")
         XCTAssertEqual(MenuBarStatusFormatter.compactTokenText(1_250_000), "1.3M tok")
+        XCTAssertEqual(MenuBarStatusFormatter.compactTokenText(1_250_000_000), "1.3B tok")
+        XCTAssertEqual(MenuBarStatusFormatter.compactTokenText(2_004_000_000), "2B tok")
 
         XCTAssertEqual(MenuBarStatusFormatter.compactMenuBarTokenText(nil), "--")
         XCTAssertEqual(MenuBarStatusFormatter.compactMenuBarTokenText(1_250_000), "1.3M")
+        XCTAssertEqual(MenuBarStatusFormatter.compactMenuBarTokenText(1_250_000_000), "1.3B")
+        XCTAssertEqual(MenuBarStatusFormatter.compactMenuBarTokenText(2_004_000_000), "2B")
     }
 
     func testCompactTokenCategoryTextFormatsAvailableParts() {

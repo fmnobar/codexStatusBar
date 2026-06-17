@@ -301,8 +301,10 @@ enum MenuBarStatusFormatter {
             return "\(Int((Double(count) / 1_000).rounded()))k"
         case 1_000_000..<10_000_000:
             return "\(compactNumber(Double(count) / 1_000_000))M"
-        default:
+        case 10_000_000..<1_000_000_000:
             return "\(Int((Double(count) / 1_000_000).rounded()))M"
+        default:
+            return "\(compactNumber(Double(count) / 1_000_000_000))B"
         }
     }
 
