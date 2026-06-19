@@ -3683,6 +3683,55 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testLiveTokenCaptureSessionFallbackUsesNarrowNonForcedRequest() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-06-13T12:48:13Z")
+        try createCodexLogsDatabase(
+            at: databaseURL,
+            rows: [
+                (
+                    timestamp,
+                    """
+                    event.name="codex.session_event" event.kind=heartbeat conversation.id=conversation model=gpt-5.5
+                    """
+                ),
+            ]
+        )
+        let sessionImporter = StubTokenBackfillImporter { _, request in
+            CodexSessionTokenBackfillSummary(
+                request: request,
+                filesScanned: 0,
+                tokenEventsImported: 0,
+                duplicateEventsSkipped: 0,
+                failedLinesSkipped: 0
+            )
+        }
+
+        let state = store.captureLiveCodexLogTokenHistory(
+            at: timestamp,
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL,
+            sessionTokenBackfillImporter: sessionImporter
+        )
+
+        XCTAssertEqual(state.status, .noNewEvents)
+        XCTAssertEqual(sessionImporter.receivedRequests.count, 1)
+        let request = try XCTUnwrap(sessionImporter.receivedRequests.first)
+        XCTAssertEqual(request.mode, .recent)
+        XCTAssertEqual(
+            request.since,
+            Calendar(identifier: .gregorian).date(
+                byAdding: .day,
+                value: -UsageHistoryStore.liveSessionTokenFallbackRecentDayCount,
+                to: timestamp
+            )
+        )
+        XCTAssertFalse(request.forceRescan)
+        XCTAssertEqual(request.maximumFileSize, UsageHistoryStore.liveSessionTokenFallbackMaximumFileSize)
+    }
+
     @MainActor
     func testTokenHistoryReloadUsesPreviouslyCapturedCodexDesktopLogs() async throws {
         let store = try makeStore()

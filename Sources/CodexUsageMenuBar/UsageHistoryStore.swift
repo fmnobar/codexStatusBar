@@ -57,6 +57,9 @@ extension UsageHistoryRecorder: TokenUsageRecording {
 }
 
 extension UsageHistoryStore {
+    static let liveSessionTokenFallbackRecentDayCount = 2
+    static let liveSessionTokenFallbackMaximumFileSize: Int64 = 128 * 1024 * 1024
+
     @discardableResult
     func importRecentTokenHistoryIfAvailable(
         containing date: Date,
@@ -107,7 +110,7 @@ extension UsageHistoryStore {
             {
                 let sessionSummary = try sessionTokenBackfillImporter.importTokenHistory(
                     into: self,
-                    request: .recent(now: date, forceRescan: force)
+                    request: Self.liveSessionTokenFallbackRequest(now: date)
                 )
                 importResult = Self.combinedTokenImportResult(
                     logResult: importResult,
@@ -145,6 +148,15 @@ extension UsageHistoryStore {
             try? recordCodexLiveTokenCaptureState(state)
             return state
         }
+    }
+
+    private static func liveSessionTokenFallbackRequest(now date: Date) -> CodexSessionTokenBackfillRequest {
+        .recent(
+            now: date,
+            days: liveSessionTokenFallbackRecentDayCount,
+            forceRescan: false,
+            maximumFileSize: liveSessionTokenFallbackMaximumFileSize
+        )
     }
 
     private static func shouldRunSessionTokenFallback(after result: TokenUsageImportResult) -> Bool {

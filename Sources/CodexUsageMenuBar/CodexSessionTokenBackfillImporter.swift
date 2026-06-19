@@ -2069,21 +2069,32 @@ struct CodexSessionTokenBackfillRequest: Equatable, Sendable {
     let mode: Mode
     let since: Date?
     let forceRescan: Bool
+    let maximumFileSize: Int64?
 
     static func recent(
         now: Date = Date(),
         days: Int = Self.defaultRecentDayCount,
-        forceRescan: Bool = false
+        forceRescan: Bool = false,
+        maximumFileSize: Int64? = nil
     ) -> CodexSessionTokenBackfillRequest {
         CodexSessionTokenBackfillRequest(
             mode: .recent,
             since: Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: now) ?? now,
-            forceRescan: forceRescan
+            forceRescan: forceRescan,
+            maximumFileSize: maximumFileSize
         )
     }
 
-    static func allHistory(forceRescan: Bool = false) -> CodexSessionTokenBackfillRequest {
-        CodexSessionTokenBackfillRequest(mode: .allHistory, since: nil, forceRescan: forceRescan)
+    static func allHistory(
+        forceRescan: Bool = false,
+        maximumFileSize: Int64? = nil
+    ) -> CodexSessionTokenBackfillRequest {
+        CodexSessionTokenBackfillRequest(
+            mode: .allHistory,
+            since: nil,
+            forceRescan: forceRescan,
+            maximumFileSize: maximumFileSize
+        )
     }
 
     var displayTitle: String {
@@ -3760,6 +3771,13 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
 
         let sessionFiles = discoveredFiles.filter { candidate in
             guard shouldInclude(candidate: candidate, request: request) else {
+                filesSkippedByBounds += 1
+                return false
+            }
+
+            if let maximumFileSize = request.maximumFileSize,
+               candidate.metadata.fileSize > maximumFileSize
+            {
                 filesSkippedByBounds += 1
                 return false
             }

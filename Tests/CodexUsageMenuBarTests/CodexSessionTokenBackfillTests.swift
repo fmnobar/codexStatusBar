@@ -663,6 +663,46 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.tokenUsageSamples().map(\.receivedAt), [date("2026-05-10T18:00:00Z")])
     }
 
+    func testSessionTokenBackfillSkipsOversizedFilesWhenRequestIsBounded() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-oversized.jsonl")
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    lastInput: 100,
+                    lastCached: 80,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 120,
+                    totalInput: 100,
+                    totalCached: 80,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 120
+                ),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(
+            into: store,
+            request: .recent(
+                now: date("2026-05-18T12:00:00Z"),
+                days: 30,
+                maximumFileSize: 1
+            )
+        )
+
+        XCTAssertEqual(summary.filesDiscovered, 1)
+        XCTAssertEqual(summary.filesScanned, 0)
+        XCTAssertEqual(summary.filesSkippedByBounds, 1)
+        XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
+    }
+
     func testSessionTokenBackfillReimportsChangedFilesAndRepairsModel() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
