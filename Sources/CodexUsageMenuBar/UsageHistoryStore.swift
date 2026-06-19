@@ -59,6 +59,8 @@ extension UsageHistoryRecorder: TokenUsageRecording {
 extension UsageHistoryStore {
     static let liveSessionTokenFallbackRecentDayCount = 2
     static let liveSessionTokenFallbackMaximumFileSize: Int64 = 128 * 1024 * 1024
+    static let turnPerformanceCaptureMaximumRowsPerRun = 2_500
+    static let turnPerformanceCaptureMaximumBodyCharacters = CodexOtelTurnPerformanceImporter.defaultMaximumBodyCharacters
 
     @discardableResult
     func importRecentTokenHistoryIfAvailable(
@@ -232,9 +234,15 @@ extension UsageHistoryStore {
         calendar: Calendar = .autoupdatingCurrent,
         minimumInterval: TimeInterval = 30,
         force: Bool = false,
-        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL(),
+        maximumRowsPerRun: Int? = UsageHistoryStore.turnPerformanceCaptureMaximumRowsPerRun,
+        maximumBodyCharacters: Int = UsageHistoryStore.turnPerformanceCaptureMaximumBodyCharacters
     ) -> CodexTurnPerformanceCaptureState {
-        let importer = CodexOtelTurnPerformanceImporter(logsDatabaseURL: logsDatabaseURL)
+        let importer = CodexOtelTurnPerformanceImporter(
+            logsDatabaseURL: logsDatabaseURL,
+            maximumRowsPerRun: maximumRowsPerRun,
+            maximumBodyCharacters: maximumBodyCharacters
+        )
         let sourceKey = CodexTurnPerformanceCaptureState.codexOtelLogSourceKey
         let existingState = (try? codexTurnPerformanceCaptureState(sourceKey: sourceKey))
             ?? CodexTurnPerformanceCaptureState(sourceKey: sourceKey)

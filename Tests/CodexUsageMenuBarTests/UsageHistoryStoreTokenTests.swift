@@ -4007,6 +4007,84 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try store.codexTurnPerformanceCaptureState().status, .noNewEvents)
     }
 
+    func testCodexOtelTurnPerformanceImporterBoundsRowsWithoutSkippingUnprocessedMatches() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let rows: [(Date, String, String)] = (1...3).map { index in
+            (
+                timestamp.addingTimeInterval(TimeInterval(index)),
+                "codex_api::sse::responses",
+                """
+                event.name=codex.sse_event event.kind=response.completed duration_ms=\(index) success=true event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation-\(index) model=gpt-5.5
+                """
+            )
+        }
+        try createCodexLogsDatabase(at: databaseURL, rowsWithTargets: rows)
+        let importer = CodexOtelTurnPerformanceImporter(
+            logsDatabaseURL: databaseURL,
+            maximumRowsPerRun: 2
+        )
+
+        let firstResult = try importer.importTurnPerformanceEvents(
+            into: store,
+            afterLogRowID: 0,
+            containing: timestamp,
+            calendar: calendar
+        )
+        let secondResult = try importer.importTurnPerformanceEvents(
+            into: store,
+            afterLogRowID: firstResult.maxLogRowID,
+            containing: timestamp,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(firstResult.importResult.insertedCount, 2)
+        XCTAssertEqual(firstResult.maxLogRowID, 2)
+        XCTAssertEqual(secondResult.importResult.insertedCount, 1)
+        XCTAssertEqual(secondResult.maxLogRowID, 3)
+        XCTAssertEqual(try store.turnPerformanceEvents().count, 3)
+    }
+
+    func testCodexOtelTurnPerformanceCaptureUsesBoundedRowsByDefault() async throws {
+        let store = try makeStore()
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
+        let timestamp = date("2026-05-17T12:48:13Z")
+        let rows: [(Date, String, String)] = (1...3).map { index in
+            (
+                timestamp.addingTimeInterval(TimeInterval(index)),
+                "codex_api::sse::responses",
+                """
+                event.name=codex.sse_event event.kind=response.completed duration_ms=\(index) success=true event.timestamp=2026-05-17T12:48:13.035Z conversation.id=conversation-\(index) model=gpt-5.5
+                """
+            )
+        }
+        try createCodexLogsDatabase(at: databaseURL, rowsWithTargets: rows)
+
+        let firstState = store.captureCodexOtelTurnPerformance(
+            at: timestamp,
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL,
+            maximumRowsPerRun: 2
+        )
+        let secondState = store.captureCodexOtelTurnPerformance(
+            at: timestamp.addingTimeInterval(1),
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: databaseURL,
+            maximumRowsPerRun: 2
+        )
+
+        XCTAssertEqual(firstState.status, .imported)
+        XCTAssertEqual(firstState.insertedCount, 2)
+        XCTAssertEqual(firstState.lastLogRowID, 2)
+        XCTAssertEqual(secondState.status, .imported)
+        XCTAssertEqual(secondState.insertedCount, 1)
+        XCTAssertEqual(secondState.lastLogRowID, 3)
+        XCTAssertEqual(try store.turnPerformanceEvents().count, 3)
+    }
+
     func testPerformanceDashboardQueriesAggregateTimingAndReliabilityInputs() async throws {
         let store = try makeStore()
         try seedPerformanceDashboardFixture(in: store)

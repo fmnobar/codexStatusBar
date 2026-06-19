@@ -2916,10 +2916,20 @@ struct CodexLogTokenUsageImporter {
 }
 
 struct CodexOtelTurnPerformanceImporter {
-    let logsDatabaseURL: URL
+    static let defaultMaximumBodyCharacters = 256 * 1024
 
-    init(logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL()) {
+    let logsDatabaseURL: URL
+    let maximumRowsPerRun: Int?
+    let maximumBodyCharacters: Int
+
+    init(
+        logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL(),
+        maximumRowsPerRun: Int? = nil,
+        maximumBodyCharacters: Int = CodexOtelTurnPerformanceImporter.defaultMaximumBodyCharacters
+    ) {
         self.logsDatabaseURL = logsDatabaseURL
+        self.maximumRowsPerRun = maximumRowsPerRun
+        self.maximumBodyCharacters = maximumBodyCharacters
     }
 
     func importTurnPerformanceEvents(
@@ -2952,38 +2962,42 @@ struct CodexOtelTurnPerformanceImporter {
         )
 
         let sql = """
-        SELECT id, ts, target, feedback_log_body
-        FROM logs
-        WHERE id > ?
-            AND ts >= ? AND ts < ?
-            AND target IN (
-                'codex_otel.trace_safe',
-                'codex_otel.log_only',
-                'codex_api::endpoint::responses_websocket',
-                'codex_api::sse::responses'
-            )
-            AND (
-                feedback_log_body LIKE '%event.name=%'
-                OR feedback_log_body LIKE '%duration_ms=%'
-                OR feedback_log_body LIKE '%duration_ms":%'
-                OR feedback_log_body LIKE '%success=%'
-                OR feedback_log_body LIKE '%transport=%'
-                OR feedback_log_body LIKE '%wire_api=%'
-                OR feedback_log_body LIKE '%api.path=%'
-                OR feedback_log_body LIKE '%codex.turn.reasoning_effort=%'
-                OR feedback_log_body LIKE '%reasoning_effort=%'
-                OR feedback_log_body LIKE '%auth_mode%'
-                OR feedback_log_body LIKE '%has_metadata_header%'
-                OR feedback_log_body LIKE '%websocket.warmup%'
-                OR feedback_log_body LIKE '%codex.request.reasoning_effort%'
-                OR feedback_log_body LIKE '%request.reasoning_effort%'
-                OR feedback_log_body LIKE '%tool_output%'
-                OR feedback_log_body LIKE '%tool.output.size%'
-                OR feedback_log_body LIKE '%model=%'
-                OR feedback_log_body LIKE '%slug=%'
-                OR feedback_log_body LIKE '%cwd=%'
+        SELECT id, ts, target, body_prefix
+        FROM (
+            SELECT id, ts, target, substr(feedback_log_body, 1, ?) AS body_prefix
+            FROM logs
+            WHERE id > ?
+                AND ts >= ? AND ts < ?
+                AND target IN (
+                    'codex_otel.trace_safe',
+                    'codex_otel.log_only',
+                    'codex_api::endpoint::responses_websocket',
+                    'codex_api::sse::responses'
+                )
+        )
+        WHERE (
+                body_prefix LIKE '%event.name=%'
+                OR body_prefix LIKE '%duration_ms=%'
+                OR body_prefix LIKE '%duration_ms":%'
+                OR body_prefix LIKE '%success=%'
+                OR body_prefix LIKE '%transport=%'
+                OR body_prefix LIKE '%wire_api=%'
+                OR body_prefix LIKE '%api.path=%'
+                OR body_prefix LIKE '%codex.turn.reasoning_effort=%'
+                OR body_prefix LIKE '%reasoning_effort=%'
+                OR body_prefix LIKE '%auth_mode%'
+                OR body_prefix LIKE '%has_metadata_header%'
+                OR body_prefix LIKE '%websocket.warmup%'
+                OR body_prefix LIKE '%codex.request.reasoning_effort%'
+                OR body_prefix LIKE '%request.reasoning_effort%'
+                OR body_prefix LIKE '%tool_output%'
+                OR body_prefix LIKE '%tool.output.size%'
+                OR body_prefix LIKE '%model=%'
+                OR body_prefix LIKE '%slug=%'
+                OR body_prefix LIKE '%cwd=%'
             )
         ORDER BY id ASC
+        LIMIT ?
         """
 
         var statement: OpaquePointer?
@@ -2992,12 +3006,15 @@ struct CodexOtelTurnPerformanceImporter {
         }
         defer { sqlite3_finalize(statement) }
 
-        sqlite3_bind_int64(statement, 1, max(afterLogRowID, 0))
-        sqlite3_bind_int64(statement, 2, interval.start.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 3, interval.end.timeIntervalSince1970Int)
+        sqlite3_bind_int(statement, 1, Int32(max(maximumBodyCharacters, 1)))
+        sqlite3_bind_int64(statement, 2, max(afterLogRowID, 0))
+        sqlite3_bind_int64(statement, 3, interval.start.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 4, interval.end.timeIntervalSince1970Int)
+        sqlite3_bind_int(statement, 5, Int32(max(maximumRowsPerRun ?? Int(Int32.max), 1)))
 
         var events: [CodexTurnPerformanceEvent] = []
-        var maxLogRowID = max(max(afterLogRowID, 0), latestLogRowID)
+        var maxLogRowID = max(afterLogRowID, 0)
+        var rowCount = 0
         var lastImportedEventAt: Date?
 
         rowLoop:
@@ -3005,6 +3022,7 @@ struct CodexOtelTurnPerformanceImporter {
             switch sqlite3_step(statement) {
             case SQLITE_ROW:
                 let logRowID = sqlite3_column_int64(statement, 0)
+                rowCount += 1
                 maxLogRowID = max(maxLogRowID, logRowID)
                 guard let targetPointer = sqlite3_column_text(statement, 2),
                       let bodyPointer = sqlite3_column_text(statement, 3)
@@ -3036,6 +3054,10 @@ struct CodexOtelTurnPerformanceImporter {
             default:
                 throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(database)))
             }
+        }
+
+        if maximumRowsPerRun == nil || rowCount < max(maximumRowsPerRun ?? 0, 1) {
+            maxLogRowID = max(maxLogRowID, latestLogRowID)
         }
 
         let importResult = try store.importTurnPerformanceEvents(events)
