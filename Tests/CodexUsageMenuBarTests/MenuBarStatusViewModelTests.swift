@@ -170,7 +170,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Today's local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Current UTC day local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
 
         viewModel.stop()
@@ -215,8 +215,42 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Today's local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Current UTC day local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
+
+        viewModel.stop()
+    }
+
+    func testMenuBarTokenOptionRequestsCurrentUTCDayTotalsOnStartup() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let tokenRecorder = MockTokenUsageRecorder(todayTotals: .zero)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            tokenUsageRecorder: tokenRecorder,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: false,
+                showsResetTime: false,
+                showsTokens: true
+            ),
+            persistSelection: { _ in },
+            persistMenuBarDisplayOptions: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+
+        let requestedTimeZoneOffsets = await tokenRecorder.todayTotalsRequestTimeZoneOffsetsSnapshot()
+        XCTAssertEqual(requestedTimeZoneOffsets, [0])
 
         viewModel.stop()
     }
@@ -283,7 +317,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 0")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Today's local captured tokens: input 0 tok, cached input 0 tok, output 0 tok, reasoning 0 tok, total 0 tok."
+            "Current UTC day local captured tokens: input 0 tok, cached input 0 tok, output 0 tok, reasoning 0 tok, total 0 tok."
         )
 
         viewModel.stop()
@@ -834,6 +868,7 @@ private actor MockUsageHistoryRecorder: UsageHistoryRecording {
 private actor MockTokenUsageRecorder: TokenUsageRecording {
     private var records: [(tokenUsage: CodexTokenUsageNotification, date: Date)] = []
     private var todayTotals: TokenCategoryTotals?
+    private var todayTotalsRequestTimeZoneOffsets: [Int?] = []
 
     init(todayTotals: TokenCategoryTotals?) {
         self.todayTotals = todayTotals
@@ -857,11 +892,12 @@ private actor MockTokenUsageRecorder: TokenUsageRecording {
     }
 
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
-        todayTotals
+        todayTotalsRequestTimeZoneOffsets.append(calendar.timeZone.secondsFromGMT(for: date))
+        return todayTotals
     }
 
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
-        todayTotals?.totalTokens
+        return todayTotals?.totalTokens
     }
 
     var recordCount: Int {
@@ -870,6 +906,10 @@ private actor MockTokenUsageRecorder: TokenUsageRecording {
 
     func recordsSnapshot() -> [(tokenUsage: CodexTokenUsageNotification, date: Date)] {
         records
+    }
+
+    func todayTotalsRequestTimeZoneOffsetsSnapshot() -> [Int?] {
+        todayTotalsRequestTimeZoneOffsets
     }
 }
 

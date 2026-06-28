@@ -462,9 +462,15 @@ final class MenuBarStatusViewModel: ObservableObject {
         let currentNow = now()
         todayTokenTotals = await tokenUsageRecorder.todayTokenCategoryTotals(
             at: currentNow,
-            calendar: .autoupdatingCurrent
+            calendar: Self.accountTokenCalendar
         )
         applyPresentation()
+    }
+
+    private static var accountTokenCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
     }
 
     private func refreshLaunchAtLoginState() {

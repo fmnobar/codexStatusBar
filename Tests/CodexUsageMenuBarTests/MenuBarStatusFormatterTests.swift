@@ -243,7 +243,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "No limit data · 4.8M")
         XCTAssertEqual(
             presentation.menuBarToolTipText,
-            "Today's local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Current UTC day local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
     }
 
@@ -335,7 +335,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · 4.8M")
         XCTAssertEqual(
             presentation.menuBarToolTipText,
-            "Today's local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Current UTC day local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
     }
 
@@ -361,7 +361,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · --")
-        XCTAssertEqual(presentation.menuBarToolTipText, "No local captured token data today.")
+        XCTAssertEqual(presentation.menuBarToolTipText, "No local captured token data for current UTC day.")
     }
 
     func testTightestSelectionUsesLowerRemainingPercent() {
