@@ -823,7 +823,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             guard captureState.hasSuccessfulCheck(containing: date, calendar: calendar) else {
                 return nil
             }
-            return try store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)
+            return try store.tokenCategoryTotalsForDay(containing: date, calendar: calendar) ?? .zero
         } catch {
             return nil
         }
@@ -836,7 +836,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             guard captureState.hasSuccessfulCheck(containing: date, calendar: calendar) else {
                 return nil
             }
-            return try store.tokenCategoryTotalsForDay(containing: date, calendar: calendar)?.totalTokens
+            return (try store.tokenCategoryTotalsForDay(containing: date, calendar: calendar) ?? .zero).totalTokens
         } catch {
             return nil
         }

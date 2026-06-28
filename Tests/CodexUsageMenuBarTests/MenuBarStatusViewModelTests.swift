@@ -252,6 +252,43 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
+    func testMenuBarTokenOptionShowsZeroWhenTokenTotalsAreKnownEmpty() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let tokenRecorder = MockTokenUsageRecorder(todayTotals: .zero)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            tokenUsageRecorder: tokenRecorder,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: false,
+                showsResetTime: false,
+                showsTokens: true
+            ),
+            persistSelection: { _ in },
+            persistMenuBarDisplayOptions: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 0")
+        XCTAssertEqual(
+            viewModel.menuBarToolTipText,
+            "Today's local captured tokens: input 0 tok, cached input 0 tok, output 0 tok, reasoning 0 tok, total 0 tok."
+        )
+
+        viewModel.stop()
+    }
+
     func testFailedRefreshWithCachedSnapshotShowsStaleOfflineState() async {
         let currentTime = MutableNow(date: ISO8601DateFormatter().date(from: "2026-04-14T20:00:00Z")!)
         let snapshot = CodexRateLimitSnapshot(

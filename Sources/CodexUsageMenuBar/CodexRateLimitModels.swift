@@ -75,6 +75,14 @@ struct TokenCategoryTotals: Equatable {
     let outputTokens: Int64
     let reasoningOutputTokens: Int64
     let totalTokens: Int64
+
+    static let zero = TokenCategoryTotals(
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0
+    )
 }
 
 enum CodexModelIdentifier {

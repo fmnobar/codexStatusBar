@@ -3242,6 +3242,21 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(totalTokens, 186)
     }
 
+    func testWorkerTodayTokenTotalsReturnZeroAfterSuccessfulNoNewEventsCheckWithNoRows() async throws {
+        let store = try makeStore()
+        let timestamp = date("2026-05-17T12:00:00Z")
+        try store.recordCodexLiveTokenCaptureState(
+            CodexLiveTokenCaptureState(lastCheckedAt: timestamp, status: .noNewEvents)
+        )
+        let worker = UsageHistoryDatabaseWorker(store: store)
+
+        let totals = await worker.todayTokenCategoryTotals(at: timestamp, calendar: calendar)
+        let totalTokens = await worker.todayTotalTokens(at: timestamp, calendar: calendar)
+
+        XCTAssertEqual(totals, .zero)
+        XCTAssertEqual(totalTokens, 0)
+    }
+
     func testApplicationSupportFallbackWorkerDoesNotPermanentlyHideTokenTotals() async throws {
         let fallbackStore = try makeStore()
         let recoveredStore = try makeStore()
