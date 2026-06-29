@@ -235,7 +235,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
                 showsResetTime: false,
                 showsTokens: true
             ),
-            todayTokenTotals: tokenTotals,
+            displayedWindowTokenTotals: tokenTotals,
             calendar: Calendar(identifier: .gregorian),
             locale: Locale(identifier: "en_US_POSIX")
         )
@@ -243,7 +243,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "No limit data · 4.8M")
         XCTAssertEqual(
             presentation.menuBarToolTipText,
-            "Current UTC day local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Displayed limit window local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
     }
 
@@ -304,7 +304,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "5h: 84%")
     }
 
-    func testMenuBarTextCanAppendTodayTokenTotal() {
+    func testMenuBarTextCanAppendDisplayedWindowTokenTotal() {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 5, windowDurationMinutes: 10080, resetsAt: nil)
@@ -327,7 +327,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
                 showsResetTime: false,
                 showsTokens: true
             ),
-            todayTokenTotals: tokenTotals,
+            displayedWindowTokenTotals: tokenTotals,
             calendar: Calendar(identifier: .gregorian),
             locale: Locale(identifier: "en_US_POSIX")
         )
@@ -335,7 +335,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · 4.8M")
         XCTAssertEqual(
             presentation.menuBarToolTipText,
-            "Current UTC day local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Displayed limit window local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
     }
 
@@ -355,13 +355,13 @@ final class MenuBarStatusFormatterTests: XCTestCase {
                 showsResetTime: false,
                 showsTokens: true
             ),
-            todayTokenTotals: nil,
+            displayedWindowTokenTotals: nil,
             calendar: Calendar(identifier: .gregorian),
             locale: Locale(identifier: "en_US_POSIX")
         )
 
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 95% · --")
-        XCTAssertEqual(presentation.menuBarToolTipText, "No local captured token data for current UTC day.")
+        XCTAssertEqual(presentation.menuBarToolTipText, "No local captured token data for the displayed limit window.")
     }
 
     func testTightestSelectionUsesLowerRemainingPercent() {

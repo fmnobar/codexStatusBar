@@ -164,7 +164,7 @@ enum MenuBarStatusFormatter {
         now: Date,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow,
         menuBarDisplayOptions: MenuBarDisplayOptions = .defaultValue,
-        todayTokenTotals: TokenCategoryTotals? = nil,
+        displayedWindowTokenTotals: TokenCategoryTotals? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
@@ -179,13 +179,13 @@ enum MenuBarStatusFormatter {
                 sourceTitle: menuBarWindow.sourceTitle,
                 hasAnyLimitWindow: snapshot?.primary != nil || snapshot?.secondary != nil,
                 options: menuBarDisplayOptions,
-                todayTokenTotals: todayTokenTotals,
+                displayedWindowTokenTotals: displayedWindowTokenTotals,
                 now: now,
                 calendar: calendar
             ),
             menuBarToolTipText: menuBarToolTipText(
                 options: menuBarDisplayOptions,
-                todayTokenTotals: todayTokenTotals
+                displayedWindowTokenTotals: displayedWindowTokenTotals
             ),
             fiveHourRow: row(
                 title: "5h limit",
@@ -218,7 +218,7 @@ enum MenuBarStatusFormatter {
         sourceTitle: String? = nil,
         hasAnyLimitWindow: Bool = true,
         options: MenuBarDisplayOptions = .defaultValue,
-        todayTokenTotals: TokenCategoryTotals? = nil,
+        displayedWindowTokenTotals: TokenCategoryTotals? = nil,
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
@@ -229,7 +229,7 @@ enum MenuBarStatusFormatter {
 
             var components = ["No limit data"]
             if options.showsTokens {
-                components.append("· \(compactMenuBarTokenText(todayTokenTotals?.totalTokens))")
+                components.append("· \(compactMenuBarTokenText(displayedWindowTokenTotals?.totalTokens))")
             }
 
             return components.joined(separator: " ")
@@ -255,7 +255,7 @@ enum MenuBarStatusFormatter {
         }
 
         if options.showsTokens {
-            components.append("· \(compactMenuBarTokenText(todayTokenTotals?.totalTokens))")
+            components.append("· \(compactMenuBarTokenText(displayedWindowTokenTotals?.totalTokens))")
         }
 
         return components.joined(separator: " ")
@@ -378,18 +378,18 @@ enum MenuBarStatusFormatter {
 
     static func menuBarToolTipText(
         options: MenuBarDisplayOptions,
-        todayTokenTotals: TokenCategoryTotals?
+        displayedWindowTokenTotals: TokenCategoryTotals?
     ) -> String? {
         guard options.showsTokens else {
             return nil
         }
 
-        guard let totals = todayTokenTotals else {
-            return "No local captured token data for current UTC day."
+        guard let totals = displayedWindowTokenTotals else {
+            return "No local captured token data for the displayed limit window."
         }
 
         return [
-            "Current UTC day local captured tokens:",
+            "Displayed limit window local captured tokens:",
             "input \(compactTokenText(totals.inputTokens)),",
             "cached input \(compactTokenText(totals.cachedInputTokens)),",
             "output \(compactTokenText(totals.outputTokens)),",

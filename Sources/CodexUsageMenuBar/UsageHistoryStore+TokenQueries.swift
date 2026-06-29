@@ -117,6 +117,14 @@ extension UsageHistoryStore {
             return nil
         }
 
+        return try tokenCategoryTotals(periodStart: interval.start, periodEnd: interval.end)
+    }
+
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) throws -> TokenCategoryTotals? {
+        guard periodStart < periodEnd else {
+            return nil
+        }
+
         let statement = try prepare(
             """
             SELECT COUNT(*),
@@ -137,8 +145,8 @@ extension UsageHistoryStore {
         )
         defer { sqlite3_finalize(statement) }
 
-        sqlite3_bind_int64(statement, 1, interval.start.timeIntervalSince1970Int)
-        sqlite3_bind_int64(statement, 2, interval.end.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
 
         switch sqlite3_step(statement) {
         case SQLITE_ROW:

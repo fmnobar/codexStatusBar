@@ -3257,6 +3257,57 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(totalTokens, 0)
     }
 
+    func testWorkerTokenWindowTotalsSurviveUTCDayBoundary() async throws {
+        let store = try makeStore()
+        let sampleTimestamp = date("2026-06-28T04:00:07Z")
+        let refreshTimestamp = date("2026-06-29T00:37:00Z")
+        try store.record(
+            tokenUsage: tokenNotification(
+                threadID: "thread",
+                turnID: "turn",
+                lastInput: 210_000_000,
+                lastCached: 200_000_000,
+                lastOutput: 10_000_000,
+                lastReasoning: 1_365_879,
+                lastTotal: 421_365_879,
+                totalInput: 210_000_000,
+                totalCached: 200_000_000,
+                totalOutput: 10_000_000,
+                totalReasoning: 1_365_879,
+                totalTotal: 421_365_879
+            ),
+            at: sampleTimestamp
+        )
+        try store.recordCodexLiveTokenCaptureState(
+            CodexLiveTokenCaptureState(lastCheckedAt: refreshTimestamp, status: .noNewEvents)
+        )
+        let worker = UsageHistoryDatabaseWorker(store: store)
+        let periodStart = refreshTimestamp.addingTimeInterval(-7 * 24 * 60 * 60)
+        let expectedWindowTotals = TokenCategoryTotals(
+            inputTokens: 210_000_000,
+            cachedInputTokens: 200_000_000,
+            outputTokens: 10_000_000,
+            reasoningOutputTokens: 1_365_879,
+            totalTokens: 421_365_879
+        )
+
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        XCTAssertEqual(try store.tokenUsageSamples().count, 1)
+        XCTAssertEqual(
+            try store.tokenCategoryTotals(periodStart: periodStart, periodEnd: refreshTimestamp),
+            expectedWindowTotals
+        )
+        let currentUTCDayTotals = await worker.todayTokenCategoryTotals(at: refreshTimestamp, calendar: utcCalendar)
+        let windowTotals = await worker.tokenCategoryTotals(
+            periodStart: periodStart,
+            periodEnd: refreshTimestamp
+        )
+
+        XCTAssertEqual(currentUTCDayTotals, .zero)
+        XCTAssertEqual(windowTotals, expectedWindowTotals)
+    }
+
     func testApplicationSupportFallbackWorkerDoesNotPermanentlyHideTokenTotals() async throws {
         let fallbackStore = try makeStore()
         let recoveredStore = try makeStore()

@@ -66,7 +66,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let setLaunchAtLoginEnabledAction: (Bool) throws -> Void
 
     private var snapshot: CodexRateLimitSnapshot?
-    private var todayTokenTotals: TokenCategoryTotals?
+    private var displayedWindowTokenTotals: TokenCategoryTotals?
     private var lastUpdatedAt: Date?
     private var didStart = false
     private var didBootstrapClient = false
@@ -149,6 +149,9 @@ final class MenuBarStatusViewModel: ObservableObject {
         selectedMenuBarDisplayWindow = displayWindow
         persistSelection(displayWindow)
         applyPresentation()
+        if menuBarDisplayOptions.showsTokens {
+            refreshDisplayedWindowTokenTotals()
+        }
     }
 
     func setMenuBarShowsLimitLabel(_ isEnabled: Bool) {
@@ -255,7 +258,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         }
 
         if menuBarDisplayOptions.showsTokens {
-            await loadTodayTokenTotals()
+            await loadDisplayedWindowTokenTotals()
         }
     }
 
@@ -281,15 +284,15 @@ final class MenuBarStatusViewModel: ObservableObject {
                 return
             }
 
-            todayTokenTotals = await tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
-            applyPresentation()
+            _ = await tokenUsageRecorder.record(tokenUsage: notification, at: updateDate)
+            await loadDisplayedWindowTokenTotals(at: updateDate)
         }
     }
 
     private func applyPresentation() {
         let currentNow = now()
         let tokenTotals = if menuBarDisplayOptions.showsTokens {
-            todayTokenTotals
+            displayedWindowTokenTotals
         } else {
             TokenCategoryTotals?.none
         }
@@ -298,7 +301,7 @@ final class MenuBarStatusViewModel: ObservableObject {
             now: currentNow,
             selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow,
             menuBarDisplayOptions: menuBarDisplayOptions,
-            todayTokenTotals: tokenTotals
+            displayedWindowTokenTotals: tokenTotals
         )
         let shouldShowOffline = isUsingCachedSnapshotAfterFailure || (!hasSnapshot && errorMessage != nil)
         let offlineStatusText = MenuBarStatusFormatter.freshnessText(
@@ -422,7 +425,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         if needsPresentationUpdate {
             applyPresentation()
             if menuBarDisplayOptions.showsTokens {
-                refreshTodayTokenTotals()
+                refreshDisplayedWindowTokenTotals()
             }
         }
     }
@@ -436,41 +439,68 @@ final class MenuBarStatusViewModel: ObservableObject {
         persistMenuBarDisplayOptions(options)
         applyPresentation()
         if options.showsTokens {
-            refreshTodayTokenTotals()
+            refreshDisplayedWindowTokenTotals()
         }
     }
 
-    private func refreshTodayTokenTotals() {
+    private func refreshDisplayedWindowTokenTotals() {
         Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
 
-            await loadTodayTokenTotals()
+            await loadDisplayedWindowTokenTotals()
         }
     }
 
-    func refreshTodayTokenTotalsIfDisplayed() {
+    func refreshDisplayedWindowTokenTotalsIfDisplayed() {
         guard menuBarDisplayOptions.showsTokens else {
             return
         }
 
-        refreshTodayTokenTotals()
+        refreshDisplayedWindowTokenTotals()
     }
 
-    private func loadTodayTokenTotals() async {
-        let currentNow = now()
-        todayTokenTotals = await tokenUsageRecorder.todayTokenCategoryTotals(
-            at: currentNow,
-            calendar: Self.accountTokenCalendar
+    private func loadDisplayedWindowTokenTotals(at date: Date? = nil) async {
+        let currentNow = date ?? now()
+        guard let interval = displayedTokenInterval(endingAt: currentNow) else {
+            displayedWindowTokenTotals = nil
+            applyPresentation()
+            return
+        }
+
+        displayedWindowTokenTotals = await tokenUsageRecorder.tokenCategoryTotals(
+            periodStart: interval.start,
+            periodEnd: interval.end
         )
         applyPresentation()
     }
 
-    private static var accountTokenCalendar: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        return calendar
+    private func displayedTokenInterval(endingAt end: Date) -> DateInterval? {
+        guard
+            let durationMinutes = displayedRateLimitWindow()?.windowDurationMinutes,
+            durationMinutes > 0
+        else {
+            return nil
+        }
+
+        let start = end.addingTimeInterval(-TimeInterval(durationMinutes * 60))
+        guard start < end else {
+            return nil
+        }
+
+        return DateInterval(start: start, end: end)
+    }
+
+    private func displayedRateLimitWindow() -> CodexRateLimitWindow? {
+        switch selectedMenuBarDisplayWindow {
+        case .fiveHour:
+            return snapshot?.primary
+        case .sevenDay:
+            return snapshot?.secondary
+        case .tightest:
+            return MenuBarStatusFormatter.tightestWindow(primary: snapshot?.primary, secondary: snapshot?.secondary)
+        }
     }
 
     private func refreshLaunchAtLoginState() {

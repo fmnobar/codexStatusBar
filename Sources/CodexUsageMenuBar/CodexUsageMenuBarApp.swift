@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
-                viewModel?.refreshTodayTokenTotalsIfDisplayed()
+                viewModel?.refreshDisplayedWindowTokenTotalsIfDisplayed()
             }
         )
         liveTokenCaptureCoordinator?.start()

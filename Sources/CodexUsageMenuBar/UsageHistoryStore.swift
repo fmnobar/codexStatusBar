@@ -8,8 +8,15 @@ protocol UsageHistoryRecording: Sendable {
 protocol TokenUsageRecording: Sendable {
     @discardableResult
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals?
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals?
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
+}
+
+extension TokenUsageRecording {
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
+        nil
+    }
 }
 
 struct NoOpUsageHistoryRecorder: UsageHistoryRecording {
@@ -45,6 +52,10 @@ final class UsageHistoryRecorder: UsageHistoryRecording, @unchecked Sendable {
 extension UsageHistoryRecorder: TokenUsageRecording {
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
         await database.record(tokenUsage: tokenUsage, at: date)
+    }
+
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
+        await database.tokenCategoryTotals(periodStart: periodStart, periodEnd: periodEnd)
     }
 
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {

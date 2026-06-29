@@ -107,6 +107,7 @@ struct TokenDashboardLoadResult: Equatable {
 protocol UsageHistoryDatabaseWorking: Sendable {
     func record(snapshot: CodexUsageSnapshot, at date: Date) async
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals?
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals?
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
     func captureLiveTokenHistoryIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexLiveTokenCaptureState
@@ -149,6 +150,10 @@ protocol UsageHistoryDashboardQueryWorking: Sendable {
 }
 
 extension UsageHistoryDatabaseWorking {
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
+        nil
+    }
+
     func turnPerformanceRuntimeDimensionSummary() async -> CodexOtelRuntimeDimensionSummary {
         .empty
     }
@@ -455,6 +460,10 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
 
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
         await writer.record(tokenUsage: tokenUsage, at: date)
+    }
+
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
+        await writer.tokenCategoryTotals(periodStart: periodStart, periodEnd: periodEnd)
     }
 
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals? {
@@ -812,6 +821,24 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             return try store.tokenCategoryTotalsForDay(containing: date, calendar: .autoupdatingCurrent)
         } catch {
             // Token telemetry should never interrupt the live menu bar status.
+            return nil
+        }
+    }
+
+    func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
+        do {
+            guard periodStart < periodEnd else {
+                return nil
+            }
+
+            let store = try store()
+            let captureState = try store.codexLiveTokenCaptureState()
+            guard captureState.hasSuccessfulCheck else {
+                return nil
+            }
+
+            return try store.tokenCategoryTotals(periodStart: periodStart, periodEnd: periodEnd) ?? .zero
+        } catch {
             return nil
         }
     }
