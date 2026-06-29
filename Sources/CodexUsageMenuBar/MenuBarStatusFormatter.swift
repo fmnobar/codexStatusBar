@@ -158,13 +158,40 @@ struct MenuBarStatusPresentation: Equatable {
     let tightestRow: MenuBarLimitRowPresentation
 }
 
+enum MenuBarTokenDisplaySource: Equatable {
+    case accountUTCDate(String)
+    case localCapturedToday
+}
+
+struct MenuBarTokenDisplay: Equatable {
+    let tokenCount: Int64
+    let source: MenuBarTokenDisplaySource
+    let localCapturedTotals: TokenCategoryTotals?
+
+    static func accountUTCDate(_ date: String, tokens: Int64) -> MenuBarTokenDisplay {
+        MenuBarTokenDisplay(
+            tokenCount: tokens,
+            source: .accountUTCDate(date),
+            localCapturedTotals: nil
+        )
+    }
+
+    static func localCapturedToday(_ totals: TokenCategoryTotals) -> MenuBarTokenDisplay {
+        MenuBarTokenDisplay(
+            tokenCount: totals.totalTokens,
+            source: .localCapturedToday,
+            localCapturedTotals: totals
+        )
+    }
+}
+
 enum MenuBarStatusFormatter {
     static func presentation(
         snapshot: CodexRateLimitSnapshot?,
         now: Date,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow,
         menuBarDisplayOptions: MenuBarDisplayOptions = .defaultValue,
-        displayedWindowTokenTotals: TokenCategoryTotals? = nil,
+        tokenDisplay: MenuBarTokenDisplay? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
@@ -179,13 +206,13 @@ enum MenuBarStatusFormatter {
                 sourceTitle: menuBarWindow.sourceTitle,
                 hasAnyLimitWindow: snapshot?.primary != nil || snapshot?.secondary != nil,
                 options: menuBarDisplayOptions,
-                displayedWindowTokenTotals: displayedWindowTokenTotals,
+                tokenDisplay: tokenDisplay,
                 now: now,
                 calendar: calendar
             ),
             menuBarToolTipText: menuBarToolTipText(
                 options: menuBarDisplayOptions,
-                displayedWindowTokenTotals: displayedWindowTokenTotals
+                tokenDisplay: tokenDisplay
             ),
             fiveHourRow: row(
                 title: "5h limit",
@@ -218,7 +245,7 @@ enum MenuBarStatusFormatter {
         sourceTitle: String? = nil,
         hasAnyLimitWindow: Bool = true,
         options: MenuBarDisplayOptions = .defaultValue,
-        displayedWindowTokenTotals: TokenCategoryTotals? = nil,
+        tokenDisplay: MenuBarTokenDisplay? = nil,
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
@@ -229,7 +256,7 @@ enum MenuBarStatusFormatter {
 
             var components = ["No limit data"]
             if options.showsTokens {
-                components.append("· \(compactMenuBarTokenText(displayedWindowTokenTotals?.totalTokens))")
+                components.append("· \(compactMenuBarTokenText(tokenDisplay?.tokenCount))")
             }
 
             return components.joined(separator: " ")
@@ -255,7 +282,7 @@ enum MenuBarStatusFormatter {
         }
 
         if options.showsTokens {
-            components.append("· \(compactMenuBarTokenText(displayedWindowTokenTotals?.totalTokens))")
+            components.append("· \(compactMenuBarTokenText(tokenDisplay?.tokenCount))")
         }
 
         return components.joined(separator: " ")
@@ -378,24 +405,33 @@ enum MenuBarStatusFormatter {
 
     static func menuBarToolTipText(
         options: MenuBarDisplayOptions,
-        displayedWindowTokenTotals: TokenCategoryTotals?
+        tokenDisplay: MenuBarTokenDisplay?
     ) -> String? {
         guard options.showsTokens else {
             return nil
         }
 
-        guard let totals = displayedWindowTokenTotals else {
-            return "No local captured token data for the displayed limit window."
+        guard let tokenDisplay else {
+            return "No token usage data is available for the menu bar."
         }
 
-        return [
-            "Displayed limit window local captured tokens:",
-            "input \(compactTokenText(totals.inputTokens)),",
-            "cached input \(compactTokenText(totals.cachedInputTokens)),",
-            "output \(compactTokenText(totals.outputTokens)),",
-            "reasoning \(compactTokenText(totals.reasoningOutputTokens)),",
-            "total \(compactTokenText(totals.totalTokens)).",
-        ].joined(separator: " ")
+        switch tokenDisplay.source {
+        case .accountUTCDate(let date):
+            return "Codex account tokens for \(date) UTC: \(compactTokenText(tokenDisplay.tokenCount))."
+        case .localCapturedToday:
+            guard let totals = tokenDisplay.localCapturedTotals else {
+                return "Local captured tokens are available."
+            }
+
+            return [
+                "Current local day captured tokens:",
+                "input \(compactTokenText(totals.inputTokens)),",
+                "cached input \(compactTokenText(totals.cachedInputTokens)),",
+                "output \(compactTokenText(totals.outputTokens)),",
+                "reasoning \(compactTokenText(totals.reasoningOutputTokens)),",
+                "total \(compactTokenText(totals.totalTokens)).",
+            ].joined(separator: " ")
+        }
     }
 
     private static func resolvedMenuBarWindow(

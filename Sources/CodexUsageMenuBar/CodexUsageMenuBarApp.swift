@@ -82,7 +82,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel = MenuBarStatusViewModel(
             client: codexClient,
             historyRecorder: historyRecorder,
-            tokenUsageRecorder: historyRecorder
+            tokenUsageRecorder: historyRecorder,
+            accountTokenUsageClient: codexClient,
+            recordAccountTokenUsageSnapshot: { snapshot in
+                profileTokenUsageStore.recordSuccess(snapshot)
+            }
         )
         super.init()
     }
@@ -125,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
-                viewModel?.refreshDisplayedWindowTokenTotalsIfDisplayed()
+                viewModel?.refreshMenuBarTokenDisplayIfDisplayed()
             }
         )
         liveTokenCaptureCoordinator?.start()

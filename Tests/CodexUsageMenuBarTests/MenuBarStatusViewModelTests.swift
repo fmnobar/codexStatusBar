@@ -127,7 +127,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
-    func testMenuBarTokenOptionAppendsDisplayedWindowTokenTotalAndPersists() async {
+    func testMenuBarTokenOptionAppendsLocalCapturedTokenTotalAndPersists() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
@@ -149,6 +149,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: Date.init,
             refreshInterval: 3_600,
             tokenUsageRecorder: tokenRecorder,
+            accountTokenUsageClient: MockProfileTokenUsageClient(result: .failure(MockClientError.sample)),
             selectedMenuBarDisplayWindow: .sevenDay,
             menuBarDisplayOptions: persistedOptions.options,
             persistSelection: { _ in },
@@ -170,13 +171,13 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Displayed limit window local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Current local day captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
 
         viewModel.stop()
     }
 
-    func testMenuBarTokenOptionLoadsDisplayedWindowTokensOnStartupWhenAlreadyEnabled() async {
+    func testMenuBarTokenOptionLoadsLocalCapturedTokensOnStartupWhenAlreadyEnabled() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
@@ -197,6 +198,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: Date.init,
             refreshInterval: 3_600,
             tokenUsageRecorder: tokenRecorder,
+            accountTokenUsageClient: MockProfileTokenUsageClient(result: .failure(MockClientError.sample)),
             selectedMenuBarDisplayWindow: .sevenDay,
             menuBarDisplayOptions: MenuBarDisplayOptions(
                 showsLimitLabel: true,
@@ -215,26 +217,30 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 4.8M")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Displayed limit window local captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
+            "Current local day captured tokens: input 3.1M tok, cached input 1.4M tok, output 240k tok, reasoning 18k tok, total 4.8M tok."
         )
 
         viewModel.stop()
     }
 
-    func testMenuBarTokenOptionRequestsDisplayedLimitWindowTotalsOnStartup() async {
+    func testMenuBarTokenOptionPrefersAccountDailyTokensOverLocalWindowZero() async {
         let now = ISO8601DateFormatter().date(from: "2026-06-29T00:37:00Z")!
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
-        let tokenRecorder = MockTokenUsageRecorder(
-            todayTotals: TokenCategoryTotals(
-                inputTokens: 210_000_000,
-                cachedInputTokens: 200_000_000,
-                outputTokens: 10_000_000,
-                reasoningOutputTokens: 1_365_879,
-                totalTokens: 421_365_879
+        let tokenRecorder = MockTokenUsageRecorder(todayTotals: .zero)
+        let profileClient = MockProfileTokenUsageClient(
+            result: .success(
+                CodexProfileTokenUsageSnapshot(
+                    fetchedAt: now,
+                    lifetimeTokens: nil,
+                    peakDailyTokens: nil,
+                    dailyBuckets: [
+                        CodexProfileTokenDailyBucket(date: "2026-06-29", tokens: 123_456_789),
+                    ]
+                )
             )
         )
 
@@ -243,7 +249,8 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: { now },
             refreshInterval: 3_600,
             tokenUsageRecorder: tokenRecorder,
-            selectedMenuBarDisplayWindow: .sevenDay,
+            accountTokenUsageClient: profileClient,
+            selectedMenuBarDisplayWindow: .fiveHour,
             menuBarDisplayOptions: MenuBarDisplayOptions(
                 showsLimitLabel: true,
                 showsResetDate: false,
@@ -258,29 +265,43 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         await viewModel.start()
 
+        XCTAssertEqual(viewModel.menuBarPercentText, "5h: 84% · 123M")
+        XCTAssertEqual(
+            viewModel.menuBarToolTipText,
+            "Codex account tokens for 2026-06-29 UTC: 123M tok."
+        )
+        XCTAssertEqual(profileClient.fetchCallCount, 1)
         let periodRequests = await tokenRecorder.periodRequestsSnapshot()
-        XCTAssertEqual(periodRequests.count, 1)
-        XCTAssertEqual(periodRequests.first?.end, now)
-        XCTAssertEqual(periodRequests.first?.start, now.addingTimeInterval(-7 * 24 * 60 * 60))
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 421M")
+        XCTAssertTrue(periodRequests.isEmpty)
 
         viewModel.stop()
     }
 
-    func testSelectingDifferentMenuBarWindowReloadsTokenWindow() async {
+    func testSelectingDifferentMenuBarWindowKeepsCachedTokenDisplay() async {
         let now = ISO8601DateFormatter().date(from: "2026-06-29T00:37:00Z")!
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
-        let tokenRecorder = MockTokenUsageRecorder(todayTotals: .zero)
+        let profileClient = MockProfileTokenUsageClient(
+            result: .success(
+                CodexProfileTokenUsageSnapshot(
+                    fetchedAt: now,
+                    lifetimeTokens: nil,
+                    peakDailyTokens: nil,
+                    dailyBuckets: [
+                        CodexProfileTokenDailyBucket(date: "2026-06-29", tokens: 123_456_789),
+                    ]
+                )
+            )
+        )
 
         let viewModel = MenuBarStatusViewModel(
             client: client,
             now: { now },
             refreshInterval: 3_600,
-            tokenUsageRecorder: tokenRecorder,
+            accountTokenUsageClient: profileClient,
             selectedMenuBarDisplayWindow: .sevenDay,
             menuBarDisplayOptions: MenuBarDisplayOptions(
                 showsLimitLabel: true,
@@ -295,16 +316,12 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         )
 
         await viewModel.start()
-        viewModel.selectMenuBarDisplayWindow(.fiveHour)
-        await waitUntil {
-            let requests = await tokenRecorder.periodRequestsSnapshot()
-            return requests.count == 2
-        }
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 123M")
 
-        let periodRequests = await tokenRecorder.periodRequestsSnapshot()
-        XCTAssertEqual(periodRequests.map(\.end), [now, now])
-        XCTAssertEqual(periodRequests[0].start, now.addingTimeInterval(-7 * 24 * 60 * 60))
-        XCTAssertEqual(periodRequests[1].start, now.addingTimeInterval(-5 * 60 * 60))
+        viewModel.selectMenuBarDisplayWindow(.fiveHour)
+
+        XCTAssertEqual(viewModel.menuBarPercentText, "5h: 84% · 123M")
+        XCTAssertEqual(profileClient.fetchCallCount, 1)
 
         viewModel.stop()
     }
@@ -340,7 +357,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
-    func testMenuBarTokenOptionShowsZeroWhenTokenTotalsAreKnownEmpty() async {
+    func testMenuBarTokenOptionShowsPlaceholderWhenLocalTotalsAreEmptyAndAccountUnavailable() async {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMinutes: 300, resetsAt: nil),
             secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
@@ -353,6 +370,7 @@ final class MenuBarStatusViewModelTests: XCTestCase {
             now: Date.init,
             refreshInterval: 3_600,
             tokenUsageRecorder: tokenRecorder,
+            accountTokenUsageClient: MockProfileTokenUsageClient(result: .failure(MockClientError.sample)),
             selectedMenuBarDisplayWindow: .sevenDay,
             menuBarDisplayOptions: MenuBarDisplayOptions(
                 showsLimitLabel: true,
@@ -368,10 +386,10 @@ final class MenuBarStatusViewModelTests: XCTestCase {
 
         await viewModel.start()
 
-        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · 0")
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 39% · --")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Displayed limit window local captured tokens: input 0 tok, cached input 0 tok, output 0 tok, reasoning 0 tok, total 0 tok."
+            "No token usage data is available for the menu bar."
         )
 
         viewModel.stop()
@@ -974,6 +992,20 @@ private actor MockTokenUsageRecorder: TokenUsageRecording {
 
     func periodRequestsSnapshot() -> [(start: Date, end: Date)] {
         periodRequests
+    }
+}
+
+private final class MockProfileTokenUsageClient: CodexProfileTokenUsageFetching {
+    private let result: Result<CodexProfileTokenUsageSnapshot, Error>
+    private(set) var fetchCallCount = 0
+
+    init(result: Result<CodexProfileTokenUsageSnapshot, Error>) {
+        self.result = result
+    }
+
+    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
+        fetchCallCount += 1
+        return try result.get()
     }
 }
 
