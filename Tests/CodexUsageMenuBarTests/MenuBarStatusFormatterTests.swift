@@ -355,7 +355,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
                 showsResetTime: false,
                 showsTokens: true
             ),
-            tokenDisplay: .accountUTCDate("2026-06-29", tokens: 123_456_789),
+            tokenDisplay: .accountDate("2026-06-29", tokens: 123_456_789),
             calendar: Calendar(identifier: .gregorian),
             locale: Locale(identifier: "en_US_POSIX")
         )
@@ -363,7 +363,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "5h: 84% · 123M")
         XCTAssertEqual(
             presentation.menuBarToolTipText,
-            "Codex account tokens for 2026-06-29 UTC: 123M tok."
+            "Codex account tokens for 2026-06-29: 123M tok."
         )
     }
 

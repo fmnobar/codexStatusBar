@@ -268,7 +268,64 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.menuBarPercentText, "5h: 84% · 123M")
         XCTAssertEqual(
             viewModel.menuBarToolTipText,
-            "Codex account tokens for 2026-06-29 UTC: 123M tok."
+            "Codex account tokens for 2026-06-29: 123M tok."
+        )
+        XCTAssertEqual(profileClient.fetchCallCount, 1)
+        let periodRequests = await tokenRecorder.periodRequestsSnapshot()
+        XCTAssertTrue(periodRequests.isEmpty)
+
+        viewModel.stop()
+    }
+
+    func testMenuBarTokenOptionUsesCurrentLocalAccountBucketAfterUTCDayRollsOver() async {
+        let now = ISO8601DateFormatter().date(from: "2026-06-29T03:30:20Z")!
+        var pacificCalendar = Calendar(identifier: .gregorian)
+        pacificCalendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 52, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 61, windowDurationMinutes: 10080, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+        let tokenRecorder = MockTokenUsageRecorder(todayTotals: .zero)
+        let profileClient = MockProfileTokenUsageClient(
+            result: .success(
+                CodexProfileTokenUsageSnapshot(
+                    fetchedAt: now,
+                    lifetimeTokens: nil,
+                    peakDailyTokens: nil,
+                    dailyBuckets: [
+                        CodexProfileTokenDailyBucket(date: "2026-06-28", tokens: 278_611_893),
+                    ]
+                )
+            )
+        )
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: { now },
+            refreshInterval: 3_600,
+            tokenUsageRecorder: tokenRecorder,
+            accountTokenUsageClient: profileClient,
+            menuBarTokenCalendar: pacificCalendar,
+            selectedMenuBarDisplayWindow: .fiveHour,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: false,
+                showsResetTime: false,
+                showsTokens: true
+            ),
+            persistSelection: { _ in },
+            persistMenuBarDisplayOptions: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+
+        XCTAssertEqual(viewModel.menuBarPercentText, "5h: 48% · 279M")
+        XCTAssertEqual(
+            viewModel.menuBarToolTipText,
+            "Codex account tokens for 2026-06-28: 279M tok."
         )
         XCTAssertEqual(profileClient.fetchCallCount, 1)
         let periodRequests = await tokenRecorder.periodRequestsSnapshot()

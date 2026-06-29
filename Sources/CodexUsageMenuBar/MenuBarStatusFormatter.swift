@@ -159,7 +159,7 @@ struct MenuBarStatusPresentation: Equatable {
 }
 
 enum MenuBarTokenDisplaySource: Equatable {
-    case accountUTCDate(String)
+    case accountDate(String)
     case localCapturedToday
 }
 
@@ -168,10 +168,10 @@ struct MenuBarTokenDisplay: Equatable {
     let source: MenuBarTokenDisplaySource
     let localCapturedTotals: TokenCategoryTotals?
 
-    static func accountUTCDate(_ date: String, tokens: Int64) -> MenuBarTokenDisplay {
+    static func accountDate(_ date: String, tokens: Int64) -> MenuBarTokenDisplay {
         MenuBarTokenDisplay(
             tokenCount: tokens,
-            source: .accountUTCDate(date),
+            source: .accountDate(date),
             localCapturedTotals: nil
         )
     }
@@ -416,8 +416,8 @@ enum MenuBarStatusFormatter {
         }
 
         switch tokenDisplay.source {
-        case .accountUTCDate(let date):
-            return "Codex account tokens for \(date) UTC: \(compactTokenText(tokenDisplay.tokenCount))."
+        case .accountDate(let date):
+            return "Codex account tokens for \(date): \(compactTokenText(tokenDisplay.tokenCount))."
         case .localCapturedToday:
             guard let totals = tokenDisplay.localCapturedTotals else {
                 return "Local captured tokens are available."

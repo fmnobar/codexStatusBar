@@ -60,6 +60,7 @@ final class MenuBarStatusViewModel: ObservableObject {
     private let tokenUsageRecorder: TokenUsageRecording
     private weak var accountTokenUsageClient: CodexProfileTokenUsageFetching?
     private let recordAccountTokenUsageSnapshot: (CodexProfileTokenUsageSnapshot) -> Void
+    private let menuBarTokenCalendar: Calendar
     private let loadPersistedSelection: () -> MenuBarDisplayWindow
     private let persistSelection: (MenuBarDisplayWindow) -> Void
     private let loadMenuBarDisplayOptions: () -> MenuBarDisplayOptions
@@ -88,6 +89,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         tokenUsageRecorder: TokenUsageRecording = NoOpTokenUsageRecorder(),
         accountTokenUsageClient: CodexProfileTokenUsageFetching? = nil,
         recordAccountTokenUsageSnapshot: @escaping (CodexProfileTokenUsageSnapshot) -> Void = { _ in },
+        menuBarTokenCalendar: Calendar = .autoupdatingCurrent,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow = MenuBarDisplayWindowStore.load(),
         menuBarDisplayOptions: MenuBarDisplayOptions = MenuBarDisplayOptionsStore.load(),
         loadPersistedSelection: @escaping () -> MenuBarDisplayWindow = { MenuBarDisplayWindowStore.load() },
@@ -104,6 +106,7 @@ final class MenuBarStatusViewModel: ObservableObject {
         self.tokenUsageRecorder = tokenUsageRecorder
         self.accountTokenUsageClient = accountTokenUsageClient
         self.recordAccountTokenUsageSnapshot = recordAccountTokenUsageSnapshot
+        self.menuBarTokenCalendar = menuBarTokenCalendar
         self.selectedMenuBarDisplayWindow = selectedMenuBarDisplayWindow
         self.menuBarDisplayOptions = menuBarDisplayOptions
         self.loadPersistedSelection = loadPersistedSelection
@@ -481,7 +484,11 @@ final class MenuBarStatusViewModel: ObservableObject {
     private func accountTokenDisplay(at date: Date, allowRefresh: Bool) async -> MenuBarTokenDisplay? {
         if let cachedAccountTokenSnapshot,
            !cachedAccountTokenSnapshotIsStale(cachedAccountTokenSnapshot, at: date),
-           let display = Self.accountTokenDisplay(from: cachedAccountTokenSnapshot, at: date)
+           let display = Self.accountTokenDisplay(
+               from: cachedAccountTokenSnapshot,
+               at: date,
+               calendar: menuBarTokenCalendar
+           )
         {
             return display
         }
@@ -494,7 +501,7 @@ final class MenuBarStatusViewModel: ObservableObject {
             let snapshot = try await accountTokenUsageClient.profileTokenUsageSnapshot()
             cachedAccountTokenSnapshot = snapshot
             recordAccountTokenUsageSnapshot(snapshot)
-            return Self.accountTokenDisplay(from: snapshot, at: date)
+            return Self.accountTokenDisplay(from: snapshot, at: date, calendar: menuBarTokenCalendar)
         } catch {
             return nil
         }
@@ -504,17 +511,30 @@ final class MenuBarStatusViewModel: ObservableObject {
         date.timeIntervalSince(snapshot.fetchedAt) >= CodexProfileTokenUsageStore.defaultCacheDuration
     }
 
-    private static func accountTokenDisplay(from snapshot: CodexProfileTokenUsageSnapshot, at date: Date) -> MenuBarTokenDisplay? {
+    private static func accountTokenDisplay(
+        from snapshot: CodexProfileTokenUsageSnapshot,
+        at date: Date,
+        calendar: Calendar
+    ) -> MenuBarTokenDisplay? {
         let utcDay = utcDayString(for: date)
-        guard let tokens = snapshot.dailyBuckets.first(where: { $0.date == utcDay })?.tokens else {
+        let localDay = dayString(for: date, calendar: calendar)
+        let candidateDays = utcDay == localDay ? [utcDay] : [utcDay, localDay]
+
+        for day in candidateDays {
+            if let tokens = snapshot.dailyBuckets.first(where: { $0.date == day })?.tokens {
+                return .accountDate(day, tokens: tokens)
+            }
+        }
+
+        guard let latestBucket = latestRecentAccountBucket(in: snapshot.dailyBuckets, at: date) else {
             return nil
         }
 
-        return .accountUTCDate(utcDay, tokens: tokens)
+        return .accountDate(latestBucket.date, tokens: latestBucket.tokens)
     }
 
     private func localCapturedTokenDisplay(at date: Date) async -> MenuBarTokenDisplay? {
-        guard let totals = await tokenUsageRecorder.todayTokenCategoryTotals(at: date, calendar: .autoupdatingCurrent),
+        guard let totals = await tokenUsageRecorder.todayTokenCategoryTotals(at: date, calendar: menuBarTokenCalendar),
               totals.totalTokens > 0
         else {
             return nil
@@ -526,6 +546,10 @@ final class MenuBarStatusViewModel: ObservableObject {
     private static func utcDayString(for date: Date) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return dayString(for: date, calendar: calendar)
+    }
+
+    private static func dayString(for date: Date, calendar: Calendar) -> String {
         let components = calendar.dateComponents([.year, .month, .day], from: date)
         return String(
             format: "%04d-%02d-%02d",
@@ -533,6 +557,37 @@ final class MenuBarStatusViewModel: ObservableObject {
             components.month ?? 1,
             components.day ?? 1
         )
+    }
+
+    private static func latestRecentAccountBucket(
+        in buckets: [CodexProfileTokenDailyBucket],
+        at date: Date
+    ) -> CodexProfileTokenDailyBucket? {
+        let utcDay = utcDayString(for: date)
+        guard let latestBucket = buckets
+            .filter({ $0.date <= utcDay })
+            .max(by: { $0.date < $1.date })
+        else {
+            return nil
+        }
+
+        guard let latestDate = accountBucketDate(latestBucket.date) else {
+            return nil
+        }
+
+        let age = date.timeIntervalSince(latestDate)
+        return age <= 36 * 60 * 60 ? latestBucket : nil
+    }
+
+    private static func accountBucketDate(_ day: String) -> Date? {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else {
+            return nil
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 
     private func refreshLaunchAtLoginState() {
