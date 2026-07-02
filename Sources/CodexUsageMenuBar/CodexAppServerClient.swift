@@ -32,7 +32,12 @@ protocol CodexProfileTokenUsageFetching: AnyObject {
 }
 
 @MainActor
-final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexProfileTokenUsageFetching {
+protocol CodexResetCreditFetching: AnyObject {
+    func resetCreditSnapshot() async throws -> CodexResetCreditSnapshot
+}
+
+@MainActor
+final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexProfileTokenUsageFetching, CodexResetCreditFetching {
     var onSnapshot: ((CodexUsageSnapshot) -> Void)?
     var onTokenUsage: ((CodexTokenUsageNotification) -> Void)?
     var onTokenUsagePayloadAudit: ((CodexTokenUsagePayloadAudit) -> Void)?
@@ -46,6 +51,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     private let ensureConnectedOverride: (@MainActor () async throws -> Void)?
     private let sendRequestOverride: (@MainActor (String, Any?) async throws -> Any)?
     private let profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient?
+    private let resetCreditHTTPClient: CodexResetCreditHTTPClient?
 
     private var process: Process?
     private var ownsProcess = false
@@ -66,7 +72,8 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         readyPollInterval: TimeInterval = 0.25,
         ensureConnectedOverride: (@MainActor () async throws -> Void)? = nil,
         sendRequestOverride: (@MainActor (String, Any?) async throws -> Any)? = nil,
-        profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient? = nil
+        profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient? = nil,
+        resetCreditHTTPClient: CodexResetCreditHTTPClient? = nil
     ) {
         self.urlSession = urlSession
         self.portRange = portRange
@@ -75,6 +82,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         self.ensureConnectedOverride = ensureConnectedOverride
         self.sendRequestOverride = sendRequestOverride
         self.profileTokenUsageHTTPClient = profileTokenUsageHTTPClient
+        self.resetCreditHTTPClient = resetCreditHTTPClient
     }
 
     func start() async throws -> CodexUsageSnapshot {
@@ -112,6 +120,17 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
             resetSocketState()
             try await ensureConnected()
             return try await fetchProfileTokenUsageSnapshot()
+        }
+    }
+
+    func resetCreditSnapshot() async throws -> CodexResetCreditSnapshot {
+        do {
+            try await ensureConnected()
+            return try await fetchResetCreditHTTPSnapshot()
+        } catch {
+            resetSocketState()
+            try await ensureConnected()
+            return try await fetchResetCreditHTTPSnapshot()
         }
     }
 
@@ -393,6 +412,21 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         })
 
         return try await profileClient.fetch { [weak self] refreshToken in
+            guard let self else {
+                throw CodexClientError.appServerUnavailable
+            }
+
+            let authStatus = try await self.fetchAuthStatus(includeToken: true, refreshToken: refreshToken)
+            return authStatus.authToken
+        }
+    }
+
+    private func fetchResetCreditHTTPSnapshot() async throws -> CodexResetCreditSnapshot {
+        let resetCreditClient = resetCreditHTTPClient ?? CodexResetCreditHTTPClient(responseLoader: { [urlSession] request in
+            try await urlSession.data(for: request)
+        })
+
+        return try await resetCreditClient.fetch { [weak self] refreshToken in
             guard let self else {
                 throw CodexClientError.appServerUnavailable
             }

@@ -745,6 +745,44 @@ struct CodexProfileTokenUsageSnapshot: Codable, Equatable {
     }
 }
 
+struct CodexResetCredit: Codable, Equatable, Identifiable {
+    let title: String
+    let resetType: String?
+    let status: String
+    let grantedAt: Date
+    let expiresAt: Date
+    let redeemedAt: Date?
+
+    var id: String {
+        [
+            title,
+            resetType ?? "",
+            status,
+            "\(Int64(grantedAt.timeIntervalSince1970))",
+            "\(Int64(expiresAt.timeIntervalSince1970))",
+        ].joined(separator: "|")
+    }
+}
+
+struct CodexResetCreditSnapshot: Codable, Equatable {
+    let fetchedAt: Date
+    let availableCount: Int
+    let credits: [CodexResetCredit]
+
+    init(fetchedAt: Date, availableCount: Int, credits: [CodexResetCredit]) {
+        self.fetchedAt = fetchedAt
+        self.availableCount = max(availableCount, 0)
+        self.credits = credits
+            .filter { $0.status == CodexResetCreditsResponse.availableStatus }
+            .sorted {
+                if $0.expiresAt != $1.expiresAt {
+                    return $0.expiresAt < $1.expiresAt
+                }
+                return $0.grantedAt < $1.grantedAt
+            }
+    }
+}
+
 struct CodexProfileTokenComparisonRow: Equatable, Identifiable {
     let id: String
     let title: String
@@ -897,6 +935,133 @@ struct CodexAccountTokenUsageResponse: Decodable {
     }
 }
 
+struct CodexResetCreditsResponse: Decodable {
+    static let availableStatus = "available"
+
+    let availableCount: Int?
+    let credits: [Credit]?
+
+    enum CodingKeys: String, CodingKey {
+        case availableCount = "available_count"
+        case credits
+    }
+
+    struct Credit: Decodable {
+        let title: String?
+        let resetType: String?
+        let status: String?
+        let grantedAt: String?
+        let expiresAt: String?
+        let redeemedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case title
+            case resetType = "reset_type"
+            case status
+            case grantedAt = "granted_at"
+            case expiresAt = "expires_at"
+            case redeemedAt = "redeemed_at"
+        }
+
+        func domainCredit() -> CodexResetCredit? {
+            guard let status = CodexResetCreditSanitizer.safeIdentifier(status),
+                  status == CodexResetCreditsResponse.availableStatus,
+                  let grantedAt = CodexResetCreditSanitizer.safeDate(grantedAt),
+                  let expiresAt = CodexResetCreditSanitizer.safeDate(expiresAt)
+            else {
+                return nil
+            }
+
+            return CodexResetCredit(
+                title: CodexResetCreditSanitizer.safeDisplayTitle(title),
+                resetType: CodexResetCreditSanitizer.safeIdentifier(resetType),
+                status: status,
+                grantedAt: grantedAt,
+                expiresAt: expiresAt,
+                redeemedAt: CodexResetCreditSanitizer.safeDate(redeemedAt)
+            )
+        }
+    }
+
+    func domainSnapshot(fetchedAt: Date) -> CodexResetCreditSnapshot {
+        let availableCredits = (credits ?? []).compactMap { $0.domainCredit() }
+        return CodexResetCreditSnapshot(
+            fetchedAt: fetchedAt,
+            availableCount: availableCount ?? availableCredits.count,
+            credits: availableCredits
+        )
+    }
+}
+
+enum CodexResetCreditSanitizer {
+    static func safeDisplayTitle(_ value: String?) -> String {
+        guard let value else {
+            return "Usage reset"
+        }
+
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "Usage reset"
+        }
+
+        let lowercased = trimmed.lowercased()
+        guard !lowercased.contains("http://"),
+              !lowercased.contains("https://"),
+              !lowercased.contains("@")
+        else {
+            return "Usage reset"
+        }
+
+        let scalars = trimmed.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        let sanitized = String(String.UnicodeScalarView(scalars))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !sanitized.isEmpty else {
+            return "Usage reset"
+        }
+
+        if sanitized.count > 64 {
+            return String(sanitized.prefix(61)) + "..."
+        }
+
+        return sanitized
+    }
+
+    static func safeIdentifier(_ value: String?) -> String? {
+        guard let value else {
+            return nil
+        }
+
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 80 else {
+            return nil
+        }
+
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+        guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return nil
+        }
+
+        return trimmed.lowercased()
+    }
+
+    static func safeDate(_ value: String?) -> Date? {
+        guard let value, value.count <= 40 else {
+            return nil
+        }
+
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: value) {
+            return date
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+}
+
 struct CodexAccountTokenUsageSummary: Decodable {
     let lifetimeTokens: Int64?
     let peakDailyTokens: Int64?
@@ -957,6 +1122,20 @@ enum CodexProfileTokenUsageFetchError: LocalizedError, Equatable {
     }
 }
 
+enum CodexResetCreditFetchError: LocalizedError, Equatable {
+    case unauthorized
+    case unexpectedStatusCode(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized:
+            return "Codex reset credits are not authorized."
+        case .unexpectedStatusCode:
+            return "Codex reset credits returned an unexpected response."
+        }
+    }
+}
+
 struct CodexProfileTokenUsageHTTPClient {
     typealias ResponseLoader = (URLRequest) async throws -> (Data, URLResponse)
     typealias AuthTokenProvider = @MainActor (Bool) async throws -> String?
@@ -1013,6 +1192,66 @@ struct CodexProfileTokenUsageHTTPClient {
             throw CodexProfileTokenUsageFetchError.unauthorized
         default:
             throw CodexProfileTokenUsageFetchError.unexpectedStatusCode(httpResponse.statusCode)
+        }
+    }
+}
+
+struct CodexResetCreditHTTPClient {
+    typealias ResponseLoader = (URLRequest) async throws -> (Data, URLResponse)
+    typealias AuthTokenProvider = @MainActor (Bool) async throws -> String?
+
+    let endpoint: URL
+    let responseLoader: ResponseLoader
+    let now: () -> Date
+
+    init(
+        endpoint: URL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!,
+        responseLoader: @escaping ResponseLoader = { request in
+            try await URLSession.shared.data(for: request)
+        },
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.endpoint = endpoint
+        self.responseLoader = responseLoader
+        self.now = now
+    }
+
+    @MainActor
+    func fetch(authTokenProvider: AuthTokenProvider) async throws -> CodexResetCreditSnapshot {
+        do {
+            return try await fetch(refreshToken: false, authTokenProvider: authTokenProvider)
+        } catch CodexResetCreditFetchError.unauthorized {
+            return try await fetch(refreshToken: true, authTokenProvider: authTokenProvider)
+        }
+    }
+
+    @MainActor
+    private func fetch(
+        refreshToken: Bool,
+        authTokenProvider: AuthTokenProvider
+    ) async throws -> CodexResetCreditSnapshot {
+        guard let authToken = try await authTokenProvider(refreshToken), !authToken.isEmpty else {
+            throw CodexClientError.authTokenUnavailable
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("CodexStatusBar/1.0", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await responseLoader(request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexClientError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200..<300:
+            return try JSONDecoder()
+                .decode(CodexResetCreditsResponse.self, from: data)
+                .domainSnapshot(fetchedAt: now())
+        case 401:
+            throw CodexResetCreditFetchError.unauthorized
+        default:
+            throw CodexResetCreditFetchError.unexpectedStatusCode(httpResponse.statusCode)
         }
     }
 }

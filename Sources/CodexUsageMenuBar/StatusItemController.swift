@@ -10,6 +10,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     private let codexSourceHealthStore: CodexSourceHealthStore
     private let appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
+    private let resetCreditStore: CodexResetCreditStore
+    private let resetCreditClient: CodexResetCreditFetching?
     private let popoverOpenInstrumentation: AppPerformanceSpanTracker
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
@@ -38,6 +40,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
+        resetCreditStore: CodexResetCreditStore = .applicationSupportStore(),
+        resetCreditClient: CodexResetCreditFetching? = nil,
         launchToMenuTitleSpan: AppPerformanceSpan? = nil
     ) {
         self.viewModel = viewModel
@@ -46,6 +50,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.codexSourceHealthStore = codexSourceHealthStore
         self.appServerDiagnosticsStore = appServerDiagnosticsStore
+        self.resetCreditStore = resetCreditStore
+        self.resetCreditClient = resetCreditClient
         self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
             kind: .menuPopoverOpenToContent,
             instrumentationStore: performanceInstrumentationStore,
@@ -74,6 +80,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 performanceInstrumentationStore: performanceInstrumentationStore,
                 codexSourceHealthStore: codexSourceHealthStore,
                 appServerDiagnosticsStore: appServerDiagnosticsStore,
+                resetCreditStore: resetCreditStore,
+                resetCreditClient: resetCreditClient,
                 onOpenTokenDashboard: { [weak self] in
                     self?.openTokenDashboard()
                 },

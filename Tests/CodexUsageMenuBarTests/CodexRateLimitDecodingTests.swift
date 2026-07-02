@@ -1616,6 +1616,71 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertTrue(snapshot.dailyBuckets.isEmpty)
     }
 
+    func testResetCreditsResponseDecodesAvailableCreditsOnlyAndIgnoresPrivateFields() throws {
+        let response = try JSONDecoder().decode(
+            CodexResetCreditsResponse.self,
+            from: Data(
+                """
+                {
+                  "available_count": 2,
+                  "total_earned_count": 10,
+                  "credits": [
+                    {
+                      "id": "credit-private-id",
+                      "profile_user_id": "user-private",
+                      "profile_image_url": "https://example.com/private.png",
+                      "description": "do not store this",
+                      "title": "Full reset (Weekly + 5 hr)",
+                      "reset_type": "codex_rate_limits",
+                      "status": "available",
+                      "granted_at": "2026-06-26T23:58:05.557369Z",
+                      "expires_at": "2026-07-26T23:58:05.557369Z",
+                      "redeemed_at": null
+                    },
+                    {
+                      "title": "Used reset",
+                      "reset_type": "codex_rate_limits",
+                      "status": "redeemed",
+                      "granted_at": "2026-06-01T00:00:00Z",
+                      "expires_at": "2026-07-01T00:00:00Z",
+                      "redeemed_at": "2026-06-03T00:00:00Z"
+                    },
+                    {
+                      "title": "https://private.example/reset",
+                      "reset_type": "bad value",
+                      "status": "available",
+                      "granted_at": "not a date",
+                      "expires_at": "2026-07-01T00:00:00Z"
+                    }
+                  ]
+                }
+                """.utf8
+            )
+        )
+
+        let snapshot = response.domainSnapshot(fetchedAt: Date(timeIntervalSince1970: 1_800_000_000))
+
+        XCTAssertEqual(snapshot.availableCount, 2)
+        XCTAssertEqual(snapshot.credits.count, 1)
+        XCTAssertEqual(snapshot.credits[0].title, "Full reset (Weekly + 5 hr)")
+        XCTAssertEqual(snapshot.credits[0].resetType, "codex_rate_limits")
+        XCTAssertEqual(snapshot.credits[0].status, "available")
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        XCTAssertEqual(
+            snapshot.credits[0].grantedAt,
+            fractionalFormatter.date(from: "2026-06-26T23:58:05.557369Z")
+        )
+        XCTAssertNil(snapshot.credits[0].redeemedAt)
+
+        let encodedSnapshot = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8) ?? ""
+        XCTAssertFalse(encodedSnapshot.contains("credit-private-id"))
+        XCTAssertFalse(encodedSnapshot.contains("user-private"))
+        XCTAssertFalse(encodedSnapshot.contains("profile_image_url"))
+        XCTAssertFalse(encodedSnapshot.contains("do not store"))
+        XCTAssertFalse(encodedSnapshot.contains("Used reset"))
+    }
+
     @MainActor
     func testAppServerClientPrefersAccountUsageReadForProfileTokenSnapshot() async throws {
         var requestedMethods: [String] = []
@@ -1710,6 +1775,110 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertNil(snapshot.longestRunningTurnSeconds)
         XCTAssertNil(snapshot.currentStreakDays)
         XCTAssertNil(snapshot.longestStreakDays)
+    }
+
+    @MainActor
+    func testResetCreditHTTPClientRetriesUnauthorizedWithRefreshedAuth() async throws {
+        let endpoint = URL(string: "https://example.com/wham/rate-limit-reset-credits")!
+        var refreshRequests: [Bool] = []
+        var authorizationHeaders: [String?] = []
+        var loadCount = 0
+        let client = CodexResetCreditHTTPClient(
+            endpoint: endpoint,
+            responseLoader: { request in
+                loadCount += 1
+                authorizationHeaders.append(request.value(forHTTPHeaderField: "Authorization"))
+                if loadCount == 1 {
+                    return (
+                        Data(),
+                        HTTPURLResponse(url: endpoint, statusCode: 401, httpVersion: nil, headerFields: nil)!
+                    )
+                }
+
+                return (
+                    Data(
+                        """
+                        {
+                          "available_count": 1,
+                          "credits": [
+                            {
+                              "title": "Usage reset",
+                              "reset_type": "codex_rate_limits",
+                              "status": "available",
+                              "granted_at": "2026-06-26T23:58:05Z",
+                              "expires_at": "2026-07-26T23:58:05Z"
+                            }
+                          ]
+                        }
+                        """.utf8
+                    ),
+                    HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                )
+            },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+
+        let snapshot = try await client.fetch { refreshToken in
+            refreshRequests.append(refreshToken)
+            return refreshToken ? "new-token" : "old-token"
+        }
+
+        XCTAssertEqual(refreshRequests, [false, true])
+        XCTAssertEqual(authorizationHeaders, ["Bearer old-token", "Bearer new-token"])
+        XCTAssertEqual(snapshot.availableCount, 1)
+        XCTAssertEqual(snapshot.credits.map(\.title), ["Usage reset"])
+    }
+
+    @MainActor
+    func testAppServerClientFetchesResetCreditsThroughAuthStatus() async throws {
+        let endpoint = URL(string: "https://example.com/wham/rate-limit-reset-credits")!
+        var requestedMethods: [String] = []
+        var authorizationHeaders: [String?] = []
+        let resetClient = CodexResetCreditHTTPClient(
+            endpoint: endpoint,
+            responseLoader: { request in
+                authorizationHeaders.append(request.value(forHTTPHeaderField: "Authorization"))
+                return (
+                    Data(
+                        """
+                        {
+                          "available_count": 1,
+                          "credits": [
+                            {
+                              "title": "Full reset",
+                              "reset_type": "codex_rate_limits",
+                              "status": "available",
+                              "granted_at": "2026-07-01T20:16:33Z",
+                              "expires_at": "2026-07-31T20:16:33Z"
+                            }
+                          ]
+                        }
+                        """.utf8
+                    ),
+                    HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                )
+            },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+        let client = CodexAppServerClient(
+            ensureConnectedOverride: {},
+            sendRequestOverride: { method, _ in
+                requestedMethods.append(method)
+                XCTAssertEqual(method, "getAuthStatus")
+                return [
+                    "authMethod": "chatgpt",
+                    "authToken": "reset-token",
+                    "requiresOpenaiAuth": true,
+                ]
+            },
+            resetCreditHTTPClient: resetClient
+        )
+
+        let snapshot = try await client.resetCreditSnapshot()
+
+        XCTAssertEqual(requestedMethods, ["getAuthStatus"])
+        XCTAssertEqual(authorizationHeaders, ["Bearer reset-token"])
+        XCTAssertEqual(snapshot.credits.map(\.title), ["Full reset"])
     }
 
     @MainActor

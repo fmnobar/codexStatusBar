@@ -1847,6 +1847,57 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
+    func testResetCreditStorePersistsBoundsAndFailureState() throws {
+        let fileURL = try makeTemporaryDirectory().appendingPathComponent("reset-credits.json")
+        let store = CodexResetCreditStore(fileURL: fileURL, creditLimit: 1)
+        let snapshot = CodexResetCreditSnapshot(
+            fetchedAt: date("2026-07-02T12:00:00Z"),
+            availableCount: 2,
+            credits: [
+                CodexResetCredit(
+                    title: "Reset B",
+                    resetType: "codex_rate_limits",
+                    status: "available",
+                    grantedAt: date("2026-07-01T12:00:00Z"),
+                    expiresAt: date("2026-07-31T12:00:00Z"),
+                    redeemedAt: nil
+                ),
+                CodexResetCredit(
+                    title: "Reset A",
+                    resetType: "codex_rate_limits",
+                    status: "available",
+                    grantedAt: date("2026-06-26T12:00:00Z"),
+                    expiresAt: date("2026-07-26T12:00:00Z"),
+                    redeemedAt: nil
+                ),
+            ]
+        )
+
+        store.recordRefreshStarted()
+        XCTAssertEqual(store.state.status, .refreshing)
+
+        store.recordSuccess(snapshot)
+
+        XCTAssertEqual(store.state.status, .succeeded)
+        XCTAssertEqual(store.state.snapshot?.credits.map(\.title), ["Reset A"])
+        XCTAssertEqual(store.state.snapshot?.availableCount, 2)
+
+        let reloadedStore = CodexResetCreditStore(fileURL: fileURL, creditLimit: 1)
+        XCTAssertEqual(reloadedStore.state.status, .succeeded)
+        XCTAssertEqual(reloadedStore.state.snapshot?.credits.map(\.title), ["Reset A"])
+
+        reloadedStore.recordFailure("Usage resets unavailable.")
+
+        XCTAssertEqual(reloadedStore.state.status, .failed)
+        XCTAssertEqual(reloadedStore.state.lastErrorText, "Usage resets unavailable.")
+        XCTAssertEqual(reloadedStore.state.snapshot?.credits.map(\.title), ["Reset A"])
+
+        reloadedStore.clear()
+        XCTAssertNil(reloadedStore.state.snapshot)
+        XCTAssertEqual(reloadedStore.state.status, .neverSynced)
+    }
+
+    @MainActor
     func testSettingsViewModelRefreshesProfileTokensAndComparesLocalCapturedTotals() async throws {
         let (store, _) = try makeTemporaryStore()
         try store.record(

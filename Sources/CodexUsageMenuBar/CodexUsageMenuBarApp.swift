@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let tokenPayloadAuditDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     let performanceInstrumentationStore: AppPerformanceInstrumentationStore
     let profileTokenUsageStore: CodexProfileTokenUsageStore
+    let resetCreditStore: CodexResetCreditStore
     let codexSourceHealthStore: CodexSourceHealthStore
     let codexClient: CodexAppServerClient
     private let historyWriteDatabase: UsageHistoryDatabaseWorker
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let payloadAuditDiagnosticsStore = CodexAppServerAuditDiagnosticsStore.applicationSupportStore()
         let performanceInstrumentationStore = AppPerformanceInstrumentationStore.shared
         let profileTokenUsageStore = CodexProfileTokenUsageStore.applicationSupportStore()
+        let resetCreditStore = CodexResetCreditStore.applicationSupportStore()
         let codexSourceHealthStore = CodexSourceHealthStore.shared
         codexClient.onTokenUsagePayloadAudit = { audit in
             Task { @MainActor in
@@ -76,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tokenPayloadAuditDiagnosticsStore = payloadAuditDiagnosticsStore
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.profileTokenUsageStore = profileTokenUsageStore
+        self.resetCreditStore = resetCreditStore
         self.codexSourceHealthStore = codexSourceHealthStore
         self.codexClient = codexClient
         launchToMenuTitleSpan = performanceInstrumentationStore.begin(.appLaunchToFirstMenuBarTitle)
@@ -99,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             performanceInstrumentationStore: performanceInstrumentationStore,
             codexSourceHealthStore: codexSourceHealthStore,
             appServerDiagnosticsStore: tokenPayloadAuditDiagnosticsStore,
+            resetCreditStore: resetCreditStore,
+            resetCreditClient: codexClient,
             launchToMenuTitleSpan: launchToMenuTitleSpan
         )
 

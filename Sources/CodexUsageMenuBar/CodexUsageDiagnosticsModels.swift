@@ -3121,6 +3121,143 @@ final class CodexProfileTokenUsageStore: ObservableObject {
     }
 }
 
+enum CodexResetCreditSyncStatus: String, Codable, Equatable {
+    case neverSynced = "never_synced"
+    case refreshing
+    case succeeded
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .neverSynced:
+            return "Not synced"
+        case .refreshing:
+            return "Refreshing"
+        case .succeeded:
+            return "Synced"
+        case .failed:
+            return "Failed"
+        }
+    }
+}
+
+struct CodexResetCreditState: Codable, Equatable {
+    var snapshot: CodexResetCreditSnapshot?
+    var status: CodexResetCreditSyncStatus
+    var lastSyncedAt: Date?
+    var lastErrorText: String?
+
+    init(
+        snapshot: CodexResetCreditSnapshot? = nil,
+        status: CodexResetCreditSyncStatus = .neverSynced,
+        lastSyncedAt: Date? = nil,
+        lastErrorText: String? = nil
+    ) {
+        self.snapshot = snapshot
+        self.status = status
+        self.lastSyncedAt = lastSyncedAt
+        self.lastErrorText = lastErrorText
+    }
+
+    func isStale(now: Date, staleAfter: TimeInterval) -> Bool {
+        guard let lastSyncedAt else {
+            return true
+        }
+
+        return now.timeIntervalSince(lastSyncedAt) >= staleAfter
+    }
+}
+
+@MainActor
+final class CodexResetCreditStore: ObservableObject {
+    static let defaultCacheDuration: TimeInterval = 10 * 60
+    static let defaultCreditLimit = 20
+
+    @Published private(set) var state: CodexResetCreditState
+
+    private let fileURL: URL
+    private let fileManager: FileManager
+    private let creditLimit: Int
+
+    init(
+        fileURL: URL,
+        fileManager: FileManager = .default,
+        creditLimit: Int = CodexResetCreditStore.defaultCreditLimit
+    ) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+        self.creditLimit = creditLimit
+        state = (try? Self.loadState(from: fileURL)) ?? CodexResetCreditState()
+    }
+
+    static func applicationSupportStore() -> CodexResetCreditStore {
+        let directoryURL = (try? UsageHistoryStore.applicationSupportDirectoryURL())
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("CodexStatusBar", isDirectory: true)
+        return CodexResetCreditStore(
+            fileURL: directoryURL.appendingPathComponent("reset-credits.json")
+        )
+    }
+
+    func recordRefreshStarted() {
+        state = CodexResetCreditState(
+            snapshot: state.snapshot,
+            status: .refreshing,
+            lastSyncedAt: state.lastSyncedAt,
+            lastErrorText: nil
+        )
+    }
+
+    func recordSuccess(_ snapshot: CodexResetCreditSnapshot) {
+        let boundedCredits = Array(snapshot.credits.prefix(creditLimit))
+        let boundedSnapshot = CodexResetCreditSnapshot(
+            fetchedAt: snapshot.fetchedAt,
+            availableCount: snapshot.availableCount,
+            credits: boundedCredits
+        )
+        state = CodexResetCreditState(
+            snapshot: boundedSnapshot,
+            status: .succeeded,
+            lastSyncedAt: boundedSnapshot.fetchedAt,
+            lastErrorText: nil
+        )
+        persist()
+    }
+
+    func recordFailure(_ errorText: String) {
+        state = CodexResetCreditState(
+            snapshot: state.snapshot,
+            status: .failed,
+            lastSyncedAt: state.lastSyncedAt,
+            lastErrorText: errorText
+        )
+        persist()
+    }
+
+    func clear() {
+        state = CodexResetCreditState()
+        try? fileManager.removeItem(at: fileURL)
+    }
+
+    private func persist() {
+        do {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(state).write(to: fileURL, options: .atomic)
+        } catch {
+            // Reset-credit diagnostics must never affect menu-bar or dashboard behavior.
+        }
+    }
+
+    private static func loadState(from fileURL: URL) throws -> CodexResetCreditState {
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(CodexResetCreditState.self, from: data)
+    }
+}
+
 enum CodexSourceVersionKind: String, Codable, CaseIterable, Equatable, Sendable {
     case appBundled = "app_bundled"
     case homebrew

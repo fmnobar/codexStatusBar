@@ -12,8 +12,10 @@ struct MenuBarContentView: View {
     @ObservedObject var updateMonitor: AppUpdateMonitor
     @ObservedObject var codexSourceHealthStore: CodexSourceHealthStore
     @ObservedObject var appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
+    @ObservedObject var resetCreditStore: CodexResetCreditStore
     let historyDatabase: UsageHistoryDatabaseWorking
     let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    let resetCreditClient: CodexResetCreditFetching?
     var onOpenTokenDashboard: () -> Void
     var onOpenPerformanceDashboard: () -> Void
     var onOpenUpdatesSettings: () -> Void
@@ -24,6 +26,7 @@ struct MenuBarContentView: View {
     @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
     @StateObject private var historyViewModel: UsageHistoryViewModel
     @State private var expandedSection: MenuBarPopoverExpandedSection?
+    @State private var resetCreditRefreshTask: Task<Void, Never>?
 
     init(
         viewModel: MenuBarStatusViewModel,
@@ -32,6 +35,8 @@ struct MenuBarContentView: View {
         performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
         codexSourceHealthStore: CodexSourceHealthStore = .shared,
         appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
+        resetCreditStore: CodexResetCreditStore = .applicationSupportStore(),
+        resetCreditClient: CodexResetCreditFetching? = nil,
         onOpenTokenDashboard: @escaping () -> Void = {},
         onOpenPerformanceDashboard: @escaping () -> Void = {},
         onOpenUpdatesSettings: @escaping () -> Void = {},
@@ -48,6 +53,8 @@ struct MenuBarContentView: View {
         self.historyDatabase = historyDatabase
         self.performanceInstrumentationStore = performanceInstrumentationStore
         self.onOpenTokenDashboard = onOpenTokenDashboard
+        self.resetCreditStore = resetCreditStore
+        self.resetCreditClient = resetCreditClient
         self.onOpenPerformanceDashboard = onOpenPerformanceDashboard
         self.onOpenUpdatesSettings = onOpenUpdatesSettings
         self.onOpenDataSettings = onOpenDataSettings
@@ -80,6 +87,10 @@ struct MenuBarContentView: View {
                 }
             } else {
                 limitSelectionRow
+                if shouldShowResetCreditsSection {
+                    Divider()
+                    resetCreditsSection
+                }
                 Divider()
                 historySection
                 Divider()
@@ -121,6 +132,11 @@ struct MenuBarContentView: View {
             Task {
                 await updateMonitor.checkIfNeeded()
             }
+            refreshResetCreditsIfNeeded()
+        }
+        .onDisappear {
+            resetCreditRefreshTask?.cancel()
+            resetCreditRefreshTask = nil
         }
     }
 
@@ -201,6 +217,90 @@ struct MenuBarContentView: View {
                 CompactUsageHistoryPanel(viewModel: historyViewModel)
             }
         }
+    }
+
+    private var shouldShowResetCreditsSection: Bool {
+        resetCreditClient != nil
+            || resetCreditStore.state.snapshot != nil
+            || resetCreditStore.state.status == .refreshing
+    }
+
+    private var resetCreditsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "arrow.counterclockwise.circle")
+                    .font(.system(size: 14))
+                    .frame(width: 14)
+
+                Text("Usage resets")
+                    .font(.system(size: 13))
+
+                Spacer(minLength: 0)
+
+                if resetCreditStore.state.status == .refreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.72)
+                }
+
+                Button("Refresh") {
+                    refreshResetCredits(force: true)
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(.borderless)
+                .disabled(resetCreditStore.state.status == .refreshing || resetCreditClient == nil)
+                .help("Refresh available usage resets")
+            }
+
+            resetCreditsBody
+        }
+    }
+
+    @ViewBuilder
+    private var resetCreditsBody: some View {
+        if let snapshot = resetCreditStore.state.snapshot {
+            if snapshot.credits.isEmpty {
+                Text("No available resets.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 24)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(snapshot.credits) { credit in
+                        resetCreditRow(credit)
+                    }
+                }
+                .padding(.leading, 24)
+            }
+        } else if resetCreditStore.state.status == .failed {
+            Text("Usage resets unavailable.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 24)
+        } else {
+            Text("Checking available resets...")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 24)
+        }
+    }
+
+    private func resetCreditRow(_ credit: CodexResetCredit) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(credit.title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+
+            HStack(spacing: 8) {
+                Text("Granted \(Self.resetCreditDateFormatter.string(from: credit.grantedAt))")
+                Text("Expires \(Self.resetCreditDateFormatter.string(from: credit.expiresAt))")
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var settingsSection: some View {
@@ -580,6 +680,56 @@ struct MenuBarContentView: View {
     private func checkboxImage(isSelected: Bool, size: CGFloat) -> some View {
         NeutralCheckboxMark(isSelected: isSelected, size: size)
     }
+
+    private func refreshResetCreditsIfNeeded() {
+        guard resetCreditStore.state.isStale(
+            now: Date(),
+            staleAfter: CodexResetCreditStore.defaultCacheDuration
+        ) else {
+            return
+        }
+
+        refreshResetCredits(force: false)
+    }
+
+    private func refreshResetCredits(force: Bool) {
+        guard let resetCreditClient else {
+            return
+        }
+
+        if !force,
+           !resetCreditStore.state.isStale(
+               now: Date(),
+               staleAfter: CodexResetCreditStore.defaultCacheDuration
+           )
+        {
+            return
+        }
+
+        resetCreditRefreshTask?.cancel()
+        resetCreditRefreshTask = Task { @MainActor in
+            resetCreditStore.recordRefreshStarted()
+            do {
+                let snapshot = try await resetCreditClient.resetCreditSnapshot()
+                guard !Task.isCancelled else {
+                    return
+                }
+                resetCreditStore.recordSuccess(snapshot)
+            } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
+                resetCreditStore.recordFailure("Usage resets unavailable.")
+            }
+        }
+    }
+
+    private static let resetCreditDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
 }
 
 private enum CompactHistoryControlMetrics {
