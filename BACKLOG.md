@@ -7,7 +7,108 @@
 
 ## Remaining Work
 
-No normal Remaining Work is currently queued. Keep the Conditional Watchlist below separate until its evidence gates are met.
+The July 10, 2026 repo audit is captured below. Intake is complete and backlog drain is explicitly authorized. Work through the items in dependency order, move blocked work aside without stalling the drain, and preserve the Conditional Watchlist as a separate evidence-gated lane.
+
+### Audit Drain Ledger
+
+- `AUDIT-20260710-01` — Repair Codex executable discovery and restart resilience
+  - Status: pending.
+  - Add the current ChatGPT-bundled Codex location, centralize candidate ordering used by the app and installer, and validate candidates with a bounded `--version` probe instead of executable-bit checks alone.
+  - Cover missing legacy `Codex.app`, a broken Homebrew wrapper, restricted GUI `PATH`, symlinks, and reconnect/restart behavior.
+  - Verify a freshly relaunched installed app owns a child using the current executable rather than a deleted legacy path.
+
+- `AUDIT-20260710-02` — Harden app-server request and transport lifecycle
+  - Status: pending.
+  - Add cancellation-safe per-request deadlines, bounded response handling, and late-response safety for JSON-RPC continuations.
+  - Keep malformed optional notifications from tearing down an otherwise healthy connection.
+  - Move the capability probe off the main actor with a timeout; prefer owned stdio transport and avoid trusting unauthenticated predictable loopback listeners when the current CLI supports stdio.
+  - Add fixture-process or fake-transport tests for no response, late response, disconnect, malformed notification, and reconnect.
+
+- `AUDIT-20260710-03` — Guard destructive release and install paths
+  - Status: pending.
+  - Reject unsafe `RELEASE_ROOT` values such as `/`, `$HOME`, the repo root, or paths outside an explicitly owned build root before recursive deletion.
+  - Add equivalent containment/sentinel protection anywhere a configurable path is recursively removed.
+  - Make the source installer stage and swap the app without deleting the only working copy first.
+  - Verify shell syntax plus safe/unsafe path fixtures.
+
+- `AUDIT-20260710-04` — Pin update provenance and complete package validation
+  - Status: pending.
+  - Require the expected Developer ID team/designated requirement for in-app installation rather than accepting any notarized signer with the same bundle ID/version.
+  - Define an explicit policy for missing or malformed SHA-256 metadata and verify `CFBundleVersion` against the asset build number.
+  - Add expected-signer, wrong-signer, missing-digest, malformed-digest, and build-mismatch tests using injectable command results where signing fixtures are unavailable.
+
+- `AUDIT-20260710-05` — Establish one release-bundle provenance contract
+  - Status: pending.
+  - Share artifact finalization/validation across `install.sh`, local packaging, and CI.
+  - Ensure public release bundles contain a privacy-safe build fingerprint without local source paths and that runtime freshness handles source and public builds correctly.
+  - Add the configured macOS `AppIcon` asset and assert that fingerprint, icon, architecture, version/build, signature, staple, Gatekeeper result, and zip round-trip are validated where applicable.
+
+- `AUDIT-20260710-06` — Make in-app replacement transactional and recoverable
+  - Status: pending.
+  - Add a bounded process-exit wait, reverify the staged sibling, retain a backup during replacement, confirm relaunch, and roll back on copy/rename/launch failure.
+  - Execute the detached transition against temporary fixture bundles instead of testing script text only.
+
+- `AUDIT-20260710-07` — Make release preparation and publication resumable
+  - Status: pending.
+  - Roll back local version edits when validation or packaging fails and verify clean `main` parity with `origin/main` before release prep.
+  - Make the disabled publication workflow safe to resume after a tag push or release-create failure, preferably by creating/uploading a draft before final publication.
+  - Keep the release workflow disabled unless explicitly re-enabled; validate its source statically.
+
+- `AUDIT-20260710-08` — Add storage budgets for token and performance telemetry
+  - Status: pending.
+  - Add configurable raw retention and durable rollups/summary preservation for the currently unbounded token, timing, performance, dimension, and catalog data where appropriate.
+  - Benchmark and remove redundant composite-prefix indexes only after `EXPLAIN QUERY PLAN` and representative dashboard regression proof.
+  - Add migration, retention-boundary, backup/restore, query-plan, and size-regression coverage; compact only a copied fixture during tests.
+
+- `AUDIT-20260710-09` — Simplify SQLite writer ownership and migrations
+  - Status: pending.
+  - Share one writer actor for live capture and metadata work, cache a successfully opened persistent store while allowing recovery from a temporary in-memory fallback, and add a bounded busy timeout.
+  - Replace repeated all-schema migration work with numbered transactional migrations and explicit interrupted-migration recovery.
+  - Add concurrent capture/import stress, lock injection, open-count, and recovery tests.
+
+- `AUDIT-20260710-10` — Incrementally tail large active session files
+  - Status: pending.
+  - Replace the 128 MiB all-or-nothing live fallback with bounded byte/line cursors that can resume appended files and recover from truncation/rotation.
+  - Prune discovery by date directory before recursively enumerating and sorting the session tree.
+  - Cover files above the former cap, append/resume, truncation, rotation, partial lines, and large-directory discovery cost.
+
+- `AUDIT-20260710-11` — Sanitize persisted Git remote metadata
+  - Status: pending.
+  - Strip URL user/password, query, and fragment data before storing or exporting Git origins; preserve only the minimum useful normalized remote identity.
+  - Cover PAT-style HTTPS URLs, SCP-style SSH remotes, ordinary SSH/HTTPS URLs, file URLs, malformed strings, and backup round-trips.
+
+- `AUDIT-20260710-12` — Restore complete healthy-state navigation and lazy UI work
+  - Status: pending.
+  - Add always-visible left-click routes to full Settings and full History while preserving the intentional Quit-only right-click menu.
+  - Remove or expose the currently unreachable full History surface, and stop loading collapsed History twice.
+  - Move local source probes off the main actor, add missing selection/expanded/accessibility semantics and dashboard navigation/export labels, and either remove the dead tooltip pipeline or repurpose it as accessibility help without restoring a visual hover tooltip.
+  - Verify keyboard/VoiceOver semantics, healthy and warning states, popover latency, and actual window rendering.
+
+- `AUDIT-20260710-13` — Test the production module and critical app wiring
+  - Status: pending.
+  - Stop recompiling nearly all production sources in the test bundle; extract/import a shared production module with clear app-glue ownership.
+  - Clean all compiler/concurrency warnings, collect app-target coverage, and add focused coverage for executable resolution, real transport framing, launch coordination, status item/popover wiring, Settings, History, and dashboards.
+  - Keep wall-clock performance assertions out of noisy required lanes unless backed by stable metrics/baselines.
+
+- `AUDIT-20260710-14` — Add a canonical verification entry point and non-publishing CI
+  - Status: pending.
+  - Add one local verification script covering shell syntax/static checks, `git diff --check`, focused project validation, the full XCTest suite, and analyzer/build checks.
+  - Add a non-publishing PR/push CI workflow with failure artifacts while leaving the notification-sensitive release workflow disabled.
+  - Gate on a warning-free build after the existing warnings are repaired.
+
+- `AUDIT-20260710-15` — Repair documentation and backlog drift
+  - Status: pending.
+  - Update README behavior that still promises removed right-click quick actions, document privacy/data retention and uninstall behavior, and add the canonical developer verification command.
+  - Archive or condense the oversized Done ledger, remove the stale completed Next Candidate, and keep active work discoverable.
+  - Add an appropriate public-repo license/security contribution posture if the intended distribution policy can be established from existing repository metadata; otherwise record that sub-item as blocked rather than guessing.
+
+### Drain Order
+
+1. Current runtime breakage and destructive-safety items: `01`, `03`, `02`.
+2. Updater and release integrity: `04` through `07`.
+3. Persistence and import resilience: `08` through `11`.
+4. Product/UI and verification architecture: `12` through `14`.
+5. Documentation closeout: `15`.
 
 ## Codex Update Audit Details
 
