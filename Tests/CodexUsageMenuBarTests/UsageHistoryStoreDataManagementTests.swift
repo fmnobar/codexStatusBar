@@ -1,6 +1,7 @@
 import CoreGraphics
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
 
 extension UsageHistoryStoreTests {
     func testClearHistoryDeletesTokenUsageSamples() async throws {
@@ -13,7 +14,7 @@ extension UsageHistoryStoreTests {
             at: date("2026-04-14T20:00:00Z")
         )
         try store.recordCodexSessionTokenImportFile(metadata, importedAt: 789, status: .imported)
-        try store.importSessionTaskTimingEvents([
+        _ = try store.importSessionTaskTimingEvents([
             CodexSessionTaskTimingEvent(
                 sessionID: "session-clear",
                 turnID: "turn-clear",
@@ -26,7 +27,7 @@ extension UsageHistoryStoreTests {
         try store.recordCodexSessionTaskTimingCaptureState(
             CodexSessionTaskTimingCaptureState(lastCheckedAt: date("2026-04-14T20:00:04Z"), status: .imported, insertedCount: 1)
         )
-        try store.importCodexThreadCatalog(
+        _ = try store.importCodexThreadCatalog(
             CodexThreadCatalogImportBatch(
                 threads: [
                     CodexThreadCatalogThread(
@@ -66,7 +67,7 @@ extension UsageHistoryStoreTests {
         try store.recordCodexThreadCatalogCaptureState(
             CodexThreadCatalogCaptureState(lastCheckedAt: date("2026-04-14T20:00:05Z"), status: .imported, threadsInsertedCount: 1)
         )
-        try store.importCodexModelCapabilities(
+        _ = try store.importCodexModelCapabilities(
             CodexModelCapabilitiesImportBatch(
                 models: [
                     CodexModelCapability(
@@ -237,7 +238,7 @@ extension UsageHistoryStoreTests {
                 )
             ),
         ])
-        try sourceStore.importSessionTaskTimingEvents([
+        _ = try sourceStore.importSessionTaskTimingEvents([
             CodexSessionTaskTimingEvent(
                 sessionID: "session-backup",
                 turnID: "turn-backup",
@@ -264,7 +265,7 @@ extension UsageHistoryStoreTests {
                 insertedCount: 1
             )
         )
-        try sourceStore.importCodexThreadCatalog(
+        _ = try sourceStore.importCodexThreadCatalog(
             CodexThreadCatalogImportBatch(
                 threads: [
                     CodexThreadCatalogThread(
@@ -283,7 +284,7 @@ extension UsageHistoryStoreTests {
                         archivedAt: nil,
                         gitSHA: "abcdef",
                         gitBranch: "main",
-                        gitOriginURL: "git@github.com:example/backup.git",
+                        gitOriginURL: "https://github_pat_secret@github.com/example/backup.git?token=secret#fragment",
                         cliVersion: "0.42.0",
                         agentNickname: "helper",
                         agentRole: "default",
@@ -316,7 +317,7 @@ extension UsageHistoryStoreTests {
                 sourcePath: "/Users/example/.codex/state_5.sqlite"
             )
         )
-        try sourceStore.importCodexModelCapabilities(
+        _ = try sourceStore.importCodexModelCapabilities(
             CodexModelCapabilitiesImportBatch(
                 models: [
                     CodexModelCapability(
@@ -378,6 +379,10 @@ extension UsageHistoryStoreTests {
         try sourceStore.exportBackup(to: backupURL)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
+        XCTAssertEqual(
+            try sqliteStrings(at: backupURL, sql: "SELECT git_origin_url FROM codex_thread_catalog"),
+            ["https://github.com/example/backup.git"]
+        )
 
         let (destinationStore, destinationDatabaseURL) = try makeTemporaryStore()
         try destinationStore.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 80)), at: date("2026-04-14T20:00:00Z"))
@@ -408,6 +413,7 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(thread.threadID, "thread-backup")
         XCTAssertEqual(thread.projectName, "backup-project")
         XCTAssertEqual(thread.sandboxPolicy, "workspace-write")
+        XCTAssertEqual(thread.gitOriginURL, "https://github.com/example/backup.git")
         XCTAssertEqual(try destinationStore.codexThreadSpawnEdges().first?.status, "running")
         XCTAssertEqual(try destinationStore.codexThreadDynamicTools().first?.namespace, "github")
         XCTAssertEqual(try destinationStore.codexThreadCatalogCaptureState().status, .imported)
@@ -418,6 +424,224 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(try destinationStore.codexModelCapabilitiesCaptureState().status, .imported)
         XCTAssertEqual(try destinationStore.availableSeries(window: .sevenDay).map(\.id), ["codex"])
         XCTAssertEqual(try destinationStore.availableTokenComponentSeries().map(\.id), ["tokens_all", "model:gpt-5.5"])
+    }
+
+    func testBackupExportSanitizesCurrentSchemaRemoteCanariesBeforeCopy() throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO codex_thread_catalog (
+                thread_id, model_provider, git_origin_url, cli_version, agent_nickname,
+                agent_role, thread_source, recorded_at
+            )
+            VALUES
+                (
+                    'secret-export', 'private_export@example.com',
+                    'https://user:export_secret@github.com/example/app.git?token=canary#fragment',
+                    'private_cli@example.com', 'acct_export_canary',
+                    'acct_agent_role_789', 'private_thread@example.com', 1
+                ),
+                (
+                    'local-export', 'openai', 'file:///Users/example/private/app.git', '0.78.0',
+                    'Build', 'explorer', 'cli', 1
+                );
+            INSERT INTO token_usage_dimensions (
+                thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+            ) VALUES
+                ('secret-export', 'turn', 1, 'originator', 'private_export@example.com', 1),
+                ('secret-export', 'turn', 1, 'cli_version', 'private_cli@example.com', 1),
+                ('secret-export', 'turn', 1, 'agent_role', 'acct_agent_role_789', 1);
+            INSERT INTO token_dimension_catalog (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            ) VALUES
+                ('model_provider', 'acct_export_canary', 1, 1),
+                ('cli_version', 'private_cli@example.com', 1, 1),
+                ('agent_role', 'acct_agent_role_789', 1, 1);
+            INSERT INTO token_usage_samples (
+                thread_id, turn_id, session_id, effort, source, received_at,
+                last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                last_reasoning_output_tokens, last_total_tokens, total_input_tokens,
+                total_cached_input_tokens, total_output_tokens, total_reasoning_output_tokens,
+                total_total_tokens, observed_total_tokens
+            ) VALUES (
+                'secret-context', 'turn', 'acct_session_context_123',
+                'private_effort@example.com', 'acct_source_context_456', 1,
+                1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1
+            );
+            INSERT INTO token_effort_catalog (effort, first_seen_at, last_seen_at)
+            VALUES ('private_effort@example.com', 1, 1);
+            INSERT INTO token_source_catalog (source, first_seen_at, last_seen_at)
+            VALUES ('acct_source_context_456', 1, 1);
+            INSERT INTO codex_turn_performance_events (
+                source_key, source_row_id, target, event_timestamp, originator, recorded_at
+            ) VALUES ('secret-export', 1, 'trace', 1, 'private_export@example.com', 1);
+            INSERT INTO codex_session_task_timing_events (
+                session_id, turn_id, collaboration_mode_kind, effort, source,
+                dimensions_json, event_timestamp, recorded_at
+            ) VALUES (
+                'secret-export', 'turn', 'acct_collaboration_789',
+                'private_effort@example.com', 'acct_source_context_456',
+                '[{"key":"agent_nickname","value":"acct_export_canary"}]', 1, 1
+            );
+            INSERT INTO token_usage_hourly_rollups (
+                period_start, effort, source, observed_total_tokens, sample_count
+            ) VALUES
+                (1, '', '', 10, 1),
+                (1, 'private_effort@example.com', 'acct_source_context_456', 20, 2);
+            INSERT INTO token_dimension_hourly_rollups (
+                period_start, dimension_key, dimension_value, observed_total_tokens, sample_count
+            ) VALUES
+                (1, 'agent_role', '', 30, 3),
+                (1, 'agent_role', 'acct_agent_role_789', 40, 4);
+            INSERT INTO telemetry_hourly_rollups (
+                metric, period_start, effort, source, transport, wire_api,
+                sample_count, duration_sample_count, duration_total_ms, duration_values
+            ) VALUES
+                ('session_timing', 1, '', '', '', '', 2, 2, 30, '10,20,'),
+                ('session_timing', 1, 'private_effort@example.com', 'acct_source_context_456',
+                    'acct_transport_1234', 'private_wire@example.com', 3, 2, 70, '30,40,');
+            INSERT INTO telemetry_error_hourly_rollups (
+                period_start, effort, source, transport, wire_api, error_summary, event_count
+            ) VALUES
+                (1, '', '', '', '', '', 2),
+                (1, 'private_effort@example.com', 'acct_source_context_456',
+                    'acct_transport_1234', 'private_wire@example.com', 'acct_error_1234', 3);
+            INSERT INTO codex_session_token_imports (
+                file_path, file_size, modified_at, imported_at, status, tail_state_json
+            ) VALUES (
+                '/tmp/secret-export.jsonl', 1, 1, 1, 'imported',
+                '{"dimensions":[{"key":"originator","value":"private_export@example.com"}]}'
+            );
+            """
+        )
+        let backupURL = try makeTemporaryDirectory().appendingPathComponent("sanitized-backup.sqlite3")
+
+        try store.exportBackup(to: backupURL)
+
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT COALESCE(git_origin_url, 'nil') FROM codex_thread_catalog ORDER BY thread_id"
+            ),
+            ["nil", "https://github.com/example/app.git"]
+        )
+        let backupBytes = try Data(contentsOf: backupURL)
+        XCTAssertNil(backupBytes.range(of: Data("export_secret".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("canary".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("private_export@example.com".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_export_canary".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("private_cli@example.com".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_agent_role_789".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_session_context_123".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("private_effort@example.com".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_source_context_456".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_collaboration_789".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_error_1234".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("acct_transport_1234".utf8)))
+        XCTAssertNil(backupBytes.range(of: Data("private_wire@example.com".utf8)))
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT COUNT(*) FROM token_usage_dimensions WHERE dimension_value LIKE '%@%'"
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: """
+                SELECT COUNT(*) FROM token_usage_samples
+                WHERE session_id IS NOT NULL OR effort IS NOT NULL OR source IS NOT NULL
+                """
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(try sqliteStrings(at: backupURL, sql: "SELECT COUNT(*) FROM token_effort_catalog"), ["0"])
+        XCTAssertEqual(try sqliteStrings(at: backupURL, sql: "SELECT COUNT(*) FROM token_source_catalog"), ["0"])
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT effort || '|' || source || '|' || observed_total_tokens || '|' || sample_count FROM token_usage_hourly_rollups"
+            ),
+            ["||30|3"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT dimension_value || '|' || observed_total_tokens || '|' || sample_count FROM token_dimension_hourly_rollups"
+            ),
+            ["|70|7"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: """
+                SELECT effort || '|' || source || '|' || transport || '|' || wire_api || '|' ||
+                    sample_count || '|' || duration_sample_count || '|' || duration_total_ms || '|' || duration_values
+                FROM telemetry_hourly_rollups
+                """
+            ),
+            ["||||5|4|100|10,20,30,40,"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT effort || '|' || source || '|' || transport || '|' || wire_api || '|' || error_summary || '|' || event_count FROM telemetry_error_hourly_rollups"
+            ),
+            ["|||||5"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT COUNT(*) FROM token_dimension_catalog WHERE dimension_value LIKE 'acct_%'"
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT COUNT(*) FROM codex_turn_performance_events WHERE originator IS NOT NULL"
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: """
+                SELECT COUNT(*) FROM codex_session_task_timing_events
+                WHERE collaboration_mode_kind IS NOT NULL OR effort IS NOT NULL
+                    OR source IS NOT NULL OR dimensions_json IS NOT NULL
+                """
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: backupURL,
+                sql: "SELECT COUNT(*) FROM codex_session_token_imports WHERE tail_state_json IS NOT NULL"
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COALESCE(git_origin_url, 'nil') FROM codex_thread_catalog ORDER BY thread_id"
+            ),
+            ["nil", "https://github.com/example/app.git"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT COALESCE(model_provider, 'nil') || '|' ||
+                    COALESCE(cli_version, 'nil') || '|' || COALESCE(agent_nickname, 'nil') || '|' ||
+                    COALESCE(agent_role, 'nil') || '|' || COALESCE(thread_source, 'nil')
+                FROM codex_thread_catalog ORDER BY thread_id
+                """
+            ),
+            ["openai|0.78.0|Build|explorer|cli", "nil|nil|nil|nil|nil"]
+        )
     }
 
     func testBackupImportReconstructsMissingSessionTaskTimingEventTimestamp() async throws {
@@ -745,12 +969,14 @@ extension UsageHistoryStoreTests {
     func testBackupImportCleansMalformedTokenModelLabelsAndRebuildsCatalogs() async throws {
         let sourceDirectoryURL = try makeTemporaryDirectory()
         let sourceURL = sourceDirectoryURL.appendingPathComponent("source.sqlite3")
-        var sourceStore: UsageHistoryStore? = try UsageHistoryStore(
-            databaseURL: sourceURL,
-            notificationCenter: NotificationCenter(),
-            calendar: calendar
-        )
-        sourceStore = nil
+        do {
+            let sourceStore = try UsageHistoryStore(
+                databaseURL: sourceURL,
+                notificationCenter: NotificationCenter(),
+                calendar: calendar
+            )
+            XCTAssertEqual(sourceStore.databaseURL, sourceURL)
+        }
         try insertMalformedTokenModelRows(into: sourceURL)
         let (destinationStore, _) = try makeTemporaryStore()
 
@@ -812,9 +1038,12 @@ extension UsageHistoryStoreTests {
         XCTAssertNotEqual(viewModel.databaseSizeText, "--")
 
         viewModel.selectedRetention = .ninetyDays
+        for _ in 0..<100 where viewModel.statusMessage != "Raw sample retention updated and applied." {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
 
         XCTAssertEqual(UsageHistoryRawRetentionStore.load(from: defaults), .ninetyDays)
-        XCTAssertEqual(viewModel.statusMessage, "Raw sample retention updated.")
+        XCTAssertEqual(viewModel.statusMessage, "Raw sample retention updated and applied.")
         XCTAssertNil(viewModel.errorMessage)
     }
 
@@ -1090,6 +1319,31 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(reloadedStore.diagnostics.tokenUsageNotificationCount, 0)
         XCTAssertEqual(reloadedStore.diagnostics.lastAuditPersistenceStatus, .notAttempted)
         XCTAssertFalse(FileManager.default.fileExists(atPath: diagnosticsURL.path))
+    }
+
+    @MainActor
+    func testAppServerAuditDiagnosticsStoreCoalescesBurstPersistence() async throws {
+        let diagnosticsURL = try makeTemporaryDirectory()
+            .appendingPathComponent("live-token-payload-audit-diagnostics.json")
+        let store = CodexAppServerAuditDiagnosticsStore(
+            fileURL: diagnosticsURL,
+            persistenceInterval: 0.05
+        )
+
+        for _ in 0..<500 {
+            store.record(.inboundMethod("remoteControl/status/changed"))
+            store.record(.remoteControlNotification(status: .connected, warningText: nil))
+        }
+
+        XCTAssertEqual(store.diagnostics.inboundNotificationCount, 500)
+        XCTAssertEqual(store.diagnostics.remoteControlDiagnostics.notificationCount, 500)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: diagnosticsURL.path))
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let reloadedStore = CodexAppServerAuditDiagnosticsStore(fileURL: diagnosticsURL)
+        XCTAssertEqual(reloadedStore.diagnostics.inboundNotificationCount, 500)
+        XCTAssertEqual(reloadedStore.diagnostics.remoteControlDiagnostics.notificationCount, 500)
     }
 
     @MainActor
@@ -1632,7 +1886,129 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(viewModel.localSourceCoverageHeadlineText.contains("passive no-sample"))
     }
 
-    func testLocalSourceCoverageProbeReportsMissingSourcesAndSchemasWithoutRawValues() throws {
+    func testExecutableCandidateProviderPrioritizesCurrentBundleAndDeduplicatesSymlinks() throws {
+        let fixedCandidates = CodexExecutableCandidateProvider.candidates()
+        XCTAssertEqual(
+            fixedCandidates.prefix(4).map(\.url.path),
+            [
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                "/Applications/Codex.app/Contents/Resources/codex",
+                "/opt/homebrew/bin/codex",
+                "/usr/local/bin/codex",
+            ]
+        )
+
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let executableURL = try makeExecutable("codex-real", in: temporaryDirectory)
+        let symlinkURL = temporaryDirectory.appendingPathComponent("codex-link")
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: executableURL)
+        let deduplicated = CodexExecutableCandidateProvider.deduplicated([
+            CodexExecutableCandidate(url: symlinkURL, kind: .path),
+            CodexExecutableCandidate(url: executableURL, kind: .path),
+        ])
+
+        XCTAssertEqual(deduplicated.map(\.url), [symlinkURL])
+    }
+
+    @MainActor
+    func testCodexSourceHealthReaderSkipsExecutableCandidateWhoseVersionProbeFails() async throws {
+        let homeURL = try makeTemporaryDirectory()
+        let brokenWrapperURL = try makeExecutable("broken-wrapper", in: homeURL)
+        let usableURL = try makeExecutable("usable-codex", in: homeURL)
+        let reader = CodexSourceHealthReader(
+            homeDirectory: homeURL,
+            commandRunner: StubCodexSourceVersionCommandRunner(
+                outputs: [usableURL.path: "codex-cli 0.144.0-alpha.4"],
+                errors: [brokenWrapperURL.path: CodexSourceHealthReaderError.versionCommandFailed]
+            ),
+            executableCandidates: [
+                CodexExecutableCandidate(url: brokenWrapperURL, kind: .homebrew),
+                CodexExecutableCandidate(url: usableURL, kind: .appBundled),
+            ],
+            pathCandidates: []
+        )
+
+        let snapshot = try await reader.sourceHealthSnapshot(now: date("2026-06-13T12:00:00Z"))
+
+        XCTAssertEqual(snapshot.activeExecutablePath, usableURL.path)
+        XCTAssertEqual(snapshot.activeSignal?.version, "0.144.0-alpha.4")
+        XCTAssertEqual(
+            snapshot.versionSignals.first { $0.executablePath == brokenWrapperURL.path }?.errorText,
+            CodexSourceHealthReaderError.versionCommandFailed.localizedDescription
+        )
+    }
+
+    @MainActor
+    func testVersionProbeDrainsAndRejectsOversizedCommandOutput() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let executableURL = temporaryDirectory.appendingPathComponent("noisy-codex")
+        try Data("#!/bin/sh\n/usr/bin/yes x | /usr/bin/head -c 300000\n".utf8).write(to: executableURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+
+        do {
+            _ = try await ProcessCodexSourceVersionCommandRunner().versionOutput(
+                for: executableURL,
+                timeout: 1
+            )
+            XCTFail("Expected oversized output to be rejected")
+        } catch {
+            XCTAssertEqual(error as? CodexSourceHealthReaderError, .versionCommandFailed)
+        }
+    }
+
+    @MainActor
+    func testVersionProbeForceTerminatesCommandAfterDeadline() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let executableURL = temporaryDirectory.appendingPathComponent("hung-codex")
+        try Data("#!/bin/sh\ntrap '' TERM\nwhile :; do :; done\n".utf8).write(to: executableURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+
+        do {
+            _ = try await ProcessCodexSourceVersionCommandRunner().versionOutput(
+                for: executableURL,
+                timeout: 0.02
+            )
+            XCTFail("Expected version probe timeout")
+        } catch {
+            XCTAssertEqual(error as? CodexSourceHealthReaderError, .versionCommandTimedOut)
+        }
+    }
+
+    @MainActor
+    func testLocalSourceCoverageProbeDoesNotBlockMainActor() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let probeStarted = DispatchSemaphore(value: 0)
+        let allowProbeToFinish = DispatchSemaphore(value: 0)
+        let timestamp = date("2026-06-13T12:00:00Z")
+        let probe = CodexLocalSourceCoverageProbe(
+            logsDatabaseURL: temporaryDirectory.appendingPathComponent("missing-logs.sqlite"),
+            sessionDirectories: [temporaryDirectory.appendingPathComponent("missing-sessions")],
+            stateDatabaseURL: temporaryDirectory.appendingPathComponent("missing-state.sqlite"),
+            modelsCacheURL: temporaryDirectory.appendingPathComponent("missing-models-cache.json"),
+            beforeProbe: {
+                probeStarted.signal()
+                allowProbeToFinish.wait()
+            }
+        )
+        let task = Task { @MainActor in
+            await probe.probeSnapshot(now: timestamp)
+        }
+
+        let didStart = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: probeStarted.wait(timeout: .now() + 1) == .success)
+            }
+        }
+        XCTAssertTrue(didStart)
+        // This assertion executes on MainActor while the filesystem/SQLite probe is paused.
+        XCTAssertFalse(task.isCancelled)
+
+        allowProbeToFinish.signal()
+        let snapshot = await task.value
+        XCTAssertEqual(snapshot.logsDatabase.status, .missingSource)
+    }
+
+    func testLocalSourceCoverageProbeReportsMissingSourcesAndSchemasWithoutRawValues() async throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         let stateDatabaseURL = temporaryDirectory.appendingPathComponent("state_5.sqlite")
         let modelsCacheURL = temporaryDirectory.appendingPathComponent("models_cache.json")
@@ -1646,7 +2022,7 @@ extension UsageHistoryStoreTests {
             modelsCacheURL: modelsCacheURL
         )
 
-        let snapshot = probe.probeSnapshot(now: date("2026-06-13T12:00:00Z"))
+        let snapshot = await probe.probeSnapshot(now: date("2026-06-13T12:00:00Z"))
 
         XCTAssertEqual(snapshot.logsDatabase.status, .missingSource)
         XCTAssertEqual(snapshot.sessionDirectory.status, .missingSource)
@@ -1654,7 +2030,7 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(snapshot.modelsCache.status, .schemaMissing)
     }
 
-    func testLocalSourceCoverageProbeUsesStateUpdatedAtFallbackWhenMillisecondsAreMissing() throws {
+    func testLocalSourceCoverageProbeUsesStateUpdatedAtFallbackWhenMillisecondsAreMissing() async throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         let stateDatabaseURL = temporaryDirectory.appendingPathComponent("state_5.sqlite")
         let laterDate = date("2026-06-13T12:00:00Z")
@@ -1677,14 +2053,14 @@ extension UsageHistoryStoreTests {
             modelsCacheURL: temporaryDirectory.appendingPathComponent("missing-models-cache.json")
         )
 
-        let snapshot = probe.probeSnapshot(now: date("2026-06-13T13:00:00Z"))
+        let snapshot = await probe.probeSnapshot(now: date("2026-06-13T13:00:00Z"))
 
         XCTAssertEqual(snapshot.stateDatabase.status, .available)
         XCTAssertEqual(snapshot.stateDatabase.sourceRowCount, 2)
         XCTAssertEqual(snapshot.stateDatabase.latestSourceEventAt, laterDate)
     }
 
-    func testLocalSourceCoverageProbeParsesFractionalModelsCacheFetchedAt() throws {
+    func testLocalSourceCoverageProbeParsesFractionalModelsCacheFetchedAt() async throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         let modelsCacheURL = temporaryDirectory.appendingPathComponent("models_cache.json")
         try """
@@ -1703,7 +2079,7 @@ extension UsageHistoryStoreTests {
             modelsCacheURL: modelsCacheURL
         )
 
-        let snapshot = probe.probeSnapshot(now: date("2026-06-13T13:00:00Z"))
+        let snapshot = await probe.probeSnapshot(now: date("2026-06-13T13:00:00Z"))
 
         XCTAssertEqual(snapshot.modelsCache.status, .available)
         XCTAssertEqual(snapshot.modelsCache.sourceRowCount, 1)
@@ -2976,7 +3352,7 @@ private final class StubCodexSourceHealthReader: CodexSourceHealthReading {
 private struct StubCodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
     let snapshot: CodexLocalSourceProbeSnapshot
 
-    func probeSnapshot(now: Date) -> CodexLocalSourceProbeSnapshot {
+    func probeSnapshot(now: Date) async -> CodexLocalSourceProbeSnapshot {
         snapshot
     }
 }

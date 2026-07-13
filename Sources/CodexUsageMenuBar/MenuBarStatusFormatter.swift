@@ -43,6 +43,54 @@ enum StatusItemToolTipPolicy {
     }
 }
 
+struct AppAccessibilityPresentation: Equatable {
+    let label: String
+    let value: String
+    let isSelected: Bool
+}
+
+enum AppAccessibilitySemantics {
+    static let openFullHistoryLabel = "Open full history"
+    static let openFullSettingsLabel = "Open full settings"
+    static let exportCSVLabel = "Export CSV"
+
+    static func limitRow(_ row: MenuBarLimitRowPresentation) -> AppAccessibilityPresentation {
+        AppAccessibilityPresentation(
+            label: row.title,
+            value: [row.remainingPercentText, row.detailText]
+                .filter { !$0.isEmpty }
+                .joined(separator: ", "),
+            isSelected: row.isSelected
+        )
+    }
+
+    static func expandableSection(
+        title: String,
+        isExpanded: Bool
+    ) -> AppAccessibilityPresentation {
+        AppAccessibilityPresentation(
+            label: title,
+            value: isExpanded ? "Expanded" : "Collapsed",
+            isSelected: false
+        )
+    }
+
+    static func selectableSeries(
+        name: String,
+        isSelected: Bool
+    ) -> AppAccessibilityPresentation {
+        AppAccessibilityPresentation(
+            label: name,
+            value: isSelected ? "Selected" : "Not selected",
+            isSelected: isSelected
+        )
+    }
+
+    static func statusItemLabel(visibleText: String) -> String {
+        "Codex usage \(visibleText)"
+    }
+}
+
 enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
     case fiveHour
     case sevenDay

@@ -9,54 +9,34 @@
 /* Begin PBXBuildFile section */
 		12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */; };
 		17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */; };
-		2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BB492230DD65BC50EB1EBD /* CodexRateLimitModels.swift */; };
-		2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */; };
-		2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
 		2B2719138AB40807B72BE239 /* LaunchAtLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */; };
 		2768A0530A96D373AE819B01 /* MenuBarStatusFormatterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */; };
-		319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */; };
 		4B7E911F7C5F52280586877E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 08DB61787596576CE72359F0 /* Assets.xcassets */; };
+		D00000000000000000000011 /* CodexExecutableCandidates.txt in Resources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000001 /* CodexExecutableCandidates.txt */; };
 		4EE2F61D6D32744924EAD4F4 /* MenuBarStatusViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7661827716372F273D8604F5 /* MenuBarStatusViewModelTests.swift */; };
 		580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64E0E68CBE235EB13AA69D6C /* CodexRateLimitDecodingTests.swift */; };
 		746901348E7A668975CEDA56 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5363F89C9BF34793883A496 /* StatusItemController.swift */; };
 		9FDB9FC9E0A054FC426AD5C3 /* MenuBarStatusFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B766D8676BDEABF428F4C06F /* MenuBarStatusFormatter.swift */; };
 		A20000000000000000000011 /* CodexUsageDiagnosticsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */; };
-		A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CodexUsageDiagnosticsModels.swift */; };
 		A20000000000000000000022 /* CodexUsageDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* CodexUsageDiagnosticsTests.swift */; };
 		A30000000000000000000011 /* DataManagementSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000001 /* DataManagementSettingsView.swift */; };
-		A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000001 /* DataManagementSettingsView.swift */; };
 		A40000000000000000000011 /* InstallUpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000001 /* InstallUpdateSettingsView.swift */; };
-		A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000001 /* InstallUpdateSettingsView.swift */; };
 		A41000000000000000000011 /* AppBuildFreshness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000001 /* AppBuildFreshness.swift */; };
-		A41000000000000000000021 /* AppBuildFreshness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000001 /* AppBuildFreshness.swift */; };
 		A41000000000000000000022 /* AppBuildFreshnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41000000000000000000002 /* AppBuildFreshnessTests.swift */; };
 		A42000000000000000000011 /* AppPerformanceInstrumentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A42000000000000000000001 /* AppPerformanceInstrumentation.swift */; };
-		A42000000000000000000021 /* AppPerformanceInstrumentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A42000000000000000000001 /* AppPerformanceInstrumentation.swift */; };
 		A50000000000000000000011 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
-		A50000000000000000000021 /* AppUpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000001 /* AppUpdateCheck.swift */; };
 		A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50000000000000000000002 /* AppUpdateCheckTests.swift */; };
 		A60000000000000000000011 /* CodexSessionTokenBackfillImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */; };
-		A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60000000000000000000001 /* CodexSessionTokenBackfillImporter.swift */; };
 		A70000000000000000000011 /* TokenDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* TokenDashboardView.swift */; };
 		A70000000000000000000012 /* TokenDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* TokenDashboardWindowController.swift */; };
-		A70000000000000000000021 /* TokenDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* TokenDashboardView.swift */; };
-		A70000000000000000000022 /* TokenDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* TokenDashboardWindowController.swift */; };
 		A71000000000000000000011 /* PerformanceDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000001 /* PerformanceDashboardView.swift */; };
 		A71000000000000000000012 /* PerformanceDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000002 /* PerformanceDashboardWindowController.swift */; };
 		A71000000000000000000013 /* UsageHistoryStore+PerformanceQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000003 /* UsageHistoryStore+PerformanceQueries.swift */; };
-		A71000000000000000000021 /* PerformanceDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000001 /* PerformanceDashboardView.swift */; };
-		A71000000000000000000022 /* PerformanceDashboardWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000002 /* PerformanceDashboardWindowController.swift */; };
-		A71000000000000000000023 /* UsageHistoryStore+PerformanceQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71000000000000000000003 /* UsageHistoryStore+PerformanceQueries.swift */; };
 		A80000000000000000000011 /* UsageHistoryDatabaseWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */; };
-		A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001 /* UsageHistoryDatabaseWorker.swift */; };
 		A10000000000000000000011 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
 		A10000000000000000000012 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
 		A10000000000000000000013 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
 		A10000000000000000000014 /* UsageHistoryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* UsageHistoryWindowController.swift */; };
-		A10000000000000000000021 /* UsageHistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* UsageHistoryModels.swift */; };
-		A10000000000000000000022 /* UsageHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* UsageHistoryStore.swift */; };
-		A10000000000000000000023 /* UsageHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* UsageHistoryView.swift */; };
-		A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* UsageHistoryWindowController.swift */; };
 		A10000000000000000000025 /* UsageHistoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* UsageHistoryStoreTests.swift */; };
 		B11000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* UsageHistoryStore+Recording.swift */; };
 		B11000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */; };
@@ -67,15 +47,6 @@
 		B11000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */; };
 		B11000000000000000000008 /* UsageHistoryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* UsageHistoryControls.swift */; };
 		B11000000000000000000009 /* UsageHistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* UsageHistoryViewModel.swift */; };
-		B12000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* UsageHistoryStore+Recording.swift */; };
-		B12000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift */; };
-		B12000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* UsageHistoryStore+TokenQueries.swift */; };
-		B12000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* UsageHistoryStore+UsageQueries.swift */; };
-		B12000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* UsageHistoryStore+DataManagement.swift */; };
-		B12000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* UsageHistoryStore+Migrations.swift */; };
-		B12000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift */; };
-		B12000000000000000000008 /* UsageHistoryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* UsageHistoryControls.swift */; };
-		B12000000000000000000009 /* UsageHistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* UsageHistoryViewModel.swift */; };
 		B21000000000000000000001 /* UsageHistoryStoreUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* UsageHistoryStoreUsageTests.swift */; };
 		B21000000000000000000002 /* UsageHistoryStoreTokenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* UsageHistoryStoreTokenTests.swift */; };
 		B21000000000000000000003 /* UsageHistoryStoreMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* UsageHistoryStoreMigrationTests.swift */; };
@@ -88,21 +59,31 @@
 		AAE17A25A7BBC51C7EA81CE4 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */; };
 		D2CF5F80FCF4B50E82DB7DB3 /* MenuBarStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A6393D4BFFA27026E13E085 /* MenuBarStatusViewModel.swift */; };
 		ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */; };
-		ED158C1DA325D4FA480D76DC /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */; };
+		C00000000000000000000011 /* CodexUsageCoreAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000001 /* CodexUsageCoreAppDelegate.swift */; };
+		C00000000000000000000012 /* libCodexUsageCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002 /* libCodexUsageCore.a */; };
+		C00000000000000000000013 /* libCodexUsageCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002 /* libCodexUsageCore.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		8D11B449AC99F19CF82B8839 /* PBXContainerItemProxy */ = {
+		C00000000000000000000041 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = AE519A2F0A78F14F2F8840AC /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = 0E0D327876564F782332F3AC;
-			remoteInfo = CodexUsageMenuBar;
+			remoteGlobalIDString = C00000000000000000000061;
+			remoteInfo = CodexUsageCore;
+		};
+		C00000000000000000000042 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AE519A2F0A78F14F2F8840AC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C00000000000000000000061;
+			remoteInfo = CodexUsageCore;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		08DB61787596576CE72359F0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		D00000000000000000000001 /* CodexExecutableCandidates.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = CodexExecutableCandidates.txt; sourceTree = "<group>"; };
 		1615CBD7D5D0BFBA6D625661 /* CodexStatusBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexStatusBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexUsageMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		318B76E70CB43DDFB6D36975 /* LaunchAtLoginController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginController.swift; sourceTree = "<group>"; };
@@ -155,7 +136,35 @@
 		D9104604892F027317595702 /* MenuBarStatusFormatterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusFormatterTests.swift; sourceTree = "<group>"; };
 		F85C52B1A0E2CD03426D9FBA /* CodexUsageMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageMenuBarApp.swift; sourceTree = "<group>"; };
 		F90FE2522397BFB65A4EBB8F /* MenuBarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContentView.swift; sourceTree = "<group>"; };
+		C00000000000000000000001 /* CodexUsageCoreAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageCoreAppDelegate.swift; sourceTree = "<group>"; };
+		C00000000000000000000002 /* libCodexUsageCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libCodexUsageCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C00000000000000000000021 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000012 /* libCodexUsageCore.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C00000000000000000000022 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000013 /* libCodexUsageCore.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C00000000000000000000023 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		724EA114FB5A964B25CF8443 /* Tests */ = {
@@ -194,6 +203,7 @@
 			children = (
 				1615CBD7D5D0BFBA6D625661 /* CodexStatusBar.app */,
 				1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */,
+				C00000000000000000000002 /* libCodexUsageCore.a */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -201,6 +211,7 @@
 		99585084361C276AABC79F8A /* CodexUsageMenuBar */ = {
 			isa = PBXGroup;
 			children = (
+				C00000000000000000000001 /* CodexUsageCoreAppDelegate.swift */,
 				A41000000000000000000001 /* AppBuildFreshness.swift */,
 				A50000000000000000000001 /* AppUpdateCheck.swift */,
 				403220D0E8B0B3B21E721E23 /* CodexAppServerClient.swift */,
@@ -261,6 +272,7 @@
 			isa = PBXGroup;
 			children = (
 				08DB61787596576CE72359F0 /* Assets.xcassets */,
+				D00000000000000000000001 /* CodexExecutableCandidates.txt */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -273,11 +285,13 @@
 			buildConfigurationList = EB5FA61365D1835AC0E2DC4E /* Build configuration list for PBXNativeTarget "CodexUsageMenuBar" */;
 			buildPhases = (
 				33589D2911A89A78A3EC3DF7 /* Sources */,
+				C00000000000000000000021 /* Frameworks */,
 				758500EB80F228285599C9C5 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C00000000000000000000051 /* PBXTargetDependency */,
 			);
 			name = CodexUsageMenuBar;
 			packageProductDependencies = (
@@ -291,11 +305,12 @@
 			buildConfigurationList = 6BA0A1F36728D0898535CC50 /* Build configuration list for PBXNativeTarget "CodexUsageMenuBarTests" */;
 			buildPhases = (
 				117DF5E366A5AE21640D5BB9 /* Sources */,
+				C00000000000000000000022 /* Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				7BD4451C48B532E07BD9D7D0 /* PBXTargetDependency */,
+				C00000000000000000000052 /* PBXTargetDependency */,
 			);
 			name = CodexUsageMenuBarTests;
 			packageProductDependencies = (
@@ -303,6 +318,24 @@
 			productName = CodexUsageMenuBarTests;
 			productReference = 1A6BAD8BEA54C86A19542A9F /* CodexUsageMenuBarTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		C00000000000000000000061 /* CodexUsageCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C00000000000000000000073 /* Build configuration list for PBXNativeTarget "CodexUsageCore" */;
+			buildPhases = (
+				C00000000000000000000031 /* Sources */,
+				C00000000000000000000023 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CodexUsageCore;
+			packageProductDependencies = (
+			);
+			productName = CodexUsageCore;
+			productReference = C00000000000000000000002 /* libCodexUsageCore.a */;
+			productType = "com.apple.product-type.library.static";
 		};
 /* End PBXNativeTarget section */
 
@@ -334,6 +367,7 @@
 			targets = (
 				0E0D327876564F782332F3AC /* CodexUsageMenuBar */,
 				181B7B289FA2703280E604C6 /* CodexUsageMenuBarTests */,
+				C00000000000000000000061 /* CodexUsageCore */,
 			);
 		};
 /* End PBXProject section */
@@ -344,6 +378,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4B7E911F7C5F52280586877E /* Assets.xcassets in Resources */,
+				D00000000000000000000011 /* CodexExecutableCandidates.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -354,37 +389,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2A7A1E7B82C14D7C91A1B001 /* CodexRateLimitModels.swift in Sources */,
-				A41000000000000000000021 /* AppBuildFreshness.swift in Sources */,
-				A42000000000000000000021 /* AppPerformanceInstrumentation.swift in Sources */,
-				A50000000000000000000021 /* AppUpdateCheck.swift in Sources */,
-				A60000000000000000000021 /* CodexSessionTokenBackfillImporter.swift in Sources */,
-				ED158C1DA325D4FA480D76DC /* CodexAppServerClient.swift in Sources */,
-				A20000000000000000000021 /* CodexUsageDiagnosticsModels.swift in Sources */,
-				A30000000000000000000021 /* DataManagementSettingsView.swift in Sources */,
-				A40000000000000000000021 /* InstallUpdateSettingsView.swift in Sources */,
-				319C1E50A0E0F10B41AC7821 /* LaunchAtLoginController.swift in Sources */,
-				2A7A1E7B82C14D7C91A1B002 /* MenuBarStatusFormatter.swift in Sources */,
-				2A7A1E7B82C14D7C91A1B003 /* MenuBarStatusViewModel.swift in Sources */,
-				A71000000000000000000021 /* PerformanceDashboardView.swift in Sources */,
-				A71000000000000000000022 /* PerformanceDashboardWindowController.swift in Sources */,
-				A70000000000000000000021 /* TokenDashboardView.swift in Sources */,
-				A70000000000000000000022 /* TokenDashboardWindowController.swift in Sources */,
-				A80000000000000000000021 /* UsageHistoryDatabaseWorker.swift in Sources */,
-				A10000000000000000000021 /* UsageHistoryModels.swift in Sources */,
-				A10000000000000000000022 /* UsageHistoryStore.swift in Sources */,
-				B12000000000000000000001 /* UsageHistoryStore+Recording.swift in Sources */,
-				B12000000000000000000002 /* UsageHistoryStore+SessionImportMetadata.swift in Sources */,
-				B12000000000000000000003 /* UsageHistoryStore+TokenQueries.swift in Sources */,
-				B12000000000000000000004 /* UsageHistoryStore+UsageQueries.swift in Sources */,
-				A71000000000000000000023 /* UsageHistoryStore+PerformanceQueries.swift in Sources */,
-				B12000000000000000000005 /* UsageHistoryStore+DataManagement.swift in Sources */,
-				B12000000000000000000006 /* UsageHistoryStore+Migrations.swift in Sources */,
-				B12000000000000000000007 /* UsageHistoryStore+SQLiteSupport.swift in Sources */,
-				B12000000000000000000008 /* UsageHistoryControls.swift in Sources */,
-				A10000000000000000000023 /* UsageHistoryView.swift in Sources */,
-				B12000000000000000000009 /* UsageHistoryViewModel.swift in Sources */,
-				A10000000000000000000024 /* UsageHistoryWindowController.swift in Sources */,
 				580C091280BB6F8531A7F9AD /* CodexRateLimitDecodingTests.swift in Sources */,
 				A41000000000000000000022 /* AppBuildFreshnessTests.swift in Sources */,
 				A50000000000000000000022 /* AppUpdateCheckTests.swift in Sources */,
@@ -408,6 +412,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C00000000000000000000031 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000011 /* CodexUsageCoreAppDelegate.swift in Sources */,
 				A41000000000000000000011 /* AppBuildFreshness.swift in Sources */,
 				A42000000000000000000011 /* AppPerformanceInstrumentation.swift in Sources */,
 				ED158C1DA325D4FA480D76DB /* CodexAppServerClient.swift in Sources */,
@@ -415,7 +428,6 @@
 				A60000000000000000000011 /* CodexSessionTokenBackfillImporter.swift in Sources */,
 				17045955D14EE68B495261E1 /* CodexRateLimitModels.swift in Sources */,
 				A20000000000000000000011 /* CodexUsageDiagnosticsModels.swift in Sources */,
-				12825454090C19E7D15FEEA5 /* CodexUsageMenuBarApp.swift in Sources */,
 				A30000000000000000000011 /* DataManagementSettingsView.swift in Sources */,
 				A40000000000000000000011 /* InstallUpdateSettingsView.swift in Sources */,
 				2B2719138AB40807B72BE239 /* LaunchAtLoginController.swift in Sources */,
@@ -448,10 +460,15 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		7BD4451C48B532E07BD9D7D0 /* PBXTargetDependency */ = {
+		C00000000000000000000051 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 0E0D327876564F782332F3AC /* CodexUsageMenuBar */;
-			targetProxy = 8D11B449AC99F19CF82B8839 /* PBXContainerItemProxy */;
+			target = C00000000000000000000061 /* CodexUsageCore */;
+			targetProxy = C00000000000000000000041 /* PBXContainerItemProxy */;
+		};
+		C00000000000000000000052 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C00000000000000000000061 /* CodexUsageCore */;
+			targetProxy = C00000000000000000000042 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -653,6 +670,38 @@
 			};
 			name = Release;
 		};
+		C00000000000000000000071 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				DEFINES_MODULE = YES;
+				ENABLE_TESTABILITY = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C00000000000000000000072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				DEFINES_MODULE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -679,6 +728,15 @@
 			buildConfigurations = (
 				87765E797281A77A1BA29063 /* Debug */,
 				C701CF175C262FD5C4C3EF03 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C00000000000000000000073 /* Build configuration list for PBXNativeTarget "CodexUsageCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000071 /* Debug */,
+				C00000000000000000000072 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

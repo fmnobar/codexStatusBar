@@ -115,7 +115,7 @@ extension UsageHistoryStore {
             SELECT received_at, model, project_path, project_name, effort, source,
                 model_context_window, observed_input_tokens, observed_cached_input_tokens,
                 observed_output_tokens, observed_reasoning_output_tokens
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE received_at >= ?
               AND received_at < ?
               AND (
@@ -269,9 +269,11 @@ extension UsageHistoryStore {
                 SELECT
                     b.bucket_start,
                     b.bucket_end,
-                    t.completed_at,
-                    t.duration_ms,
-                    t.time_to_first_token_ms,
+                    1 AS turn_count,
+                    CASE WHEN t.completed_at IS NOT NULL THEN 1 ELSE 0 END AS completed_turn_count,
+                    CASE WHEN t.completed_at IS NULL THEN 1 ELSE 0 END AS incomplete_turn_count,
+                    CAST(t.duration_ms AS TEXT) AS duration_values,
+                    CAST(t.time_to_first_token_ms AS TEXT) AS first_token_values,
                     t.model,
                     t.project_path,
                     t.project_name,
@@ -285,6 +287,21 @@ extension UsageHistoryStore {
                     AND t.event_timestamp < b.query_end
                 WHERE t.event_timestamp >= ?
                     AND t.event_timestamp < ?
+
+                UNION ALL
+
+                SELECT b.bucket_start, b.bucket_end,
+                    r.sample_count, r.completed_count, r.incomplete_count,
+                    r.duration_values, r.first_token_values,
+                    NULLIF(r.model, ''), NULLIF(r.project_path, ''), NULLIF(r.project_name, ''),
+                    NULLIF(r.effort, ''), NULLIF(r.source, ''), NULL, NULL
+                FROM buckets b
+                JOIN telemetry_hourly_rollups r
+                    ON r.period_start >= b.bucket_start
+                    AND r.period_start < b.query_end
+                WHERE r.metric = 'session_timing'
+                    AND r.period_start >= ?
+                    AND r.period_start < ?
             ),
             expanded AS (
                 SELECT
@@ -294,9 +311,11 @@ extension UsageHistoryStore {
                     NULL AS series_value,
                     NULL AS series_project_path,
                     NULL AS series_project_name,
-                    completed_at,
-                    duration_ms,
-                    time_to_first_token_ms
+                    turn_count,
+                    completed_turn_count,
+                    incomplete_turn_count,
+                    duration_values,
+                    first_token_values
                 FROM timing_base
                 UNION ALL
                 SELECT
@@ -306,9 +325,11 @@ extension UsageHistoryStore {
                     \(breakdown.valueSQL) AS series_value,
                     \(breakdown.projectPathSQL) AS series_project_path,
                     \(breakdown.projectNameSQL) AS series_project_name,
-                    completed_at,
-                    duration_ms,
-                    time_to_first_token_ms
+                    turn_count,
+                    completed_turn_count,
+                    incomplete_turn_count,
+                    duration_values,
+                    first_token_values
                 FROM timing_base
             )
             SELECT
@@ -318,11 +339,11 @@ extension UsageHistoryStore {
                 series_value,
                 series_project_path,
                 series_project_name,
-                COUNT(*) AS turn_count,
-                SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed_turn_count,
-                SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END) AS incomplete_turn_count,
-                GROUP_CONCAT(duration_ms) AS duration_values,
-                GROUP_CONCAT(time_to_first_token_ms) AS first_token_values
+                SUM(turn_count) AS turn_count,
+                SUM(completed_turn_count) AS completed_turn_count,
+                SUM(incomplete_turn_count) AS incomplete_turn_count,
+                GROUP_CONCAT(duration_values) AS duration_values,
+                GROUP_CONCAT(first_token_values) AS first_token_values
             FROM expanded
             GROUP BY
                 bucket_start,
@@ -337,6 +358,10 @@ extension UsageHistoryStore {
         defer { sqlite3_finalize(statement) }
 
         var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statement)
+        sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
+        bindIndex += 1
+        sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
+        bindIndex += 1
         sqlite3_bind_int64(statement, bindIndex, periodStart.timeIntervalSince1970Int)
         bindIndex += 1
         sqlite3_bind_int64(statement, bindIndex, periodEnd.timeIntervalSince1970Int)
@@ -397,36 +422,79 @@ extension UsageHistoryStore {
             WITH buckets(bucket_start, query_end, bucket_end) AS (
                 VALUES \(bucketValuesSQL)
             ),
+            reliability_base AS (
+                SELECT b.bucket_start, b.bucket_end,
+                    r.model, r.project_path, r.project_name, r.effort, r.source,
+                    r.transport, r.wire_api,
+                    CASE
+                        WHEN r.success IS NULL THEN 'unknown'
+                        WHEN r.success = 1 THEN 'success'
+                        ELSE 'failure'
+                    END AS status,
+                    1 AS event_count
+                FROM buckets b
+                JOIN codex_turn_performance_events r
+                    ON r.event_timestamp >= b.bucket_start
+                    AND r.event_timestamp < b.query_end
+                WHERE r.event_timestamp >= ? AND r.event_timestamp < ?
+
+                UNION ALL
+
+                SELECT b.bucket_start, b.bucket_end,
+                    NULLIF(r.model, ''), NULLIF(r.project_path, ''), NULLIF(r.project_name, ''),
+                    NULLIF(r.effort, ''), NULLIF(r.source, ''), NULLIF(r.transport, ''),
+                    NULLIF(r.wire_api, ''), 'success', r.success_count
+                FROM buckets b
+                JOIN telemetry_hourly_rollups r
+                    ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
+                WHERE r.metric = 'turn_performance' AND r.success_count > 0
+
+                UNION ALL
+
+                SELECT b.bucket_start, b.bucket_end,
+                    NULLIF(r.model, ''), NULLIF(r.project_path, ''), NULLIF(r.project_name, ''),
+                    NULLIF(r.effort, ''), NULLIF(r.source, ''), NULLIF(r.transport, ''),
+                    NULLIF(r.wire_api, ''), 'failure', r.failure_count
+                FROM buckets b
+                JOIN telemetry_hourly_rollups r
+                    ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
+                WHERE r.metric = 'turn_performance' AND r.failure_count > 0
+
+                UNION ALL
+
+                SELECT b.bucket_start, b.bucket_end,
+                    NULLIF(r.model, ''), NULLIF(r.project_path, ''), NULLIF(r.project_name, ''),
+                    NULLIF(r.effort, ''), NULLIF(r.source, ''), NULLIF(r.transport, ''),
+                    NULLIF(r.wire_api, ''), 'unknown',
+                    r.sample_count - r.success_count - r.failure_count
+                FROM buckets b
+                JOIN telemetry_hourly_rollups r
+                    ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
+                WHERE r.metric = 'turn_performance'
+                    AND r.sample_count > r.success_count + r.failure_count
+            ),
             expanded AS (
                 SELECT
-                    b.bucket_start,
-                    b.bucket_end,
+                    bucket_start,
+                    bucket_end,
                     'aggregate' AS series_kind,
                     NULL AS series_value,
                     NULL AS series_project_path,
                     NULL AS series_project_name,
-                    r.success
-                FROM buckets b
-                JOIN codex_turn_performance_events r
-                    ON r.event_timestamp >= b.bucket_start
-                    AND r.event_timestamp < b.query_end
-                WHERE r.event_timestamp >= ?
-                    AND r.event_timestamp < ?
+                    status,
+                    event_count
+                FROM reliability_base
                 UNION ALL
                 SELECT
-                    b.bucket_start,
-                    b.bucket_end,
+                    bucket_start,
+                    bucket_end,
                     \(breakdown.kindSQL) AS series_kind,
                     \(breakdown.valueSQL) AS series_value,
                     \(breakdown.projectPathSQL) AS series_project_path,
                     \(breakdown.projectNameSQL) AS series_project_name,
-                    r.success
-                FROM buckets b
-                JOIN codex_turn_performance_events r
-                    ON r.event_timestamp >= b.bucket_start
-                    AND r.event_timestamp < b.query_end
-                WHERE r.event_timestamp >= ?
-                    AND r.event_timestamp < ?
+                    status,
+                    event_count
+                FROM reliability_base
             )
             SELECT
                 bucket_start,
@@ -435,12 +503,8 @@ extension UsageHistoryStore {
                 series_value,
                 series_project_path,
                 series_project_name,
-                CASE
-                    WHEN success IS NULL THEN 'unknown'
-                    WHEN success = 1 THEN 'success'
-                    ELSE 'failure'
-                END AS status,
-                COUNT(*) AS event_count
+                status,
+                SUM(event_count) AS event_count
             FROM expanded
             GROUP BY
                 bucket_start,
@@ -455,10 +519,6 @@ extension UsageHistoryStore {
         defer { sqlite3_finalize(statusStatement) }
 
         var bindIndex = Self.bindPerformanceDashboardBucketIntervals(intervals, in: statusStatement)
-        sqlite3_bind_int64(statusStatement, bindIndex, periodStart.timeIntervalSince1970Int)
-        bindIndex += 1
-        sqlite3_bind_int64(statusStatement, bindIndex, periodEnd.timeIntervalSince1970Int)
-        bindIndex += 1
         sqlite3_bind_int64(statusStatement, bindIndex, periodStart.timeIntervalSince1970Int)
         bindIndex += 1
         sqlite3_bind_int64(statusStatement, bindIndex, periodEnd.timeIntervalSince1970Int)
@@ -510,7 +570,8 @@ extension UsageHistoryStore {
                     NULL AS series_value,
                     NULL AS series_project_path,
                     NULL AS series_project_name,
-                    r.error_summary
+                    r.error_summary,
+                    1 AS event_count
                 FROM buckets b
                 JOIN codex_turn_performance_events r
                     ON r.event_timestamp >= b.bucket_start
@@ -527,7 +588,8 @@ extension UsageHistoryStore {
                     \(breakdown.valueSQL) AS series_value,
                     \(breakdown.projectPathSQL) AS series_project_path,
                     \(breakdown.projectNameSQL) AS series_project_name,
-                    r.error_summary
+                    r.error_summary,
+                    1 AS event_count
                 FROM buckets b
                 JOIN codex_turn_performance_events r
                     ON r.event_timestamp >= b.bucket_start
@@ -536,6 +598,24 @@ extension UsageHistoryStore {
                     AND r.event_timestamp < ?
                     AND r.success = 0
                     AND r.error_summary IS NOT NULL
+
+                UNION ALL
+
+                SELECT b.bucket_start, b.bucket_end,
+                    'aggregate', NULL, NULL, NULL, r.error_summary, r.event_count
+                FROM buckets b
+                JOIN telemetry_error_hourly_rollups r
+                    ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
+
+                UNION ALL
+
+                SELECT b.bucket_start, b.bucket_end,
+                    \(breakdown.kindSQL), \(breakdown.valueSQL),
+                    \(breakdown.projectPathSQL), \(breakdown.projectNameSQL),
+                    r.error_summary, r.event_count
+                FROM buckets b
+                JOIN telemetry_error_hourly_rollups r
+                    ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
             )
             SELECT
                 bucket_start,
@@ -545,7 +625,7 @@ extension UsageHistoryStore {
                 series_project_path,
                 series_project_name,
                 error_summary,
-                COUNT(*) AS event_count
+                SUM(event_count) AS event_count
             FROM expanded
             GROUP BY
                 bucket_start,
@@ -648,7 +728,7 @@ extension UsageHistoryStore {
                         ELSE NULL
                     END AS context_pressure
                 FROM buckets b
-                JOIN token_usage_samples t
+                JOIN token_usage_query_samples t
                     ON t.received_at >= b.bucket_start
                     AND t.received_at < b.query_end
                 LEFT JOIN codex_model_capabilities c
@@ -761,7 +841,7 @@ extension UsageHistoryStore {
             ? """
                 UNION ALL
                 SELECT received_at AS timestamp
-                FROM token_usage_samples
+                FROM token_usage_query_samples
                 WHERE \(Self.observedTokenComponentsPredicate)
             """
             : ""
@@ -775,6 +855,9 @@ extension UsageHistoryStore {
                 UNION ALL
                 SELECT event_timestamp AS timestamp
                 FROM codex_turn_performance_events
+                UNION ALL
+                SELECT period_start AS timestamp
+                FROM telemetry_hourly_rollups
                 \(tokenBoundsSQL)
             )
             """

@@ -312,6 +312,9 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         guard !isWorkingOnUpdateInstall else {
             return
         }
+        if let package = installState.preparedPackage {
+            removeOwnedStagingDirectory(package.cleanupRootURL)
+        }
         installState = .idle
         await updateMonitor.check(force: force)
     }
@@ -329,10 +332,22 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
             return
         }
 
+        guard let installedAppURL = appBundleURL else {
+            installState = .unavailable("Installed app location is unavailable, so signer continuity cannot be verified.", nil)
+            return
+        }
+
+        var ownedStagingDirectory: URL?
         do {
-            let stagingDirectory = try stagingDirectoryProvider(release)
-            try? FileManager.default.removeItem(at: stagingDirectory)
+            let stagingRoot = try stagingDirectoryProvider(release)
+            let stagingDirectory = stagingRoot
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            try Data().write(
+                to: stagingDirectory.appendingPathComponent(".codex-status-bar-update-staging"),
+                options: .atomic
+            )
+            ownedStagingDirectory = stagingDirectory
             let zipURL = stagingDirectory.appendingPathComponent(asset.name)
 
             installState = .downloading(progress: nil)
@@ -345,22 +360,20 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
                 zipURL: downloadedZipURL,
                 release: release,
                 asset: asset,
-                installedBundleIdentifier: versionInfo.bundleIdentifier
+                installedBundleIdentifier: versionInfo.bundleIdentifier,
+                installedAppURL: installedAppURL
             )
 
-            guard let appBundleURL else {
-                installState = .unavailable("Installed app location is unavailable. Reveal the verified download and replace it manually.", package)
-                return
-            }
-
-            if installer.canInstall(to: appBundleURL) {
+            if installer.canInstall(to: installedAppURL) {
                 installState = .ready(package)
             } else {
                 installState = .unavailable("The installed app location is not writable. Reveal the verified download and replace it manually.", package)
             }
         } catch is AppUpdatePackageVerificationError {
+            removeOwnedStagingDirectory(ownedStagingDirectory)
             installState = .failed("Downloaded update could not be verified.")
         } catch {
+            removeOwnedStagingDirectory(ownedStagingDirectory)
             installState = .failed("Update could not be downloaded.")
         }
     }
@@ -385,6 +398,7 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
         } catch AppUpdateInstallerError.targetNotWritable {
             installState = .unavailable("The installed app location is not writable. Reveal the verified download and replace it manually.", package)
         } catch {
+            removeOwnedStagingDirectory(package.cleanupRootURL)
             installState = .failed("Update could not be installed.")
         }
     }
@@ -403,6 +417,22 @@ final class InstallUpdateSettingsViewModel: ObservableObject {
 
     private var downloadableUpdateAsset: AppUpdateReleaseAsset? {
         updateState.release?.matchingCodexStatusBarZipAsset
+    }
+
+    private func removeOwnedStagingDirectory(_ directoryURL: URL?) {
+        guard let directoryURL else {
+            return
+        }
+        let markerURL = directoryURL.appendingPathComponent(".codex-status-bar-update-staging")
+        let values = try? directoryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard
+            values?.isDirectory == true,
+            values?.isSymbolicLink != true,
+            FileManager.default.fileExists(atPath: markerURL.path)
+        else {
+            return
+        }
+        try? FileManager.default.removeItem(at: directoryURL)
     }
 
     private static func defaultStagingDirectory(for release: AppUpdateRelease) throws -> URL {

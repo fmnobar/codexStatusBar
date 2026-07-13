@@ -680,7 +680,8 @@ struct TokenUsageDimension: Hashable, Equatable, Sendable {
             normalizedValue = CodexTokenContextNormalizer.normalizedDimensionValue(rawValue)
         }
 
-        guard let normalizedValue else {
+        guard let normalizedValue,
+              !CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(normalizedValue) else {
             return nil
         }
 
@@ -771,11 +772,11 @@ struct TokenUsageContext: Equatable, Sendable {
         source: String? = nil,
         dimensions: [TokenUsageDimension] = []
     ) {
-        self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
+        self.sessionID = CodexTokenContextNormalizer.normalizedMetadataIdentifier(sessionID)
         self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
         self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
-        self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
-        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+        self.effort = CodexTokenContextNormalizer.normalizedMetadataIdentifier(effort)
+        self.source = CodexTokenContextNormalizer.normalizedMetadataIdentifier(source)
         self.dimensions = TokenUsageDimension.unique(dimensions)
     }
 
@@ -877,6 +878,36 @@ enum CodexTokenContextNormalizer {
         return trimmedValue
     }
 
+    static func normalizedMetadataDimensionValue(_ value: String?) -> String? {
+        guard let value = normalizedDimensionValue(value), !isPrivacySensitiveIdentifier(value) else {
+            return nil
+        }
+        return value
+    }
+
+    static func normalizedMetadataIdentifier(_ value: String?) -> String? {
+        guard let value = normalizedIdentifier(value), !isPrivacySensitiveIdentifier(value) else {
+            return nil
+        }
+        return value
+    }
+
+    static func isPrivacySensitiveIdentifier(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: trimSet).lowercased()
+        guard !normalized.isEmpty else {
+            return false
+        }
+        if normalized.contains("@") {
+            return true
+        }
+        let accountPrefixes = [
+            "acct_", "account_", "user_", "usr_", "uid_", "org_", "tenant_", "workspace_",
+        ]
+        return accountPrefixes.contains { prefix in
+            normalized.hasPrefix(prefix) && normalized.count > prefix.count + 3
+        }
+    }
+
     static func normalizedModeValue(_ value: String?) -> String? {
         var trimmedValue = value?.trimmingCharacters(in: trimSet) ?? ""
         if trimmedValue.hasPrefix("/") {
@@ -926,6 +957,8 @@ final class UsageHistoryStore: @unchecked Sendable {
 
     static let didChangeNotification = Notification.Name("UsageHistoryStoreDidChange")
     static let defaultRawRetention: TimeInterval = 14 * 24 * 60 * 60
+    static let defaultBusyTimeoutMilliseconds: Int32 = 5_000
+    static let currentSchemaVersion: Int32 = 2
     static let consumptionAlgorithmMetadataKey = "usage_consumption_algorithm_version"
     static let currentConsumptionAlgorithmVersion = "5"
     static let seriesCatalogMetadataKey = "series_catalog_version"
@@ -937,7 +970,7 @@ final class UsageHistoryStore: @unchecked Sendable {
     static let tokenDimensionCleanupMetadataKey = "token_dimension_cleanup_version"
     static let currentTokenDimensionCleanupVersion = "1"
     static let currentSessionTokenContextImportVersion = "3"
-    static let currentSessionTaskTimingImportVersion = "1"
+    static let currentSessionTaskTimingImportVersion = "2"
     static let resetCohortTolerance: Int64 = 60 * 60
     static let observedTokenComponentsPredicate = """
         observed_input_tokens > 0
@@ -951,6 +984,7 @@ final class UsageHistoryStore: @unchecked Sendable {
     let notificationCenter: NotificationCenter
     let calendar: Calendar
     let rawRetentionProvider: () -> TimeInterval
+    var transactionSavepointCounter = 0
 
     convenience init(
         databaseURL: URL,
@@ -1003,7 +1037,16 @@ final class UsageHistoryStore: @unchecked Sendable {
         }
         guard sqlite3_open_v2(databasePath, &openedDatabase, flags, nil) == SQLITE_OK, let openedDatabase else {
             let message = openedDatabase.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown error"
+            if let openedDatabase {
+                sqlite3_close(openedDatabase)
+            }
             throw UsageHistoryStoreError.databaseOpenFailed(message)
+        }
+        var initializationSucceeded = false
+        defer {
+            if !initializationSucceeded {
+                sqlite3_close(openedDatabase)
+            }
         }
 
         database = openedDatabase
@@ -1011,6 +1054,10 @@ final class UsageHistoryStore: @unchecked Sendable {
         self.notificationCenter = notificationCenter
         self.calendar = calendar
         self.rawRetentionProvider = rawRetentionProvider
+
+        guard sqlite3_busy_timeout(openedDatabase, Self.defaultBusyTimeoutMilliseconds) == SQLITE_OK else {
+            throw UsageHistoryStoreError.databaseOperationFailed(String(cString: sqlite3_errmsg(openedDatabase)))
+        }
 
         switch openMode {
         case .readWrite:
@@ -1022,6 +1069,7 @@ final class UsageHistoryStore: @unchecked Sendable {
             try execute("PRAGMA query_only=ON")
             try execute("PRAGMA foreign_keys=ON")
         }
+        initializationSucceeded = true
     }
 
     deinit {

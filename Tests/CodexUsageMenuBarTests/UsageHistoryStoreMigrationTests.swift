@@ -1,8 +1,324 @@
 import CoreGraphics
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
 
 extension UsageHistoryStoreTests {
+    func testBusyTimeoutLetsWriterResumeAfterShortExternalLock() async throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        var lockingDatabase: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(databaseURL.path, &lockingDatabase, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil),
+            SQLITE_OK
+        )
+        let database = try XCTUnwrap(lockingDatabase)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        let notification = tokenNotification(
+            threadID: "locked-thread",
+            turnID: "locked-turn",
+            lastTotal: 100,
+            totalTotal: 100
+        )
+        let timestamp = date("2026-05-17T12:00:00Z")
+
+        let write = Task.detached {
+            try store.record(tokenUsage: notification, at: timestamp)
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sqlite3_exec(database, "COMMIT", nil, nil, nil), SQLITE_OK)
+        try await write.value
+
+        XCTAssertEqual(try store.tokenUsageSamples().count, 1)
+    }
+
+    func testGitOriginMigrationSanitizesPreviouslyPersistedSecretsAndLocalPaths() async throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
+        let conflictOversizedValues = Array(1_000..<1_300)
+        let conflictOversizedCSV = conflictOversizedValues.map(String.init).joined(separator: ",") + ","
+        let conflictOversizedTotal = conflictOversizedValues.reduce(0, +)
+        let noConflictOversizedValues = Array(2_000..<2_300)
+        let noConflictOversizedCSV = noConflictOversizedValues.map(String.init).joined(separator: ",") + ","
+        let noConflictOversizedTotal = noConflictOversizedValues.reduce(0, +)
+        do {
+            let store = try UsageHistoryStore(
+                databaseURL: databaseURL,
+                notificationCenter: NotificationCenter(),
+                calendar: calendar
+            )
+            XCTAssertEqual(store.databaseURL, databaseURL)
+        }
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            INSERT INTO codex_thread_catalog (
+                thread_id, git_origin_url, cli_version, agent_role, recorded_at
+            )
+            VALUES
+                (
+                    'secret-remote',
+                    'https://user:github_pat_secret@github.com/example/app.git?token=secret#fragment',
+                    'private_cli@example.com', 'acct_agent_role_789', 1
+                ),
+                ('local-remote', 'file:///Users/example/private/app.git', '0.78.0', 'explorer', 1);
+            INSERT INTO token_usage_dimensions (
+                thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+            ) VALUES
+                ('secret-remote', 'turn', 1, 'cli_version', 'private_cli@example.com', 1),
+                ('secret-remote', 'turn', 1, 'agent_role', 'acct_agent_role_789', 1);
+            INSERT INTO token_dimension_catalog (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            ) VALUES
+                ('cli_version', 'private_cli@example.com', 1, 1),
+                ('agent_role', 'acct_agent_role_789', 1, 1);
+            INSERT INTO token_usage_samples (
+                thread_id, turn_id, session_id, effort, source, received_at,
+                last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                last_reasoning_output_tokens, last_total_tokens, total_input_tokens,
+                total_cached_input_tokens, total_output_tokens, total_reasoning_output_tokens,
+                total_total_tokens, observed_total_tokens
+            ) VALUES (
+                'secret-context', 'turn', 'acct_session_context_123',
+                'private_effort@example.com', 'acct_source_context_456', 1,
+                1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1
+            );
+            INSERT INTO token_effort_catalog (effort, first_seen_at, last_seen_at)
+            VALUES ('private_effort@example.com', 1, 1);
+            INSERT INTO token_source_catalog (source, first_seen_at, last_seen_at)
+            VALUES ('acct_source_context_456', 1, 1);
+            INSERT INTO token_usage_hourly_rollups (
+                period_start, effort, source, observed_total_tokens, sample_count
+            ) VALUES
+                (1, '', '', 10, 1),
+                (1, 'private_effort@example.com', 'acct_source_context_456', 20, 2);
+            INSERT INTO token_dimension_hourly_rollups (
+                period_start, dimension_key, dimension_value, observed_total_tokens, sample_count
+            ) VALUES
+                (1, 'agent_role', '', 30, 3),
+                (1, 'agent_role', 'acct_agent_role_789', 40, 4);
+            INSERT INTO telemetry_hourly_rollups (
+                metric, period_start, effort, source, transport, wire_api,
+                sample_count, success_count, failure_count, duration_sample_count,
+                duration_total_ms, first_token_sample_count, first_token_total_ms,
+                completed_count, incomplete_count, duration_values, first_token_values
+            ) VALUES
+                ('session_timing', 1, '', '', '', '', 2, 1, 0, 0, 0, 1, 5, 2, 0, NULL, '5,'),
+                ('session_timing', 1, 'private_effort@example.com', 'acct_source_context_456',
+                    'acct_transport_1234', 'private_wire@example.com',
+                    3, 0, 2, 300, \(conflictOversizedTotal), 1, 15, 0, 3,
+                    '\(conflictOversizedCSV)', '15,'),
+                ('turn_performance', 2, 'private_effort@example.com', 'acct_source_context_456',
+                    'acct_transport_1234', 'private_wire@example.com',
+                    300, 300, 0, 300, \(noConflictOversizedTotal), 0, 0, 0, 0,
+                    '\(noConflictOversizedCSV)', NULL);
+            INSERT INTO telemetry_error_hourly_rollups (
+                period_start, effort, source, transport, wire_api, error_summary, event_count
+            ) VALUES
+                (1, '', '', '', '', '', 2),
+                (1, 'private_effort@example.com', 'acct_source_context_456',
+                    'acct_transport_1234', 'private_wire@example.com', 'acct_error_1234', 3);
+            PRAGMA user_version = 1;
+            """
+        )
+
+        let migratedStore = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let threads = try migratedStore.codexThreadCatalogThreads()
+
+        XCTAssertEqual(
+            threads.first { $0.threadID == "secret-remote" }?.gitOriginURL,
+            "https://github.com/example/app.git"
+        )
+        XCTAssertNil(threads.first { $0.threadID == "local-remote" }?.gitOriginURL)
+        XCTAssertNil(threads.first { $0.threadID == "secret-remote" }?.cliVersion)
+        XCTAssertNil(threads.first { $0.threadID == "secret-remote" }?.agentRole)
+        XCTAssertEqual(threads.first { $0.threadID == "local-remote" }?.cliVersion, "0.78.0")
+        XCTAssertEqual(threads.first { $0.threadID == "local-remote" }?.agentRole, "explorer")
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_usage_dimensions"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_dimension_catalog"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT COUNT(*) FROM token_usage_samples
+                WHERE session_id IS NOT NULL OR effort IS NOT NULL OR source IS NOT NULL
+                """
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_effort_catalog"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_source_catalog"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT effort || '|' || source || '|' || observed_total_tokens || '|' || sample_count FROM token_usage_hourly_rollups"
+            ),
+            ["||30|3"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT dimension_value || '|' || observed_total_tokens || '|' || sample_count FROM token_dimension_hourly_rollups"
+            ),
+            ["|70|7"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT effort || '|' || source || '|' || transport || '|' || wire_api || '|' ||
+                    sample_count || '|' || success_count || '|' || failure_count || '|' ||
+                    duration_sample_count || '|' || duration_total_ms || '|' ||
+                    first_token_sample_count || '|' || first_token_total_ms || '|' ||
+                    completed_count || '|' || incomplete_count || '|' || first_token_values
+                FROM telemetry_hourly_rollups
+                WHERE metric = 'session_timing'
+                """
+            ),
+            ["||||5|1|2|300|\(conflictOversizedTotal)|2|20|2|3|5,15,"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT CAST((LENGTH(duration_values) - LENGTH(REPLACE(duration_values, ',', ''))) <= 192 AS TEXT) || '|' ||
+                    CAST(LENGTH(CAST(duration_values AS BLOB)) <= 4096 AS TEXT) || '|' ||
+                    CAST(duration_values LIKE '1000,%' AS TEXT) || '|' ||
+                    CAST(duration_values LIKE '%1299,' AS TEXT)
+                FROM telemetry_hourly_rollups WHERE metric = 'session_timing'
+                """
+            ),
+            ["1|1|1|1"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT effort || '|' || source || '|' || transport || '|' || wire_api || '|' ||
+                    sample_count || '|' || duration_sample_count || '|' || duration_total_ms
+                FROM telemetry_hourly_rollups WHERE metric = 'turn_performance'
+                """
+            ),
+            ["||||300|300|\(noConflictOversizedTotal)"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT CAST((LENGTH(duration_values) - LENGTH(REPLACE(duration_values, ',', ''))) <= 192 AS TEXT) || '|' ||
+                    CAST(LENGTH(CAST(duration_values AS BLOB)) <= 4096 AS TEXT) || '|' ||
+                    CAST(duration_values LIKE '2000,%' AS TEXT) || '|' ||
+                    CAST(duration_values LIKE '%2299,' AS TEXT)
+                FROM telemetry_hourly_rollups WHERE metric = 'turn_performance'
+                """
+            ),
+            ["1|1|1|1"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT effort || '|' || source || '|' || transport || '|' || wire_api || '|' || error_summary || '|' || event_count FROM telemetry_error_hourly_rollups"
+            ),
+            ["|||||5"]
+        )
+        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"), ["2"])
+    }
+
+    func testNumberedMigrationRollsBackAndRecoversAfterInterruption() async throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+        do {
+            let seedStore = try UsageHistoryStore(
+                databaseURL: databaseURL,
+                notificationCenter: NotificationCenter(),
+                calendar: calendar
+            )
+            XCTAssertEqual(seedStore.databaseURL, databaseURL)
+        }
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            DROP VIEW token_usage_query_samples;
+            DROP TABLE token_dimension_hourly_rollups;
+            DROP TABLE token_usage_hourly_rollups;
+            DROP TABLE telemetry_error_hourly_rollups;
+            DROP TABLE telemetry_hourly_rollups;
+            ALTER TABLE token_usage_samples DROP COLUMN is_retention_baseline;
+            ALTER TABLE codex_session_token_imports DROP COLUMN tail_state_json;
+            ALTER TABLE codex_session_token_imports DROP COLUMN file_prefix_hash;
+            ALTER TABLE codex_session_token_imports DROP COLUMN next_line_number;
+            ALTER TABLE codex_session_token_imports DROP COLUMN byte_offset;
+            ALTER TABLE codex_session_task_timing_import_files DROP COLUMN tail_state_json;
+            ALTER TABLE codex_session_task_timing_import_files DROP COLUMN file_prefix_hash;
+            ALTER TABLE codex_session_task_timing_import_files DROP COLUMN next_line_number;
+            ALTER TABLE codex_session_task_timing_import_files DROP COLUMN byte_offset;
+            PRAGMA user_version = 1;
+            CREATE VIEW token_dimension_hourly_rollups AS SELECT 1 AS value;
+            """
+        )
+
+        XCTAssertThrowsError(
+            try UsageHistoryStore(
+                databaseURL: databaseURL,
+                notificationCenter: NotificationCenter(),
+                calendar: calendar
+            )
+        )
+        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"), ["1"])
+        XCTAssertFalse(
+            try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_usage_samples')")
+                .contains("is_retention_baseline")
+        )
+        XCTAssertFalse(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT name FROM pragma_table_info('codex_session_task_timing_import_files')"
+            )
+            .contains("byte_offset")
+        )
+
+        try executeSQLite(at: databaseURL, sql: "DROP VIEW token_dimension_hourly_rollups;")
+        let recoveredStore = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"), ["2"])
+        XCTAssertEqual(try recoveredStore.busyTimeoutMilliseconds(), UsageHistoryStore.defaultBusyTimeoutMilliseconds)
+        XCTAssertTrue(
+            try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_usage_samples')")
+                .contains("is_retention_baseline")
+        )
+        XCTAssertEqual(
+            Set(try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT name FROM pragma_table_info('codex_session_task_timing_import_files')"
+            )).intersection(["byte_offset", "next_line_number", "file_prefix_hash", "tail_state_json"]),
+            Set(["byte_offset", "next_line_number", "file_prefix_hash", "tail_state_json"])
+        )
+    }
+
     func testMigratesExistingDatabaseForTokenUsageSamples() async throws {
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("usage-history.sqlite3")
         try createLegacyHistoryDatabase(at: databaseURL)
@@ -21,7 +337,7 @@ extension UsageHistoryStoreTests {
     }
 
     func testMigrationCreatesSeriesCatalogsAndTargetedIndexes() async throws {
-        let (_, databaseURL) = try makeTemporaryStore()
+        let (store, databaseURL) = try makeTemporaryStore()
 
         let tables = try sqliteStrings(
             at: databaseURL,
@@ -55,6 +371,17 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(tables.contains("codex_model_capability_input_modalities"))
         XCTAssertTrue(tables.contains("codex_model_capability_tools"))
         XCTAssertTrue(tables.contains("codex_model_capabilities_capture_state"))
+        XCTAssertTrue(tables.contains("token_usage_hourly_rollups"))
+        XCTAssertTrue(tables.contains("token_dimension_hourly_rollups"))
+        XCTAssertTrue(tables.contains("telemetry_hourly_rollups"))
+        XCTAssertTrue(tables.contains("telemetry_error_hourly_rollups"))
+        XCTAssertEqual(
+            Set(try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT name FROM pragma_table_info('codex_session_task_timing_import_files')"
+            )).intersection(["byte_offset", "next_line_number", "file_prefix_hash", "tail_state_json"]),
+            Set(["byte_offset", "next_line_number", "file_prefix_hash", "tail_state_json"])
+        )
         XCTAssertTrue(
             try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_project_catalog')")
                 .contains("display_name")
@@ -66,10 +393,14 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_project_received_at"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_effort_received_at"))
         XCTAssertTrue(indexes.contains("idx_token_usage_samples_observed_components_received_at"))
-        XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_sample"))
+        XCTAssertFalse(indexes.contains("idx_token_usage_dimensions_sample"))
         XCTAssertTrue(indexes.contains("idx_token_usage_dimensions_key_value_seen"))
         XCTAssertTrue(indexes.contains("idx_token_dimension_catalog_key_seen"))
-        XCTAssertTrue(indexes.contains("idx_codex_turn_performance_dimensions_event"))
+        XCTAssertFalse(indexes.contains("idx_codex_turn_performance_dimensions_event"))
+        XCTAssertFalse(indexes.contains("idx_token_usage_hourly_rollups_period"))
+        XCTAssertFalse(indexes.contains("idx_telemetry_hourly_rollups_metric_period"))
+        XCTAssertFalse(indexes.contains("idx_telemetry_error_hourly_rollups_period"))
+        XCTAssertTrue(indexes.contains("idx_token_dimension_hourly_rollups_key_period"))
         XCTAssertTrue(indexes.contains("idx_codex_turn_performance_dimensions_key_value_seen"))
         XCTAssertTrue(indexes.contains("idx_codex_turn_performance_dimension_catalog_key_seen"))
         XCTAssertTrue(
@@ -100,6 +431,63 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(indexes.contains("idx_codex_model_capabilities_visibility"))
         XCTAssertTrue(indexes.contains("idx_codex_model_capability_reasoning_effort"))
         XCTAssertTrue(indexes.contains("idx_codex_model_capability_tool_kind_value"))
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"),
+            [String(UsageHistoryStore.currentSchemaVersion)]
+        )
+        XCTAssertEqual(try store.busyTimeoutMilliseconds(), UsageHistoryStore.defaultBusyTimeoutMilliseconds)
+        XCTAssertTrue(
+            try sqliteQueryPlanDetails(
+                at: databaseURL,
+                sql: """
+                EXPLAIN QUERY PLAN
+                SELECT observed_total_tokens
+                FROM token_usage_hourly_rollups
+                WHERE period_start >= 1 AND period_start < 2
+                """
+            )
+            .joined(separator: "\n")
+            .contains("sqlite_autoindex_token_usage_hourly_rollups_1")
+        )
+        XCTAssertTrue(
+            try sqliteQueryPlanDetails(
+                at: databaseURL,
+                sql: """
+                EXPLAIN QUERY PLAN
+                SELECT sample_count
+                FROM telemetry_hourly_rollups
+                WHERE metric = 'session_timing' AND period_start >= 1 AND period_start < 2
+                """
+            )
+            .joined(separator: "\n")
+            .contains("sqlite_autoindex_telemetry_hourly_rollups_1")
+        )
+        XCTAssertTrue(
+            try sqliteQueryPlanDetails(
+                at: databaseURL,
+                sql: """
+                EXPLAIN QUERY PLAN
+                SELECT dimension_value
+                FROM token_usage_dimensions
+                WHERE thread_id = 'thread' AND turn_id = 'turn' AND total_total_tokens = 1
+                """
+            )
+            .joined(separator: "\n")
+            .contains("sqlite_autoindex_token_usage_dimensions_1")
+        )
+        XCTAssertTrue(
+            try sqliteQueryPlanDetails(
+                at: databaseURL,
+                sql: """
+                EXPLAIN QUERY PLAN
+                SELECT dimension_value
+                FROM codex_turn_performance_dimensions
+                WHERE source_key = 'source' AND source_row_id = 1
+                """
+            )
+            .joined(separator: "\n")
+            .contains("sqlite_autoindex_codex_turn_performance_dimensions_1")
+        )
     }
 
     func testSessionTaskTimingEventTimestampMigrationBackfillsExistingRows() async throws {
@@ -168,12 +556,14 @@ extension UsageHistoryStoreTests {
     func testTokenModelCleanupMigrationRepairsStoredRowsAndCatalogs() async throws {
         let directoryURL = try makeTemporaryDirectory()
         let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
-        var seedStore: UsageHistoryStore? = try UsageHistoryStore(
-            databaseURL: databaseURL,
-            notificationCenter: NotificationCenter(),
-            calendar: calendar
-        )
-        seedStore = nil
+        do {
+            let seedStore = try UsageHistoryStore(
+                databaseURL: databaseURL,
+                notificationCenter: NotificationCenter(),
+                calendar: calendar
+            )
+            XCTAssertEqual(seedStore.databaseURL, databaseURL)
+        }
         try insertMalformedTokenModelRows(into: databaseURL)
         try executeSQLite(
             at: databaseURL,

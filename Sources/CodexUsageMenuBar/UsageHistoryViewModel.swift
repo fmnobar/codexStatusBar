@@ -167,7 +167,7 @@ final class UsageHistoryViewModel: ObservableObject {
     }
     let chartSemantics: UsageHistoryChartSemantics
 
-    private let database: UsageHistoryDatabaseWorking
+    private let database: UsageHistoryViewModelDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
@@ -177,6 +177,7 @@ final class UsageHistoryViewModel: ObservableObject {
     private var historyObserver: NSObjectProtocol?
     private var reloadTask: Task<Void, Never>?
     private var reloadGeneration = 0
+    private var acceptsReloadScheduling = false
     private var hoverSelectionWorkItem: DispatchWorkItem?
     private var cachedChartPoints: [UsageHistoryChartPoint] = []
     private var cachedVisibleChartPoints: [UsageHistoryChartPoint] = []
@@ -188,7 +189,7 @@ final class UsageHistoryViewModel: ObservableObject {
     private var hoverCacheVersion = 0
 
     init(
-        database: UsageHistoryDatabaseWorking,
+        database: UsageHistoryViewModelDatabaseWorking,
         chartSemantics: UsageHistoryChartSemantics = .independentSignals,
         performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
         now: @escaping () -> Date = Date.init,
@@ -209,6 +210,7 @@ final class UsageHistoryViewModel: ObservableObject {
                 self?.scheduleReload()
             }
         }
+        acceptsReloadScheduling = true
     }
 
     convenience init(
@@ -626,6 +628,9 @@ final class UsageHistoryViewModel: ObservableObject {
     }
 
     func scheduleReload() {
+        guard acceptsReloadScheduling else {
+            return
+        }
         isLoadingHistory = true
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in

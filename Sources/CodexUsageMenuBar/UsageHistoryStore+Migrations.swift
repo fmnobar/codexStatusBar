@@ -3,6 +3,40 @@ import SQLite3
 
 extension UsageHistoryStore {
     func migrate() throws {
+        let startingVersion = try schemaVersion()
+        guard startingVersion <= Self.currentSchemaVersion else {
+            throw UsageHistoryStoreError.databaseOperationFailed(
+                "History database schema version \(startingVersion) is newer than this app supports."
+            )
+        }
+
+        if startingVersion < 1 {
+            try transaction {
+                try migrateLegacySchema()
+                try setSchemaVersion(1)
+            }
+        }
+
+        if try schemaVersion() < 2 {
+            try migrateToVersion2()
+        }
+
+        try transaction {
+            try sanitizeStoredGitOrigins()
+            try sanitizeStoredSensitiveMetadata()
+        }
+
+        // Data repairs are versioned independently from structural schema migrations. Backups,
+        // test fixtures, and older app versions can introduce rows after the schema is current,
+        // so keep these guarded maintenance passes on every successful open.
+        try cleanupTokenModelLabelsIfNeeded()
+        try cleanupTokenContextValuesIfNeeded()
+        try cleanupTokenDimensionsIfNeeded()
+        try recomputeStoredUsageConsumptionIfNeeded()
+        try rebuildSeriesCatalogsIfNeeded()
+    }
+
+    private func migrateLegacySchema() throws {
         try execute(
             """
             CREATE TABLE IF NOT EXISTS usage_samples (
@@ -597,6 +631,655 @@ extension UsageHistoryStore {
         try cleanupTokenDimensionsIfNeeded()
         try recomputeStoredUsageConsumptionIfNeeded()
         try rebuildSeriesCatalogsIfNeeded()
+    }
+
+    private func migrateToVersion2() throws {
+        try transaction {
+            try addColumnIfNeeded(
+                table: "token_usage_samples",
+                column: "is_retention_baseline",
+                definition: "INTEGER NOT NULL DEFAULT 0"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_token_imports",
+                column: "byte_offset",
+                definition: "INTEGER NOT NULL DEFAULT 0"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_token_imports",
+                column: "next_line_number",
+                definition: "INTEGER"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_token_imports",
+                column: "file_prefix_hash",
+                definition: "TEXT"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_token_imports",
+                column: "tail_state_json",
+                definition: "TEXT"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_task_timing_import_files",
+                column: "byte_offset",
+                definition: "INTEGER NOT NULL DEFAULT 0"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_task_timing_import_files",
+                column: "next_line_number",
+                definition: "INTEGER"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_task_timing_import_files",
+                column: "file_prefix_hash",
+                definition: "TEXT"
+            )
+            try addColumnIfNeeded(
+                table: "codex_session_task_timing_import_files",
+                column: "tail_state_json",
+                definition: "TEXT"
+            )
+
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS token_usage_hourly_rollups (
+                    period_start INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    project_path TEXT NOT NULL DEFAULT '',
+                    project_name TEXT NOT NULL DEFAULT '',
+                    effort TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    model_context_window INTEGER NOT NULL DEFAULT -1,
+                    observed_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (
+                        period_start, model, project_path, project_name,
+                        effort, source, model_context_window
+                    )
+                )
+                """
+            )
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS telemetry_hourly_rollups (
+                    metric TEXT NOT NULL,
+                    period_start INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    project_path TEXT NOT NULL DEFAULT '',
+                    project_name TEXT NOT NULL DEFAULT '',
+                    effort TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    transport TEXT NOT NULL DEFAULT '',
+                    wire_api TEXT NOT NULL DEFAULT '',
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    duration_sample_count INTEGER NOT NULL DEFAULT 0,
+                    duration_total_ms INTEGER NOT NULL DEFAULT 0,
+                    first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+                    first_token_total_ms INTEGER NOT NULL DEFAULT 0,
+                    completed_count INTEGER NOT NULL DEFAULT 0,
+                    incomplete_count INTEGER NOT NULL DEFAULT 0,
+                    duration_values TEXT,
+                    first_token_values TEXT,
+                    PRIMARY KEY (
+                        metric, period_start, model, project_path, project_name,
+                        effort, source, transport, wire_api
+                    )
+                )
+                """
+            )
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS telemetry_error_hourly_rollups (
+                    period_start INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    project_path TEXT NOT NULL DEFAULT '',
+                    project_name TEXT NOT NULL DEFAULT '',
+                    effort TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    transport TEXT NOT NULL DEFAULT '',
+                    wire_api TEXT NOT NULL DEFAULT '',
+                    error_summary TEXT NOT NULL,
+                    event_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (
+                        period_start, model, project_path, project_name,
+                        effort, source, transport, wire_api, error_summary
+                    )
+                )
+                """
+            )
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS token_dimension_hourly_rollups (
+                    period_start INTEGER NOT NULL,
+                    dimension_key TEXT NOT NULL,
+                    dimension_value TEXT NOT NULL DEFAULT '',
+                    observed_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (period_start, dimension_key, dimension_value)
+                )
+                """
+            )
+            try execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_dimension_hourly_rollups_key_period ON token_dimension_hourly_rollups(dimension_key, period_start)"
+            )
+
+            // These indexes duplicate left-most primary-key prefixes. SQLite's autoindexes serve
+            // the same point/range lookups with less disk and write amplification.
+            try execute("DROP INDEX IF EXISTS idx_token_usage_dimensions_sample")
+            try execute("DROP INDEX IF EXISTS idx_codex_turn_performance_dimensions_event")
+            try execute("DROP INDEX IF EXISTS idx_token_usage_hourly_rollups_period")
+            try execute("DROP INDEX IF EXISTS idx_telemetry_hourly_rollups_metric_period")
+            try execute("DROP INDEX IF EXISTS idx_telemetry_error_hourly_rollups_period")
+
+            try execute("DROP VIEW IF EXISTS token_usage_query_samples")
+            try execute(
+                """
+                CREATE VIEW token_usage_query_samples AS
+                SELECT thread_id, turn_id, model, session_id, project_path, project_name,
+                    effort, source, received_at, model_context_window,
+                    last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                    last_reasoning_output_tokens, last_total_tokens,
+                    total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                    total_reasoning_output_tokens, total_total_tokens,
+                    observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                    observed_reasoning_output_tokens, observed_total_tokens
+                FROM token_usage_samples
+                WHERE is_retention_baseline = 0
+
+                UNION ALL
+
+                SELECT 'rollup:' || period_start || ':' || rowid,
+                    'hourly-rollup', NULLIF(model, ''), NULL,
+                    NULLIF(project_path, ''), NULLIF(project_name, ''),
+                    NULLIF(effort, ''), NULLIF(source, ''), period_start,
+                    NULLIF(model_context_window, -1),
+                    observed_input_tokens, observed_cached_input_tokens,
+                    observed_output_tokens, observed_reasoning_output_tokens,
+                    observed_total_tokens,
+                    observed_input_tokens, observed_cached_input_tokens,
+                    observed_output_tokens, observed_reasoning_output_tokens,
+                    observed_total_tokens,
+                    observed_input_tokens, observed_cached_input_tokens,
+                    observed_output_tokens, observed_reasoning_output_tokens,
+                    observed_total_tokens
+                FROM token_usage_hourly_rollups
+                """
+            )
+
+            try sanitizeStoredGitOrigins()
+            try sanitizeStoredSensitiveMetadata()
+            try setSchemaVersion(2)
+        }
+    }
+
+    private func schemaVersion() throws -> Int32 {
+        let statement = try prepare("PRAGMA user_version")
+        defer { sqlite3_finalize(statement) }
+
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_int(statement, 0)
+        case SQLITE_DONE:
+            return 0
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func setSchemaVersion(_ version: Int32) throws {
+        try execute("PRAGMA user_version = \(version)")
+    }
+
+    func sanitizeStoredGitOrigins() throws {
+        guard try tableExists(table: "codex_thread_catalog") else {
+            return
+        }
+
+        let select = try prepare(
+            "SELECT thread_id, git_origin_url FROM codex_thread_catalog WHERE git_origin_url IS NOT NULL"
+        )
+        defer { sqlite3_finalize(select) }
+        var updates: [(threadID: String, origin: String?)] = []
+        while true {
+            switch sqlite3_step(select) {
+            case SQLITE_ROW:
+                let threadID = columnText(select, index: 0)
+                let rawOrigin = columnText(select, index: 1)
+                let sanitized = CodexGitRemoteSanitizer.sanitized(rawOrigin)
+                if sanitized != rawOrigin {
+                    updates.append((threadID, sanitized))
+                }
+            case SQLITE_DONE:
+                for update in updates {
+                    let statement = try prepare(
+                        "UPDATE codex_thread_catalog SET git_origin_url = ? WHERE thread_id = ?"
+                    )
+                    defer { sqlite3_finalize(statement) }
+                    bindOptionalText(update.origin, to: 1, in: statement)
+                    bindText(update.threadID, to: 2, in: statement)
+                    try step(statement)
+                }
+                return
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    func sanitizeStoredSensitiveMetadata() throws {
+        if try tableExists(table: "token_usage_samples") {
+            try sanitizeOptionalMetadataColumns(
+                table: "token_usage_samples",
+                columns: ["session_id", "effort", "source"]
+            )
+        }
+        if try tableExists(table: "token_effort_catalog") {
+            try deleteRowsWithSensitiveValues(from: "token_effort_catalog", columns: ["effort"])
+        }
+        if try tableExists(table: "token_source_catalog") {
+            try deleteRowsWithSensitiveValues(from: "token_source_catalog", columns: ["source"])
+        }
+        if try tableExists(table: "token_usage_hourly_rollups") {
+            try rekeySensitiveAggregateRows(
+                table: "token_usage_hourly_rollups",
+                keyColumns: [
+                    "period_start", "model", "project_path", "project_name", "effort", "source",
+                    "model_context_window",
+                ],
+                sensitiveKeyColumns: ["effort", "source"],
+                additiveColumns: [
+                    "observed_input_tokens", "observed_cached_input_tokens", "observed_output_tokens",
+                    "observed_reasoning_output_tokens", "observed_total_tokens", "sample_count",
+                ]
+            )
+        }
+        if try tableExists(table: "telemetry_hourly_rollups") {
+            try rekeySensitiveAggregateRows(
+                table: "telemetry_hourly_rollups",
+                keyColumns: [
+                    "metric", "period_start", "model", "project_path", "project_name", "effort",
+                    "source", "transport", "wire_api",
+                ],
+                sensitiveKeyColumns: ["effort", "source", "transport", "wire_api"],
+                additiveColumns: [
+                    "sample_count", "success_count", "failure_count", "duration_sample_count",
+                    "duration_total_ms", "first_token_sample_count", "first_token_total_ms",
+                    "completed_count", "incomplete_count",
+                ],
+                sampleColumns: ["duration_values", "first_token_values"]
+            )
+        }
+        if try tableExists(table: "telemetry_error_hourly_rollups") {
+            try rekeySensitiveAggregateRows(
+                table: "telemetry_error_hourly_rollups",
+                keyColumns: [
+                    "period_start", "model", "project_path", "project_name", "effort", "source",
+                    "transport", "wire_api", "error_summary",
+                ],
+                sensitiveKeyColumns: ["effort", "source", "transport", "wire_api", "error_summary"],
+                additiveColumns: ["event_count"]
+            )
+        }
+        if try tableExists(table: "token_dimension_hourly_rollups") {
+            try rekeySensitiveAggregateRows(
+                table: "token_dimension_hourly_rollups",
+                keyColumns: ["period_start", "dimension_key", "dimension_value"],
+                sensitiveKeyColumns: ["dimension_value"],
+                additiveColumns: [
+                    "observed_input_tokens", "observed_cached_input_tokens", "observed_output_tokens",
+                    "observed_reasoning_output_tokens", "observed_total_tokens", "sample_count",
+                ]
+            )
+        }
+        for table in [
+            "token_usage_dimensions",
+            "token_dimension_catalog",
+            "codex_turn_performance_dimensions",
+            "codex_turn_performance_dimension_catalog",
+        ] where try tableExists(table: table) {
+            try deleteSensitiveDimensionRows(from: table)
+        }
+
+        if try tableExists(table: "codex_turn_performance_events") {
+            try sanitizeOptionalMetadataColumns(
+                table: "codex_turn_performance_events",
+                columns: [
+                    "target", "event_name", "event_kind", "error_summary", "effort", "source",
+                    "originator", "app_version", "terminal_type", "transport", "wire_api",
+                ]
+            )
+        }
+        if try tableExists(table: "codex_thread_catalog") {
+            try sanitizeOptionalMetadataColumns(
+                table: "codex_thread_catalog",
+                columns: [
+                    "source", "model_provider", "approval_mode", "cli_version", "agent_nickname",
+                    "agent_role", "memory_mode", "reasoning_effort", "thread_source",
+                ]
+            )
+        }
+        if try tableExists(table: "codex_session_task_timing_events") {
+            try sanitizeOptionalMetadataColumns(
+                table: "codex_session_task_timing_events",
+                columns: ["collaboration_mode_kind", "effort", "source"]
+            )
+            try sanitizeMetadataJSONColumn(
+                table: "codex_session_task_timing_events",
+                column: "dimensions_json",
+                filterDimensions: true
+            )
+        }
+        for table in ["codex_session_token_imports", "codex_session_task_timing_import_files"]
+        where try tableExists(table: table) && (try tableHasColumn(table: table, column: "tail_state_json")) {
+            try sanitizeMetadataJSONColumn(
+                table: table,
+                column: "tail_state_json",
+                filterDimensions: false
+            )
+        }
+    }
+
+    private func deleteSensitiveDimensionRows(from table: String) throws {
+        let select = try prepare("SELECT rowid, dimension_value FROM \(table)")
+        defer { sqlite3_finalize(select) }
+        var rowIDs: [Int64] = []
+        while true {
+            switch sqlite3_step(select) {
+            case SQLITE_ROW:
+                if CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(columnText(select, index: 1)) {
+                    rowIDs.append(sqlite3_column_int64(select, 0))
+                }
+            case SQLITE_DONE:
+                for rowID in rowIDs {
+                    let delete = try prepare("DELETE FROM \(table) WHERE rowid = ?")
+                    defer { sqlite3_finalize(delete) }
+                    sqlite3_bind_int64(delete, 1, rowID)
+                    try step(delete)
+                }
+                return
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func deleteRowsWithSensitiveValues(from table: String, columns: [String]) throws {
+        let select = try prepare("SELECT rowid, \(columns.joined(separator: ", ")) FROM \(table)")
+        defer { sqlite3_finalize(select) }
+        var rowIDs: [Int64] = []
+        while true {
+            switch sqlite3_step(select) {
+            case SQLITE_ROW:
+                let hasSensitiveValue = columns.indices.contains { index in
+                    optionalColumnText(select, index: Int32(index + 1)).map(
+                        CodexTokenContextNormalizer.isPrivacySensitiveIdentifier
+                    ) ?? false
+                }
+                if hasSensitiveValue {
+                    rowIDs.append(sqlite3_column_int64(select, 0))
+                }
+            case SQLITE_DONE:
+                for rowID in rowIDs {
+                    let delete = try prepare("DELETE FROM \(table) WHERE rowid = ?")
+                    defer { sqlite3_finalize(delete) }
+                    sqlite3_bind_int64(delete, 1, rowID)
+                    try step(delete)
+                }
+                return
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private struct SensitiveAggregateRow {
+        let rowID: Int64
+        let keyValues: [SQLAggregateKeyValue]
+        let additiveValues: [Int64]
+        let sampleValues: [String?]
+    }
+
+    private enum SQLAggregateKeyValue {
+        case integer(Int64)
+        case text(String)
+    }
+
+    /// Moves privacy-sensitive aggregate keys into the unattributed bucket without losing the
+    /// counters or representative timing samples already compacted into the source row.
+    private func rekeySensitiveAggregateRows(
+        table: String,
+        keyColumns: [String],
+        sensitiveKeyColumns: Set<String>,
+        additiveColumns: [String],
+        sampleColumns: [String] = []
+    ) throws {
+        let selectedColumns = keyColumns + additiveColumns + sampleColumns
+        let select = try prepare(
+            "SELECT rowid, \(selectedColumns.joined(separator: ", ")) FROM \(table) "
+                + "ORDER BY \(keyColumns.joined(separator: ", "))"
+        )
+        defer { sqlite3_finalize(select) }
+        var rows: [SensitiveAggregateRow] = []
+        readRows: while true {
+            switch sqlite3_step(select) {
+            case SQLITE_ROW:
+                var changed = false
+                let keyValues = keyColumns.indices.map { index -> SQLAggregateKeyValue in
+                    let statementIndex = Int32(index + 1)
+                    if sqlite3_column_type(select, statementIndex) == SQLITE_INTEGER {
+                        return .integer(sqlite3_column_int64(select, statementIndex))
+                    }
+                    let value = columnText(select, index: statementIndex)
+                    if sensitiveKeyColumns.contains(keyColumns[index]),
+                       CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(value)
+                    {
+                        changed = true
+                        return .text("")
+                    }
+                    return .text(value)
+                }
+                guard changed else {
+                    continue
+                }
+                let additiveStart = keyColumns.count + 1
+                let additiveValues = additiveColumns.indices.map {
+                    sqlite3_column_int64(select, Int32(additiveStart + $0))
+                }
+                let sampleStart = additiveStart + additiveColumns.count
+                let sampleValues = sampleColumns.indices.map {
+                    optionalColumnText(select, index: Int32(sampleStart + $0))
+                }
+                rows.append(
+                    SensitiveAggregateRow(
+                        rowID: sqlite3_column_int64(select, 0),
+                        keyValues: keyValues,
+                        additiveValues: additiveValues,
+                        sampleValues: sampleValues
+                    )
+                )
+            case SQLITE_DONE:
+                break readRows
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+
+        guard !rows.isEmpty else {
+            return
+        }
+
+        let allColumns = selectedColumns.joined(separator: ", ")
+        let sampleStartIndex = keyColumns.count + additiveColumns.count
+        let valueExpressions = selectedColumns.indices.map { index in
+            let placeholder = "?\(index + 1)"
+            guard index >= sampleStartIndex else {
+                return placeholder
+            }
+            return Self.normalizedRepresentativeTelemetrySampleSQL(value: placeholder)
+        }
+        let additiveMerges = additiveColumns.map { "\($0) = \($0) + excluded.\($0)" }
+        let sampleMerges = sampleColumns.map { column in
+            "\(column) = \(Self.representativeTelemetrySampleMergeSQL(existing: column, incoming: "excluded.\(column)"))"
+        }
+        let upsert = try prepare(
+            """
+            INSERT INTO \(table) (\(allColumns)) VALUES (\(valueExpressions.joined(separator: ", ")))
+            ON CONFLICT(\(keyColumns.joined(separator: ", "))) DO UPDATE SET
+                \((additiveMerges + sampleMerges).joined(separator: ", "))
+            """
+        )
+        defer { sqlite3_finalize(upsert) }
+        let delete = try prepare("DELETE FROM \(table) WHERE rowid = ?")
+        defer { sqlite3_finalize(delete) }
+
+        for row in rows {
+            sqlite3_reset(upsert)
+            sqlite3_clear_bindings(upsert)
+            var bindingIndex: Int32 = 1
+            for value in row.keyValues {
+                switch value {
+                case let .integer(value):
+                    sqlite3_bind_int64(upsert, bindingIndex, value)
+                case let .text(value):
+                    bindText(value, to: bindingIndex, in: upsert)
+                }
+                bindingIndex += 1
+            }
+            for value in row.additiveValues {
+                sqlite3_bind_int64(upsert, bindingIndex, value)
+                bindingIndex += 1
+            }
+            for value in row.sampleValues {
+                bindOptionalText(value, to: bindingIndex, in: upsert)
+                bindingIndex += 1
+            }
+            try step(upsert)
+
+            sqlite3_reset(delete)
+            sqlite3_clear_bindings(delete)
+            sqlite3_bind_int64(delete, 1, row.rowID)
+            try step(delete)
+        }
+    }
+
+    private func sanitizeOptionalMetadataColumns(table: String, columns: [String]) throws {
+        let select = try prepare("SELECT rowid, \(columns.joined(separator: ", ")) FROM \(table)")
+        defer { sqlite3_finalize(select) }
+        var updates: [(rowID: Int64, values: [String?])] = []
+        while true {
+            switch sqlite3_step(select) {
+            case SQLITE_ROW:
+                let rawValues = columns.indices.map { optionalColumnText(select, index: Int32($0 + 1)) }
+                let sanitizedValues = rawValues.map { value in
+                    value.flatMap { CodexTokenContextNormalizer.isPrivacySensitiveIdentifier($0) ? nil : $0 }
+                }
+                if rawValues != sanitizedValues {
+                    updates.append((sqlite3_column_int64(select, 0), sanitizedValues))
+                }
+            case SQLITE_DONE:
+                for update in updates {
+                    let assignments = columns.map { "\($0) = ?" }.joined(separator: ", ")
+                    let statement = try prepare("UPDATE \(table) SET \(assignments) WHERE rowid = ?")
+                    defer { sqlite3_finalize(statement) }
+                    for (index, value) in update.values.enumerated() {
+                        bindOptionalText(value, to: Int32(index + 1), in: statement)
+                    }
+                    sqlite3_bind_int64(statement, Int32(columns.count + 1), update.rowID)
+                    try step(statement)
+                }
+                return
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private func sanitizeMetadataJSONColumn(
+        table: String,
+        column: String,
+        filterDimensions: Bool
+    ) throws {
+        let select = try prepare("SELECT rowid, \(column) FROM \(table) WHERE \(column) IS NOT NULL")
+        defer { sqlite3_finalize(select) }
+        var updates: [(rowID: Int64, value: String?)] = []
+        while true {
+            switch sqlite3_step(select) {
+            case SQLITE_ROW:
+                let rowID = sqlite3_column_int64(select, 0)
+                let rawValue = columnText(select, index: 1)
+                let sanitized = filterDimensions
+                    ? Self.sanitizedMetadataDimensionsJSON(rawValue)
+                    : (Self.jsonContainsSensitiveIdentifier(rawValue) ? nil : rawValue)
+                if sanitized != rawValue {
+                    updates.append((rowID, sanitized))
+                }
+            case SQLITE_DONE:
+                for update in updates {
+                    let statement = try prepare("UPDATE \(table) SET \(column) = ? WHERE rowid = ?")
+                    defer { sqlite3_finalize(statement) }
+                    bindOptionalText(update.value, to: 1, in: statement)
+                    sqlite3_bind_int64(statement, 2, update.rowID)
+                    try step(statement)
+                }
+                return
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
+    private static func sanitizedMetadataDimensionsJSON(_ value: String) -> String? {
+        guard let data = value.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return jsonContainsSensitiveIdentifier(value) ? nil : value
+        }
+        let sanitizedRows = rows.filter { row in
+            guard let dimensionValue = row["value"] as? String
+            else {
+                return true
+            }
+            return !CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(dimensionValue)
+        }
+        guard !sanitizedRows.isEmpty else {
+            return nil
+        }
+        guard let sanitizedData = try? JSONSerialization.data(withJSONObject: sanitizedRows, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: sanitizedData, encoding: .utf8)
+    }
+
+    private static func jsonContainsSensitiveIdentifier(_ value: String) -> Bool {
+        guard let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data)
+        else {
+            return CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(value)
+        }
+        func containsSensitiveIdentifier(_ value: Any) -> Bool {
+            if let string = value as? String {
+                return CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(string)
+            }
+            if let array = value as? [Any] {
+                return array.contains(where: containsSensitiveIdentifier)
+            }
+            if let dictionary = value as? [String: Any] {
+                return dictionary.values.contains(where: containsSensitiveIdentifier)
+            }
+            return false
+        }
+        return containsSensitiveIdentifier(object)
     }
 
     func cleanupTokenModelLabelsIfNeeded() throws {

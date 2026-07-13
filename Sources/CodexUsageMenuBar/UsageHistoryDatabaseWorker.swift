@@ -104,7 +104,12 @@ struct TokenDashboardLoadResult: Equatable {
     }
 }
 
-protocol UsageHistoryDatabaseWorking: Sendable {
+protocol UsageHistoryViewModelDatabaseWorking: Sendable {
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
+    func clearHistory() async throws
+}
+
+protocol UsageHistoryDatabaseWorking: UsageHistoryViewModelDatabaseWorking {
     func record(snapshot: CodexUsageSnapshot, at date: Date) async
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
     func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals?
@@ -121,16 +126,15 @@ protocol UsageHistoryDatabaseWorking: Sendable {
     func threadCatalogCaptureState() async -> CodexThreadCatalogCaptureState
     func captureModelCapabilitiesIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexModelCapabilitiesCaptureState
     func modelCapabilitiesCaptureState() async -> CodexModelCapabilitiesCaptureState
-    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) async throws -> UsageHistoryLoadResult
     func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
     func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
     func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
     func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics
+    func enforceTelemetryRetention(referenceDate: Date) async throws
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
     func exportBackup(to destinationURL: URL) async throws
     func importBackup(from sourceURL: URL) async throws
-    func clearHistory() async throws
     func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry]
     func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry]
     func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws
@@ -169,6 +173,8 @@ extension UsageHistoryDatabaseWorking {
     func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics {
         throw UsageHistoryStoreError.databaseOperationFailed("Local source stored metrics are unavailable.")
     }
+
+    func enforceTelemetryRetention(referenceDate: Date) async throws {}
 }
 
 extension UsageHistoryDashboardQueryWorking {
@@ -437,7 +443,17 @@ actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
 
     private func store() throws -> UsageHistoryStore {
         if let cachedStore {
-            return cachedStore
+            guard cachedStore.databaseURL == nil else {
+                return cachedStore
+            }
+
+            do {
+                let durableStore = try storeFactory()
+                self.cachedStore = durableStore
+                return durableStore
+            } catch {
+                return cachedStore
+            }
         }
 
         do {
@@ -445,7 +461,9 @@ actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
             cachedStore = store
             return store
         } catch {
-            return try fallbackStoreFactory()
+            let fallbackStore = try fallbackStoreFactory()
+            cachedStore = fallbackStore
+            return fallbackStore
         }
     }
 }
@@ -560,6 +578,10 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
 
     func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics {
         try await dashboardQueryWorker.localSourceStoredMetrics()
+    }
+
+    func enforceTelemetryRetention(referenceDate: Date) async throws {
+        try await writer.enforceTelemetryRetention(referenceDate: referenceDate)
     }
 
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
@@ -741,6 +763,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     private let sessionTaskTimingImporter: SessionTaskTimingImporter
     private let threadCatalogImporter: ThreadCatalogImporter
     private let modelCapabilitiesImporter: ModelCapabilitiesImporter
+    private let fallbackStoreFactory: StoreFactory?
     private let cacheStoreOnOpen: Bool
     private var cachedStore: UsageHistoryStore?
     private var lastRecentTokenImportAt: Date?
@@ -763,6 +786,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         self.sessionTaskTimingImporter = sessionTaskTimingImporter
         self.threadCatalogImporter = threadCatalogImporter
         self.modelCapabilitiesImporter = modelCapabilitiesImporter
+        self.fallbackStoreFactory = nil
         self.cacheStoreOnOpen = true
         self.cachedStore = store
     }
@@ -774,6 +798,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter,
         threadCatalogImporter: @escaping ThreadCatalogImporter = UsageHistoryDatabaseWorker.liveThreadCatalogImporter,
         modelCapabilitiesImporter: @escaping ModelCapabilitiesImporter = UsageHistoryDatabaseWorker.liveModelCapabilitiesImporter,
+        fallbackStoreFactory: StoreFactory? = nil,
         cacheStoreOnOpen: Bool = true
     ) {
         self.storeFactory = storeFactory
@@ -782,6 +807,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         self.sessionTaskTimingImporter = sessionTaskTimingImporter
         self.threadCatalogImporter = threadCatalogImporter
         self.modelCapabilitiesImporter = modelCapabilitiesImporter
+        self.fallbackStoreFactory = fallbackStoreFactory
         self.cacheStoreOnOpen = cacheStoreOnOpen
     }
 
@@ -793,12 +819,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     static func applicationSupportStoreWithInMemoryFallback() -> UsageHistoryDatabaseWorker {
         UsageHistoryDatabaseWorker(storeFactory: {
-            if let applicationSupportStore = try? UsageHistoryStore.applicationSupportStore() {
-                return applicationSupportStore
-            }
-
-            return try UsageHistoryStore.inMemory()
-        }, cacheStoreOnOpen: false)
+            try UsageHistoryStore.applicationSupportStore()
+        }, fallbackStoreFactory: {
+            try UsageHistoryStore.inMemory()
+        })
     }
 
     static func inMemory() throws -> UsageHistoryDatabaseWorker {
@@ -1007,6 +1031,10 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         try store().localSourceStoredMetrics()
     }
 
+    func enforceTelemetryRetention(referenceDate: Date) throws {
+        try store().enforceTelemetryRetention(referenceDate: referenceDate, force: true)
+    }
+
     func databaseInfo() throws -> UsageHistoryDatabaseInfo {
         let store = try store()
         return try store.databaseInfo()
@@ -1052,14 +1080,40 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
 
     private func store() throws -> UsageHistoryStore {
         if let cachedStore {
+            guard cachedStore.databaseURL == nil else {
+                return cachedStore
+            }
+
+            // An in-memory store is a temporary continuity fallback. Retry the persistent
+            // factory on subsequent operations, but keep the same fallback instance until
+            // opening the durable database succeeds so transient failures do not lose data
+            // repeatedly within one process lifetime.
+            do {
+                let candidate = try storeFactory()
+                if candidate.databaseURL != nil {
+                    self.cachedStore = candidate
+                    return candidate
+                }
+            } catch {
+                return cachedStore
+            }
             return cachedStore
         }
 
-        let store = try storeFactory()
-        if cacheStoreOnOpen {
-            cachedStore = store
+        do {
+            let store = try storeFactory()
+            if cacheStoreOnOpen {
+                cachedStore = store
+            }
+            return store
+        } catch {
+            guard let fallbackStoreFactory else {
+                throw error
+            }
+            let fallbackStore = try fallbackStoreFactory()
+            cachedStore = fallbackStore
+            return fallbackStore
         }
-        return store
     }
 
     private func importRecentTokenHistoryIfNeeded(

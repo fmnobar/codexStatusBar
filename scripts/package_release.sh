@@ -17,12 +17,20 @@ fail() {
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/safe_paths.sh"
 PROJECT_FILE="${PROJECT_FILE:-$REPO_ROOT/CodexUsageMenuBar.xcodeproj/project.pbxproj}"
 PROJECT_PATH="$REPO_ROOT/CodexUsageMenuBar.xcodeproj"
 SCHEME_NAME="CodexUsageMenuBar"
 APP_NAME="CodexStatusBar.app"
 BUILD_ARCH="${BUILD_ARCH:-$(uname -m)}"
-RELEASE_ROOT="${RELEASE_ROOT:-$REPO_ROOT/.build/release}"
+DEFAULT_RELEASE_ROOT="$REPO_ROOT/.build/release"
+RELEASE_ROOT="${RELEASE_ROOT:-$DEFAULT_RELEASE_ROOT}"
+RELEASE_SENTINEL=".codex-status-bar-release-root"
+if [[ "$RELEASE_ROOT" == "$DEFAULT_RELEASE_ROOT" && -d "$RELEASE_ROOT" && ! -f "$RELEASE_ROOT/$RELEASE_SENTINEL" ]]; then
+  RELEASE_ROOT="$REPO_ROOT/.build/release.package.$$"
+  echo "Preserving legacy release output without an ownership sentinel: $DEFAULT_RELEASE_ROOT"
+  echo "Using isolated release output instead: $RELEASE_ROOT"
+fi
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$RELEASE_ROOT/DerivedData}"
 STAGED_APP_PATH="$RELEASE_ROOT/$APP_NAME"
 BUILT_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/$APP_NAME"
@@ -69,6 +77,8 @@ fi
 if [[ ! -f "$PROJECT_FILE" ]]; then
   fail "Project file not found: $PROJECT_FILE"
 fi
+
+safe_assert_strict_descendant "$RELEASE_ROOT" "$REPO_ROOT/.build"
 
 if [[ "$NOTARIZE" == "1" && "$SIGNED" != "1" ]]; then
   fail "--notarize requires --signed."
@@ -170,7 +180,15 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-rm -rf "$RELEASE_ROOT"
+if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  fail "Public packaging requires a git checkout."
+fi
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+  fail "Public packaging requires a clean source tree whose HEAD exactly identifies the artifact."
+fi
+SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
+safe_reset_owned_directory "$RELEASE_ROOT" "$REPO_ROOT/.build" "$RELEASE_SENTINEL"
 mkdir -p "$RELEASE_ROOT" "$DIST_DIR"
 
 echo "Building Release app..."
@@ -214,9 +232,40 @@ fi
 
 ditto "$BUILT_APP_PATH" "$STAGED_APP_PATH"
 
+"$SCRIPT_DIR/finalize_app_bundle.sh" \
+  --app "$STAGED_APP_PATH" \
+  --provenance public-release \
+  --omit-executable-hash
+
 if [[ "$SIGNED" == "1" ]]; then
+  echo "Re-signing finalized release bundle..."
+  codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --timestamp \
+    --sign "$DEVELOPER_ID_APPLICATION" \
+    "$STAGED_APP_PATH"
+
   echo "Verifying Developer ID signature..."
-  codesign --verify --deep --strict --verbose=2 "$STAGED_APP_PATH"
+  "$SCRIPT_DIR/validate_app_bundle.sh" \
+    --app "$STAGED_APP_PATH" \
+    --version "$VERSION" \
+    --build "$BUILD" \
+    --arch "$BUILD_ARCH" \
+    --provenance public-release \
+    --commit "$SOURCE_COMMIT" \
+    --signed \
+    --team "$DEVELOPMENT_TEAM" \
+    --signer "$DEVELOPER_ID_APPLICATION"
+else
+  "$SCRIPT_DIR/validate_app_bundle.sh" \
+    --app "$STAGED_APP_PATH" \
+    --version "$VERSION" \
+    --build "$BUILD" \
+    --arch "$BUILD_ARCH" \
+    --provenance public-release \
+    --commit "$SOURCE_COMMIT"
 fi
 
 if [[ "$NOTARIZE" == "1" ]]; then
@@ -252,7 +301,7 @@ if [[ "$NOTARIZE" == "1" ]]; then
   codesign --verify --deep --strict --verbose=2 "$STAGED_APP_PATH"
 fi
 
-rm -f "$ARTIFACT_PATH"
+rm -f "$ARTIFACT_PATH" "$ARTIFACT_PATH.sha256"
 
 echo "Creating zip..."
 (
@@ -264,8 +313,28 @@ if [[ ! -f "$ARTIFACT_PATH" ]]; then
   fail "Expected zip was not created: $ARTIFACT_PATH"
 fi
 
+validation_args=(
+  --artifact "$ARTIFACT_PATH"
+  --version "$VERSION"
+  --build "$BUILD"
+  --arch "$BUILD_ARCH"
+  --provenance public-release
+  --commit "$SOURCE_COMMIT"
+)
+if [[ "$SIGNED" == "1" ]]; then
+  validation_args+=(--signed --team "$DEVELOPMENT_TEAM" --signer "$DEVELOPER_ID_APPLICATION")
+fi
+if [[ "$NOTARIZE" == "1" ]]; then
+  validation_args+=(--notarized)
+fi
+"$SCRIPT_DIR/validate_release_artifact.sh" "${validation_args[@]}"
+
+artifact_digest="$(shasum -a 256 "$ARTIFACT_PATH" | awk '{print $1}')"
+printf '%s  %s\n' "$artifact_digest" "$(basename "$ARTIFACT_PATH")" > "$ARTIFACT_PATH.sha256"
+
 echo
 echo "Created release artifact:"
 echo "  $ARTIFACT_PATH"
+echo "  $ARTIFACT_PATH.sha256"
 echo
 echo "Signing: $SIGNING_STATUS."

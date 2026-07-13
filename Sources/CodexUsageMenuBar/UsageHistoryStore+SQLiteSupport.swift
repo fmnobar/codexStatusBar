@@ -2,6 +2,15 @@ import Foundation
 import SQLite3
 
 extension UsageHistoryStore {
+    func busyTimeoutMilliseconds() throws -> Int32 {
+        let statement = try prepare("PRAGMA busy_timeout")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        return sqlite3_column_int(statement, 0)
+    }
+
     func tableHasColumn(table: String, column: String, schema: String? = nil) throws -> Bool {
         let pragmaPrefix = schema.map { "\($0)." } ?? ""
         let statement = try prepare("PRAGMA \(pragmaPrefix)table_info(\(table))")
@@ -54,6 +63,22 @@ extension UsageHistoryStore {
     }
 
     func transaction(_ work: () throws -> Void) throws {
+        if sqlite3_get_autocommit(database) == 0 {
+            transactionSavepointCounter += 1
+            let savepoint = "usage_history_nested_\(transactionSavepointCounter)"
+            try execute("SAVEPOINT \(savepoint)")
+
+            do {
+                try work()
+                try execute("RELEASE SAVEPOINT \(savepoint)")
+            } catch {
+                try? execute("ROLLBACK TO SAVEPOINT \(savepoint)")
+                try? execute("RELEASE SAVEPOINT \(savepoint)")
+                throw error
+            }
+            return
+        }
+
         try execute("BEGIN IMMEDIATE TRANSACTION")
 
         do {

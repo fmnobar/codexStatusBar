@@ -1,5 +1,6 @@
 import CryptoKit
 import XCTest
+@testable import CodexUsageCore
 
 @MainActor
 final class AppUpdateCheckTests: XCTestCase {
@@ -49,6 +50,21 @@ final class AppUpdateCheckTests: XCTestCase {
         ])
 
         XCTAssertNil(release.matchingCodexStatusBarZipAsset)
+    }
+
+    func testReleaseAssetSelectionRequiresCanonicalTagAndExactlyOneAsset() {
+        let matchingAsset = asset(name: "CodexStatusBar-v1.2.3-build7.zip")
+
+        XCTAssertNil(release(tagName: "1.2.3", assets: [matchingAsset]).matchingCodexStatusBarZipAsset)
+        XCTAssertNil(release(tagName: "V1.2.3", assets: [matchingAsset]).matchingCodexStatusBarZipAsset)
+        XCTAssertNil(release(tagName: "v1.2.3", assets: [
+            matchingAsset,
+            asset(name: "CodexStatusBar-v1.2.3-build8.zip"),
+        ]).matchingCodexStatusBarZipAsset)
+        XCTAssertNil(release(
+            tagName: "v1.2.3",
+            assets: [asset(name: "CodexStatusBar-v1.2.3-build0.zip")]
+        ).matchingCodexStatusBarZipAsset)
     }
 
     func testLatestReleaseClientMapsMalformedAssetPayload() async {
@@ -101,6 +117,123 @@ final class AppUpdateCheckTests: XCTestCase {
 
         await assertUpdateClientError(.decodingFailed) {
             _ = try await client.latestRelease()
+        }
+    }
+
+    func testDownloadClientRejectsOversizedAssetBeforeStartingNetworkWork() async {
+        var loaderWasCalled = false
+        let client = AppUpdateDownloadClient(
+            maximumArchiveBytes: 4,
+            responseLoader: { _, _, _, _ in
+                loaderWasCalled = true
+                return Self.response(statusCode: 200)
+            }
+        )
+
+        do {
+            _ = try await client.download(
+                asset: asset(size: 5),
+                to: temporaryDirectory().appendingPathComponent("update.zip"),
+                progress: { _ in }
+            )
+            XCTFail("Expected oversized asset rejection")
+        } catch AppUpdateDownloadError.responseTooLarge(let maximumBytes) {
+            XCTAssertEqual(maximumBytes, 4)
+            XCTAssertFalse(loaderWasCalled)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testDownloadClientRemovesPartialFileWhenStreamExceedsLimit() async {
+        let destinationURL = temporaryDirectory().appendingPathComponent("update.zip")
+        let client = AppUpdateDownloadClient(
+            maximumArchiveBytes: 4,
+            responseLoader: { _, destinationURL, maximumBytes, _ in
+                XCTAssertEqual(maximumBytes, 4)
+                try Data("12345".utf8).write(to: destinationURL)
+                return Self.response(statusCode: 200)
+            }
+        )
+
+        do {
+            _ = try await client.download(
+                asset: asset(size: 0),
+                to: destinationURL,
+                progress: { _ in }
+            )
+            XCTFail("Expected streamed size rejection")
+        } catch AppUpdateDownloadError.responseTooLarge(let maximumBytes) {
+            XCTAssertEqual(maximumBytes, 4)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destinationURL.path))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testProcessCommandRunnerDrainsStdoutAndStderrConcurrently() async throws {
+        let runner = AppUpdateProcessCommandRunner(timeout: 2, maximumOutputBytes: 512 * 1024)
+        let result = try await runner.run(
+            executablePath: "/bin/bash",
+            arguments: [
+                "-c",
+                "/usr/bin/yes stdout | /usr/bin/head -c 131072; /usr/bin/yes stderr | /usr/bin/head -c 131072 >&2",
+            ]
+        )
+
+        XCTAssertEqual(result.output.utf8.count, 131_072)
+        XCTAssertEqual(result.errorOutput.utf8.count, 131_072)
+    }
+
+    func testProcessCommandRunnerBoundsCapturedOutput() async {
+        let runner = AppUpdateProcessCommandRunner(timeout: 2, maximumOutputBytes: 1024)
+        do {
+            _ = try await runner.run(
+                executablePath: "/bin/bash",
+                arguments: ["-c", "/usr/bin/yes output | /usr/bin/head -c 131072"]
+            )
+            XCTFail("Expected output limit failure")
+        } catch AppUpdateCommandError.outputLimitExceeded {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testProcessCommandRunnerTimesOutAndKillsStubbornProcess() async {
+        let runner = AppUpdateProcessCommandRunner(timeout: 0.1, maximumOutputBytes: 1024)
+        let startedAt = Date()
+        do {
+            _ = try await runner.run(
+                executablePath: "/bin/bash",
+                arguments: ["-c", "trap '' TERM; while :; do :; done"]
+            )
+            XCTFail("Expected command timeout")
+        } catch AppUpdateCommandError.timedOut {
+            XCTAssertLessThan(Date().timeIntervalSince(startedAt), 2)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testProcessCommandRunnerRespondsToTaskCancellation() async {
+        let runner = AppUpdateProcessCommandRunner(timeout: 5, maximumOutputBytes: 1024)
+        let task = Task {
+            try await runner.run(
+                executablePath: "/bin/bash",
+                arguments: ["-c", "trap '' TERM; while :; do :; done"]
+            )
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch AppUpdateCommandError.cancelled {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
         }
     }
 
@@ -371,14 +504,24 @@ final class AppUpdateCheckTests: XCTestCase {
             zipURL: zipURL,
             release: release,
             asset: asset,
-            installedBundleIdentifier: "com.farzad.codexstatusbar"
+            installedBundleIdentifier: "com.farzad.codexstatusbar",
+            installedAppURL: installedAppURL()
         )
 
         XCTAssertEqual(package.release, release)
         XCTAssertEqual(package.asset, asset)
         XCTAssertEqual(package.appURL.lastPathComponent, "CodexStatusBar.app")
+        XCTAssertEqual(package.cleanupRootURL, zipURL.deletingLastPathComponent())
+        XCTAssertEqual(package.bundleIdentifier, "com.farzad.codexstatusbar")
+        XCTAssertEqual(package.immutableContentSHA256?.count, 64)
         XCTAssertTrue(commandRunner.commands.contains { $0.executablePath == "/usr/bin/codesign" })
         XCTAssertTrue(commandRunner.commands.contains { $0.executablePath == "/usr/sbin/spctl" })
+        XCTAssertEqual(package.signingRequirement?.teamIdentifier, commandRunner.installedTeamIdentifier)
+        XCTAssertTrue(commandRunner.commands.contains { command in
+            command.executablePath == "/usr/bin/codesign"
+                && command.arguments.contains("-R=\(commandRunner.designatedRequirement)")
+                && !command.arguments.contains("-R")
+        })
     }
 
     func testPackageVerifierRejectsChecksumMismatch() async throws {
@@ -390,23 +533,96 @@ final class AppUpdateCheckTests: XCTestCase {
                 zipURL: zipURL,
                 release: release(tagName: "v1.2.3"),
                 asset: asset(digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                installedBundleIdentifier: "com.farzad.codexstatusbar"
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
             )
         }
     }
 
-    func testPackageVerifierAllowsMissingChecksum() async throws {
+    func testPackageVerifierRejectsOversizedArchiveBeforeExtraction() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let verifier = AppUpdatePackageVerifier(
+            maximumArchiveBytes: 1,
+            commandRunner: RecordingCommandRunner()
+        )
+
+        await assertPackageVerificationError(.archiveTooLarge) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+        XCTAssertTrue(try expandedDirectories(nextTo: zipURL).isEmpty)
+    }
+
+    func testPackageVerifierRejectsMissingChecksum() async throws {
         let zipURL = try makeUpdateZip(version: "1.2.3")
         let verifier = AppUpdatePackageVerifier(commandRunner: RecordingCommandRunner())
 
-        let package = try await verifier.verify(
-            zipURL: zipURL,
-            release: release(tagName: "v1.2.3"),
-            asset: asset(digest: nil),
-            installedBundleIdentifier: "com.farzad.codexstatusbar"
-        )
+        await assertPackageVerificationError(.checksumMissing) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: asset(digest: nil),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+    }
 
-        XCTAssertEqual(package.appURL.lastPathComponent, "CodexStatusBar.app")
+    func testPackageVerifierRejectsMalformedChecksum() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let verifier = AppUpdatePackageVerifier(commandRunner: RecordingCommandRunner())
+
+        await assertPackageVerificationError(.checksumMalformed) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: asset(digest: "sha512:not-supported"),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+    }
+
+    func testPackageVerifierRejectsNonCanonicalDigestFormatting() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let digest = try sha256Digest(for: zipURL)
+        let verifier = AppUpdatePackageVerifier(commandRunner: RecordingCommandRunner())
+
+        for malformedDigest in ["SHA256:\(digest)", " sha256:\(digest)"] {
+            await assertPackageVerificationError(.checksumMalformed) {
+                _ = try await verifier.verify(
+                    zipURL: zipURL,
+                    release: release(tagName: "v1.2.3"),
+                    asset: asset(digest: malformedDigest),
+                    installedBundleIdentifier: "com.farzad.codexstatusbar",
+                    installedAppURL: installedAppURL()
+                )
+            }
+        }
+    }
+
+    func testPackageVerifierRejectsNonCanonicalOrAmbiguousAssetName() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let verifier = AppUpdatePackageVerifier(commandRunner: RecordingCommandRunner())
+        let selectedAsset = try verifiedAsset(for: zipURL)
+
+        await assertPackageVerificationError(.assetNameMismatch) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3", assets: [
+                    selectedAsset,
+                    asset(name: "CodexStatusBar-v1.2.3-build8.zip", digest: selectedAsset.digest),
+                ]),
+                asset: selectedAsset,
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
     }
 
     func testPackageVerifierRejectsInvalidZip() async throws {
@@ -418,8 +634,9 @@ final class AppUpdateCheckTests: XCTestCase {
             _ = try await verifier.verify(
                 zipURL: invalidZipURL,
                 release: release(tagName: "v1.2.3"),
-                asset: asset(),
-                installedBundleIdentifier: "com.farzad.codexstatusbar"
+                asset: try verifiedAsset(for: invalidZipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
             )
         }
     }
@@ -432,8 +649,9 @@ final class AppUpdateCheckTests: XCTestCase {
             _ = try await verifier.verify(
                 zipURL: zipURL,
                 release: release(tagName: "v1.2.3"),
-                asset: asset(),
-                installedBundleIdentifier: "com.farzad.codexstatusbar"
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
             )
         }
     }
@@ -448,10 +666,12 @@ final class AppUpdateCheckTests: XCTestCase {
             _ = try await verifier.verify(
                 zipURL: zipURL,
                 release: release(tagName: "v1.2.3"),
-                asset: asset(),
-                installedBundleIdentifier: "com.farzad.codexstatusbar"
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
             )
         }
+        XCTAssertTrue(try expandedDirectories(nextTo: zipURL).isEmpty)
     }
 
     func testPackageVerifierRejectsVersionMismatch() async throws {
@@ -464,8 +684,77 @@ final class AppUpdateCheckTests: XCTestCase {
             _ = try await verifier.verify(
                 zipURL: zipURL,
                 release: release(tagName: "v1.2.3"),
-                asset: asset(),
-                installedBundleIdentifier: "com.farzad.codexstatusbar"
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+    }
+
+    func testPackageVerifierRejectsBuildMismatch() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3", build: "7")
+        let verifier = AppUpdatePackageVerifier(commandRunner: RecordingCommandRunner())
+
+        await assertPackageVerificationError(.buildMismatch(expected: "8", actual: "7")) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: try verifiedAsset(for: zipURL, name: "CodexStatusBar-v1.2.3-build8.zip"),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+    }
+
+    func testPackageVerifierRejectsMissingExpectedDeveloperIDSigner() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let commandRunner = RecordingCommandRunner()
+        commandRunner.installedTeamIdentifier = nil
+        let verifier = AppUpdatePackageVerifier(commandRunner: commandRunner)
+
+        await assertPackageVerificationError(.expectedSignerUnavailable) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+    }
+
+    func testPackageVerifierRejectsWrongSignerTeam() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let commandRunner = RecordingCommandRunner()
+        commandRunner.stagedTeamIdentifier = "WRONG12345"
+        let verifier = AppUpdatePackageVerifier(commandRunner: commandRunner)
+
+        await assertPackageVerificationError(
+            .signingTeamMismatch(expected: "ABCDE12345", actual: "WRONG12345")
+        ) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
+            )
+        }
+    }
+
+    func testPackageVerifierRejectsWrongDesignatedRequirement() async throws {
+        let zipURL = try makeUpdateZip(version: "1.2.3")
+        let commandRunner = RecordingCommandRunner()
+        commandRunner.stagedDesignatedRequirement = "identifier \"com.example.other\""
+        let verifier = AppUpdatePackageVerifier(commandRunner: commandRunner)
+
+        await assertPackageVerificationError(.designatedRequirementMismatch) {
+            _ = try await verifier.verify(
+                zipURL: zipURL,
+                release: release(tagName: "v1.2.3"),
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
             )
         }
     }
@@ -480,8 +769,9 @@ final class AppUpdateCheckTests: XCTestCase {
             _ = try await verifier.verify(
                 zipURL: zipURL,
                 release: release(tagName: "v1.2.3"),
-                asset: asset(),
-                installedBundleIdentifier: "com.farzad.codexstatusbar"
+                asset: try verifiedAsset(for: zipURL),
+                installedBundleIdentifier: "com.farzad.codexstatusbar",
+                installedAppURL: installedAppURL()
             )
             XCTFail("Expected trust check failure")
         } catch AppUpdatePackageVerificationError.verificationCommandFailed(let message) {
@@ -500,6 +790,9 @@ final class AppUpdateCheckTests: XCTestCase {
             at: targetAppURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        let cleanupRootURL = directory.appendingPathComponent("Staged App", isDirectory: true)
+        try FileManager.default.createDirectory(at: cleanupRootURL, withIntermediateDirectories: true)
+        try Data().write(to: cleanupRootURL.appendingPathComponent(".codex-status-bar-update-staging"))
         let launcher = RecordingProcessLauncher()
         let installer = AppUpdateInstaller(
             processLauncher: launcher,
@@ -509,8 +802,11 @@ final class AppUpdateCheckTests: XCTestCase {
         let package = AppUpdatePackage(
             release: release(tagName: "v1.2.3"),
             asset: asset(),
-            zipURL: directory.appendingPathComponent("Update Zip.zip"),
-            appURL: directory.appendingPathComponent("Staged App/CodexStatusBar.app", isDirectory: true)
+            zipURL: cleanupRootURL.appendingPathComponent("Update Zip.zip"),
+            appURL: cleanupRootURL.appendingPathComponent("CodexStatusBar.app", isDirectory: true),
+            cleanupRootURL: cleanupRootURL,
+            immutableContentSHA256: String(repeating: "a", count: 64),
+            signingRequirement: testSigningRequirement()
         )
 
         let launch = try await installer.install(
@@ -524,10 +820,22 @@ final class AppUpdateCheckTests: XCTestCase {
         XCTAssertEqual(launch.arguments[1], "123")
         XCTAssertEqual(launch.arguments[2], package.appURL.path)
         XCTAssertEqual(launch.arguments[3], targetAppURL.path)
+        XCTAssertEqual(launch.arguments[5], "com.farzad.codexstatusbar")
+        XCTAssertEqual(launch.arguments[6], "1.2.3")
+        XCTAssertEqual(launch.arguments[7], "7")
+        XCTAssertEqual(launch.arguments[8], String(repeating: "a", count: 64))
+        XCTAssertEqual(launch.arguments[9], "ABCDE12345")
+        XCTAssertEqual(launch.arguments[10], testSigningRequirement().designatedRequirement)
+        XCTAssertEqual(launch.arguments[11], cleanupRootURL.path)
 
         let script = try String(contentsOf: launch.scriptURL)
         XCTAssertTrue(script.contains("while kill -0 \"$CURRENT_PID\""))
-        XCTAssertTrue(script.contains("open \"$TARGET_APP\""))
+        XCTAssertTrue(script.contains("MAX_EXIT_WAIT_ATTEMPTS"))
+        XCTAssertTrue(script.contains("restore_backup"))
+        XCTAssertTrue(script.contains("\"-R=$EXPECTED_REQUIREMENT\""))
+        XCTAssertTrue(script.contains("actual_requirement"))
+        XCTAssertTrue(script.contains("verify_release_app \"$STAGED_APP\""))
+        XCTAssertTrue(script.contains("verify_release_app \"$TARGET_APP\""))
         XCTAssertFalse(script.contains("sudo"))
     }
 
@@ -559,6 +867,241 @@ final class AppUpdateCheckTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testInstallerRejectsPackageWithoutPinnedSigningRequirement() async throws {
+        let directory = temporaryDirectory()
+        let targetAppURL = directory.appendingPathComponent("CodexStatusBar.app", isDirectory: true)
+        let installer = AppUpdateInstaller(
+            processLauncher: RecordingProcessLauncher(),
+            scriptDirectory: directory.appendingPathComponent("Scripts", isDirectory: true),
+            writableDirectoryCheck: { _ in true }
+        )
+
+        do {
+            _ = try await installer.install(
+                package: AppUpdatePackage(
+                    release: release(tagName: "v1.2.3"),
+                    asset: asset(),
+                    zipURL: directory.appendingPathComponent("update.zip"),
+                    appURL: directory.appendingPathComponent("Staged/CodexStatusBar.app", isDirectory: true)
+                ),
+                targetAppURL: targetAppURL,
+                currentProcessIdentifier: 123
+            )
+            XCTFail("Expected missing signing requirement failure")
+        } catch AppUpdateInstallerError.missingSigningRequirement {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testInstallerRejectsPackageWithoutImmutableContentDigest() async throws {
+        let directory = temporaryDirectory()
+        let targetAppURL = directory.appendingPathComponent("CodexStatusBar.app", isDirectory: true)
+        let installer = AppUpdateInstaller(
+            processLauncher: RecordingProcessLauncher(),
+            scriptDirectory: directory.appendingPathComponent("Scripts", isDirectory: true),
+            writableDirectoryCheck: { _ in true }
+        )
+
+        do {
+            _ = try await installer.install(
+                package: AppUpdatePackage(
+                    release: release(tagName: "v1.2.3"),
+                    asset: asset(),
+                    zipURL: directory.appendingPathComponent("update.zip"),
+                    appURL: directory.appendingPathComponent("Staged/CodexStatusBar.app", isDirectory: true),
+                    signingRequirement: testSigningRequirement()
+                ),
+                targetAppURL: targetAppURL,
+                currentProcessIdentifier: 123
+            )
+            XCTFail("Expected missing immutable content digest failure")
+        } catch AppUpdateInstallerError.missingImmutableContentDigest {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testDetachedInstallerExecutesTransactionalSwapAgainstFixtureBundles() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true
+        )
+
+        XCTAssertEqual(result.status, 0, result.output)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertEqual(try String(contentsOf: fixture.openMarker), fixture.targetApp.path)
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+    }
+
+    func testDetachedInstallerRollsBackFixtureWhenRelaunchCannotBeConfirmed() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: false
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("did not relaunch"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+    }
+
+    func testDetachedInstallerLeavesOriginalWhenStagingCopyFails() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true,
+            shouldFailStagingCopy: true
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+    }
+
+    func testDetachedInstallerRejectsChangedStagedContentBeforeSwap() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.stagedApp.appendingPathComponent("injected-empty-directory", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("content changed"), result.output)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+    }
+
+    func testDetachedInstallerLeavesOriginalWhenPreSwapIdentityValidationFails() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true,
+            validationFailurePathSubstring: "/.CodexStatusBar.update."
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("injected identity validation failure"), result.output)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.killMarker.path))
+    }
+
+    func testDetachedInstallerRollsBackWhenPostSwapIdentityValidationFails() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true,
+            validationFailurePath: fixture.targetApp
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("injected identity validation failure"), result.output)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+        let killedProcesses = try String(contentsOf: fixture.killMarker)
+        XCTAssertTrue(killedProcesses.contains("4242"))
+        XCTAssertFalse(killedProcesses.contains("4343"), "Rollback must preserve the foreign same-name canary.")
+    }
+
+    func testDetachedInstallerRollsBackFixtureWhenReplacementRenameFails() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true,
+            shouldFailReplacementRename: true
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
+    }
+
+    func testDetachedInstallerRollsBackFixtureWhenLaunchFails() async throws {
+        let fixture = try makeInstallerFixture()
+        let launch = try await makeInstallerLaunch(
+            fixture: fixture,
+            currentProcessIdentifier: 999_999
+        )
+
+        let result = try executeInstallerScript(
+            launch,
+            fixture: fixture,
+            shouldReportRelaunch: true,
+            shouldFailLaunch: true
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("old.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.targetApp.appendingPathComponent("new.txt").path))
+        XCTAssertTrue(try siblingBackups(in: fixture.targetApp.deletingLastPathComponent()).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot.path))
     }
 
     func testUpdatesViewModelDownloadsVerifiesAndPreparesInstall() async {
@@ -732,14 +1275,15 @@ final class AppUpdateCheckTests: XCTestCase {
     }
 
     private func asset(
-        name: String = "CodexStatusBar-v1.2.3-build4.zip",
+        name: String = "CodexStatusBar-v1.2.3-build7.zip",
+        size: Int64 = 1234,
         digest: String? = nil
     ) -> AppUpdateReleaseAsset {
         AppUpdateReleaseAsset(
             name: name,
             browserDownloadURL: URL(string: "https://github.com/fmnobar/codexStatusBar/releases/download/v1.2.3/\(name)")!,
             contentType: "application/zip",
-            size: 1234,
+            size: size,
             digest: digest
         )
     }
@@ -788,6 +1332,7 @@ final class AppUpdateCheckTests: XCTestCase {
     private func makeUpdateZip(
         bundleIdentifier: String = "com.farzad.codexstatusbar",
         version: String = "1.2.3",
+        build: String = "7",
         includeApp: Bool = true
     ) throws -> URL {
         let directory = temporaryDirectory()
@@ -802,7 +1347,7 @@ final class AppUpdateCheckTests: XCTestCase {
             let info: [String: Any] = [
                 "CFBundleIdentifier": bundleIdentifier,
                 "CFBundleShortVersionString": version,
-                "CFBundleVersion": "7",
+                "CFBundleVersion": build,
             ]
             let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
             try data.write(to: contentsURL.appendingPathComponent("Info.plist"))
@@ -821,6 +1366,258 @@ final class AppUpdateCheckTests: XCTestCase {
         return SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private func verifiedAsset(
+        for zipURL: URL,
+        name: String = "CodexStatusBar-v1.2.3-build7.zip"
+    ) throws -> AppUpdateReleaseAsset {
+        asset(name: name, digest: "sha256:\(try sha256Digest(for: zipURL))")
+    }
+
+    private func installedAppURL() -> URL {
+        URL(fileURLWithPath: "/Applications/CodexStatusBar.app", isDirectory: true)
+    }
+
+    private func testSigningRequirement() -> AppUpdateSigningRequirement {
+        AppUpdateSigningRequirement(
+            teamIdentifier: "ABCDE12345",
+            designatedRequirement: RecordingCommandRunner.defaultDesignatedRequirement
+        )
+    }
+
+    private struct InstallerFixture {
+        let root: URL
+        let stagingRoot: URL
+        let stagedApp: URL
+        let targetApp: URL
+        let toolsDirectory: URL
+        let openMarker: URL
+        let killMarker: URL
+        let canaryExecutable: URL
+    }
+
+    private func makeInstallerFixture() throws -> InstallerFixture {
+        let temporaryRoot = temporaryDirectory()
+        let canonicalRoot = try XCTUnwrap(
+            temporaryRoot.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+        )
+        let root = URL(fileURLWithPath: canonicalRoot, isDirectory: true)
+        let stagingRoot = root.appendingPathComponent("Staging-UUID", isDirectory: true)
+        let stagedApp = stagingRoot.appendingPathComponent("Expanded/CodexStatusBar.app", isDirectory: true)
+        let targetApp = root.appendingPathComponent("Installed/CodexStatusBar.app", isDirectory: true)
+        let toolsDirectory = root.appendingPathComponent("Tools", isDirectory: true)
+        let openMarker = root.appendingPathComponent("opened.txt")
+        let killMarker = root.appendingPathComponent("killed.txt")
+        let canaryExecutable = root.appendingPathComponent("Canary/CodexStatusBar")
+        try FileManager.default.createDirectory(at: stagedApp, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: targetApp, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: toolsDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: canaryExecutable.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: stagingRoot.appendingPathComponent(".codex-status-bar-update-staging"))
+        try Data("new".utf8).write(to: stagedApp.appendingPathComponent("new.txt"))
+        try Data("old".utf8).write(to: targetApp.appendingPathComponent("old.txt"))
+        try makeInstallerAppIdentity(at: stagedApp)
+
+        try writeExecutable(
+            at: toolsDirectory.appendingPathComponent("codesign"),
+            contents: """
+            #!/bin/bash
+            app_path="${!#}"
+            if [[ -n "${CODEX_TEST_FAIL_VALIDATION_PATH:-}" && "$app_path" == "$CODEX_TEST_FAIL_VALIDATION_PATH" ]]; then
+              echo 'injected identity validation failure' >&2
+              exit 94
+            fi
+            if [[ -n "${CODEX_TEST_FAIL_VALIDATION_SUBSTRING:-}" && "$app_path" == *"$CODEX_TEST_FAIL_VALIDATION_SUBSTRING"* ]]; then
+              echo 'injected identity validation failure' >&2
+              exit 94
+            fi
+            if [[ " $* " == *" --requirements "* ]]; then
+              echo 'designated => \(RecordingCommandRunner.defaultDesignatedRequirement)' >&2
+            elif [[ " $* " == *" --display "* ]]; then
+              echo "TeamIdentifier=ABCDE12345" >&2
+            fi
+            exit 0
+            """
+        )
+        try writeExecutable(at: toolsDirectory.appendingPathComponent("spctl"), contents: "#!/bin/bash\nexit 0\n")
+        try writeExecutable(
+            at: toolsDirectory.appendingPathComponent("open"),
+            contents: "#!/bin/bash\nprintf '%s' \"$1\" > \"$CODEX_TEST_OPEN_MARKER\"\n"
+        )
+        try writeExecutable(
+            at: toolsDirectory.appendingPathComponent("kill"),
+            contents: "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$CODEX_TEST_KILL_MARKER\"\n"
+        )
+
+        return InstallerFixture(
+            root: root,
+            stagingRoot: stagingRoot,
+            stagedApp: stagedApp,
+            targetApp: targetApp,
+            toolsDirectory: toolsDirectory,
+            openMarker: openMarker,
+            killMarker: killMarker,
+            canaryExecutable: canaryExecutable
+        )
+    }
+
+    private func makeInstallerLaunch(
+        fixture: InstallerFixture,
+        currentProcessIdentifier: Int32
+    ) async throws -> AppUpdateInstallLaunch {
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.stagingRoot.appendingPathComponent(".codex-status-bar-update-staging").path
+        ), "Staging ownership marker is missing before installer launch.")
+        let installer = AppUpdateInstaller(
+            processLauncher: RecordingProcessLauncher(),
+            scriptDirectory: fixture.root.appendingPathComponent("Scripts", isDirectory: true),
+            writableDirectoryCheck: { _ in true }
+        )
+        return try await installer.install(
+            package: AppUpdatePackage(
+                release: release(tagName: "v1.2.3"),
+                asset: asset(),
+                zipURL: fixture.stagingRoot.appendingPathComponent("update.zip"),
+                appURL: fixture.stagedApp,
+                cleanupRootURL: fixture.stagingRoot,
+                immutableContentSHA256: try await AppUpdateImmutableContentDigest.digest(
+                    for: fixture.stagedApp,
+                    commandRunner: AppUpdateProcessCommandRunner()
+                ),
+                signingRequirement: testSigningRequirement()
+            ),
+            targetAppURL: fixture.targetApp,
+            currentProcessIdentifier: currentProcessIdentifier
+        )
+    }
+
+    private func executeInstallerScript(
+        _ launch: AppUpdateInstallLaunch,
+        fixture: InstallerFixture,
+        shouldReportRelaunch: Bool,
+        shouldFailStagingCopy: Bool = false,
+        shouldFailReplacementRename: Bool = false,
+        shouldFailLaunch: Bool = false,
+        validationFailurePath: URL? = nil,
+        validationFailurePathSubstring: String? = nil
+    ) throws -> (status: Int32, output: String) {
+        let pgrepURL = fixture.toolsDirectory.appendingPathComponent("pgrep")
+        let psURL = fixture.toolsDirectory.appendingPathComponent("ps")
+        let dittoURL = fixture.toolsDirectory.appendingPathComponent("ditto")
+        let moveURL = fixture.toolsDirectory.appendingPathComponent("mv")
+        let openURL = fixture.toolsDirectory.appendingPathComponent("open")
+        try writeExecutable(
+            at: pgrepURL,
+            contents: shouldReportRelaunch ? "#!/bin/bash\nprintf '4242\\n4343\\n'\n" : "#!/bin/bash\nexit 1\n"
+        )
+        try writeExecutable(
+            at: psURL,
+            contents: """
+            #!/bin/bash
+            if [[ "${2:-}" == "4242" ]]; then
+              printf '%s\n' "$CODEX_TEST_PROCESS_PATH"
+            else
+              printf '%s\n' "$CODEX_TEST_CANARY_PATH"
+            fi
+            """
+        )
+        try writeExecutable(
+            at: dittoURL,
+            contents: shouldFailStagingCopy
+                ? "#!/bin/bash\necho 'injected staging copy failure' >&2\nexit 92\n"
+                : "#!/bin/bash\nexec /usr/bin/ditto \"$@\"\n"
+        )
+        try writeExecutable(
+            at: moveURL,
+            contents: shouldFailReplacementRename
+                ? """
+                  #!/bin/bash
+                  if [[ "$1" == *"/.CodexStatusBar.update."* && "$2" == */CodexStatusBar.app ]]; then
+                    echo "injected replacement rename failure" >&2
+                    exit 91
+                  fi
+                  exec /bin/mv "$@"
+                  """
+                : "#!/bin/bash\nexec /bin/mv \"$@\"\n"
+        )
+        try writeExecutable(
+            at: openURL,
+            contents: shouldFailLaunch
+                ? "#!/bin/bash\necho 'injected launch failure' >&2\nexit 93\n"
+                : "#!/bin/bash\nprintf '%s' \"$1\" > \"$CODEX_TEST_OPEN_MARKER\"\n"
+        )
+
+        let process = Process()
+        let outputPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = launch.arguments
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "CODEX_UPDATE_CODESIGN_BIN": fixture.toolsDirectory.appendingPathComponent("codesign").path,
+            "CODEX_UPDATE_DITTO_BIN": dittoURL.path,
+            "CODEX_UPDATE_MV_BIN": moveURL.path,
+            "CODEX_UPDATE_SPCTL_BIN": fixture.toolsDirectory.appendingPathComponent("spctl").path,
+            "CODEX_UPDATE_OPEN_BIN": openURL.path,
+            "CODEX_UPDATE_PGREP_BIN": pgrepURL.path,
+            "CODEX_UPDATE_PS_BIN": psURL.path,
+            "CODEX_UPDATE_KILL_BIN": fixture.toolsDirectory.appendingPathComponent("kill").path,
+            "CODEX_UPDATE_MAX_EXIT_WAIT_ATTEMPTS": "1",
+            "CODEX_UPDATE_MAX_LAUNCH_WAIT_ATTEMPTS": "1",
+            "CODEX_UPDATE_WAIT_INTERVAL": "0.01",
+            "CODEX_TEST_OPEN_MARKER": fixture.openMarker.path,
+            "CODEX_TEST_PROCESS_PATH": fixture.targetApp.appendingPathComponent("Contents/MacOS/CodexStatusBar").path,
+            "CODEX_TEST_CANARY_PATH": fixture.canaryExecutable.path,
+            "CODEX_TEST_KILL_MARKER": fixture.killMarker.path,
+            "CODEX_TEST_FAIL_VALIDATION_PATH": validationFailurePath?.path ?? "",
+            "CODEX_TEST_FAIL_VALIDATION_SUBSTRING": validationFailurePathSubstring ?? "",
+        ]) { _, new in new }
+        try process.run()
+        process.waitUntilExit()
+
+        let logURL = URL(fileURLWithPath: launch.arguments[4])
+        let output = (try? String(contentsOf: logURL))
+            ?? String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            ?? ""
+        return (process.terminationStatus, output)
+    }
+
+    private func makeInstallerAppIdentity(at appURL: URL) throws {
+        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let executableURL = contentsURL.appendingPathComponent("MacOS/CodexStatusBar")
+        try FileManager.default.createDirectory(
+            at: executableURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try writeExecutable(at: executableURL, contents: "#!/bin/bash\nexit 0\n")
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "com.farzad.codexstatusbar",
+            "CFBundleShortVersionString": "1.2.3",
+            "CFBundleVersion": "7",
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try data.write(to: contentsURL.appendingPathComponent("Info.plist"), options: .atomic)
+    }
+
+    private func writeExecutable(at url: URL, contents: String) throws {
+        try Data(contents.utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func siblingBackups(in directory: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".CodexStatusBar.") }
+    }
+
+    private func expandedDirectories(nextTo zipURL: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: zipURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("Expanded-") }
     }
 
     private func runProcess(_ executablePath: String, _ arguments: [String], currentDirectory: URL? = nil) throws {
@@ -884,7 +1681,7 @@ private final class MockAppUpdateDownloadClient: AppUpdateDownloadClientProtocol
     func download(
         asset: AppUpdateReleaseAsset,
         to destinationURL: URL,
-        progress: @escaping (Double?) -> Void
+        progress: @escaping @MainActor @Sendable (Double?) -> Void
     ) async throws -> URL {
         if let error {
             throw error
@@ -936,7 +1733,8 @@ private final class MockPackageVerifier: AppUpdatePackageVerifierProtocol {
         zipURL: URL,
         release: AppUpdateRelease,
         asset: AppUpdateReleaseAsset,
-        installedBundleIdentifier: String
+        installedBundleIdentifier: String,
+        installedAppURL: URL
     ) async throws -> AppUpdatePackage {
         if let error {
             throw error
@@ -974,12 +1772,18 @@ private final class MockInstaller: AppUpdateInstallerProtocol {
 }
 
 private final class RecordingCommandRunner: AppUpdateCommandRunning {
+    static let defaultDesignatedRequirement = "anchor apple generic and identifier \"com.farzad.codexstatusbar\" and certificate leaf[subject.OU] = \"ABCDE12345\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+
     struct Command {
         let executablePath: String
         let arguments: [String]
     }
 
     var failures: [String: Error] = [:]
+    var installedTeamIdentifier: String? = "ABCDE12345"
+    var stagedTeamIdentifier: String? = "ABCDE12345"
+    var designatedRequirement = RecordingCommandRunner.defaultDesignatedRequirement
+    var stagedDesignatedRequirement = RecordingCommandRunner.defaultDesignatedRequirement
     private(set) var commands: [Command] = []
     private let processRunner = AppUpdateProcessCommandRunner()
 
@@ -989,8 +1793,24 @@ private final class RecordingCommandRunner: AppUpdateCommandRunning {
             throw failure
         }
 
-        if executablePath == "/usr/bin/ditto" {
+        if executablePath == "/usr/bin/ditto" || executablePath == "/bin/bash" {
             return try await processRunner.run(executablePath: executablePath, arguments: arguments)
+        }
+
+        if executablePath == "/usr/bin/codesign", arguments.contains("--display") {
+            if arguments.contains("--requirements") {
+                let isInstalledApp = arguments.last == "/Applications/CodexStatusBar.app"
+                return AppUpdateCommandResult(
+                    output: "",
+                    errorOutput: "designated => \(isInstalledApp ? designatedRequirement : stagedDesignatedRequirement)\n"
+                )
+            }
+
+            let isInstalledApp = arguments.last == "/Applications/CodexStatusBar.app"
+            let teamIdentifier = isInstalledApp ? installedTeamIdentifier : stagedTeamIdentifier
+            let teamLine = teamIdentifier.map { "TeamIdentifier=\($0)\n" } ?? "TeamIdentifier=not set\n"
+            let authorityLine = isInstalledApp ? "Authority=Developer ID Application: Example (ABCDE12345)\n" : ""
+            return AppUpdateCommandResult(output: "", errorOutput: teamLine + authorityLine)
         }
 
         return AppUpdateCommandResult(output: "", errorOutput: "")

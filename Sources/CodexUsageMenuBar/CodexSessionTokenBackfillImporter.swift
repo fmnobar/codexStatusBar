@@ -1,5 +1,97 @@
+import CryptoKit
+import Darwin
 import Foundation
 import SQLite3
+
+private extension Data {
+    init?(hexString: String) {
+        guard hexString.count.isMultiple(of: 2) else {
+            return nil
+        }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(hexString.count / 2)
+        var index = hexString.startIndex
+        while index < hexString.endIndex {
+            let nextIndex = hexString.index(index, offsetBy: 2)
+            guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else {
+                return nil
+            }
+            bytes.append(byte)
+            index = nextIndex
+        }
+        self.init(bytes)
+    }
+
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum CodexGitRemoteSanitizer {
+    static func sanitized(_ value: String?) -> String? {
+        let trimSet = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+        let trimmed = value?.trimmingCharacters(in: trimSet) ?? ""
+        guard !trimmed.isEmpty, trimmed.count <= 512,
+              trimmed.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+              !trimmed.contains(where: { $0.isWhitespace })
+        else {
+            return nil
+        }
+
+        if trimmed.contains("://") {
+            guard var components = URLComponents(string: trimmed),
+                  let scheme = components.scheme?.lowercased(),
+                  ["https", "http", "ssh", "git", "file"].contains(scheme)
+            else {
+                return nil
+            }
+            guard scheme != "file" else {
+                // Local file remotes reveal a private filesystem path and have no portable identity.
+                return nil
+            }
+            guard components.host?.isEmpty == false,
+                  !components.path.isEmpty,
+                  components.path != "/",
+                  components.path.unicodeScalars.allSatisfy({
+                      !CharacterSet.whitespacesAndNewlines.contains($0)
+                          && !CharacterSet.controlCharacters.contains($0)
+                  })
+            else {
+                return nil
+            }
+
+            components.scheme = scheme
+            components.user = nil
+            components.password = nil
+            components.query = nil
+            components.fragment = nil
+            return components.string.flatMap { normalizedLength($0) }
+        }
+
+        // Git's SCP-style syntax is not a URL. Keep host:path while dropping the
+        // optional user and any query/fragment payload that could carry secrets.
+        let withoutSuffix = String(trimmed.prefix { $0 != "?" && $0 != "#" })
+        guard let colon = withoutSuffix.firstIndex(of: ":"), colon != withoutSuffix.startIndex else {
+            return nil
+        }
+        let authority = String(withoutSuffix[..<colon])
+        let path = String(withoutSuffix[withoutSuffix.index(after: colon)...])
+        let host = authority.split(separator: "@", omittingEmptySubsequences: false).last.map(String.init) ?? ""
+        guard !host.isEmpty,
+              !path.isEmpty,
+              !host.contains("/"),
+              !path.hasPrefix("/"),
+              !path.contains("\\")
+        else {
+            return nil
+        }
+        return normalizedLength("\(host):\(path)")
+    }
+
+    private static func normalizedLength(_ value: String) -> String? {
+        value.isEmpty || value.count > 512 ? nil : value
+    }
+}
 
 struct ImportedCodexTokenUsageSample: Equatable {
     let notification: CodexTokenUsageNotification
@@ -905,27 +997,27 @@ struct CodexThreadCatalogThread: Equatable, Sendable {
         self.rolloutPath = CodexThreadCatalogCaptureState.normalizedPathPointer(rolloutPath)
         self.createdAt = createdAt
         self.updatedAt = updatedAt
-        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
-        self.modelProvider = CodexTokenContextNormalizer.normalizedIdentifier(modelProvider)
+        self.source = CodexTokenContextNormalizer.normalizedMetadataIdentifier(source)
+        self.modelProvider = CodexTokenContextNormalizer.normalizedMetadataIdentifier(modelProvider)
         self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(cwd)
         self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
         self.sandboxPolicy = Self.normalizedSandboxPolicy(sandboxPolicy)
-        self.approvalMode = CodexTokenContextNormalizer.normalizedIdentifier(approvalMode)
+        self.approvalMode = CodexTokenContextNormalizer.normalizedMetadataIdentifier(approvalMode)
         self.tokensUsed = max(tokensUsed, 0)
         self.hasUserEvent = hasUserEvent
         self.archived = archived
         self.archivedAt = archivedAt
         self.gitSHA = Self.normalizedSHA(gitSHA)
         self.gitBranch = CodexTokenContextNormalizer.normalizedDimensionValue(gitBranch)
-        self.gitOriginURL = Self.normalizedMetadataText(gitOriginURL, maximumLength: 512)
-        self.cliVersion = CodexTokenContextNormalizer.normalizedIdentifier(cliVersion)
-        self.agentNickname = CodexTokenContextNormalizer.normalizedDimensionValue(agentNickname)
-        self.agentRole = CodexTokenContextNormalizer.normalizedIdentifier(agentRole)
+        self.gitOriginURL = CodexGitRemoteSanitizer.sanitized(gitOriginURL)
+        self.cliVersion = CodexTokenContextNormalizer.normalizedMetadataIdentifier(cliVersion)
+        self.agentNickname = CodexTokenContextNormalizer.normalizedMetadataDimensionValue(agentNickname)
+        self.agentRole = CodexTokenContextNormalizer.normalizedMetadataIdentifier(agentRole)
         self.agentPath = CodexThreadCatalogCaptureState.normalizedPathPointer(agentPath)
-        self.memoryMode = CodexTokenContextNormalizer.normalizedIdentifier(memoryMode)
+        self.memoryMode = CodexTokenContextNormalizer.normalizedMetadataIdentifier(memoryMode)
         self.model = CodexModelIdentifier.normalized(model)
-        self.reasoningEffort = CodexTokenContextNormalizer.normalizedIdentifier(reasoningEffort)
-        self.threadSource = CodexTokenContextNormalizer.normalizedIdentifier(threadSource)
+        self.reasoningEffort = CodexTokenContextNormalizer.normalizedMetadataIdentifier(reasoningEffort)
+        self.threadSource = CodexTokenContextNormalizer.normalizedMetadataIdentifier(threadSource)
     }
 
     private static func normalizedSandboxPolicy(_ value: String?) -> String? {
@@ -957,16 +1049,6 @@ struct CodexThreadCatalogThread: Equatable, Sendable {
         return trimmedValue
     }
 
-    private static func normalizedMetadataText(_ value: String?, maximumLength: Int) -> String? {
-        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) ?? ""
-        guard !trimmedValue.isEmpty, trimmedValue.count <= maximumLength else {
-            return nil
-        }
-        guard trimmedValue.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
-            return nil
-        }
-        return trimmedValue
-    }
 }
 
 struct CodexThreadSpawnEdge: Equatable, Sendable {
@@ -1540,6 +1622,21 @@ struct CodexSessionTaskTimingImportFileRecord: Equatable, Sendable {
     let importedAt: Int64
     let status: CodexSessionTaskTimingImportFileStatus
     let timingVersion: String?
+    let tailCursor: CodexSessionTokenTailCursor?
+
+    init(
+        metadata: CodexSessionTokenImportFileMetadata,
+        importedAt: Int64,
+        status: CodexSessionTaskTimingImportFileStatus,
+        timingVersion: String? = UsageHistoryStore.currentSessionTaskTimingImportVersion,
+        tailCursor: CodexSessionTokenTailCursor? = nil
+    ) {
+        self.metadata = metadata
+        self.importedAt = importedAt
+        self.status = status
+        self.timingVersion = timingVersion
+        self.tailCursor = tailCursor
+    }
 }
 
 struct CodexSessionTaskTimingImportResult: Equatable, Sendable {
@@ -1613,12 +1710,12 @@ struct CodexSessionTaskTimingEvent: Equatable, Sendable {
         self.durationMilliseconds = durationMilliseconds.map { max($0, 0) } ?? computedDuration
         self.timeToFirstTokenMilliseconds = timeToFirstTokenMilliseconds.map { max($0, 0) }
         self.modelContextWindow = modelContextWindow.map { max($0, 0) }
-        self.collaborationModeKind = CodexTokenContextNormalizer.normalizedIdentifier(collaborationModeKind)
+        self.collaborationModeKind = CodexTokenContextNormalizer.normalizedMetadataIdentifier(collaborationModeKind)
         self.model = CodexModelIdentifier.normalized(model)
         self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
         self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
-        self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
-        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
+        self.effort = CodexTokenContextNormalizer.normalizedMetadataIdentifier(effort)
+        self.source = CodexTokenContextNormalizer.normalizedMetadataIdentifier(source)
         self.dimensionsJSON = dimensionsJSON ?? Self.dimensionsJSON(dimensions)
         self.recordedAt = recordedAt
     }
@@ -1755,26 +1852,26 @@ struct CodexTurnPerformanceEvent: Equatable, Sendable {
     ) {
         self.sourceKey = sourceKey
         self.sourceRowID = max(sourceRowID, 0)
-        self.target = CodexTokenContextNormalizer.normalizedIdentifier(target) ?? "unknown"
+        self.target = CodexTokenContextNormalizer.normalizedMetadataIdentifier(target) ?? "unknown"
         self.eventTimestamp = eventTimestamp
-        self.eventName = CodexTokenContextNormalizer.normalizedDimensionValue(eventName)
-        self.eventKind = CodexTokenContextNormalizer.normalizedDimensionValue(eventKind)
+        self.eventName = CodexTokenContextNormalizer.normalizedMetadataDimensionValue(eventName)
+        self.eventKind = CodexTokenContextNormalizer.normalizedMetadataDimensionValue(eventKind)
         self.durationMilliseconds = durationMilliseconds.map { max($0, 0) }
         self.success = success
-        self.errorSummary = CodexTokenContextNormalizer.normalizedIdentifier(errorSummary)
+        self.errorSummary = CodexTokenContextNormalizer.normalizedMetadataIdentifier(errorSummary)
         self.threadID = CodexTokenContextNormalizer.normalizedIdentifier(threadID)
         self.turnID = CodexTokenContextNormalizer.normalizedIdentifier(turnID)
         self.model = CodexModelIdentifier.normalized(model)
         self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
         self.projectPath = CodexTokenContextNormalizer.normalizedProjectPath(projectPath)
         self.projectName = self.projectPath.flatMap(CodexTokenContextNormalizer.projectName)
-        self.effort = CodexTokenContextNormalizer.normalizedIdentifier(effort)
-        self.source = CodexTokenContextNormalizer.normalizedIdentifier(source)
-        self.originator = CodexTokenContextNormalizer.normalizedIdentifier(originator)
-        self.appVersion = CodexTokenContextNormalizer.normalizedIdentifier(appVersion)
-        self.terminalType = CodexTokenContextNormalizer.normalizedIdentifier(terminalType)
-        self.transport = CodexTokenContextNormalizer.normalizedIdentifier(transport)
-        self.wireAPI = CodexTokenContextNormalizer.normalizedIdentifier(wireAPI)
+        self.effort = CodexTokenContextNormalizer.normalizedMetadataIdentifier(effort)
+        self.source = CodexTokenContextNormalizer.normalizedMetadataIdentifier(source)
+        self.originator = CodexTokenContextNormalizer.normalizedMetadataIdentifier(originator)
+        self.appVersion = CodexTokenContextNormalizer.normalizedMetadataIdentifier(appVersion)
+        self.terminalType = CodexTokenContextNormalizer.normalizedMetadataIdentifier(terminalType)
+        self.transport = CodexTokenContextNormalizer.normalizedMetadataIdentifier(transport)
+        self.wireAPI = CodexTokenContextNormalizer.normalizedMetadataIdentifier(wireAPI)
         self.apiPath = Self.normalizedAPIPath(apiPath)
         self.runtimeDimensions = CodexOtelRuntimeDimension.unique(runtimeDimensions)
         self.recordedAt = recordedAt
@@ -1868,7 +1965,8 @@ struct CodexOtelRuntimeDimension: Hashable, Equatable, Sendable {
             normalizedValue = Self.normalizedSafeIdentifier(rawValue)
         }
 
-        guard let normalizedValue else {
+        guard let normalizedValue,
+              !CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(normalizedValue) else {
             return nil
         }
 
@@ -1893,7 +1991,8 @@ struct CodexOtelRuntimeDimension: Hashable, Equatable, Sendable {
             normalizedValue = Self.normalizedSafeIdentifier(storedValue)
         }
 
-        guard let normalizedValue else {
+        guard let normalizedValue,
+              !CodexTokenContextNormalizer.isPrivacySensitiveIdentifier(normalizedValue) else {
             return nil
         }
 
@@ -2118,22 +2217,44 @@ struct CodexSessionTokenImportFileMetadata: Equatable, Sendable {
     let modifiedAt: Int64
 }
 
+struct CodexSessionTokenTailCursor: Equatable, Sendable {
+    let byteOffset: Int64
+    let nextLineNumber: Int?
+    let filePrefixHash: String?
+    let stateJSON: String?
+
+    init(
+        byteOffset: Int64,
+        nextLineNumber: Int? = nil,
+        filePrefixHash: String? = nil,
+        stateJSON: String? = nil
+    ) {
+        self.byteOffset = max(byteOffset, 0)
+        self.nextLineNumber = nextLineNumber.flatMap { $0 > 0 ? $0 : nil }
+        self.filePrefixHash = filePrefixHash
+        self.stateJSON = stateJSON
+    }
+}
+
 struct CodexSessionTokenImportFileRecord: Equatable, Sendable {
     let metadata: CodexSessionTokenImportFileMetadata
     let importedAt: Int64
     let status: CodexSessionTokenImportFileStatus
     let contextVersion: String?
+    let tailCursor: CodexSessionTokenTailCursor?
 
     init(
         metadata: CodexSessionTokenImportFileMetadata,
         importedAt: Int64,
         status: CodexSessionTokenImportFileStatus,
-        contextVersion: String? = UsageHistoryStore.currentSessionTokenContextImportVersion
+        contextVersion: String? = UsageHistoryStore.currentSessionTokenContextImportVersion,
+        tailCursor: CodexSessionTokenTailCursor? = nil
     ) {
         self.metadata = metadata
         self.importedAt = importedAt
         self.status = status
         self.contextVersion = contextVersion
+        self.tailCursor = tailCursor
     }
 }
 
@@ -2226,8 +2347,12 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
     let sourceDirectories: [URL]
     let fileManager: FileManager
     let maximumSessionFileSize: Int64
+    let readWindowSize: Int64
 
-    static let defaultMaximumSessionFileSize: Int64 = 64 * 1024 * 1024
+    /// Zero means there is no whole-file cutoff. Reads remain bounded by the streaming reader's
+    /// chunk and per-line limits, so a large session file is not rejected merely for growing.
+    static let defaultMaximumSessionFileSize: Int64 = 0
+    static let defaultReadWindowSize: Int64 = (64 * 1_024 * 1_024) - (2 * 64 * 1_024)
     private static let taskStartedLineNeedle = Data(#""task_started""#.utf8)
     private static let taskCompleteLineNeedle = Data(#""task_complete""#.utf8)
     private static let turnContextLineNeedle = Data(#""turn_context""#.utf8)
@@ -2236,11 +2361,13 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
     init(
         sourceDirectories: [URL] = Self.defaultSourceDirectories(),
         fileManager: FileManager = .default,
-        maximumSessionFileSize: Int64 = Self.defaultMaximumSessionFileSize
+        maximumSessionFileSize: Int64 = Self.defaultMaximumSessionFileSize,
+        readWindowSize: Int64 = Self.defaultReadWindowSize
     ) {
         self.sourceDirectories = sourceDirectories
         self.fileManager = fileManager
         self.maximumSessionFileSize = max(maximumSessionFileSize, 0)
+        self.readWindowSize = min(max(readWindowSize, 1), Self.defaultReadWindowSize)
     }
 
     static func defaultSourceDirectories(fileManager: FileManager = .default) -> [URL] {
@@ -2273,7 +2400,7 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
                 return false
             }
 
-            guard candidate.metadata.fileSize <= maximumSessionFileSize else {
+            guard maximumSessionFileSize == 0 || candidate.metadata.fileSize <= maximumSessionFileSize else {
                 filesSkippedByBounds += 1
                 return false
             }
@@ -2287,7 +2414,20 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
         }
 
         for candidate in sessionFiles {
-            let fileResult = parseSessionFile(candidate.url)
+            let storedRecord = try? store.codexSessionTaskTimingImportFileRecord(path: candidate.metadata.path)
+            let priorRecord: CodexSessionTaskTimingImportFileRecord?
+            if !forceRescan,
+               storedRecord?.timingVersion == UsageHistoryStore.currentSessionTaskTimingImportVersion
+            {
+                priorRecord = storedRecord
+            } else {
+                priorRecord = nil
+            }
+            let fileResult = parseSessionFileWindow(
+                candidate.url,
+                metadata: candidate.metadata,
+                priorRecord: priorRecord
+            )
             failedLinesSkipped += fileResult.failedLinesSkipped
             let importResult = try store.importSessionTaskTimingEvents(fileResult.events)
             insertedCount += importResult.insertedCount
@@ -2297,7 +2437,8 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
             try store.recordCodexSessionTaskTimingImportFile(
                 candidate.metadata,
                 importedAt: Int64(Date().timeIntervalSince1970),
-                status: fileResult.readSucceeded ? .imported : .failed
+                status: fileResult.readSucceeded ? .imported : .failed,
+                tailCursor: fileResult.tailCursor
             )
         }
 
@@ -2383,10 +2524,24 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
             return false
         }
 
-        return record.status == .imported
+        guard record.status == .imported
             && record.metadata.fileSize == metadata.fileSize
             && record.metadata.modifiedAt == metadata.modifiedAt
             && record.timingVersion == UsageHistoryStore.currentSessionTaskTimingImportVersion
+            && (record.tailCursor?.byteOffset ?? metadata.fileSize) >= metadata.fileSize
+        else {
+            return false
+        }
+        guard let tailCursor = record.tailCursor,
+              let storedHash = tailCursor.filePrefixHash
+        else {
+            return false
+        }
+        return CodexSessionTokenBackfillImporter.filePrefixMatches(
+            storedHash,
+            fileURL: URL(fileURLWithPath: metadata.path),
+            through: tailCursor.byteOffset
+        )
     }
 
     private static func latestDate(_ left: Date?, _ right: Date?) -> Date? {
@@ -2402,62 +2557,150 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
         }
     }
 
-    private func parseSessionFile(_ fileURL: URL) -> (events: [CodexSessionTaskTimingEvent], failedLinesSkipped: Int, readSucceeded: Bool) {
-        guard let lineReader = try? StreamingLineReader(fileURL: fileURL) else {
-            return ([], 1, false)
-        }
-        defer { lineReader.close() }
+    private struct TailParseResult {
+        let events: [CodexSessionTaskTimingEvent]
+        let failedLinesSkipped: Int
+        let readSucceeded: Bool
+        let tailCursor: CodexSessionTokenTailCursor
+    }
 
+    private func parseSessionFileWindow(
+        _ fileURL: URL,
+        metadata: CodexSessionTokenImportFileMetadata,
+        priorRecord: CodexSessionTaskTimingImportFileRecord?
+    ) -> TailParseResult {
+        let priorCursor = priorRecord?.tailCursor
+        let canResume: Bool
+        if let priorCursor, let storedHash = priorCursor.filePrefixHash {
+            canResume = CodexSessionTokenBackfillImporter.filePrefixMatches(
+                storedHash,
+                fileURL: fileURL,
+                through: priorCursor.byteOffset
+            ) && priorCursor.byteOffset <= metadata.fileSize
+        } else {
+            canResume = false
+        }
+        let startOffset = canResume ? (priorCursor?.byteOffset ?? 0) : 0
+        let restoredState = canResume
+            ? CodexSessionTokenTailState.decode(priorCursor?.stateJSON)
+            : nil
+        var nextLineNumber = canResume ? priorCursor?.nextLineNumber : 1
+        let window: CodexSessionTokenBackfillImporter.SessionWindow
+        do {
+            window = try CodexSessionTokenBackfillImporter.readSessionWindow(
+                fileURL,
+                startOffset: startOffset,
+                maximumBytes: readWindowSize,
+                alignToNextLine: false
+            )
+        } catch {
+            return TailParseResult(
+                events: [],
+                failedLinesSkipped: 1,
+                readSucceeded: false,
+                tailCursor: CodexSessionTokenTailCursor(
+                    byteOffset: startOffset,
+                    nextLineNumber: nextLineNumber,
+                    filePrefixHash: CodexSessionTokenBackfillImporter.filePrefixHash(
+                        fileURL,
+                        through: startOffset
+                    ),
+                    stateJSON: restoredState?.encodedJSON
+                )
+            )
+        }
         let decoder = JSONDecoder()
         let sessionID = CodexSessionTokenBackfillImporter.sessionIdentifier(for: fileURL)
-        var currentContext = CodexSessionTokenContextTracker(sessionID: sessionID)
-        var currentModel: String?
+        var currentContext = CodexSessionTokenContextTracker(
+            sessionID: sessionID,
+            restoredState: restoredState
+        )
+        var currentModel = restoredState?.currentModel
         var eventsByTurnID: [String: CodexSessionTaskTimingEvent] = [:]
-        var failedLinesSkipped = 0
+        var failedLinesSkipped = window.discardedLineCount
+        var cursorOffset = window.offset
+        var searchStart = window.data.startIndex
 
-        do {
-            while let lineData = try lineReader.nextLineData() {
-                guard !lineData.isEmpty, Self.shouldDecodeSessionLine(lineData) else {
+        while let newline = window.data[searchStart...].firstIndex(of: 0x0A) {
+            var line = window.data[searchStart..<newline]
+            if line.last == 0x0D {
+                line = line.dropLast()
+            }
+            let nextIndex = window.data.index(after: newline)
+            cursorOffset = window.offset + Int64(nextIndex - window.data.startIndex)
+            searchStart = nextIndex
+            if let lineNumber = nextLineNumber {
+                nextLineNumber = lineNumber + 1
+            }
+            guard !line.isEmpty else {
+                continue
+            }
+            let lineData = Data(line)
+            guard Self.shouldDecodeSessionLine(lineData) else {
+                continue
+            }
+
+            do {
+                let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
+                if line.isSessionMetadata {
+                    currentContext.applyMetadata(from: line.payload)
+                }
+                if line.isTurnContext {
+                    currentContext.applyTurnContext(from: line.payload)
+                }
+                if line.payload?.hasModelMetadata == true {
+                    currentModel = line.payload?.modelIdentifier
+                }
+
+                guard let event = Self.timingEvent(
+                    from: line,
+                    sourcePath: fileURL.path,
+                    fallbackSessionID: sessionID,
+                    currentContext: currentContext,
+                    currentModel: currentModel
+                ) else {
                     continue
                 }
 
-                do {
-                    let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
-                    if line.isSessionMetadata {
-                        currentContext.applyMetadata(from: line.payload)
-                    }
-                    if line.isTurnContext {
-                        currentContext.applyTurnContext(from: line.payload)
-                    }
-                    if line.payload?.hasModelMetadata == true {
-                        currentModel = line.payload?.modelIdentifier
-                    }
-
-                    guard let event = Self.timingEvent(
-                        from: line,
-                        sourcePath: fileURL.path,
-                        fallbackSessionID: sessionID,
-                        currentContext: currentContext,
-                        currentModel: currentModel
-                    ) else {
-                        continue
-                    }
-
-                    eventsByTurnID[event.turnID] = eventsByTurnID[event.turnID]?.merged(with: event) ?? event
-                } catch {
-                    failedLinesSkipped += 1
-                }
+                eventsByTurnID[event.turnID] = eventsByTurnID[event.turnID]?.merged(with: event) ?? event
+            } catch {
+                failedLinesSkipped += 1
             }
-        } catch {
-            return (Array(eventsByTurnID.values), failedLinesSkipped + 1, false)
         }
 
-        return (
-            eventsByTurnID.values.sorted {
+        if let lineNumber = nextLineNumber, window.discardedLineCount > 0 {
+            nextLineNumber = lineNumber + window.discardedLineCount
+        }
+        let state = currentContext.tailState(currentModel: currentModel)
+        let consumedSuffixCount = cursorOffset - startOffset
+        let consumedSuffix: Data? = if window.offset == startOffset,
+                                       consumedSuffixCount >= 0,
+                                       consumedSuffixCount <= Int64(window.data.count)
+        {
+            Data(window.data.prefix(Int(consumedSuffixCount)))
+        } else {
+            nil
+        }
+        return TailParseResult(
+            events: eventsByTurnID.values.sorted {
                 ($0.startedAt ?? $0.completedAt ?? .distantPast) < ($1.startedAt ?? $1.completedAt ?? .distantPast)
             },
-            failedLinesSkipped,
-            true
+            failedLinesSkipped: failedLinesSkipped,
+            readSucceeded: true,
+            tailCursor: CodexSessionTokenTailCursor(
+                byteOffset: cursorOffset,
+                nextLineNumber: nextLineNumber,
+                filePrefixHash: CodexSessionTokenBackfillImporter.extendedFilePrefixHash(
+                    priorCursor?.filePrefixHash,
+                    fileURL: fileURL,
+                    from: canResume ? startOffset : 0,
+                    through: cursorOffset,
+                    consumedSuffix: consumedSuffix,
+                    streamedSegmentLength: window.streamedSegmentLength,
+                    streamedSegmentDigest: window.streamedSegmentDigest
+                ),
+                stateJSON: state.encodedJSON
+            )
         )
     }
 
@@ -2499,58 +2742,12 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
     }
 
     private static func shouldDecodeSessionLine(_ lineData: Data) -> Bool {
-        let searchablePrefix = lineData.prefix(4_096)
-        return searchablePrefix.range(of: taskStartedLineNeedle) != nil
-            || searchablePrefix.range(of: taskCompleteLineNeedle) != nil
-            || searchablePrefix.range(of: turnContextLineNeedle) != nil
-            || searchablePrefix.range(of: sessionMetaLineNeedle) != nil
+        lineData.range(of: taskStartedLineNeedle) != nil
+            || lineData.range(of: taskCompleteLineNeedle) != nil
+            || lineData.range(of: turnContextLineNeedle) != nil
+            || lineData.range(of: sessionMetaLineNeedle) != nil
     }
 
-    private final class StreamingLineReader {
-        private let handle: FileHandle
-        private var buffer = Data()
-        private var reachedEnd = false
-
-        init(fileURL: URL) throws {
-            handle = try FileHandle(forReadingFrom: fileURL)
-        }
-
-        func nextLineData() throws -> Data? {
-            while true {
-                if let newlineRange = buffer.firstRange(of: Data([0x0A])) {
-                    var line = buffer[..<newlineRange.lowerBound]
-                    buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
-                    if line.last == 0x0D {
-                        line = line.dropLast()
-                    }
-                    return Data(line)
-                }
-
-                if reachedEnd {
-                    guard !buffer.isEmpty else {
-                        return nil
-                    }
-                    var line = buffer
-                    buffer.removeAll(keepingCapacity: false)
-                    if line.last == 0x0D {
-                        line.removeLast()
-                    }
-                    return line
-                }
-
-                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-                if chunk.isEmpty {
-                    reachedEnd = true
-                } else {
-                    buffer.append(chunk)
-                }
-            }
-        }
-
-        func close() {
-            try? handle.close()
-        }
-    }
 }
 
 struct CodexLogTokenUsageImporter {
@@ -3746,19 +3943,36 @@ extension CodexSessionTokenBackfillImporting {
     }
 }
 
+enum CodexSessionImportReadKind: Equatable, Sendable {
+    case parserWindow(Int64)
+    case fullFingerprintChunk(Int)
+    case suffixFingerprintChunk(Int)
+    case boundaryFingerprintChunk(Int)
+    case oversizedDiscardChunk(Int)
+}
+
 struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @unchecked Sendable {
     let sourceDirectories: [URL]
     let fileManager: FileManager
+    let readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    let afterWindowCheckpoint: (@Sendable (Int) throws -> Void)?
     private static let tokenCountLineNeedle = Data(#""token_count""#.utf8)
     private static let turnContextLineNeedle = Data(#""turn_context""#.utf8)
     private static let sessionMetaLineNeedle = Data(#""session_meta""#.utf8)
+    static let maximumReadWindowSize: Int64 = 64 * 1_024 * 1_024
+    static let fingerprintBoundarySize = 64 * 1_024
+    static let maximumParserReadSize = maximumReadWindowSize - (2 * Int64(fingerprintBoundarySize))
 
     init(
         sourceDirectories: [URL] = Self.defaultSourceDirectories(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)? = nil,
+        afterWindowCheckpoint: (@Sendable (Int) throws -> Void)? = nil
     ) {
         self.sourceDirectories = sourceDirectories
         self.fileManager = fileManager
+        self.readObserver = readObserver
+        self.afterWindowCheckpoint = afterWindowCheckpoint
     }
 
     static func defaultSourceDirectories(fileManager: FileManager = .default) -> [URL] {
@@ -3781,7 +3995,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         request: CodexSessionTokenBackfillRequest
     ) throws -> CodexSessionTokenBackfillSummary {
         let startedAt = Date()
-        let discoveredFiles = sessionFileCandidates()
+        let discoveredFiles = sessionFileCandidates(request: request)
         var filesSkippedByBounds = 0
         var filesSkippedUnchanged = 0
         var failedLinesSkipped = 0
@@ -3797,13 +4011,6 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                 return false
             }
 
-            if let maximumFileSize = request.maximumFileSize,
-               candidate.metadata.fileSize > maximumFileSize
-            {
-                filesSkippedByBounds += 1
-                return false
-            }
-
             guard !shouldSkipUnchanged(candidate.metadata, store: store, request: request) else {
                 filesSkippedUnchanged += 1
                 return false
@@ -3813,19 +4020,56 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         }
 
         for candidate in sessionFiles {
-            let fileResult = parseSessionFile(candidate.url)
-            failedLinesSkipped += fileResult.failedLinesSkipped
-            let importResult = try store.importTokenUsageSamples(fileResult.samples)
-            tokenEventsImported += importResult.insertedCount
-            duplicateEventsSkipped += importResult.duplicateCount
-            modelEventsRepaired += importResult.repairedModelCount
-            contextEventsRepaired += importResult.repairedContextCount
-            dimensionEventsRepaired += importResult.repairedDimensionCount
-            try store.recordCodexSessionTokenImportFile(
-                candidate.metadata,
-                importedAt: Int64(Date().timeIntervalSince1970),
-                status: fileResult.readSucceeded ? .imported : .failed
-            )
+            let storedRecord = try? store.codexSessionTokenImportFileRecord(path: candidate.metadata.path)
+            var priorRecord: CodexSessionTokenImportFileRecord?
+            if !request.forceRescan,
+               storedRecord?.contextVersion == UsageHistoryStore.currentSessionTokenContextImportVersion
+            {
+                priorRecord = storedRecord
+            } else {
+                priorRecord = nil
+            }
+            var windowCount = 0
+            repeat {
+                let previousOffset = priorRecord?.tailCursor?.byteOffset ?? 0
+                let fileResult = parseSessionFileWindow(
+                    candidate.url,
+                    metadata: candidate.metadata,
+                    priorRecord: priorRecord,
+                    maximumBytes: request.maximumFileSize
+                )
+                failedLinesSkipped += fileResult.failedLinesSkipped
+                let importResult = try store.importTokenUsageSamples(fileResult.samples)
+                tokenEventsImported += importResult.insertedCount
+                duplicateEventsSkipped += importResult.duplicateCount
+                modelEventsRepaired += importResult.repairedModelCount
+                contextEventsRepaired += importResult.repairedContextCount
+                dimensionEventsRepaired += importResult.repairedDimensionCount
+
+                try store.recordCodexSessionTokenImportFile(
+                    candidate.metadata,
+                    importedAt: Int64(Date().timeIntervalSince1970),
+                    status: fileResult.readSucceeded ? .imported : .failed,
+                    tailCursor: fileResult.tailCursor
+                )
+                windowCount += 1
+                try afterWindowCheckpoint?(windowCount)
+
+                let shouldContinueAllHistory = request.mode == .allHistory
+                    && request.maximumFileSize == nil
+                    && fileResult.readSucceeded
+                    && fileResult.tailCursor.byteOffset < candidate.metadata.fileSize
+                    && fileResult.tailCursor.byteOffset > previousOffset
+                guard shouldContinueAllHistory else {
+                    break
+                }
+                priorRecord = CodexSessionTokenImportFileRecord(
+                    metadata: candidate.metadata,
+                    importedAt: Int64(Date().timeIntervalSince1970),
+                    status: .imported,
+                    tailCursor: fileResult.tailCursor
+                )
+            } while true
         }
 
         return CodexSessionTokenBackfillSummary(
@@ -3848,29 +4092,41 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         let url: URL
         let metadata: CodexSessionTokenImportFileMetadata
         let sessionDate: Date?
-        let isArchived: Bool
     }
 
-    private func sessionFileCandidates() -> [SessionFileCandidate] {
+    private func sessionFileCandidates(request: CodexSessionTokenBackfillRequest) -> [SessionFileCandidate] {
         return sourceDirectories.flatMap { directoryURL -> [URL] in
             guard fileManager.fileExists(atPath: directoryURL.path) else {
                 return []
             }
-
             guard let enumerator = fileManager.enumerator(
                 at: directoryURL,
-                includingPropertiesForKeys: [.isRegularFileKey],
+                includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
                 options: [.skipsHiddenFiles]
             ) else {
                 return []
             }
 
             return enumerator.compactMap { item -> URL? in
-                guard let fileURL = item as? URL, fileURL.pathExtension == "jsonl" else {
+                guard let fileURL = item as? URL else {
                     return nil
                 }
-
-                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+                if values?.isDirectory == true {
+                    if let since = request.since,
+                       Self.dateDirectoryIsEntirelyBefore(
+                           fileURL,
+                           root: directoryURL,
+                           since: since
+                       )
+                    {
+                        enumerator.skipDescendants()
+                    }
+                    return nil
+                }
+                guard fileURL.pathExtension == "jsonl" else {
+                    return nil
+                }
                 return values?.isRegularFile == true ? fileURL : nil
             }
         }
@@ -3882,15 +4138,57 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             return SessionFileCandidate(
                 url: fileURL,
                 metadata: metadata,
-                sessionDate: Self.sessionDate(from: fileURL),
-                isArchived: Self.isArchivedSessionFile(fileURL)
+                sessionDate: Self.sessionDate(from: fileURL)
             )
         }
         .sorted { $0.metadata.path.localizedStandardCompare($1.metadata.path) == .orderedAscending }
     }
 
-    private static func isArchivedSessionFile(_ fileURL: URL) -> Bool {
-        fileURL.pathComponents.contains("archived_sessions")
+    private static func dateDirectoryIsEntirelyBefore(
+        _ directoryURL: URL,
+        root: URL,
+        since: Date
+    ) -> Bool {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let components = directoryURL.standardizedFileURL.pathComponents
+        guard components.count > rootComponents.count else {
+            return false
+        }
+        let relative = Array(components.dropFirst(rootComponents.count))
+        guard (1...3).contains(relative.count),
+              relative.allSatisfy({ Int($0) != nil }),
+              let year = Int(relative[0])
+        else {
+            return false
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        var dateComponents = DateComponents()
+        dateComponents.calendar = calendar
+        dateComponents.timeZone = calendar.timeZone
+        dateComponents.year = year
+        let component: Calendar.Component
+        if relative.count >= 2, let month = Int(relative[1]) {
+            dateComponents.month = month
+            if relative.count == 3, let day = Int(relative[2]) {
+                dateComponents.day = day
+                component = .day
+            } else {
+                dateComponents.day = 1
+                component = .month
+            }
+        } else {
+            dateComponents.month = 1
+            dateComponents.day = 1
+            component = .year
+        }
+        guard let start = calendar.date(from: dateComponents),
+              let end = calendar.date(byAdding: component, value: 1, to: start)
+        else {
+            return false
+        }
+        return end <= since
     }
 
     private func fileMetadata(for fileURL: URL) -> CodexSessionTokenImportFileMetadata? {
@@ -3908,10 +4206,6 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
     ) -> Bool {
         guard let since = request.since else {
             return true
-        }
-
-        guard !candidate.isArchived else {
-            return false
         }
 
         if let sessionDate = candidate.sessionDate {
@@ -3933,281 +4227,752 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             return false
         }
 
-        return record.status == .imported
+        guard record.status == .imported
             && record.metadata.fileSize == metadata.fileSize
             && record.metadata.modifiedAt == metadata.modifiedAt
             && record.contextVersion == UsageHistoryStore.currentSessionTokenContextImportVersion
+            && (record.tailCursor?.byteOffset ?? metadata.fileSize) >= metadata.fileSize
+        else {
+            return false
+        }
+        guard let tailCursor = record.tailCursor,
+              let storedHash = tailCursor.filePrefixHash
+        else {
+            return false
+        }
+        return Self.filePrefixMatches(
+            storedHash,
+            fileURL: URL(fileURLWithPath: metadata.path),
+            through: tailCursor.byteOffset,
+            readObserver: readObserver
+        )
     }
 
-    private func parseSessionFile(_ fileURL: URL) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
-        if let lineReader = try? GrepRelevantLineReader(fileURL: fileURL) {
-            return parseSessionFile(fileURL, relevantLineReader: lineReader)
-        }
-
-        guard let lineReader = try? FileLineReader(fileURL: fileURL) else {
-            return ([], 1, false)
-        }
-        defer { lineReader.close() }
-
-        return parseSessionFile(fileURL, fallbackLineReader: lineReader)
+    private struct TailParseResult {
+        let samples: [ImportedCodexTokenUsageSample]
+        let failedLinesSkipped: Int
+        let readSucceeded: Bool
+        let tailCursor: CodexSessionTokenTailCursor
     }
 
-    private func parseSessionFile(
+    private func parseSessionFileWindow(
         _ fileURL: URL,
-        relevantLineReader lineReader: GrepRelevantLineReader
-    ) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
-        defer { lineReader.close() }
+        metadata: CodexSessionTokenImportFileMetadata,
+        priorRecord: CodexSessionTokenImportFileRecord?,
+        maximumBytes: Int64?
+    ) -> TailParseResult {
+        let priorCursor = priorRecord?.tailCursor
+        let canResume: Bool
+        if let priorCursor, let storedHash = priorCursor.filePrefixHash {
+            canResume = Self.filePrefixMatches(
+                storedHash,
+                fileURL: fileURL,
+                through: priorCursor.byteOffset,
+                readObserver: readObserver
+            )
+                && priorCursor.byteOffset <= metadata.fileSize
+        } else {
+            canResume = false
+        }
+
+        let requestedByteLimit = max(maximumBytes ?? Self.maximumReadWindowSize, 1)
+        let readByteLimit = min(requestedByteLimit, Self.maximumParserReadSize)
+        var startOffset = canResume ? (priorCursor?.byteOffset ?? 0) : 0
+        var nextLineNumber = canResume ? priorCursor?.nextLineNumber : 1
+        var restoredState = canResume
+            ? CodexSessionTokenTailState.decode(priorCursor?.stateJSON)
+            : nil
+        var alignToNextLine = false
+
+        if !canResume, maximumBytes != nil, metadata.fileSize > requestedByteLimit {
+            startOffset = metadata.fileSize - requestedByteLimit
+            nextLineNumber = nil
+            restoredState = nil
+            alignToNextLine = true
+        }
+
+        let window: SessionWindow
+        do {
+            readObserver?(.parserWindow(readByteLimit))
+            window = try Self.readSessionWindow(
+                fileURL,
+                startOffset: startOffset,
+                maximumBytes: readByteLimit,
+                alignToNextLine: alignToNextLine,
+                readObserver: readObserver
+            )
+        } catch {
+            return TailParseResult(
+                samples: [],
+                failedLinesSkipped: 1,
+                readSucceeded: false,
+                tailCursor: CodexSessionTokenTailCursor(
+                    byteOffset: startOffset,
+                    nextLineNumber: nextLineNumber,
+                    filePrefixHash: Self.filePrefixHash(
+                        fileURL,
+                        through: startOffset,
+                        readObserver: readObserver
+                    ),
+                    stateJSON: restoredState?.encodedJSON
+                )
+            )
+        }
 
         let decoder = JSONDecoder()
-        var samples: [ImportedCodexTokenUsageSample] = []
-        var failedLinesSkipped = 0
         let sessionID = Self.sessionIdentifier(for: fileURL)
-        var currentContext = CodexSessionTokenContextTracker(sessionID: sessionID)
-        var currentModel: String?
+        var currentContext = CodexSessionTokenContextTracker(
+            sessionID: sessionID,
+            restoredState: restoredState
+        )
+        var currentModel = restoredState?.currentModel
+        var samples: [ImportedCodexTokenUsageSample] = []
+        var failedLinesSkipped = window.discardedLineCount
+        var cursorOffset = window.offset
+        var searchStart = window.data.startIndex
 
-        do {
-            while let line = try lineReader.nextRelevantLineData() {
-                do {
-                    let decodedLine = try decoder.decode(CodexSessionTokenBackfillLine.self, from: line.data)
-                    if decodedLine.isSessionMetadata {
-                        currentContext.applyMetadata(from: decodedLine.payload)
-                    }
-                    if decodedLine.isTurnContext {
-                        currentContext.applyTurnContext(from: decodedLine.payload)
-                    }
-                    if decodedLine.payload?.hasModelMetadata == true {
-                        currentModel = decodedLine.payload?.modelIdentifier
-                    }
+        while let newline = window.data[searchStart...].firstIndex(of: 0x0A) {
+            let lineOffset = cursorOffset
+            var line = window.data[searchStart..<newline]
+            if line.last == 0x0D {
+                line = line.dropLast()
+            }
+            let nextIndex = window.data.index(after: newline)
+            cursorOffset = window.offset + Int64(nextIndex - window.data.startIndex)
+            searchStart = nextIndex
 
-                    guard let payload = decodedLine.payload, payload.type == "token_count", let info = payload.info else {
-                        continue
-                    }
-
-                    guard let receivedAt = Self.parseTimestamp(decodedLine.timestamp) else {
-                        failedLinesSkipped += 1
-                        continue
-                    }
-
-                    let tokenUsage = CodexThreadTokenUsage(
-                        last: info.lastTokenUsage.toDomainBreakdown(),
-                        total: info.totalTokenUsage.toDomainBreakdown(),
-                        modelContextWindow: info.modelContextWindow
-                    )
-                    let notification = CodexTokenUsageNotification(
-                        threadID: sessionID,
-                        turnID: "line:\(line.lineNumber)",
-                        model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
-                        tokenUsage: tokenUsage
-                    )
-                    samples.append(ImportedCodexTokenUsageSample(
-                        notification: notification,
-                        receivedAt: receivedAt,
-                        context: currentContext.context(adding: info.dimensions)
-                    ))
-                } catch {
-                    failedLinesSkipped += 1
+            defer {
+                if let lineNumber = nextLineNumber {
+                    nextLineNumber = lineNumber + 1
                 }
             }
-        } catch {
-            return (samples, failedLinesSkipped + 1, false)
+            guard !line.isEmpty else {
+                continue
+            }
+            let lineData = Data(line)
+            guard Self.shouldDecodeSessionLine(lineData) else {
+                continue
+            }
+
+            do {
+                let decodedLine = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
+                if decodedLine.isSessionMetadata {
+                    currentContext.applyMetadata(from: decodedLine.payload)
+                }
+                if decodedLine.isTurnContext {
+                    currentContext.applyTurnContext(from: decodedLine.payload)
+                }
+                if decodedLine.payload?.hasModelMetadata == true {
+                    currentModel = decodedLine.payload?.modelIdentifier
+                }
+
+                guard let payload = decodedLine.payload,
+                      payload.type == "token_count",
+                      let info = payload.info
+                else {
+                    continue
+                }
+                guard let receivedAt = Self.parseTimestamp(decodedLine.timestamp) else {
+                    failedLinesSkipped += 1
+                    continue
+                }
+
+                let tokenUsage = CodexThreadTokenUsage(
+                    last: info.lastTokenUsage.toDomainBreakdown(),
+                    total: info.totalTokenUsage.toDomainBreakdown(),
+                    modelContextWindow: info.modelContextWindow
+                )
+                let turnID = nextLineNumber.map { "line:\($0)" } ?? "byte:\(lineOffset)"
+                samples.append(
+                    ImportedCodexTokenUsageSample(
+                        notification: CodexTokenUsageNotification(
+                            threadID: sessionID,
+                            turnID: turnID,
+                            model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
+                            tokenUsage: tokenUsage
+                        ),
+                        receivedAt: receivedAt,
+                        context: currentContext.context(adding: info.dimensions)
+                    )
+                )
+            } catch {
+                failedLinesSkipped += 1
+            }
         }
 
-        return (samples, failedLinesSkipped, lineReader.readSucceeded)
+        let state = currentContext.tailState(currentModel: currentModel)
+        if let lineNumber = nextLineNumber, window.discardedLineCount > 0 {
+            nextLineNumber = lineNumber + window.discardedLineCount
+        }
+        let fingerprintStart = canResume ? startOffset : window.offset
+        let consumedSuffixCount = cursorOffset - fingerprintStart
+        let consumedSuffix: Data? = if window.offset == fingerprintStart,
+                                       consumedSuffixCount >= 0,
+                                       consumedSuffixCount <= Int64(window.data.count)
+        {
+            Data(window.data.prefix(Int(consumedSuffixCount)))
+        } else {
+            nil
+        }
+        return TailParseResult(
+            samples: samples,
+            failedLinesSkipped: failedLinesSkipped,
+            readSucceeded: true,
+            tailCursor: CodexSessionTokenTailCursor(
+                byteOffset: cursorOffset,
+                nextLineNumber: nextLineNumber,
+                filePrefixHash: Self.extendedFilePrefixHash(
+                    priorCursor?.filePrefixHash,
+                    fileURL: fileURL,
+                    from: fingerprintStart,
+                    through: cursorOffset,
+                    consumedSuffix: consumedSuffix,
+                    streamedSegmentLength: window.streamedSegmentLength,
+                    streamedSegmentDigest: window.streamedSegmentDigest,
+                    readObserver: readObserver
+                ),
+                stateJSON: state.encodedJSON
+            )
+        )
     }
 
-    private func parseSessionFile(
+    fileprivate struct SessionWindow {
+        let data: Data
+        let offset: Int64
+        let discardedLineCount: Int
+        let streamedSegmentLength: Int64?
+        let streamedSegmentDigest: Data?
+
+        init(
+            data: Data,
+            offset: Int64,
+            discardedLineCount: Int,
+            streamedSegmentLength: Int64? = nil,
+            streamedSegmentDigest: Data? = nil
+        ) {
+            self.data = data
+            self.offset = offset
+            self.discardedLineCount = discardedLineCount
+            self.streamedSegmentLength = streamedSegmentLength
+            self.streamedSegmentDigest = streamedSegmentDigest
+        }
+    }
+
+    fileprivate static func readSessionWindow(
         _ fileURL: URL,
-        fallbackLineReader lineReader: FileLineReader
-    ) -> (samples: [ImportedCodexTokenUsageSample], failedLinesSkipped: Int, readSucceeded: Bool) {
-        let decoder = JSONDecoder()
-        var samples: [ImportedCodexTokenUsageSample] = []
-        var failedLinesSkipped = 0
-        let sessionID = Self.sessionIdentifier(for: fileURL)
-        var currentContext = CodexSessionTokenContextTracker(sessionID: sessionID)
-        var currentModel: String?
-        var lineIndex = 0
+        startOffset: Int64,
+        maximumBytes: Int64,
+        alignToNextLine: Bool,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)? = nil
+    ) throws -> SessionWindow {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        let normalizedStartOffset = max(startOffset, 0)
+        var startsAtLineBoundary = normalizedStartOffset == 0
+        if alignToNextLine, normalizedStartOffset > 0 {
+            try handle.seek(toOffset: UInt64(normalizedStartOffset - 1))
+            startsAtLineBoundary = try handle.read(upToCount: 1)?.first == 0x0A
+        }
+        try handle.seek(toOffset: UInt64(normalizedStartOffset))
 
-        do {
-            while let lineData = try lineReader.nextLineData() {
-                guard !lineData.isEmpty else {
-                    lineIndex += 1
-                    continue
+        let count = Int(min(maximumBytes, Int64(Int.max)))
+        var data = try handle.read(upToCount: count) ?? Data()
+        var actualOffset = normalizedStartOffset
+        if alignToNextLine, actualOffset > 0, !startsAtLineBoundary {
+            guard let newline = data.firstIndex(of: 0x0A) else {
+                guard data.count == count,
+                      let offsetAfterNewline = try Self.offsetAfterNextNewline(
+                          in: handle,
+                          startingAt: actualOffset + Int64(data.count)
+                      )
+                else {
+                    // The tail is an incomplete line. Leave the cursor before it so an append can
+                    // complete the record without persisting partial bytes.
+                    return SessionWindow(data: Data(), offset: actualOffset, discardedLineCount: 0)
                 }
-
-                lineIndex += 1
-                guard Self.shouldDecodeSessionLine(lineData) else {
-                    continue
-                }
-
-                do {
-                    let line = try decoder.decode(CodexSessionTokenBackfillLine.self, from: lineData)
-                    if line.isSessionMetadata {
-                        currentContext.applyMetadata(from: line.payload)
-                    }
-                    if line.isTurnContext {
-                        currentContext.applyTurnContext(from: line.payload)
-                    }
-                    if line.payload?.hasModelMetadata == true {
-                        currentModel = line.payload?.modelIdentifier
-                    }
-
-                    guard let payload = line.payload, payload.type == "token_count", let info = payload.info else {
-                        continue
-                    }
-
-                    guard let receivedAt = Self.parseTimestamp(line.timestamp) else {
-                        failedLinesSkipped += 1
-                        continue
-                    }
-
-                    let tokenUsage = CodexThreadTokenUsage(
-                        last: info.lastTokenUsage.toDomainBreakdown(),
-                        total: info.totalTokenUsage.toDomainBreakdown(),
-                        modelContextWindow: info.modelContextWindow
-                    )
-                    let notification = CodexTokenUsageNotification(
-                        threadID: sessionID,
-                        turnID: "line:\(lineIndex)",
-                        model: info.hasModelMetadata ? info.modelIdentifier : currentModel,
-                        tokenUsage: tokenUsage
-                    )
-                    samples.append(ImportedCodexTokenUsageSample(
-                        notification: notification,
-                        receivedAt: receivedAt,
-                        context: currentContext.context(adding: info.dimensions)
-                    ))
-                } catch {
-                    failedLinesSkipped += 1
-                }
+                // This prefix was intentionally omitted by a bounded tail read, so it is not a
+                // parser failure even when finding its newline requires more than one chunk.
+                return SessionWindow(data: Data(), offset: offsetAfterNewline, discardedLineCount: 0)
             }
-        } catch {
-            return (samples, failedLinesSkipped + 1, false)
+            let alignedStart = data.index(after: newline)
+            actualOffset += Int64(alignedStart - data.startIndex)
+            data.removeSubrange(data.startIndex..<alignedStart)
         }
 
-        return (samples, failedLinesSkipped, true)
+        if !alignToNextLine,
+           data.count == count,
+           data.firstIndex(of: 0x0A) == nil,
+           let discarded = try Self.discardOversizedLine(
+               in: handle,
+               initialData: data,
+               startingAt: actualOffset,
+               readObserver: readObserver
+           )
+        {
+            // A record larger than the bounded window cannot be decoded safely. Consume it in
+            // fixed-size chunks through exactly one newline, count one failure, and let the next
+            // import window resume at the following record.
+            return SessionWindow(
+                data: Data(),
+                offset: discarded.offsetAfterNewline,
+                discardedLineCount: 1,
+                streamedSegmentLength: discarded.length,
+                streamedSegmentDigest: discarded.digest
+            )
+        }
+
+        return SessionWindow(data: data, offset: actualOffset, discardedLineCount: 0)
     }
 
-    private static func shouldDecodeSessionLine(_ lineData: Data) -> Bool {
-        let searchablePrefix = lineData.prefix(4_096)
-        return searchablePrefix.range(of: tokenCountLineNeedle) != nil
-            || searchablePrefix.range(of: turnContextLineNeedle) != nil
-            || searchablePrefix.range(of: sessionMetaLineNeedle) != nil
-    }
-
-    private final class GrepRelevantLineReader {
-        private let process: Process
-        private let lineReader: FileLineReader
-        private var hasClosed = false
-
-        var readSucceeded = true
-
-        init(fileURL: URL) throws {
-            let pipe = Pipe()
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
-            process.arguments = [
-                "-anE",
-                #""token_count"|"turn_context"|"session_meta""#,
-                fileURL.path,
-            ]
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-            try process.run()
-
-            self.process = process
-            self.lineReader = FileLineReader(handle: pipe.fileHandleForReading)
-        }
-
-        func nextRelevantLineData() throws -> (lineNumber: Int, data: Data)? {
-            while let lineData = try lineReader.nextLineData() {
-                guard let parsedLine = Self.parseGrepLine(lineData) else {
-                    continue
-                }
-
-                return parsedLine
-            }
-
-            close()
-            return nil
-        }
-
-        func close() {
-            guard !hasClosed else {
-                return
-            }
-
-            hasClosed = true
-            lineReader.close()
-            process.waitUntilExit()
-            readSucceeded = process.terminationStatus == 0 || process.terminationStatus == 1
-        }
-
-        private static func parseGrepLine(_ lineData: Data) -> (lineNumber: Int, data: Data)? {
-            guard let separator = lineData.firstIndex(of: 0x3A), separator > lineData.startIndex else {
+    private static func offsetAfterNextNewline(
+        in handle: FileHandle,
+        startingAt startOffset: Int64
+    ) throws -> Int64? {
+        let chunkSize = 64 * 1_024
+        var chunkOffset = startOffset
+        while true {
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            guard !chunk.isEmpty else {
                 return nil
             }
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                return chunkOffset + Int64(newline - chunk.startIndex) + 1
+            }
+            chunkOffset += Int64(chunk.count)
+        }
+    }
 
-            let prefix = lineData[lineData.startIndex..<separator]
-            guard let rawLineNumber = String(data: prefix, encoding: .utf8),
-                  let lineNumber = Int(rawLineNumber)
+    private struct StreamedDiscardResult {
+        let offsetAfterNewline: Int64
+        let length: Int64
+        let digest: Data
+    }
+
+    private static func discardOversizedLine(
+        in handle: FileHandle,
+        initialData: Data,
+        startingAt startOffset: Int64,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    ) throws -> StreamedDiscardResult? {
+        var hasher = SHA256()
+        hasher.update(data: initialData)
+        var length = Int64(initialData.count)
+        let chunkSize = 64 * 1_024
+        while true {
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            guard !chunk.isEmpty else {
+                return nil
+            }
+            readObserver?(.oversizedDiscardChunk(chunk.count))
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                let consumed = Data(chunk[...newline])
+                hasher.update(data: consumed)
+                length += Int64(consumed.count)
+                return StreamedDiscardResult(
+                    offsetAfterNewline: startOffset + length,
+                    length: length,
+                    digest: Data(hasher.finalize())
+                )
+            }
+            hasher.update(data: chunk)
+            length += Int64(chunk.count)
+        }
+    }
+
+    /// Fingerprints consumed JSONL ranges as SHA-256 segments. Normal append-only growth extends
+    /// the fingerprint from bytes already held by the parser, so a 64 MiB window is read only once.
+    /// Same-size rewrites and inode replacement verify every persisted segment before resuming.
+    fileprivate static func filePrefixHash(
+        _ fileURL: URL,
+        through byteOffset: Int64,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)? = nil
+    ) -> String? {
+        filePrefixFingerprint(
+            fileURL,
+            coverageStart: 0,
+            through: byteOffset,
+            readObserver: readObserver
+        )?.encoded
+    }
+
+    fileprivate static func filePrefixMatches(
+        _ storedHash: String,
+        fileURL: URL,
+        through byteOffset: Int64,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)? = nil
+    ) -> Bool {
+        guard let stored = FilePrefixFingerprint(encoded: storedHash),
+              stored.byteCount == max(byteOffset, 0),
+              let currentIdentity = fileIdentity(for: fileURL)
+        else {
+            return false
+        }
+        if stored.identity == currentIdentity {
+            return true
+        }
+        // Identity changes cannot prove append-only growth: a same-inode file may have been
+        // truncated, rewritten, and regrown between scans. Revalidate every consumed segment
+        // before trusting its cursor. Reads stay chunk-bounded even though correctness requires
+        // O(consumed-prefix) I/O when the file identity changed.
+        guard let current = filePrefixFingerprint(
+            fileURL,
+            matchingLayoutOf: stored,
+            readObserver: readObserver
+        ) else {
+            return false
+        }
+        return stored.hasSameContent(as: current)
+    }
+
+    fileprivate static func extendedFilePrefixHash(
+        _ storedHash: String?,
+        fileURL: URL,
+        from startOffset: Int64,
+        through endOffset: Int64,
+        consumedSuffix: Data? = nil,
+        streamedSegmentLength: Int64? = nil,
+        streamedSegmentDigest: Data? = nil,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)? = nil
+    ) -> String? {
+        guard endOffset >= startOffset,
+              let identityBefore = fileIdentity(for: fileURL)
+        else {
+            return filePrefixHash(fileURL, through: endOffset, readObserver: readObserver)
+        }
+        let stored = storedHash.flatMap(FilePrefixFingerprint.init(encoded:))
+        let coverageStart: Int64
+        var segments: [FilePrefixFingerprint.Segment]
+        if let stored, stored.byteCount == startOffset {
+            coverageStart = stored.coverageStart
+            segments = stored.segments
+        } else if storedHash == nil {
+            coverageStart = startOffset
+            segments = []
+        } else {
+            return filePrefixHash(fileURL, through: endOffset, readObserver: readObserver)
+        }
+        if let consumedSuffix,
+           Int64(consumedSuffix.count) == endOffset - startOffset,
+           !consumedSuffix.isEmpty
+        {
+            segments.append(.init(length: Int64(consumedSuffix.count), digest: sha256(consumedSuffix)))
+        } else if let streamedSegmentLength,
+                  let streamedSegmentDigest,
+                  streamedSegmentLength == endOffset - startOffset,
+                  streamedSegmentDigest.count == 32,
+                  streamedSegmentLength > 0
+        {
+            segments.append(.init(length: streamedSegmentLength, digest: streamedSegmentDigest))
+        } else if endOffset != startOffset {
+            return filePrefixHash(fileURL, through: endOffset, readObserver: readObserver)
+        }
+        guard segments.reduce(Int64(0), { $0 + $1.length }) == endOffset - coverageStart,
+              let boundaryDigest = fingerprintBoundaryDigest(
+                  fileURL,
+                  coverageStart: coverageStart,
+                  through: endOffset,
+                  readObserver: readObserver
+              ),
+              let identityAfter = fileIdentity(for: fileURL),
+              identityAfter == identityBefore
+        else {
+            return nil
+        }
+        return FilePrefixFingerprint(
+            coverageStart: coverageStart,
+            byteCount: endOffset,
+            segments: segments,
+            boundaryDigest: boundaryDigest,
+            identity: identityAfter
+        ).encoded
+    }
+
+    private static let prefixFingerprintReadChunkSize = 1_024 * 1_024
+
+    private struct SessionFileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let fileSize: Int64
+        let modificationSeconds: Int64
+        let modificationNanoseconds: Int64
+        let changeSeconds: Int64
+        let changeNanoseconds: Int64
+
+        var encodedFields: [String] {
+            [
+                String(device), String(inode), String(fileSize),
+                String(modificationSeconds), String(modificationNanoseconds),
+                String(changeSeconds), String(changeNanoseconds),
+            ]
+        }
+    }
+
+    private struct FilePrefixFingerprint {
+        struct Segment: Equatable {
+            let length: Int64
+            let digest: Data
+
+            var encoded: String { "\(length).\(digest.hexString)" }
+
+            init(length: Int64, digest: Data) {
+                self.length = length
+                self.digest = digest
+            }
+
+            init?(encoded: Substring) {
+                guard let separator = encoded.firstIndex(of: "."),
+                      let length = Int64(encoded[..<separator]), length > 0,
+                      let digest = Data(hexString: String(encoded[encoded.index(after: separator)...])),
+                      digest.count == 32
+                else {
+                    return nil
+                }
+                self.init(length: length, digest: digest)
+            }
+        }
+
+        let coverageStart: Int64
+        let byteCount: Int64
+        let segments: [Segment]
+        let boundaryDigest: Data
+        let identity: SessionFileIdentity
+
+        init(
+            coverageStart: Int64,
+            byteCount: Int64,
+            segments: [Segment],
+            boundaryDigest: Data,
+            identity: SessionFileIdentity
+        ) {
+            self.coverageStart = coverageStart
+            self.byteCount = byteCount
+            self.segments = segments
+            self.boundaryDigest = boundaryDigest
+            self.identity = identity
+        }
+
+        init?(encoded: String) {
+            let fields = encoded.split(separator: ":", omittingEmptySubsequences: false)
+            guard fields.count == 12,
+                  fields[0] == "v4",
+                  let coverageStart = Int64(fields[1]), coverageStart >= 0,
+                  let byteCount = Int64(fields[2]), byteCount >= coverageStart,
+                  let segments = Self.decodeSegments(fields[3]),
+                  segments.reduce(Int64(0), { $0 + $1.length }) == byteCount - coverageStart,
+                  let boundaryDigest = Data(hexString: String(fields[4])), boundaryDigest.count == 32,
+                  let device = UInt64(fields[5]),
+                  let inode = UInt64(fields[6]),
+                  let fileSize = Int64(fields[7]),
+                  let modificationSeconds = Int64(fields[8]),
+                  let modificationNanoseconds = Int64(fields[9]),
+                  let changeSeconds = Int64(fields[10]),
+                  let changeNanoseconds = Int64(fields[11])
             else {
                 return nil
             }
+            self.init(
+                coverageStart: coverageStart,
+                byteCount: byteCount,
+                segments: segments,
+                boundaryDigest: boundaryDigest,
+                identity: SessionFileIdentity(
+                    device: device,
+                    inode: inode,
+                    fileSize: fileSize,
+                    modificationSeconds: modificationSeconds,
+                    modificationNanoseconds: modificationNanoseconds,
+                    changeSeconds: changeSeconds,
+                    changeNanoseconds: changeNanoseconds
+                )
+            )
+        }
 
-            let payloadStart = lineData.index(after: separator)
-            return (lineNumber, Data(lineData[payloadStart...]))
+        var encoded: String {
+            ([
+                "v4", String(coverageStart), String(byteCount),
+                segments.map(\.encoded).joined(separator: ","), boundaryDigest.hexString,
+            ] + identity.encodedFields)
+                .joined(separator: ":")
+        }
+
+        func hasSameContent(as other: FilePrefixFingerprint) -> Bool {
+            coverageStart == other.coverageStart
+                && byteCount == other.byteCount
+                && segments == other.segments
+        }
+
+        private static func decodeSegments(_ value: Substring) -> [Segment]? {
+            if value.isEmpty {
+                return []
+            }
+            let segments = value.split(separator: ",").compactMap(Segment.init(encoded:))
+            return segments.count == value.split(separator: ",").count ? segments : nil
         }
     }
 
-    private final class FileLineReader {
-        private let handle: FileHandle
-        private var buffer = Data()
-        private var reachedEnd = false
-
-        init(fileURL: URL) throws {
-            handle = try FileHandle(forReadingFrom: fileURL)
+    private static func filePrefixFingerprint(
+        _ fileURL: URL,
+        coverageStart: Int64,
+        through byteOffset: Int64,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    ) -> FilePrefixFingerprint? {
+        let length = max(byteOffset - coverageStart, 0)
+        var segmentLengths: [Int64] = []
+        var remaining = length
+        while remaining > 0 {
+            let count = min(remaining, maximumReadWindowSize)
+            segmentLengths.append(count)
+            remaining -= count
         }
+        return filePrefixFingerprint(
+            fileURL,
+            coverageStart: coverageStart,
+            through: byteOffset,
+            segmentLengths: segmentLengths,
+            readObserver: readObserver
+        )
+    }
 
-        init(handle: FileHandle) {
-            self.handle = handle
+    private static func filePrefixFingerprint(
+        _ fileURL: URL,
+        matchingLayoutOf stored: FilePrefixFingerprint,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    ) -> FilePrefixFingerprint? {
+        filePrefixFingerprint(
+            fileURL,
+            coverageStart: stored.coverageStart,
+            through: stored.byteCount,
+            segmentLengths: stored.segments.map(\.length),
+            readObserver: readObserver
+        )
+    }
+
+    private static func filePrefixFingerprint(
+        _ fileURL: URL,
+        coverageStart: Int64,
+        through byteOffset: Int64,
+        segmentLengths: [Int64],
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    ) -> FilePrefixFingerprint? {
+        guard let identityBefore = fileIdentity(for: fileURL),
+              let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return nil
         }
-
-        func nextLineData() throws -> Data? {
-            while true {
-                if let newlineRange = buffer.firstRange(of: Data([0x0A])) {
-                    var line = buffer[..<newlineRange.lowerBound]
-                    buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
-                    if line.last == 0x0D {
-                        line = line.dropLast()
-                    }
-                    return Data(line)
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(coverageStart))) != nil else {
+            return nil
+        }
+        var segments: [FilePrefixFingerprint.Segment] = []
+        for length in segmentLengths {
+            var hasher = SHA256()
+            var remaining = length
+            while remaining > 0 {
+                let count = Int(min(remaining, Int64(prefixFingerprintReadChunkSize)))
+                guard let chunk = try? readExactly(count, from: handle), chunk.count == count else {
+                    return nil
                 }
-
-                if reachedEnd {
-                    guard !buffer.isEmpty else {
-                        return nil
-                    }
-
-                    var line = buffer
-                    buffer.removeAll(keepingCapacity: false)
-                    if line.last == 0x0D {
-                        line.removeLast()
-                    }
-                    return line
-                }
-
-                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-                if chunk.isEmpty {
-                    reachedEnd = true
-                } else {
-                    buffer.append(chunk)
-                }
+                readObserver?(.fullFingerprintChunk(chunk.count))
+                hasher.update(data: chunk)
+                remaining -= Int64(count)
             }
+            segments.append(.init(length: length, digest: Data(hasher.finalize())))
         }
+        guard segmentLengths.reduce(Int64(0), +) == byteOffset - coverageStart,
+              let boundaryDigest = fingerprintBoundaryDigest(
+                  in: handle,
+                  coverageStart: coverageStart,
+                  through: byteOffset,
+                  readObserver: readObserver
+              ),
+              let identityAfter = fileIdentity(for: fileURL), identityAfter == identityBefore
+        else {
+            return nil
+        }
+        return FilePrefixFingerprint(
+            coverageStart: coverageStart,
+            byteCount: byteOffset,
+            segments: segments,
+            boundaryDigest: boundaryDigest,
+            identity: identityAfter
+        )
+    }
 
-        func close() {
-            try? handle.close()
+    private static func fingerprintBoundaryDigest(
+        _ fileURL: URL,
+        coverageStart: Int64,
+        through byteOffset: Int64,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    ) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return nil
         }
+        defer { try? handle.close() }
+        return fingerprintBoundaryDigest(
+            in: handle,
+            coverageStart: coverageStart,
+            through: byteOffset,
+            readObserver: readObserver
+        )
+    }
+
+    private static func fingerprintBoundaryDigest(
+        in handle: FileHandle,
+        coverageStart: Int64,
+        through byteOffset: Int64,
+        readObserver: (@Sendable (CodexSessionImportReadKind) -> Void)?
+    ) -> Data? {
+        let coveredLength = max(byteOffset - coverageStart, 0)
+        let count = Int(min(coveredLength, Int64(fingerprintBoundarySize)))
+        let start = byteOffset - Int64(count)
+        guard (try? handle.seek(toOffset: UInt64(start))) != nil,
+              let data = try? readExactly(count, from: handle),
+              data.count == count
+        else {
+            return nil
+        }
+        if !data.isEmpty {
+            readObserver?(.boundaryFingerprintChunk(data.count))
+        }
+        return sha256(data)
+    }
+
+    private static func fileIdentity(for fileURL: URL) -> SessionFileIdentity? {
+        var information = stat()
+        guard lstat(fileURL.path, &information) == 0 else {
+            return nil
+        }
+        return SessionFileIdentity(
+            device: UInt64(information.st_dev),
+            inode: UInt64(information.st_ino),
+            fileSize: Int64(information.st_size),
+            modificationSeconds: Int64(information.st_mtimespec.tv_sec),
+            modificationNanoseconds: Int64(information.st_mtimespec.tv_nsec),
+            changeSeconds: Int64(information.st_ctimespec.tv_sec),
+            changeNanoseconds: Int64(information.st_ctimespec.tv_nsec)
+        )
+    }
+
+    private static func readExactly(_ count: Int, from handle: FileHandle) throws -> Data {
+        var result = Data()
+        result.reserveCapacity(count)
+        while result.count < count {
+            let chunk = try handle.read(upToCount: count - result.count) ?? Data()
+            guard !chunk.isEmpty else {
+                break
+            }
+            result.append(chunk)
+        }
+        return result
+    }
+
+    private static func sha256(_ data: Data) -> Data {
+        Data(SHA256.hash(data: data))
+    }
+
+    private static func shouldDecodeSessionLine(_ lineData: Data) -> Bool {
+        lineData.range(of: tokenCountLineNeedle) != nil
+            || lineData.range(of: turnContextLineNeedle) != nil
+            || lineData.range(of: sessionMetaLineNeedle) != nil
     }
 
     static func sessionDate(from fileURL: URL) -> Date? {
@@ -4305,7 +5070,7 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         }
 
         var safeSessionID: String? {
-            CodexTokenContextNormalizer.normalizedIdentifier(id)
+            CodexTokenContextNormalizer.normalizedMetadataIdentifier(id)
         }
 
         var safeProjectPath: String? {
@@ -4313,13 +5078,15 @@ private struct CodexSessionTokenBackfillLine: Decodable {
         }
 
         var safeEffort: String? {
-            CodexTokenContextNormalizer.normalizedIdentifier(
+            CodexTokenContextNormalizer.normalizedMetadataIdentifier(
                 effort ?? collaborationMode?.settings?.reasoningEffort
             )
         }
 
         var safeSource: String? {
-            source?.dimensions.first { $0.key == .sourceKind }?.value
+            CodexTokenContextNormalizer.normalizedMetadataIdentifier(
+                source?.dimensions.first { $0.key == .sourceKind }?.value
+            )
         }
 
         var hasModelMetadata: Bool {
@@ -4531,7 +5298,22 @@ private struct CodexSessionTokenContextTracker {
     var dimensions: [TokenUsageDimensionKey: TokenUsageDimension] = [:]
 
     init(sessionID: String?) {
-        self.sessionID = CodexTokenContextNormalizer.normalizedIdentifier(sessionID)
+        self.sessionID = CodexTokenContextNormalizer.normalizedMetadataIdentifier(sessionID)
+    }
+
+    init(sessionID: String?, restoredState: CodexSessionTokenTailState?) {
+        self.init(sessionID: restoredState?.sessionID ?? sessionID)
+        projectPath = CodexTokenContextNormalizer.normalizedProjectPath(restoredState?.projectPath)
+        effort = CodexTokenContextNormalizer.normalizedMetadataIdentifier(restoredState?.effort)
+        source = CodexTokenContextNormalizer.normalizedMetadataIdentifier(restoredState?.source)
+        for (rawKey, rawValue) in restoredState?.dimensions ?? [:] {
+            guard let key = TokenUsageDimensionKey(rawValue: rawKey),
+                  let dimension = TokenUsageDimension(key, rawValue)
+            else {
+                continue
+            }
+            dimensions[key] = dimension
+        }
     }
 
     mutating func applyMetadata(from payload: CodexSessionTokenBackfillLine.Payload?) {
@@ -4590,6 +5372,40 @@ private struct CodexSessionTokenContextTracker {
             dimensions: Array(dimensions.values) + additionalDimensions
         )
         return context.hasAnyValue ? context : nil
+    }
+
+    func tailState(currentModel: String?) -> CodexSessionTokenTailState {
+        CodexSessionTokenTailState(
+            sessionID: CodexTokenContextNormalizer.normalizedMetadataIdentifier(sessionID),
+            projectPath: projectPath,
+            effort: CodexTokenContextNormalizer.normalizedMetadataIdentifier(effort),
+            source: CodexTokenContextNormalizer.normalizedMetadataIdentifier(source),
+            dimensions: Dictionary(uniqueKeysWithValues: dimensions.values.map { ($0.key.rawValue, $0.value) }),
+            currentModel: CodexModelIdentifier.normalized(currentModel)
+        )
+    }
+}
+
+private struct CodexSessionTokenTailState: Codable {
+    let sessionID: String?
+    let projectPath: String?
+    let effort: String?
+    let source: String?
+    let dimensions: [String: String]
+    let currentModel: String?
+
+    static func decode(_ json: String?) -> CodexSessionTokenTailState? {
+        guard let data = json?.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CodexSessionTokenTailState.self, from: data)
+    }
+
+    var encodedJSON: String? {
+        guard let data = try? JSONEncoder().encode(self) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 }
 

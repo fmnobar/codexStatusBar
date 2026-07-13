@@ -88,7 +88,8 @@ extension UsageHistoryStore {
     func codexSessionTaskTimingImportFileRecord(path: String) throws -> CodexSessionTaskTimingImportFileRecord? {
         let statement = try prepare(
             """
-            SELECT file_path, file_size, modified_at, imported_at, status, timing_version
+            SELECT file_path, file_size, modified_at, imported_at, status, timing_version,
+                byte_offset, next_line_number, file_prefix_hash, tail_state_json
             FROM codex_session_task_timing_import_files
             WHERE file_path = ?
             LIMIT 1
@@ -102,15 +103,17 @@ extension UsageHistoryStore {
         case SQLITE_ROW:
             let rawStatus = columnText(statement, index: 4)
             let status = CodexSessionTaskTimingImportFileStatus(rawValue: rawStatus) ?? .failed
-            return CodexSessionTaskTimingImportFileRecord(
-                metadata: CodexSessionTokenImportFileMetadata(
+            let metadata = CodexSessionTokenImportFileMetadata(
                     path: columnText(statement, index: 0),
                     fileSize: sqlite3_column_int64(statement, 1),
                     modifiedAt: sqlite3_column_int64(statement, 2)
-                ),
+                )
+            return CodexSessionTaskTimingImportFileRecord(
+                metadata: metadata,
                 importedAt: sqlite3_column_int64(statement, 3),
                 status: status,
-                timingVersion: optionalColumnText(statement, index: 5)
+                timingVersion: optionalColumnText(statement, index: 5),
+                tailCursor: codexSessionTokenTailCursor(from: statement, metadata: metadata)
             )
         case SQLITE_DONE:
             return nil
@@ -119,22 +122,67 @@ extension UsageHistoryStore {
         }
     }
 
+    func codexSessionTaskTimingImportFileRecords() throws -> [CodexSessionTaskTimingImportFileRecord] {
+        let statement = try prepare(
+            """
+            SELECT file_path, file_size, modified_at, imported_at, status, timing_version,
+                byte_offset, next_line_number, file_prefix_hash, tail_state_json
+            FROM codex_session_task_timing_import_files
+            ORDER BY file_path
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var records: [CodexSessionTaskTimingImportFileRecord] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let metadata = CodexSessionTokenImportFileMetadata(
+                    path: columnText(statement, index: 0),
+                    fileSize: sqlite3_column_int64(statement, 1),
+                    modifiedAt: sqlite3_column_int64(statement, 2)
+                )
+                records.append(
+                    CodexSessionTaskTimingImportFileRecord(
+                        metadata: metadata,
+                        importedAt: sqlite3_column_int64(statement, 3),
+                        status: CodexSessionTaskTimingImportFileStatus(
+                            rawValue: columnText(statement, index: 4)
+                        ) ?? .failed,
+                        timingVersion: optionalColumnText(statement, index: 5),
+                        tailCursor: codexSessionTokenTailCursor(from: statement, metadata: metadata)
+                    )
+                )
+            case SQLITE_DONE:
+                return records
+            default:
+                throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+            }
+        }
+    }
+
     func recordCodexSessionTaskTimingImportFile(
         _ metadata: CodexSessionTokenImportFileMetadata,
         importedAt: Int64,
-        status: CodexSessionTaskTimingImportFileStatus
+        status: CodexSessionTaskTimingImportFileStatus,
+        tailCursor: CodexSessionTokenTailCursor? = nil
     ) throws {
         let statement = try prepare(
             """
             INSERT INTO codex_session_task_timing_import_files (
-                file_path, file_size, modified_at, imported_at, status, timing_version
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                file_path, file_size, modified_at, imported_at, status, timing_version,
+                byte_offset, next_line_number, file_prefix_hash, tail_state_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 file_size = excluded.file_size,
                 modified_at = excluded.modified_at,
                 imported_at = excluded.imported_at,
                 status = excluded.status,
-                timing_version = excluded.timing_version
+                timing_version = excluded.timing_version,
+                byte_offset = excluded.byte_offset,
+                next_line_number = excluded.next_line_number,
+                file_prefix_hash = excluded.file_prefix_hash,
+                tail_state_json = excluded.tail_state_json
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -145,6 +193,10 @@ extension UsageHistoryStore {
         sqlite3_bind_int64(statement, 4, importedAt)
         bindText(status.rawValue, to: 5, in: statement)
         bindText(Self.currentSessionTaskTimingImportVersion, to: 6, in: statement)
+        sqlite3_bind_int64(statement, 7, tailCursor?.byteOffset ?? metadata.fileSize)
+        bindOptionalInt(tailCursor?.nextLineNumber.map(Int64.init), to: 8, in: statement)
+        bindOptionalText(tailCursor?.filePrefixHash, to: 9, in: statement)
+        bindOptionalText(tailCursor?.stateJSON, to: 10, in: statement)
 
         try step(statement)
     }
@@ -829,7 +881,8 @@ extension UsageHistoryStore {
     func codexSessionTokenImportFileRecord(path: String) throws -> CodexSessionTokenImportFileRecord? {
         let statement = try prepare(
             """
-            SELECT file_path, file_size, modified_at, imported_at, status, context_version
+            SELECT file_path, file_size, modified_at, imported_at, status, context_version,
+                byte_offset, next_line_number, file_prefix_hash, tail_state_json
             FROM codex_session_token_imports
             WHERE file_path = ?
             LIMIT 1
@@ -851,7 +904,8 @@ extension UsageHistoryStore {
                 metadata: metadata,
                 importedAt: sqlite3_column_int64(statement, 3),
                 status: status,
-                contextVersion: optionalColumnText(statement, index: 5)
+                contextVersion: optionalColumnText(statement, index: 5),
+                tailCursor: codexSessionTokenTailCursor(from: statement, metadata: metadata)
             )
         case SQLITE_DONE:
             return nil
@@ -863,19 +917,25 @@ extension UsageHistoryStore {
     func recordCodexSessionTokenImportFile(
         _ metadata: CodexSessionTokenImportFileMetadata,
         importedAt: Int64,
-        status: CodexSessionTokenImportFileStatus
+        status: CodexSessionTokenImportFileStatus,
+        tailCursor: CodexSessionTokenTailCursor? = nil
     ) throws {
         let statement = try prepare(
             """
             INSERT INTO codex_session_token_imports (
-                file_path, file_size, modified_at, imported_at, status, context_version
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                file_path, file_size, modified_at, imported_at, status, context_version,
+                byte_offset, next_line_number, file_prefix_hash, tail_state_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 file_size = excluded.file_size,
                 modified_at = excluded.modified_at,
                 imported_at = excluded.imported_at,
                 status = excluded.status,
-                context_version = excluded.context_version
+                context_version = excluded.context_version,
+                byte_offset = excluded.byte_offset,
+                next_line_number = excluded.next_line_number,
+                file_prefix_hash = excluded.file_prefix_hash,
+                tail_state_json = excluded.tail_state_json
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -886,6 +946,10 @@ extension UsageHistoryStore {
         sqlite3_bind_int64(statement, 4, importedAt)
         bindText(status.rawValue, to: 5, in: statement)
         bindText(Self.currentSessionTokenContextImportVersion, to: 6, in: statement)
+        sqlite3_bind_int64(statement, 7, tailCursor?.byteOffset ?? metadata.fileSize)
+        bindOptionalInt(tailCursor?.nextLineNumber.map(Int64.init), to: 8, in: statement)
+        bindOptionalText(tailCursor?.filePrefixHash, to: 9, in: statement)
+        bindOptionalText(tailCursor?.stateJSON, to: 10, in: statement)
 
         try step(statement)
     }
@@ -893,7 +957,8 @@ extension UsageHistoryStore {
     func codexSessionTokenImportFileRecords() throws -> [CodexSessionTokenImportFileRecord] {
         let statement = try prepare(
             """
-            SELECT file_path, file_size, modified_at, imported_at, status, context_version
+            SELECT file_path, file_size, modified_at, imported_at, status, context_version,
+                byte_offset, next_line_number, file_prefix_hash, tail_state_json
             FROM codex_session_token_imports
             ORDER BY file_path
             """
@@ -915,7 +980,8 @@ extension UsageHistoryStore {
                         metadata: metadata,
                         importedAt: sqlite3_column_int64(statement, 3),
                         status: status,
-                        contextVersion: optionalColumnText(statement, index: 5)
+                        contextVersion: optionalColumnText(statement, index: 5),
+                        tailCursor: codexSessionTokenTailCursor(from: statement, metadata: metadata)
                     )
                 )
             case SQLITE_DONE:
@@ -924,6 +990,25 @@ extension UsageHistoryStore {
                 throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
             }
         }
+    }
+
+    private func codexSessionTokenTailCursor(
+        from statement: OpaquePointer,
+        metadata: CodexSessionTokenImportFileMetadata
+    ) -> CodexSessionTokenTailCursor? {
+        let byteOffset = sqlite3_column_int64(statement, 6)
+        let nextLineNumber = optionalColumnInt(statement, index: 7).map(Int.init)
+        let prefixHash = optionalColumnText(statement, index: 8)
+        let stateJSON = optionalColumnText(statement, index: 9)
+        guard byteOffset != metadata.fileSize || nextLineNumber != nil || prefixHash != nil || stateJSON != nil else {
+            return nil
+        }
+        return CodexSessionTokenTailCursor(
+            byteOffset: byteOffset,
+            nextLineNumber: nextLineNumber,
+            filePrefixHash: prefixHash,
+            stateJSON: stateJSON
+        )
     }
 
     func codexThreadCatalogCaptureState(

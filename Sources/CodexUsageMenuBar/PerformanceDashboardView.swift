@@ -3195,6 +3195,7 @@ struct PerformanceDashboardView: View {
             .controlSize(.small)
             .disabled(!viewModel.canExportCSV)
             .help(viewModel.canExportCSV ? "Export CSV" : "Export available after dashboard data loads")
+            .accessibilityLabel(AppAccessibilitySemantics.exportCSVLabel)
         }
         .frame(height: 32)
     }
@@ -3677,6 +3678,24 @@ struct PerformanceDashboardView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(
+            AppAccessibilitySemantics.selectableSeries(
+                name: series.name,
+                isSelected: viewModel.isSelected(series)
+            ).label
+        )
+        .accessibilityValue(
+            AppAccessibilitySemantics.selectableSeries(
+                name: series.name,
+                isSelected: viewModel.isSelected(series)
+            ).value
+        )
+        .accessibilityAddTraits(
+            AppAccessibilitySemantics.selectableSeries(
+                name: series.name,
+                isSelected: viewModel.isSelected(series)
+            ).isSelected ? .isSelected : []
+        )
     }
 
     private func performanceSeriesHelpText(_ series: PerformanceDashboardSeries) -> String {
@@ -3718,6 +3737,7 @@ private struct PerformanceDashboardPeriodNavigationView: View {
             .buttonStyle(.plain)
             .disabled(!canGoToPrevious)
             .help(previousHelpText)
+            .accessibilityLabel(previousHelpText)
 
             Text(title)
                 .font(.headline)
@@ -3734,6 +3754,7 @@ private struct PerformanceDashboardPeriodNavigationView: View {
             .buttonStyle(.plain)
             .disabled(!canJumpToCurrent)
             .help(currentHelpText)
+            .accessibilityLabel(currentHelpText)
 
             Button(action: onNext) {
                 Image(systemName: "chevron.right")
@@ -3743,6 +3764,7 @@ private struct PerformanceDashboardPeriodNavigationView: View {
             .buttonStyle(.plain)
             .disabled(!canGoToNext)
             .help(nextHelpText)
+            .accessibilityLabel(nextHelpText)
         }
     }
 }

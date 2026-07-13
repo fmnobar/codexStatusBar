@@ -1,7 +1,14 @@
 import AppKit
 import XCTest
+@testable import CodexUsageCore
 
 final class MenuBarStatusFormatterTests: XCTestCase {
+    func testStatusItemControllerRoutesRightClickOnlyToContextMenu() {
+        XCTAssertEqual(StatusItemController.clickIntent(for: .rightMouseUp), .showContextMenu)
+        XCTAssertEqual(StatusItemController.clickIntent(for: .leftMouseUp), .togglePopover)
+        XCTAssertEqual(StatusItemController.clickIntent(for: nil), .togglePopover)
+    }
+
     @MainActor
     func testStatusItemContextMenuContainsOnlyQuit() {
         let menu = StatusItemContextMenuFactory.makeMenu(

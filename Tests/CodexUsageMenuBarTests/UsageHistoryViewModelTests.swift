@@ -1,6 +1,7 @@
 import CoreGraphics
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
 
 extension UsageHistoryStoreTests {
     @MainActor

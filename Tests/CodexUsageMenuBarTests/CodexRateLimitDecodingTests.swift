@@ -1,4 +1,6 @@
+import Darwin
 import XCTest
+@testable import CodexUsageCore
 
 final class CodexRateLimitDecodingTests: XCTestCase {
     func testAppServerListenSupportDetectsWebSocketSupport() {
@@ -7,12 +9,689 @@ final class CodexRateLimitDecodingTests: XCTestCase {
             Supported values: `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`
         """
         let currentHelp = """
+        --stdio
+            Use stdio as the transport (equivalent to `--listen stdio://`)
         --listen <URL>
-            Supported values: `stdio://`, `unix://`, `unix://PATH`, `off`
+            Supported values: `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`
         """
+        let standardIOOnlyHelp = "--listen <URL> stdio:// unix://PATH off"
 
         XCTAssertTrue(CodexAppServerListenSupport.supportsWebSocket(helpText: legacyHelp))
-        XCTAssertFalse(CodexAppServerListenSupport.supportsWebSocket(helpText: currentHelp))
+        XCTAssertFalse(CodexAppServerListenSupport.supportsWebSocket(helpText: standardIOOnlyHelp))
+        XCTAssertEqual(
+            CodexAppServerListenSupport.capabilities(helpText: legacyHelp).preferredTransport,
+            .legacyWebSocket
+        )
+        XCTAssertEqual(
+            CodexAppServerListenSupport.capabilities(helpText: currentHelp).preferredTransport,
+            .standardIO
+        )
+        XCTAssertEqual(
+            CodexAppServerListenSupport.capabilities(helpText: standardIOOnlyHelp).preferredTransport,
+            .standardIO
+        )
+    }
+
+    func testExecutableCandidateManifestIsCanonicalWithSafeFallback() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let manifestURL = temporaryDirectory.appendingPathComponent("CodexExecutableCandidates.txt")
+        try Data(
+            """
+            # Ordered fixture
+
+            /Applications/ChatGPT.app/Contents/Resources/codex
+            /opt/homebrew/bin/codex
+            /custom/bin/codex
+            """.utf8
+        ).write(to: manifestURL)
+
+        let manifestCandidates = CodexExecutableCandidateProvider.fixedCandidates(manifestURL: manifestURL)
+        XCTAssertEqual(
+            manifestCandidates.map(\.url.path),
+            [
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                "/opt/homebrew/bin/codex",
+                "/custom/bin/codex",
+            ]
+        )
+        XCTAssertEqual(manifestCandidates.map(\.kind), [.appBundled, .homebrew, .path])
+
+        try Data("relative/codex\nrelative/codex\n".utf8).write(to: manifestURL)
+        XCTAssertEqual(
+            CodexExecutableCandidateProvider.fixedCandidates(manifestURL: manifestURL).map(\.url.path),
+            [
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                "/Applications/Codex.app/Contents/Resources/codex",
+                "/opt/homebrew/bin/codex",
+                "/usr/local/bin/codex",
+            ]
+        )
+    }
+
+    func testExecutableCandidatesUseLexicalAppOrderPathAndCanonicalSymlinkDeduplication() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let applicationsURL = temporaryDirectory.appendingPathComponent("Applications", isDirectory: true)
+        let codex10URL = applicationsURL.appendingPathComponent("Codex10.app", isDirectory: true)
+        let codex2URL = applicationsURL.appendingPathComponent("Codex2.app", isDirectory: true)
+        for appURL in [codex10URL, codex2URL] {
+            let resourcesURL = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+            try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+            try Data().write(to: resourcesURL.appendingPathComponent("codex"))
+        }
+        try FileManager.default.createSymbolicLink(
+            at: applicationsURL.appendingPathComponent("Codex05.app"),
+            withDestinationURL: codex10URL
+        )
+
+        let pathDirectoryURL = temporaryDirectory.appendingPathComponent("path-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: pathDirectoryURL, withIntermediateDirectories: true)
+        let pathExecutableURL = pathDirectoryURL.appendingPathComponent("codex")
+        try Data().write(to: pathExecutableURL)
+
+        let manifestURL = temporaryDirectory.appendingPathComponent("CodexExecutableCandidates.txt")
+        try Data("/opt/homebrew/bin/codex\n/usr/local/bin/codex\n".utf8).write(to: manifestURL)
+
+        let candidates = CodexExecutableCandidateProvider.orderedCandidates(
+            environment: ["PATH": ":\(pathDirectoryURL.path)::"],
+            manifestURL: manifestURL,
+            applicationsURL: applicationsURL
+        )
+
+        XCTAssertEqual(candidates.prefix(2).map(\.url.path), [
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex",
+        ])
+        let discoveredAppNames = candidates
+            .filter { $0.kind == .discoveredApp }
+            .compactMap { candidate in
+                candidate.url.pathComponents.first { $0.hasSuffix(".app") }
+            }
+        XCTAssertEqual(discoveredAppNames, ["Codex05.app", "Codex2.app"])
+        XCTAssertEqual(
+            candidates.last?.url.resolvingSymlinksInPath().path,
+            pathExecutableURL.resolvingSymlinksInPath().path
+        )
+        XCTAssertEqual(candidates.map(\.kind), [.homebrew, .usrLocal, .discoveredApp, .discoveredApp, .path])
+    }
+
+    @MainActor
+    func testExecutableResolverSkipsFailedVersionAndCapabilityProbes() async throws {
+        let brokenWrapper = URL(fileURLWithPath: "/usr/bin/true")
+        let unsupportedExecutable = URL(fileURLWithPath: "/usr/bin/false")
+        let usableExecutable = URL(fileURLWithPath: "/bin/echo")
+        let currentCapabilities = CodexAppServerListenSupport.capabilities(helpText: """
+        --stdio
+        --listen <URL> stdio:// ws://IP:PORT
+        """)
+        let resolver = CodexExecutableResolver(
+            versionRunner: StubCodexExecutableVersionRunner(
+                outputs: [
+                    unsupportedExecutable.path: "codex-cli 0.143.0",
+                    usableExecutable.path: "codex-cli 0.144.0-alpha.4",
+                ],
+                failingPaths: [brokenWrapper.path]
+            ),
+            capabilityProber: StubCodexAppServerCapabilityProber(
+                capabilitiesByPath: [usableExecutable.path: currentCapabilities]
+            ),
+            candidates: [
+                CodexExecutableCandidate(url: brokenWrapper, kind: .homebrew),
+                CodexExecutableCandidate(url: unsupportedExecutable, kind: .usrLocal),
+                CodexExecutableCandidate(url: usableExecutable, kind: .appBundled),
+            ]
+        )
+
+        let resolvedExecutable = try await resolver.resolve()
+        let resolution = try XCTUnwrap(resolvedExecutable)
+
+        XCTAssertEqual(resolution.url, usableExecutable)
+        XCTAssertEqual(resolution.version, "0.144.0-alpha.4")
+        XCTAssertEqual(resolution.capabilities.preferredTransport, .standardIO)
+    }
+
+    @MainActor
+    func testSourceHealthSelectsSameCapabilityViableCandidateAsResolver() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let unsupportedExecutable = URL(fileURLWithPath: "/usr/bin/true")
+        let usableExecutable = URL(fileURLWithPath: "/bin/echo")
+        let versionRunner = StubCodexExecutableVersionRunner(outputs: [
+            unsupportedExecutable.path: "codex-cli 0.143.0",
+            usableExecutable.path: "codex-cli 0.144.0",
+        ])
+        let capabilityProber = StubCodexAppServerCapabilityProber(capabilitiesByPath: [
+            usableExecutable.path: standardIOCapabilities,
+        ])
+        let candidates = [
+            CodexExecutableCandidate(url: unsupportedExecutable, kind: .usrLocal),
+            CodexExecutableCandidate(url: usableExecutable, kind: .appBundled),
+        ]
+        let resolver = CodexExecutableResolver(
+            versionRunner: versionRunner,
+            capabilityProber: capabilityProber,
+            candidates: candidates
+        )
+        let reader = CodexSourceHealthReader(
+            homeDirectory: temporaryDirectory,
+            commandRunner: versionRunner,
+            capabilityProber: capabilityProber,
+            executableCandidates: candidates,
+            pathCandidates: []
+        )
+
+        let resolvedExecutable = try await resolver.resolve()
+        let resolution = try XCTUnwrap(resolvedExecutable)
+        let healthSnapshot = try await reader.sourceHealthSnapshot()
+
+        XCTAssertEqual(resolution.url, usableExecutable)
+        XCTAssertEqual(healthSnapshot.activeExecutablePath, usableExecutable.path)
+        XCTAssertEqual(healthSnapshot.activeSignal?.version, resolution.version)
+    }
+
+    @MainActor
+    func testJSONRPCRequestTrackerTimesOutAndIgnoresLateResponse() async {
+        let tracker = CodexJSONRPCRequestTracker()
+
+        do {
+            _ = try await tracker.response(for: 41, timeout: 0.02, send: {})
+            XCTFail("Expected request timeout")
+        } catch {
+            XCTAssertEqual(error as? CodexClientError, .requestTimedOut)
+        }
+
+        XCTAssertEqual(tracker.pendingRequestCount, 0)
+        XCTAssertFalse(tracker.succeed(requestID: 41, resultData: Data(#"{"late":true}"#.utf8)))
+    }
+
+    @MainActor
+    func testJSONRPCRequestTrackerCancellationCleansUpContinuation() async {
+        let tracker = CodexJSONRPCRequestTracker()
+        let requestSent = expectation(description: "request sent")
+        let task = Task { @MainActor () throws -> Data in
+            try await tracker.response(for: 42, timeout: 10, send: {
+                requestSent.fulfill()
+            })
+        }
+
+        await fulfillment(of: [requestSent], timeout: 1)
+        XCTAssertEqual(tracker.pendingRequestCount, 1)
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(tracker.pendingRequestCount, 0)
+    }
+
+    @MainActor
+    func testJSONRPCRequestTrackerDisconnectThenAcceptsNewRequest() async throws {
+        let tracker = CodexJSONRPCRequestTracker()
+        let firstRequestSent = expectation(description: "first request sent")
+        let disconnectedTask = Task { @MainActor () throws -> Data in
+            try await tracker.response(for: 43, timeout: 10, send: {
+                firstRequestSent.fulfill()
+            })
+        }
+        await fulfillment(of: [firstRequestSent], timeout: 1)
+
+        tracker.failAll(with: CodexClientError.appServerUnavailable)
+        do {
+            _ = try await disconnectedTask.value
+            XCTFail("Expected disconnect failure")
+        } catch {
+            XCTAssertEqual(error as? CodexClientError, .appServerUnavailable)
+        }
+
+        let secondRequestSent = expectation(description: "second request sent")
+        let reconnectedTask = Task { @MainActor () throws -> Data in
+            try await tracker.response(for: 44, timeout: 10, send: {
+                secondRequestSent.fulfill()
+            })
+        }
+        await fulfillment(of: [secondRequestSent], timeout: 1)
+        let responseData = Data(#"{"ok":true}"#.utf8)
+        XCTAssertTrue(tracker.succeed(requestID: 44, resultData: responseData))
+        let receivedData = try await reconnectedTask.value
+        XCTAssertEqual(receivedData, responseData)
+        XCTAssertEqual(tracker.pendingRequestCount, 0)
+    }
+
+    @MainActor
+    func testFailedStandardIOInitializationTerminatesManagedProcess() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pid")
+        let executableURL = try makeSilentStubbornCodexExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL
+        )
+        let capabilities = CodexAppServerListenSupport.Capabilities(
+            supportsStandardIO: true,
+            supportsWebSocket: false,
+            explicitlyPrefersStandardIO: true
+        )
+        let client = CodexAppServerClient(
+            requestTimeout: 0.5,
+            executableResolver: StubResolvedCodexExecutableResolver(
+                resolution: ResolvedCodexExecutable(
+                    url: executableURL,
+                    version: "0.144.0",
+                    capabilities: capabilities
+                )
+            )
+        )
+
+        do {
+            _ = try await client.start()
+            XCTFail("Expected initialization failure")
+        } catch {
+            XCTAssertEqual(error as? CodexClientError, .appServerUnavailable)
+        }
+        XCTAssertFalse(client.hasManagedProcessForTesting)
+        let processIdentifier = try XCTUnwrap(readProcessIdentifiers(from: pidFileURL).first)
+        let processExited = await waitForProcessExit(processIdentifier)
+        XCTAssertTrue(processExited)
+    }
+
+    @MainActor
+    func testCancellingStandardIOInitializationPreservesCancellationAndTerminatesChild() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pid")
+        let executableURL = try makeSilentStubbornCodexExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL
+        )
+        let client = CodexAppServerClient(
+            requestTimeout: 10,
+            executableResolver: StubResolvedCodexExecutableResolver(
+                resolution: ResolvedCodexExecutable(
+                    url: executableURL,
+                    version: "0.144.0",
+                    capabilities: standardIOCapabilities
+                )
+            )
+        )
+        let task = Task { @MainActor in
+            try await client.start()
+        }
+
+        let processIdentifier = try await waitForProcessIdentifier(in: pidFileURL)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertFalse(client.hasManagedProcessForTesting)
+        let processExited = await waitForProcessExit(processIdentifier)
+        XCTAssertTrue(processExited)
+    }
+
+    @MainActor
+    func testStandardIOReceiveFailureRetiresStubbornChildBeforeReconnect() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pids")
+        let executableURL = try makeResponsiveStubbornCodexExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL
+        )
+        let client = CodexAppServerClient(
+            requestTimeout: 2,
+            executableResolver: StubResolvedCodexExecutableResolver(
+                resolution: ResolvedCodexExecutable(
+                    url: executableURL,
+                    version: "0.144.0",
+                    capabilities: standardIOCapabilities
+                )
+            )
+        )
+
+        _ = try await client.start()
+        let firstProcessIdentifier = try XCTUnwrap(client.managedProcessIdentifierForTesting)
+        client.handleStandardOutputData(Data())
+
+        _ = try await client.refresh()
+        let secondProcessIdentifier = try XCTUnwrap(client.managedProcessIdentifierForTesting)
+        XCTAssertNotEqual(firstProcessIdentifier, secondProcessIdentifier)
+        let firstProcessExited = await waitForProcessExit(firstProcessIdentifier)
+        XCTAssertTrue(firstProcessExited)
+
+        client.stop()
+        let secondProcessExited = await waitForProcessExit(secondProcessIdentifier)
+        XCTAssertTrue(secondProcessExited)
+    }
+
+    @MainActor
+    func testConcurrentColdStartCoalescesAndStaleGenerationCannotRetireReconnect() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pids")
+        let methodFileURL = temporaryDirectory.appendingPathComponent("methods")
+        let executableURL = try makeResponsiveStubbornCodexExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL,
+            methodFileURL: methodFileURL
+        )
+        let client = CodexAppServerClient(
+            requestTimeout: 2,
+            executableResolver: StubResolvedCodexExecutableResolver(
+                resolution: ResolvedCodexExecutable(
+                    url: executableURL,
+                    version: "0.144.0",
+                    capabilities: standardIOCapabilities
+                )
+            )
+        )
+        defer { client.stop() }
+
+        async let firstSnapshot: CodexUsageSnapshot = client.start()
+        async let secondSnapshot: CodexUsageSnapshot = client.start()
+        _ = try await (firstSnapshot, secondSnapshot)
+
+        let firstProcessIdentifier = try XCTUnwrap(client.managedProcessIdentifierForTesting)
+        let firstGeneration = client.transportGenerationForTesting
+        XCTAssertEqual(readProcessIdentifiers(from: pidFileURL), [firstProcessIdentifier])
+        XCTAssertEqual(readLines(from: methodFileURL).filter { $0 == "initialize" }.count, 1)
+
+        client.handleStandardOutputData(Data())
+        _ = try await client.refresh()
+
+        let secondProcessIdentifier = try XCTUnwrap(client.managedProcessIdentifierForTesting)
+        XCTAssertNotEqual(firstProcessIdentifier, secondProcessIdentifier)
+        XCTAssertNotEqual(firstGeneration, client.transportGenerationForTesting)
+
+        client.retireConnectionForTesting(transportGeneration: firstGeneration)
+        XCTAssertEqual(client.managedProcessIdentifierForTesting, secondProcessIdentifier)
+        XCTAssertTrue(processIsAlive(secondProcessIdentifier))
+        _ = try await client.refresh()
+
+        client.stop()
+        let firstProcessExited = await waitForProcessExit(firstProcessIdentifier)
+        let secondProcessExited = await waitForProcessExit(secondProcessIdentifier)
+        XCTAssertTrue(firstProcessExited)
+        XCTAssertTrue(secondProcessExited)
+        XCTAssertEqual(readProcessIdentifiers(from: pidFileURL).count, 2)
+        XCTAssertEqual(readLines(from: methodFileURL).filter { $0 == "initialize" }.count, 2)
+    }
+
+    @MainActor
+    func testStandardIOOwnedLaunchUsesProbedInvocationForm() async throws {
+        let cases: [(CodexAppServerListenSupport.Capabilities, String)] = [
+            (standardIOCapabilities, "app-server --stdio"),
+            (
+                CodexAppServerListenSupport.Capabilities(
+                    supportsStandardIO: true,
+                    supportsWebSocket: false,
+                    explicitlyPrefersStandardIO: false
+                ),
+                "app-server --listen stdio://"
+            ),
+        ]
+
+        for (capabilities, expectedArguments) in cases {
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+            let pidFileURL = temporaryDirectory.appendingPathComponent("pid")
+            let argumentFileURL = temporaryDirectory.appendingPathComponent("arguments")
+            let executableURL = try makeResponsiveStubbornCodexExecutable(
+                in: temporaryDirectory,
+                pidFileURL: pidFileURL,
+                argumentFileURL: argumentFileURL
+            )
+            let client = CodexAppServerClient(
+                requestTimeout: 2,
+                executableResolver: StubResolvedCodexExecutableResolver(
+                    resolution: ResolvedCodexExecutable(
+                        url: executableURL,
+                        version: "0.144.0",
+                        capabilities: capabilities
+                    )
+                )
+            )
+            defer { client.stop() }
+
+            _ = try await client.start()
+            let processIdentifier = try XCTUnwrap(client.managedProcessIdentifierForTesting)
+            XCTAssertEqual(readLines(from: argumentFileURL), [expectedArguments])
+
+            client.stop()
+            let processExited = await waitForProcessExit(processIdentifier)
+            XCTAssertTrue(processExited)
+        }
+    }
+
+    @MainActor
+    func testLegacyWebSocketRejectsTakeoverBeforeSendingInitialize() async throws {
+        let listener = try makeLoopbackListener()
+        defer { Darwin.close(listener.descriptor) }
+
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pid")
+        let executableURL = try makeSilentStubbornCodexExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL
+        )
+        let ownershipProber = StubWebSocketConnectionOwnershipProber(result: false)
+        let legacyCapabilities = CodexAppServerListenSupport.Capabilities(
+            supportsStandardIO: true,
+            supportsWebSocket: true,
+            explicitlyPrefersStandardIO: false
+        )
+        let client = CodexAppServerClient(
+            portRange: listener.port...listener.port,
+            readyTimeout: 0.1,
+            readyPollInterval: 0.01,
+            requestTimeout: 0.1,
+            executableResolver: StubResolvedCodexExecutableResolver(
+                resolution: ResolvedCodexExecutable(
+                    url: executableURL,
+                    version: "0.143.0",
+                    capabilities: legacyCapabilities
+                )
+            ),
+            webSocketConnectionOwnershipProber: ownershipProber,
+            webSocketHandshakeOverride: { _ in
+                _ = try await waitForProcessIdentifier(in: pidFileURL)
+            }
+        )
+        defer { client.stop() }
+
+        do {
+            _ = try await client.start()
+            XCTFail("Expected listener not owned by the launched child to be rejected")
+        } catch {
+            XCTAssertEqual(error as? CodexClientError, .appServerUnavailable)
+        }
+        XCTAssertEqual(ownershipProber.callCount, 1)
+        XCTAssertFalse(client.hasManagedProcessForTesting)
+        let processIdentifier = try XCTUnwrap(readProcessIdentifiers(from: pidFileURL).first)
+        let processExited = await waitForProcessExit(processIdentifier)
+        XCTAssertTrue(processExited)
+
+        let takeoverTraffic = await readAvailableListenerData(listener.descriptor)
+        let takeoverText = String(decoding: takeoverTraffic, as: UTF8.self)
+        XCTAssertFalse(takeoverText.contains("initialize"))
+        XCTAssertFalse(takeoverText.contains("clientInfo"))
+    }
+
+    @MainActor
+    func testLsofOwnershipProbeRequiresExactEstablishedServerSocket() async throws {
+        let listener = try makeLoopbackListener()
+        defer { Darwin.close(listener.descriptor) }
+        let connection = try makeConnectedLoopbackPair(listener: listener)
+        defer {
+            Darwin.close(connection.clientDescriptor)
+            Darwin.close(connection.serverDescriptor)
+        }
+
+        let prober = CodexLsofWebSocketConnectionOwnershipProber()
+        let ownsConnection = try await prober.processOwnsEstablishedConnection(
+            processIdentifier: getpid(),
+            port: listener.port
+        )
+        let wrongProcessOwnsConnection = try await prober.processOwnsEstablishedConnection(
+            processIdentifier: Int32.max,
+            port: listener.port
+        )
+
+        XCTAssertTrue(ownsConnection)
+        XCTAssertFalse(wrongProcessOwnsConnection)
+    }
+
+    @MainActor
+    func testCancellingExecutableProbeEscalatesAndReapsStubbornChild() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pid")
+        let executableURL = try makeStubbornVersionProbeExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL
+        )
+        let resolver = CodexExecutableResolver(
+            commandTimeout: 10,
+            candidates: [CodexExecutableCandidate(url: executableURL, kind: .path)]
+        )
+        let task = Task { @MainActor in
+            try await resolver.resolve()
+        }
+
+        let processIdentifier = try await waitForProcessIdentifier(in: pidFileURL)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected resolver cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let processExited = await waitForProcessExit(processIdentifier)
+        XCTAssertTrue(processExited)
+    }
+
+    @MainActor
+    func testExecutableResolverRejectsOversizedProbeAndReapsChild() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let pidFileURL = temporaryDirectory.appendingPathComponent("pid")
+        let executableURL = try makeOversizedVersionProbeExecutable(
+            in: temporaryDirectory,
+            pidFileURL: pidFileURL
+        )
+        let resolver = CodexExecutableResolver(
+            commandTimeout: 5,
+            candidates: [CodexExecutableCandidate(url: executableURL, kind: .path)]
+        )
+
+        let resolvedExecutable = try await resolver.resolve()
+        XCTAssertNil(resolvedExecutable)
+
+        let processIdentifier = try XCTUnwrap(readProcessIdentifiers(from: pidFileURL).first)
+        let processExited = await waitForProcessExit(processIdentifier)
+        XCTAssertTrue(processExited)
+    }
+
+    @MainActor
+    func testStandardIOWriterKeepsMainActorResponsiveUnderPipeBackpressure() async throws {
+        let pipe = Pipe()
+        let writeStarted = expectation(description: "write started")
+        let writer = try CodexStandardIOWriter(
+            fileHandle: pipe.fileHandleForWriting,
+            onWriteStarted: { writeStarted.fulfill() }
+        )
+        XCTAssertTrue(writer.suppressesSIGPIPEForTesting)
+        let writeTask = Task {
+            try await writer.write(Data(repeating: 0x41, count: 8 * 1_024 * 1_024))
+        }
+        await fulfillment(of: [writeStarted], timeout: 1)
+
+        // Teardown is invoked while the pipe is still backpressured. It must enqueue the close
+        // without blocking MainActor behind the in-flight write.
+        writer.close()
+        let mainActorAdvanced = expectation(description: "main actor advanced")
+        Task { @MainActor in
+            mainActorAdvanced.fulfill()
+        }
+
+        await fulfillment(of: [mainActorAdvanced], timeout: 1)
+        try pipe.fileHandleForReading.close()
+        do {
+            try await writeTask.value
+            XCTFail("Expected the closed reader to fail the backpressured write")
+        } catch {
+            // Expected: F_SETNOSIGPIPE converts the closed-reader signal into a write error.
+        }
+    }
+
+    @MainActor
+    func testAppServerClientBoundsMessagesAndUnframedStandardIOBuffer() throws {
+        let client = CodexAppServerClient(maximumIncomingMessageBytes: 16)
+        var diagnosticEvents: [CodexAppServerAuditDiagnosticEvent] = []
+        client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
+
+        XCTAssertThrowsError(
+            try client.handleIncomingMessage(data: Data(repeating: 0x20, count: 17))
+        ) { error in
+            XCTAssertEqual(error as? CodexClientError, .responseTooLarge)
+        }
+
+        client.handleStandardOutputData(Data(repeating: 0x7B, count: 10))
+        XCTAssertFalse(diagnosticEvents.contains { event in
+            if case .receiveError = event { return true }
+            return false
+        })
+        client.handleStandardOutputData(Data(repeating: 0x7B, count: 10))
+        XCTAssertTrue(diagnosticEvents.contains(.receiveError(
+            CodexClientError.responseTooLarge.localizedDescription
+        )))
     }
 
     func testDecodesPayloadAndPrefersMainCodexBucket() throws {
@@ -473,7 +1152,7 @@ final class CodexRateLimitDecodingTests: XCTestCase {
     }
 
     @MainActor
-    func testAppServerClientEmitsAuditBeforeMalformedTokenPayloadThrows() throws {
+    func testAppServerClientEmitsAuditAndSkipsMalformedTokenPayload() throws {
         let client = CodexAppServerClient()
         var receivedAudit: CodexTokenUsagePayloadAudit?
         var receivedNotification: CodexTokenUsageNotification?
@@ -482,7 +1161,7 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         client.onTokenUsage = { receivedNotification = $0 }
         client.onAppServerAuditDiagnosticEvent = { diagnosticEvents.append($0) }
 
-        XCTAssertThrowsError(try client.handleIncomingMessage(data: Data(
+        XCTAssertNoThrow(try client.handleIncomingMessage(data: Data(
             """
             {
               "method": "thread/tokenUsage/updated",
@@ -525,7 +1204,7 @@ final class CodexRateLimitDecodingTests: XCTestCase {
 
         XCTAssertTrue(diagnosticEvents.contains(.inboundMethod("example/notification")))
 
-        XCTAssertThrowsError(try client.handleIncomingMessage(data: Data(
+        XCTAssertNoThrow(try client.handleIncomingMessage(data: Data(
             """
             {
               "method": "account/rateLimits/updated",
@@ -2060,4 +2739,403 @@ final class CodexRateLimitDecodingTests: XCTestCase {
     private func auditField(_ keyPath: String, in audit: CodexTokenUsagePayloadAudit) throws -> CodexTokenPayloadAuditField {
         try XCTUnwrap(audit.fields.first { $0.keyPath == keyPath })
     }
+}
+
+@MainActor
+private struct StubCodexExecutableVersionRunner: CodexSourceVersionCommandRunning {
+    let outputs: [String: String]
+    let failingPaths: Set<String>
+
+    init(outputs: [String: String], failingPaths: Set<String> = []) {
+        self.outputs = outputs
+        self.failingPaths = failingPaths
+    }
+
+    func versionOutput(for executableURL: URL, timeout: TimeInterval) async throws -> String {
+        if failingPaths.contains(executableURL.path) {
+            throw CodexSourceHealthReaderError.versionCommandFailed
+        }
+        guard let output = outputs[executableURL.path] else {
+            throw CodexSourceHealthReaderError.versionCommandFailed
+        }
+        return output
+    }
+}
+
+@MainActor
+private struct StubCodexAppServerCapabilityProber: CodexAppServerCapabilityProbing {
+    let capabilitiesByPath: [String: CodexAppServerListenSupport.Capabilities]
+
+    func capabilities(
+        for executableURL: URL,
+        timeout: TimeInterval
+    ) async throws -> CodexAppServerListenSupport.Capabilities {
+        guard let capabilities = capabilitiesByPath[executableURL.path] else {
+            throw CodexSourceHealthReaderError.versionCommandFailed
+        }
+        return capabilities
+    }
+}
+
+@MainActor
+private struct StubResolvedCodexExecutableResolver: CodexExecutableResolving {
+    let resolution: ResolvedCodexExecutable?
+
+    func resolve() async throws -> ResolvedCodexExecutable? {
+        resolution
+    }
+}
+
+@MainActor
+private final class StubWebSocketConnectionOwnershipProber: CodexWebSocketConnectionOwnershipProbing {
+    let result: Bool
+    private(set) var callCount = 0
+
+    init(result: Bool) {
+        self.result = result
+    }
+
+    func processOwnsEstablishedConnection(processIdentifier: pid_t, port: Int) async throws -> Bool {
+        callCount += 1
+        return result
+    }
+}
+
+private let standardIOCapabilities = CodexAppServerListenSupport.Capabilities(
+    supportsStandardIO: true,
+    supportsWebSocket: false,
+    explicitlyPrefersStandardIO: true
+)
+
+private enum ProcessFixtureError: Error {
+    case processDidNotStart
+}
+
+private func makeSilentStubbornCodexExecutable(
+    in directoryURL: URL,
+    pidFileURL: URL
+) throws -> URL {
+    let executableURL = directoryURL.appendingPathComponent("silent-codex")
+    let serverURL = directoryURL.appendingPathComponent("silent-server.py")
+    let serverScript = """
+    #!/usr/bin/python3
+    import signal
+    import sys
+    import time
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    for _ in sys.stdin:
+        pass
+    while True:
+        time.sleep(1)
+    """
+    try Data(serverScript.utf8).write(to: serverURL)
+    let wrapper = """
+    #!/bin/sh
+    printf '%s\\n' "$$" >> \(shellSingleQuoted(pidFileURL.path))
+    exec /usr/bin/python3 \(shellSingleQuoted(serverURL.path)) "$@"
+    """
+    try Data(wrapper.utf8).write(to: executableURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+    return executableURL
+}
+
+private func makeResponsiveStubbornCodexExecutable(
+    in directoryURL: URL,
+    pidFileURL: URL,
+    methodFileURL: URL? = nil,
+    argumentFileURL: URL? = nil
+) throws -> URL {
+    let executableURL = directoryURL.appendingPathComponent("responsive-codex")
+    let serverURL = directoryURL.appendingPathComponent("responsive-server.py")
+    let serverScript = """
+    #!/usr/bin/python3
+    import json
+    import signal
+    import sys
+    import time
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    method_file = sys.argv[1] or None
+
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+        except Exception:
+            continue
+        method = request.get("method")
+        if method_file:
+            with open(method_file, "a", encoding="utf-8") as handle:
+                handle.write(str(method) + "\\n")
+        if method == "initialize":
+            result = {}
+        elif method == "getAuthStatus":
+            result = {
+                "authMethod": "chatgpt",
+                "authToken": None,
+                "requiresOpenaiAuth": True,
+            }
+        elif method == "account/rateLimits/read":
+            result = {
+                "rateLimits": {
+                    "limitId": "codex",
+                    "primary": {
+                        "usedPercent": 10,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1800000000,
+                    },
+                    "secondary": {
+                        "usedPercent": 20,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1800600000,
+                    },
+                }
+            }
+        else:
+            result = {}
+        print(json.dumps({"id": request.get("id"), "result": result}), flush=True)
+
+    while True:
+        time.sleep(1)
+    """
+    try Data(serverScript.utf8).write(to: serverURL)
+    let methodFilePath = methodFileURL?.path ?? ""
+    let recordArguments = argumentFileURL.map {
+        "printf '%s\\n' \"$*\" >> \(shellSingleQuoted($0.path))\n"
+    } ?? ""
+    let wrapper = """
+    #!/bin/sh
+    printf '%s\\n' "$$" >> \(shellSingleQuoted(pidFileURL.path))
+    \(recordArguments)
+    exec /usr/bin/python3 \(shellSingleQuoted(serverURL.path)) \(shellSingleQuoted(methodFilePath)) "$@"
+    """
+    try Data(wrapper.utf8).write(to: executableURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+    return executableURL
+}
+
+private func makeStubbornVersionProbeExecutable(
+    in directoryURL: URL,
+    pidFileURL: URL
+) throws -> URL {
+    let executableURL = directoryURL.appendingPathComponent("stubborn-probe-codex")
+    let serverURL = directoryURL.appendingPathComponent("stubborn-probe.py")
+    let serverScript = """
+    #!/usr/bin/python3
+    import signal
+    import time
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
+    """
+    try Data(serverScript.utf8).write(to: serverURL)
+    let wrapper = """
+    #!/bin/sh
+    printf '%s\\n' "$$" >> \(shellSingleQuoted(pidFileURL.path))
+    exec /usr/bin/python3 \(shellSingleQuoted(serverURL.path))
+    """
+    try Data(wrapper.utf8).write(to: executableURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+    return executableURL
+}
+
+private func makeOversizedVersionProbeExecutable(
+    in directoryURL: URL,
+    pidFileURL: URL
+) throws -> URL {
+    let executableURL = directoryURL.appendingPathComponent("oversized-probe-codex")
+    let serverURL = directoryURL.appendingPathComponent("oversized-probe.py")
+    let serverScript = """
+    #!/usr/bin/python3
+    import signal
+    import sys
+    import time
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    sys.stdout.buffer.write(b"x" * 300000)
+    sys.stdout.buffer.flush()
+    while True:
+        time.sleep(1)
+    """
+    try Data(serverScript.utf8).write(to: serverURL)
+    let wrapper = """
+    #!/bin/sh
+    printf '%s\\n' "$$" >> \(shellSingleQuoted(pidFileURL.path))
+    exec /usr/bin/python3 \(shellSingleQuoted(serverURL.path))
+    """
+    try Data(wrapper.utf8).write(to: executableURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+    return executableURL
+}
+
+private func shellSingleQuoted(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+private func readProcessIdentifiers(from fileURL: URL) -> [pid_t] {
+    guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        return []
+    }
+    return text.split(whereSeparator: \.isNewline).compactMap { pid_t($0) }
+}
+
+private func readLines(from fileURL: URL) -> [String] {
+    guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        return []
+    }
+    return text.split(whereSeparator: \.isNewline).map(String.init)
+}
+
+private func processIsAlive(_ processIdentifier: pid_t) -> Bool {
+    errno = 0
+    return kill(processIdentifier, 0) == 0 || errno != ESRCH
+}
+
+private func makeLoopbackListener() throws -> (descriptor: Int32, port: Int) {
+    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    do {
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                Darwin.bind(
+                    descriptor,
+                    socketAddress,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                )
+            }
+        }
+        guard bindResult == 0, Darwin.listen(descriptor, 1) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var boundAddress = sockaddr_in()
+        var boundAddressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &boundAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                getsockname(descriptor, socketAddress, &boundAddressLength)
+            }
+        }
+        guard nameResult == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        return (descriptor, Int(in_port_t(bigEndian: boundAddress.sin_port)))
+    } catch {
+        Darwin.close(descriptor)
+        throw error
+    }
+}
+
+private func makeConnectedLoopbackPair(
+    listener: (descriptor: Int32, port: Int)
+) throws -> (clientDescriptor: Int32, serverDescriptor: Int32) {
+    let clientDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+    guard clientDescriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    do {
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(listener.port).bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let connectResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                Darwin.connect(
+                    clientDescriptor,
+                    socketAddress,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                )
+            }
+        }
+        guard connectResult == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        let serverDescriptor = Darwin.accept(listener.descriptor, nil, nil)
+        guard serverDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return (clientDescriptor, serverDescriptor)
+    } catch {
+        Darwin.close(clientDescriptor)
+        throw error
+    }
+}
+
+private func readAvailableListenerData(
+    _ listenerDescriptor: Int32,
+    timeout: TimeInterval = 0.5
+) async -> Data {
+    _ = fcntl(listenerDescriptor, F_SETFL, O_NONBLOCK)
+    let acceptDeadline = Date().addingTimeInterval(timeout)
+    var acceptedDescriptor: Int32 = -1
+    while Date() < acceptDeadline {
+        acceptedDescriptor = Darwin.accept(listenerDescriptor, nil, nil)
+        if acceptedDescriptor >= 0 {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    guard acceptedDescriptor >= 0 else {
+        return Data()
+    }
+    defer { Darwin.close(acceptedDescriptor) }
+
+    _ = fcntl(acceptedDescriptor, F_SETFL, O_NONBLOCK)
+    let readDeadline = Date().addingTimeInterval(timeout)
+    var result = Data()
+    var buffer = [UInt8](repeating: 0, count: 4 * 1_024)
+    while Date() < readDeadline {
+        let count = recv(acceptedDescriptor, &buffer, buffer.count, 0)
+        if count > 0 {
+            result.append(contentsOf: buffer.prefix(count))
+        } else if count == 0 {
+            break
+        } else if errno != EAGAIN && errno != EWOULDBLOCK {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return result
+}
+
+private func waitForProcessIdentifier(
+    in fileURL: URL,
+    timeout: TimeInterval = 5
+) async throws -> pid_t {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if let processIdentifier = readProcessIdentifiers(from: fileURL).last {
+            return processIdentifier
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    throw ProcessFixtureError.processDidNotStart
+}
+
+private func waitForProcessExit(
+    _ processIdentifier: pid_t,
+    timeout: TimeInterval = 3
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        errno = 0
+        if kill(processIdentifier, 0) == -1, errno == ESRCH {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return false
 }

@@ -7,6 +7,10 @@ struct AppBuildFingerprint: Codable, Equatable {
     static let unknownText = "unknown"
 
     let schemaVersion: Int
+    let provenanceKind: String?
+    let appVersion: String?
+    let appBuild: String?
+    let architectures: String?
     let sourceRoot: String?
     let gitCommit: String?
     let gitBranch: String?
@@ -17,6 +21,10 @@ struct AppBuildFingerprint: Codable, Equatable {
 
     init(
         schemaVersion: Int = 1,
+        provenanceKind: String? = nil,
+        appVersion: String? = nil,
+        appBuild: String? = nil,
+        architectures: String? = nil,
         sourceRoot: String? = nil,
         gitCommit: String? = nil,
         gitBranch: String? = nil,
@@ -26,6 +34,10 @@ struct AppBuildFingerprint: Codable, Equatable {
         executableSHA256: String? = nil
     ) {
         self.schemaVersion = schemaVersion
+        self.provenanceKind = Self.normalized(provenanceKind)
+        self.appVersion = Self.normalized(appVersion)
+        self.appBuild = Self.normalized(appBuild)
+        self.architectures = Self.normalized(architectures)
         self.sourceRoot = Self.normalized(sourceRoot)
         self.gitCommit = Self.normalized(gitCommit)
         self.gitBranch = Self.normalized(gitBranch)
@@ -59,6 +71,10 @@ struct AppBuildFingerprint: Codable, Equatable {
         }
 
         return URL(fileURLWithPath: sourceRoot, isDirectory: true)
+    }
+
+    var isPublicRelease: Bool {
+        Self.knownValue(provenanceKind) == "public-release"
     }
 
     var installedBundleURL: URL? {
@@ -145,8 +161,10 @@ enum AppFreshnessState: Equatable {
 
     var statusText: String {
         switch self {
-        case .current:
-            return "Local build is current."
+        case .current(_, let installed, _):
+            return installed?.isPublicRelease == true
+                ? "Installed release is current."
+                : "Local build is current."
         case .sourceNewerThanInstalled:
             return "Source checkout is newer than the installed app."
         case .installedBundleNewerThanRunning:

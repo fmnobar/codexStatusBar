@@ -1734,7 +1734,7 @@ struct TokenDashboardView: View {
             .buttonStyle(.bordered)
             .disabled(!viewModel.canExportCSV)
             .help(viewModel.canExportCSV ? "Export CSV" : "Export available after dashboard data and attribution coverage load")
-            .accessibilityLabel("Export CSV")
+            .accessibilityLabel(AppAccessibilitySemantics.exportCSVLabel)
         }
     }
 
@@ -1750,6 +1750,7 @@ struct TokenDashboardView: View {
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToPreviousPeriod)
             .help(viewModel.previousPeriodHelpText)
+            .accessibilityLabel(viewModel.previousPeriodHelpText)
 
             Text(viewModel.periodTitle)
                 .font(.body.weight(.semibold))
@@ -1767,6 +1768,7 @@ struct TokenDashboardView: View {
             .buttonStyle(.plain)
             .disabled(!viewModel.canGoToNextPeriod)
             .help(viewModel.nextPeriodHelpText)
+            .accessibilityLabel(viewModel.nextPeriodHelpText)
         }
     }
 
@@ -1936,6 +1938,24 @@ struct TokenDashboardView: View {
                         }
                         .buttonStyle(.plain)
                         .help(tokenSeriesHelpText(row.series))
+                        .accessibilityLabel(
+                            AppAccessibilitySemantics.selectableSeries(
+                                name: row.series.name,
+                                isSelected: viewModel.isSelected(row.series)
+                            ).label
+                        )
+                        .accessibilityValue(
+                            AppAccessibilitySemantics.selectableSeries(
+                                name: row.series.name,
+                                isSelected: viewModel.isSelected(row.series)
+                            ).value
+                        )
+                        .accessibilityAddTraits(
+                            AppAccessibilitySemantics.selectableSeries(
+                                name: row.series.name,
+                                isSelected: viewModel.isSelected(row.series)
+                            ).isSelected ? .isSelected : []
+                        )
 
                         Text(viewModel.formattedTokenValue(row.totalTokens))
                             .fontWeight(.semibold)

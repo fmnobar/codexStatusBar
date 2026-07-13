@@ -2,8 +2,24 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum StatusItemClickIntent: Equatable {
+    case togglePopover
+    case showContextMenu
+}
+
+enum StatusItemDestination: Equatable {
+    case history
+    case tokenDashboard
+    case performanceDashboard
+    case settings(SettingsTabSelection)
+}
+
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
+    nonisolated static func clickIntent(for eventType: NSEvent.EventType?) -> StatusItemClickIntent {
+        eventType == .rightMouseUp ? .showContextMenu : .togglePopover
+    }
+
     private let viewModel: MenuBarStatusViewModel
     private let historyDatabase: UsageHistoryDatabaseWorking
     private let updateMonitor: AppUpdateMonitor
@@ -12,9 +28,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private let resetCreditStore: CodexResetCreditStore
     private let resetCreditClient: CodexResetCreditFetching?
+    private let routeHandlerOverride: ((StatusItemDestination) -> Void)?
+    private let settingsDefaults: UserDefaults
     private let popoverOpenInstrumentation: AppPerformanceSpanTracker
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    private lazy var usageHistoryWindowController = UsageHistoryWindowController(database: historyDatabase)
     private lazy var tokenDashboardWindowController = TokenDashboardWindowController(
         database: historyDatabase,
         performanceInstrumentationStore: performanceInstrumentationStore
@@ -33,6 +52,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var globalEventMonitor: Any?
     private var pendingLaunchToMenuTitleSpan: AppPerformanceSpan?
 
+    var statusButtonForTesting: NSStatusBarButton? {
+        statusItem.button
+    }
+
     init(
         viewModel: MenuBarStatusViewModel,
         historyDatabase: UsageHistoryDatabaseWorking,
@@ -42,7 +65,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
         resetCreditStore: CodexResetCreditStore = .applicationSupportStore(),
         resetCreditClient: CodexResetCreditFetching? = nil,
-        launchToMenuTitleSpan: AppPerformanceSpan? = nil
+        launchToMenuTitleSpan: AppPerformanceSpan? = nil,
+        routeHandlerOverride: ((StatusItemDestination) -> Void)? = nil,
+        settingsDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
         self.historyDatabase = historyDatabase
@@ -52,6 +77,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.appServerDiagnosticsStore = appServerDiagnosticsStore
         self.resetCreditStore = resetCreditStore
         self.resetCreditClient = resetCreditClient
+        self.routeHandlerOverride = routeHandlerOverride
+        self.settingsDefaults = settingsDefaults
         self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
             kind: .menuPopoverOpenToContent,
             instrumentationStore: performanceInstrumentationStore,
@@ -82,17 +109,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 appServerDiagnosticsStore: appServerDiagnosticsStore,
                 resetCreditStore: resetCreditStore,
                 resetCreditClient: resetCreditClient,
+                onOpenHistory: { [weak self] in
+                    self?.route(to: .history)
+                },
                 onOpenTokenDashboard: { [weak self] in
-                    self?.openTokenDashboard()
+                    self?.route(to: .tokenDashboard)
                 },
                 onOpenPerformanceDashboard: { [weak self] in
-                    self?.openPerformanceDashboard()
+                    self?.route(to: .performanceDashboard)
                 },
                 onOpenUpdatesSettings: { [weak self] in
-                    self?.openUpdatesSettings()
+                    self?.route(to: .settings(.updates))
                 },
                 onOpenDataSettings: { [weak self] in
-                    self?.openDataSettings()
+                    self?.route(to: .settings(.data))
                 },
                 onFirstRendered: { [weak self] in
                     self?.recordPopoverContentRendered()
@@ -128,6 +158,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             }
             .store(in: &cancellables)
 
+        viewModel.$menuBarToolTipText
+            .receive(on: RunLoop.main)
+            .sink { [weak self] text in
+                self?.statusItem.button?.setAccessibilityHelp(text)
+            }
+            .store(in: &cancellables)
     }
 
     private func updateStatusItemTitle(_ text: String) {
@@ -151,6 +187,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.title = visibleText
         button.attributedTitle = attributedTitle
         button.cell?.lineBreakMode = .byTruncatingTail
+        button.setAccessibilityLabel(AppAccessibilitySemantics.statusItemLabel(visibleText: visibleText))
         statusItem.length = StatusItemTitleLayout.length(for: visibleText, font: font)
         StatusItemVisibility.forceVisible(statusItem)
 
@@ -169,12 +206,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc
     private func handleStatusItemClick(_ sender: NSStatusBarButton) {
-        switch NSApp.currentEvent?.type {
-        case .rightMouseUp:
+        switch Self.clickIntent(for: NSApp.currentEvent?.type) {
+        case .showContextMenu:
             showContextMenu()
-        case .leftMouseUp:
-            togglePopover(relativeTo: sender)
-        default:
+        case .togglePopover:
             togglePopover(relativeTo: sender)
         }
     }
@@ -239,11 +274,39 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.menu = nil
     }
 
+    func route(to destination: StatusItemDestination) {
+        if case .settings(let tab) = destination {
+            SettingsTabSelectionStore.select(tab, defaults: settingsDefaults)
+        }
+
+        if let routeHandlerOverride {
+            routeHandlerOverride(destination)
+            return
+        }
+
+        switch destination {
+        case .history:
+            openUsageHistory()
+        case .tokenDashboard:
+            openTokenDashboard()
+        case .performanceDashboard:
+            openPerformanceDashboard()
+        case .settings:
+            openSettings()
+        }
+    }
+
     private func openTokenDashboard() {
         tokenDashboardWindowController.prepareOpenInstrumentation()
         popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         tokenDashboardWindowController.showWindow()
+    }
+
+    private func openUsageHistory() {
+        popoverOpenInstrumentation.discardPendingSpan()
+        popover.performClose(nil)
+        usageHistoryWindowController.showWindow()
     }
 
     private func openPerformanceDashboard() {
@@ -253,18 +316,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         performanceDashboardWindowController.showWindow()
     }
 
-    private func openUpdatesSettings() {
+    private func openSettings() {
         popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
-        SettingsTabSelectionStore.select(.updates)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func openDataSettings() {
-        popoverOpenInstrumentation.discardPendingSpan()
-        popover.performClose(nil)
-        SettingsTabSelectionStore.select(.data)
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         NSApp.activate(ignoringOtherApps: true)
     }

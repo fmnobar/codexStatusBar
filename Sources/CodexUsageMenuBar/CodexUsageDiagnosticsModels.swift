@@ -1,4 +1,5 @@
 import Combine
+import Darwin
 import Foundation
 import SQLite3
 
@@ -1716,32 +1717,39 @@ struct CodexLocalSourceProbeSnapshot: Equatable, Sendable {
     static let notChecked = CodexLocalSourceProbeSnapshot()
 }
 
-protocol CodexLocalSourceCoverageProbing {
-    func probeSnapshot(now: Date) -> CodexLocalSourceProbeSnapshot
+protocol CodexLocalSourceCoverageProbing: Sendable {
+    func probeSnapshot(now: Date) async -> CodexLocalSourceProbeSnapshot
 }
 
-struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
+struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing, Sendable {
     let logsDatabaseURL: URL
     let sessionDirectories: [URL]
     let stateDatabaseURL: URL
     let modelsCacheURL: URL
-    let fileManager: FileManager
+    private let beforeProbe: @Sendable () -> Void
 
     init(
         logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL(),
         sessionDirectories: [URL] = CodexSessionTokenBackfillImporter.defaultActiveSourceDirectories(),
         stateDatabaseURL: URL = CodexThreadCatalogImporter.defaultStateDatabaseURL(),
         modelsCacheURL: URL = CodexModelCapabilitiesImporter.defaultModelsCacheURL(),
-        fileManager: FileManager = .default
+        beforeProbe: @escaping @Sendable () -> Void = {}
     ) {
         self.logsDatabaseURL = logsDatabaseURL
         self.sessionDirectories = sessionDirectories
         self.stateDatabaseURL = stateDatabaseURL
         self.modelsCacheURL = modelsCacheURL
-        self.fileManager = fileManager
+        self.beforeProbe = beforeProbe
     }
 
-    func probeSnapshot(now: Date = Date()) -> CodexLocalSourceProbeSnapshot {
+    func probeSnapshot(now: Date = Date()) async -> CodexLocalSourceProbeSnapshot {
+        await Task.detached(priority: .utility) {
+            beforeProbe()
+            return probeSnapshotSynchronously(now: now)
+        }.value
+    }
+
+    private func probeSnapshotSynchronously(now: Date) -> CodexLocalSourceProbeSnapshot {
         CodexLocalSourceProbeSnapshot(
             logsDatabase: logsDatabaseProbe(now: now),
             sessionDirectory: sessionDirectoryProbe(now: now),
@@ -1761,7 +1769,7 @@ struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
     }
 
     private func stateDatabaseProbe(now: Date) -> CodexLocalSourceProbe {
-        guard fileManager.fileExists(atPath: stateDatabaseURL.path) else {
+        guard FileManager.default.fileExists(atPath: stateDatabaseURL.path) else {
             return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
         }
 
@@ -1813,7 +1821,7 @@ struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
     private func sessionDirectoryProbe(now: Date) -> CodexLocalSourceProbe {
         for directory in sessionDirectories {
             var isDirectory: ObjCBool = false
-            if fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+            if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
                isDirectory.boolValue
             {
                 return CodexLocalSourceProbe(status: .available, checkedAt: now)
@@ -1824,7 +1832,7 @@ struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
     }
 
     private func modelsCacheProbe(now: Date) -> CodexLocalSourceProbe {
-        guard fileManager.fileExists(atPath: modelsCacheURL.path) else {
+        guard FileManager.default.fileExists(atPath: modelsCacheURL.path) else {
             return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
         }
 
@@ -1850,7 +1858,7 @@ struct CodexLocalSourceCoverageProbe: CodexLocalSourceCoverageProbing {
         latestTimestampExpression: String,
         now: Date
     ) -> CodexLocalSourceProbe {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
             return CodexLocalSourceProbe(status: .missingSource, checkedAt: now)
         }
 
@@ -2800,15 +2808,19 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
     private let fileURL: URL
     private let fileManager: FileManager
     private let now: () -> Date
+    private let persistenceInterval: TimeInterval
+    private var pendingPersistenceTask: Task<Void, Never>?
 
     init(
         fileURL: URL,
         fileManager: FileManager = .default,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        persistenceInterval: TimeInterval = 0
     ) {
         self.fileURL = fileURL
         self.fileManager = fileManager
         self.now = now
+        self.persistenceInterval = max(0, persistenceInterval)
         diagnostics = (try? Self.loadDiagnostics(from: fileURL)) ?? CodexAppServerAuditDiagnostics(now: now())
     }
 
@@ -2816,7 +2828,8 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
         let directoryURL = (try? UsageHistoryStore.applicationSupportDirectoryURL())
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("CodexStatusBar", isDirectory: true)
         return CodexAppServerAuditDiagnosticsStore(
-            fileURL: directoryURL.appendingPathComponent("live-token-payload-audit-diagnostics.json")
+            fileURL: directoryURL.appendingPathComponent("live-token-payload-audit-diagnostics.json"),
+            persistenceInterval: 0.5
         )
     }
 
@@ -2883,10 +2896,12 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
         }
 
         diagnostics = updated
-        persist(updated)
+        schedulePersistence()
     }
 
     func clear() {
+        pendingPersistenceTask?.cancel()
+        pendingPersistenceTask = nil
         diagnostics = CodexAppServerAuditDiagnostics(now: now())
         try? fileManager.removeItem(at: fileURL)
     }
@@ -2936,6 +2951,32 @@ final class CodexAppServerAuditDiagnosticsStore: ObservableObject {
             try encoder.encode(diagnostics).write(to: fileURL, options: .atomic)
         } catch {
             // Diagnostics must never affect app-server handling.
+        }
+    }
+
+    private func schedulePersistence() {
+        guard persistenceInterval > 0 else {
+            persist(diagnostics)
+            return
+        }
+        guard pendingPersistenceTask == nil else {
+            return
+        }
+
+        pendingPersistenceTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(self.persistenceInterval * 1_000_000_000)
+                )
+            } catch {
+                return
+            }
+
+            self.persist(self.diagnostics)
+            self.pendingPersistenceTask = nil
         }
     }
 
@@ -3287,23 +3328,35 @@ struct CodexExecutableCandidate: Equatable, Sendable {
 }
 
 enum CodexExecutableCandidateProvider {
-    static func candidates(fileManager: FileManager = .default) -> [CodexExecutableCandidate] {
-        var candidates: [CodexExecutableCandidate] = [
-            CodexExecutableCandidate(
-                url: URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
-                kind: .appBundled
-            ),
-            CodexExecutableCandidate(
-                url: URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
-                kind: .homebrew
-            ),
-            CodexExecutableCandidate(
-                url: URL(fileURLWithPath: "/usr/local/bin/codex"),
-                kind: .usrLocal
-            ),
-        ]
+    private static let fallbackFixedCandidates: [CodexExecutableCandidate] = [
+        CodexExecutableCandidate(
+            url: URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
+            kind: .appBundled
+        ),
+        CodexExecutableCandidate(
+            url: URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
+            kind: .appBundled
+        ),
+        CodexExecutableCandidate(
+            url: URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
+            kind: .homebrew
+        ),
+        CodexExecutableCandidate(
+            url: URL(fileURLWithPath: "/usr/local/bin/codex"),
+            kind: .usrLocal
+        ),
+    ]
 
-        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    static func candidates(
+        fileManager: FileManager = .default,
+        manifestURL: URL? = Bundle.main.url(
+            forResource: "CodexExecutableCandidates",
+            withExtension: "txt"
+        ),
+        applicationsURL: URL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    ) -> [CodexExecutableCandidate] {
+        var candidates = fixedCandidates(manifestURL: manifestURL)
+
         if let appBundleURLs = try? fileManager.contentsOfDirectory(
             at: applicationsURL,
             includingPropertiesForKeys: nil,
@@ -3311,7 +3364,7 @@ enum CodexExecutableCandidateProvider {
         ) {
             let discoveredCandidates = appBundleURLs
                 .filter { $0.pathExtension == "app" && $0.deletingPathExtension().lastPathComponent.hasPrefix("Codex") }
-                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
                 .map {
                     CodexExecutableCandidate(
                         url: $0.appending(path: "Contents/Resources/codex", directoryHint: .notDirectory),
@@ -3325,30 +3378,102 @@ enum CodexExecutableCandidateProvider {
         return deduplicated(candidates)
     }
 
+    static func fixedCandidates(manifestURL: URL?) -> [CodexExecutableCandidate] {
+        guard let manifestURL,
+              let contents = try? String(contentsOf: manifestURL, encoding: .utf8)
+        else {
+            return fallbackFixedCandidates
+        }
+
+        let paths = contents
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+
+        guard !paths.isEmpty,
+              Set(paths).count == paths.count,
+              paths.allSatisfy({ path in
+                  path.hasPrefix("/")
+                      && !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+              })
+        else {
+            return fallbackFixedCandidates
+        }
+
+        return paths.map { path in
+            CodexExecutableCandidate(
+                url: URL(fileURLWithPath: path),
+                kind: fixedCandidateKind(for: path)
+            )
+        }
+    }
+
+    private static func fixedCandidateKind(for path: String) -> CodexSourceVersionKind {
+        if path.hasPrefix("/Applications/"), path.contains(".app/Contents/Resources/") {
+            return .appBundled
+        }
+        if path.hasPrefix("/opt/homebrew/") {
+            return .homebrew
+        }
+        if path.hasPrefix("/usr/local/") {
+            return .usrLocal
+        }
+        return .path
+    }
+
     static func pathCandidates(environment: [String: String] = ProcessInfo.processInfo.environment) -> [CodexExecutableCandidate] {
         guard let path = environment["PATH"] else {
             return []
         }
 
-        return path
+        return deduplicated(path
             .split(separator: ":")
             .map { pathComponent in
                 CodexExecutableCandidate(
                     url: URL(fileURLWithPath: String(pathComponent)).appendingPathComponent("codex"),
                     kind: .path
                 )
-            }
+            })
     }
 
-    static func executableURLs(fileManager: FileManager = .default) -> [URL] {
-        candidates(fileManager: fileManager).map(\.url)
+    static func orderedCandidates(
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        manifestURL: URL? = Bundle.main.url(
+            forResource: "CodexExecutableCandidates",
+            withExtension: "txt"
+        ),
+        applicationsURL: URL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    ) -> [CodexExecutableCandidate] {
+        deduplicated(
+            candidates(
+                fileManager: fileManager,
+                manifestURL: manifestURL,
+                applicationsURL: applicationsURL
+            )
+                + pathCandidates(environment: environment)
+        )
     }
 
-    private static func deduplicated(_ candidates: [CodexExecutableCandidate]) -> [CodexExecutableCandidate] {
+    static func executableURLs(
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [URL] {
+        orderedCandidates(fileManager: fileManager, environment: environment).map(\.url)
+    }
+
+    static func deduplicated(_ candidates: [CodexExecutableCandidate]) -> [CodexExecutableCandidate] {
         var deduplicated: [CodexExecutableCandidate] = []
         var seenPaths = Set<String>()
 
-        for candidate in candidates where seenPaths.insert(candidate.url.path).inserted {
+        for candidate in candidates {
+            let canonicalPath = candidate.url
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+                .path
+            guard seenPaths.insert(canonicalPath).inserted else {
+                continue
+            }
             deduplicated.append(candidate)
         }
 
@@ -3550,7 +3675,8 @@ struct CodexSourceHealthSnapshot: Codable, Equatable, Sendable {
     }
 
     var appBundledSignal: CodexSourceVersionSignal? {
-        versionSignals.first { $0.kind == .appBundled }
+        versionSignals.first { $0.kind == .appBundled && $0.version != nil }
+            ?? versionSignals.first { $0.kind == .appBundled }
     }
 
     var homebrewSignal: CodexSourceVersionSignal? {
@@ -3690,60 +3816,318 @@ enum CodexSourceHealthReaderError: LocalizedError, Equatable {
     }
 }
 
-struct ProcessCodexSourceVersionCommandRunner: CodexSourceVersionCommandRunning {
-    func versionOutput(for executableURL: URL, timeout: TimeInterval) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                do {
-                    continuation.resume(
-                        returning: try Self.versionOutputSynchronously(
-                            for: executableURL,
-                            timeout: timeout
-                        )
-                    )
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
+private enum CodexBoundedCommandError: Error {
+    case cancelled
+    case timedOut
+    case failed
+    case outputTooLarge
+}
+
+private final class CodexBoundedCommandCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
+private final class CodexBoundedOutputAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maximumBytes: Int
+    private var storage = Data()
+    private var exceededLimit = false
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = max(maximumBytes, 1)
+    }
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else {
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let remainingCapacity = max(maximumBytes - storage.count, 0)
+        if remainingCapacity > 0 {
+            storage.append(data.prefix(remainingCapacity))
+        }
+        if data.count > remainingCapacity {
+            exceededLimit = true
         }
     }
 
-    nonisolated private static func versionOutputSynchronously(
+    func snapshot() -> (data: Data, exceededLimit: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (storage, exceededLimit)
+    }
+}
+
+enum CodexBoundedCommandRunner {
+    static func output(
         for executableURL: URL,
-        timeout: TimeInterval
+        arguments: [String],
+        timeout: TimeInterval,
+        maximumOutputBytes: Int
+    ) async throws -> String {
+        try Task.checkCancellation()
+        let cancellation = CodexBoundedCommandCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        continuation.resume(
+                            returning: try outputSynchronously(
+                                for: executableURL,
+                                arguments: arguments,
+                                timeout: timeout,
+                                maximumOutputBytes: maximumOutputBytes,
+                                cancellation: cancellation
+                            )
+                        )
+                    } catch CodexBoundedCommandError.cancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    nonisolated private static func outputSynchronously(
+        for executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        maximumOutputBytes: Int,
+        cancellation: CodexBoundedCommandCancellation
     ) throws -> String {
+        guard !cancellation.isCancelled else {
+            throw CodexBoundedCommandError.cancelled
+        }
+
         let process = Process()
         let outputPipe = Pipe()
         process.executableURL = executableURL
-        process.arguments = ["--version"]
+        process.arguments = arguments
         process.standardOutput = outputPipe
         process.standardError = outputPipe
-
-        let semaphore = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            semaphore.signal()
+        let outputAccumulator = CodexBoundedOutputAccumulator(maximumBytes: maximumOutputBytes)
+        let outputReadGroup = DispatchGroup()
+        outputReadGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer { outputReadGroup.leave() }
+            while true {
+                do {
+                    guard let chunk = try outputPipe.fileHandleForReading.read(upToCount: 16 * 1_024),
+                          !chunk.isEmpty
+                    else {
+                        return
+                    }
+                    outputAccumulator.append(chunk)
+                } catch {
+                    return
+                }
+            }
         }
 
         do {
             try process.run()
+            try? outputPipe.fileHandleForWriting.close()
+        } catch {
+            try? outputPipe.fileHandleForWriting.close()
+            try? outputPipe.fileHandleForReading.close()
+            _ = outputReadGroup.wait(timeout: .now() + 0.25)
+            throw CodexBoundedCommandError.failed
+        }
+
+        let deadline = Date().addingTimeInterval(max(timeout, 0.01))
+        var commandError: CodexBoundedCommandError?
+        while process.isRunning {
+            if cancellation.isCancelled {
+                commandError = .cancelled
+                break
+            } else if outputAccumulator.snapshot().exceededLimit {
+                commandError = .outputTooLarge
+                break
+            }
+            if Date() >= deadline {
+                commandError = .timedOut
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+
+        if cancellation.isCancelled, commandError == nil {
+            commandError = .cancelled
+        }
+
+        if commandError != nil, process.isRunning {
+            process.terminate()
+            let terminationDeadline = Date().addingTimeInterval(0.35)
+            while process.isRunning, Date() < terminationDeadline {
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        process.waitUntilExit()
+
+        if outputReadGroup.wait(timeout: .now() + 0.25) == .timedOut {
+            try? outputPipe.fileHandleForReading.close()
+            _ = outputReadGroup.wait(timeout: .now() + 0.25)
+        }
+        let outputSnapshot = outputAccumulator.snapshot()
+
+        if let commandError {
+            throw commandError
+        }
+        guard !outputSnapshot.exceededLimit else {
+            throw CodexBoundedCommandError.outputTooLarge
+        }
+        guard process.terminationStatus == 0 else {
+            throw CodexBoundedCommandError.failed
+        }
+
+        return String(decoding: outputSnapshot.data, as: UTF8.self)
+    }
+}
+
+struct ProcessCodexSourceVersionCommandRunner: CodexSourceVersionCommandRunning {
+    func versionOutput(for executableURL: URL, timeout: TimeInterval) async throws -> String {
+        do {
+            return try await CodexBoundedCommandRunner.output(
+                for: executableURL,
+                arguments: ["--version"],
+                timeout: timeout,
+                maximumOutputBytes: 256 * 1_024
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch CodexBoundedCommandError.timedOut {
+            throw CodexSourceHealthReaderError.versionCommandTimedOut
         } catch {
             throw CodexSourceHealthReaderError.versionCommandFailed
         }
+    }
+}
 
-        let waitResult = semaphore.wait(timeout: .now() + timeout)
-        if waitResult == .timedOut {
-            if process.isRunning {
-                process.terminate()
+@MainActor
+protocol CodexAppServerCapabilityProbing {
+    func capabilities(
+        for executableURL: URL,
+        timeout: TimeInterval
+    ) async throws -> CodexAppServerListenSupport.Capabilities
+}
+
+struct ProcessCodexAppServerCapabilityProber: CodexAppServerCapabilityProbing {
+    func capabilities(
+        for executableURL: URL,
+        timeout: TimeInterval
+    ) async throws -> CodexAppServerListenSupport.Capabilities {
+        let helpText = try await CodexBoundedCommandRunner.output(
+            for: executableURL,
+            arguments: ["app-server", "--help"],
+            timeout: timeout,
+            maximumOutputBytes: 256 * 1_024
+        )
+        return CodexAppServerListenSupport.capabilities(helpText: helpText)
+    }
+}
+
+struct ResolvedCodexExecutable: Equatable, Sendable {
+    let url: URL
+    let version: String
+    let capabilities: CodexAppServerListenSupport.Capabilities
+}
+
+@MainActor
+protocol CodexExecutableResolving {
+    func resolve() async throws -> ResolvedCodexExecutable?
+}
+
+struct CodexExecutableResolver: CodexExecutableResolving {
+    private let fileManager: FileManager
+    private let environment: [String: String]
+    private let versionRunner: CodexSourceVersionCommandRunning
+    private let capabilityProber: CodexAppServerCapabilityProbing
+    private let commandTimeout: TimeInterval
+    private let candidatesOverride: [CodexExecutableCandidate]?
+
+    init(
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        versionRunner: CodexSourceVersionCommandRunning = ProcessCodexSourceVersionCommandRunner(),
+        capabilityProber: CodexAppServerCapabilityProbing = ProcessCodexAppServerCapabilityProber(),
+        commandTimeout: TimeInterval = 2,
+        candidates: [CodexExecutableCandidate]? = nil
+    ) {
+        self.fileManager = fileManager
+        self.environment = environment
+        self.versionRunner = versionRunner
+        self.capabilityProber = capabilityProber
+        self.commandTimeout = commandTimeout
+        self.candidatesOverride = candidates
+    }
+
+    func resolve() async throws -> ResolvedCodexExecutable? {
+        let candidates = candidatesOverride ?? CodexExecutableCandidateProvider.orderedCandidates(
+            fileManager: fileManager,
+            environment: environment
+        )
+
+        for candidate in candidates where fileManager.isExecutableFile(atPath: candidate.url.path) {
+            try Task.checkCancellation()
+            do {
+                let versionOutput = try await versionRunner.versionOutput(
+                    for: candidate.url,
+                    timeout: commandTimeout
+                )
+                try Task.checkCancellation()
+                guard let version = CodexSourceHealthReader.parseVersion(from: versionOutput) else {
+                    continue
+                }
+
+                let capabilities = try await capabilityProber.capabilities(
+                    for: candidate.url,
+                    timeout: commandTimeout
+                )
+                try Task.checkCancellation()
+                guard capabilities.preferredTransport != nil else {
+                    continue
+                }
+
+                return ResolvedCodexExecutable(
+                    url: candidate.url,
+                    version: version,
+                    capabilities: capabilities
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                // A wrapper can be executable while its packaged binary is missing.
+                // Continue through the same canonical candidate list used by health checks.
+                continue
             }
-            throw CodexSourceHealthReaderError.versionCommandTimedOut
         }
 
-        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else {
-            throw CodexSourceHealthReaderError.versionCommandFailed
-        }
-
-        return String(decoding: output, as: UTF8.self)
+        try Task.checkCancellation()
+        return nil
     }
 }
 
@@ -3752,6 +4136,7 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
     private let homeDirectory: URL
     private let environment: [String: String]
     private let commandRunner: CodexSourceVersionCommandRunning
+    private let capabilityProber: CodexAppServerCapabilityProbing?
     private let commandTimeout: TimeInterval
     private let metadataStalenessInterval: TimeInterval
     private let executableCandidatesOverride: [CodexExecutableCandidate]?
@@ -3761,7 +4146,31 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        commandRunner: CodexSourceVersionCommandRunning = ProcessCodexSourceVersionCommandRunner(),
+        commandTimeout: TimeInterval = 2,
+        metadataStalenessInterval: TimeInterval = CodexSourceHealthDefaults.metadataStalenessInterval,
+        executableCandidates: [CodexExecutableCandidate]? = nil,
+        pathCandidates: [CodexExecutableCandidate]? = nil
+    ) {
+        self.fileManager = fileManager
+        self.homeDirectory = homeDirectory
+        self.environment = environment
+        commandRunner = ProcessCodexSourceVersionCommandRunner()
+        capabilityProber = ProcessCodexAppServerCapabilityProber()
+        self.commandTimeout = commandTimeout
+        self.metadataStalenessInterval = metadataStalenessInterval
+        self.executableCandidatesOverride = executableCandidates
+        self.pathCandidatesOverride = pathCandidates
+    }
+
+    /// Custom command runners are primarily a deterministic test seam. Callers
+    /// that use one for candidate selection should also provide the matching
+    /// capability prober; nil preserves version-only diagnostics fixtures.
+    init(
+        fileManager: FileManager = .default,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        commandRunner: CodexSourceVersionCommandRunning,
+        capabilityProber: CodexAppServerCapabilityProbing? = nil,
         commandTimeout: TimeInterval = 2,
         metadataStalenessInterval: TimeInterval = CodexSourceHealthDefaults.metadataStalenessInterval,
         executableCandidates: [CodexExecutableCandidate]? = nil,
@@ -3771,6 +4180,7 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
         self.homeDirectory = homeDirectory
         self.environment = environment
         self.commandRunner = commandRunner
+        self.capabilityProber = capabilityProber
         self.commandTimeout = commandTimeout
         self.metadataStalenessInterval = metadataStalenessInterval
         self.executableCandidatesOverride = executableCandidates
@@ -3780,19 +4190,34 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
     func sourceHealthSnapshot(now: Date = Date()) async throws -> CodexSourceHealthSnapshot {
         let fixedCandidates = executableCandidatesOverride ?? CodexExecutableCandidateProvider.candidates(fileManager: fileManager)
         let pathCandidates = pathCandidatesOverride ?? CodexExecutableCandidateProvider.pathCandidates(environment: environment)
-        let activeCandidate = (fixedCandidates + pathCandidates).first {
+        let orderedCandidates = CodexExecutableCandidateProvider.deduplicated(fixedCandidates + pathCandidates)
+        let executableCandidateWasPresent = orderedCandidates.contains {
             fileManager.isExecutableFile(atPath: $0.url.path)
         }
 
         var signals: [CodexSourceVersionSignal] = []
-        for candidate in fixedCandidates {
+        for candidate in CodexExecutableCandidateProvider.deduplicated(fixedCandidates) {
             signals.append(await versionSignal(for: candidate))
+            try Task.checkCancellation()
         }
 
-        if let activeCandidate,
-           !signals.contains(where: { $0.executablePath == activeCandidate.url.path })
-        {
-            signals.append(await versionSignal(for: activeCandidate))
+        var activeCandidate: CodexExecutableCandidate?
+        for candidate in orderedCandidates {
+            var signal = signals.first { $0.executablePath == candidate.url.path }
+            if signal == nil {
+                let pathSignal = await versionSignal(for: candidate)
+                signals.append(pathSignal)
+                signal = pathSignal
+                try Task.checkCancellation()
+            }
+
+            guard signal?.version != nil else {
+                continue
+            }
+            if try await supportsAppServer(candidate) {
+                activeCandidate = candidate
+                break
+            }
         }
 
         let modelsCache = readModelsCacheMetadata()
@@ -3800,12 +4225,14 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
         let warnings = warnings(
             now: now,
             activeCandidate: activeCandidate,
+            executableCandidateWasPresent: executableCandidateWasPresent,
             signals: signals,
             modelsCache: modelsCache,
             versionMetadata: versionMetadata
         )
         let status = status(
             activeCandidate: activeCandidate,
+            executableCandidateWasPresent: executableCandidateWasPresent,
             signals: signals,
             modelsCache: modelsCache,
             versionMetadata: versionMetadata,
@@ -3830,6 +4257,26 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
             warnings: warnings,
             errorText: nil
         )
+    }
+
+    private func supportsAppServer(_ candidate: CodexExecutableCandidate) async throws -> Bool {
+        guard let capabilityProber else {
+            return true
+        }
+
+        do {
+            let capabilities = try await capabilityProber.capabilities(
+                for: candidate.url,
+                timeout: commandTimeout
+            )
+            try Task.checkCancellation()
+            return capabilities.preferredTransport != nil
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            return false
+        }
     }
 
     private func versionSignal(for candidate: CodexExecutableCandidate) async -> CodexSourceVersionSignal {
@@ -3961,6 +4408,7 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
     private func warnings(
         now: Date,
         activeCandidate: CodexExecutableCandidate?,
+        executableCandidateWasPresent: Bool,
         signals: [CodexSourceVersionSignal],
         modelsCache: ModelsCacheMetadata,
         versionMetadata: VersionMetadata
@@ -3968,7 +4416,11 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
         var warnings: [String] = []
 
         if activeCandidate == nil {
-            warnings.append("No executable Codex source was found.")
+            warnings.append(
+                executableCandidateWasPresent
+                    ? "No usable Codex executable passed validation."
+                    : "No executable Codex source was found."
+            )
         }
 
         let versionPairs = versionPairs(signals: signals, modelsCache: modelsCache, versionMetadata: versionMetadata)
@@ -3999,13 +4451,14 @@ struct CodexSourceHealthReader: CodexSourceHealthReading {
 
     private func status(
         activeCandidate: CodexExecutableCandidate?,
+        executableCandidateWasPresent: Bool,
         signals: [CodexSourceVersionSignal],
         modelsCache: ModelsCacheMetadata,
         versionMetadata: VersionMetadata,
         warnings: [String]
     ) -> CodexSourceHealthStatus {
         if activeCandidate == nil {
-            return .missing
+            return executableCandidateWasPresent ? .failed : .missing
         }
 
         if let activeCandidate,

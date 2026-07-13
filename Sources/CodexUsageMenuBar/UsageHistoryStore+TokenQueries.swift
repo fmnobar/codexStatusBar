@@ -13,7 +13,7 @@ extension UsageHistoryStore {
                 total_reasoning_output_tokens, total_total_tokens,
                 observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
                 observed_reasoning_output_tokens, observed_total_tokens
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             ORDER BY received_at ASC, thread_id ASC, turn_id ASC, total_total_tokens ASC
             """
         )
@@ -85,8 +85,8 @@ extension UsageHistoryStore {
                     + IFNULL(observed_output_tokens, 0)
                     + IFNULL(observed_reasoning_output_tokens, 0)
                 ), 0)
-            FROM token_usage_samples
-            WHERE received_at >= ? AND received_at < ?
+            FROM token_usage_query_samples
+            WHERE received_at >= ?1 AND received_at < ?2
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -139,7 +139,7 @@ extension UsageHistoryStore {
                 IFNULL(SUM(observed_cached_input_tokens), 0),
                 IFNULL(SUM(observed_output_tokens), 0),
                 IFNULL(SUM(observed_reasoning_output_tokens), 0)
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE received_at >= ? AND received_at < ?
             """
         )
@@ -208,7 +208,7 @@ extension UsageHistoryStore {
                 + IFNULL(observed_output_tokens, 0)
                 + IFNULL(observed_reasoning_output_tokens, 0)
             ), 0)
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE (
                 observed_input_tokens IS NOT NULL
                 OR observed_cached_input_tokens IS NOT NULL
@@ -251,7 +251,7 @@ extension UsageHistoryStore {
                 SELECT received_at,
                     \(normalizedModelExpression) AS normalized_model,
                     \(valueExpression) AS token_count
-                FROM token_usage_samples
+                FROM token_usage_query_samples
                 WHERE received_at >= ? AND received_at < ?
             )
             SELECT received_at, series_id, series_name, series_kind, token_count
@@ -321,7 +321,7 @@ extension UsageHistoryStore {
                     observed_cached_input_tokens,
                     observed_output_tokens,
                     observed_reasoning_output_tokens
-                FROM token_usage_samples
+                FROM token_usage_query_samples
                 WHERE received_at >= ? AND received_at < ?
             ),
             series_samples AS (
@@ -469,7 +469,7 @@ extension UsageHistoryStore {
                     c.sort_order,
                     SUM(\(componentTokenExpression)) AS token_count
                 FROM buckets b
-                JOIN token_usage_samples s
+                JOIN token_usage_query_samples s
                     ON s.received_at >= b.bucket_start
                     AND s.received_at < b.bucket_end
                 CROSS JOIN components c
@@ -596,7 +596,7 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT MIN(received_at), MAX(received_at)
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE \(valueExpression) > 0
             """
         )
@@ -609,7 +609,7 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT MIN(received_at), MAX(received_at)
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE \(Self.observedTokenComponentsPredicate)
             """
         )
@@ -647,7 +647,7 @@ extension UsageHistoryStore {
                 observed_cached_input_tokens,
                 observed_output_tokens,
                 observed_reasoning_output_tokens
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE received_at >= ? AND received_at < ?
                 AND (
                     \(Self.observedTokenComponentsPredicate)
@@ -765,22 +765,38 @@ extension UsageHistoryStore {
                 WHERE dimension_key = ?
                 GROUP BY thread_id, turn_id, total_total_tokens
             )
-            SELECT samples.received_at,
-                dimension_values.dimension_value,
-                samples.observed_input_tokens,
-                samples.observed_cached_input_tokens,
-                samples.observed_output_tokens,
-                samples.observed_reasoning_output_tokens
-            FROM token_usage_samples AS samples
-            LEFT JOIN dimension_values
-                ON dimension_values.thread_id = samples.thread_id
-                AND dimension_values.turn_id = samples.turn_id
-                AND dimension_values.total_total_tokens = samples.total_total_tokens
-            WHERE samples.received_at >= ? AND samples.received_at < ?
-                AND (
-                    \(Self.observedTokenComponentsPredicate)
-                )
-            ORDER BY samples.received_at ASC
+            , dimension_points AS (
+                SELECT samples.received_at,
+                    dimension_values.dimension_value,
+                    samples.observed_input_tokens,
+                    samples.observed_cached_input_tokens,
+                    samples.observed_output_tokens,
+                    samples.observed_reasoning_output_tokens
+                FROM token_usage_samples AS samples
+                LEFT JOIN dimension_values
+                    ON dimension_values.thread_id = samples.thread_id
+                    AND dimension_values.turn_id = samples.turn_id
+                    AND dimension_values.total_total_tokens = samples.total_total_tokens
+                WHERE samples.is_retention_baseline = 0
+                    AND samples.received_at >= ? AND samples.received_at < ?
+                    AND (
+                        \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
+                    )
+
+                UNION ALL
+
+                SELECT period_start, NULLIF(dimension_value, ''),
+                    observed_input_tokens, observed_cached_input_tokens,
+                    observed_output_tokens, observed_reasoning_output_tokens
+                FROM token_dimension_hourly_rollups
+                WHERE dimension_key = ?
+                    AND period_start >= ? AND period_start < ?
+            )
+            SELECT received_at, dimension_value, observed_input_tokens,
+                observed_cached_input_tokens, observed_output_tokens,
+                observed_reasoning_output_tokens
+            FROM dimension_points
+            ORDER BY received_at ASC
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -788,6 +804,9 @@ extension UsageHistoryStore {
         bindText(dimensionKey.rawValue, to: 1, in: statement)
         sqlite3_bind_int64(statement, 2, startTimestamp)
         sqlite3_bind_int64(statement, 3, endTimestamp)
+        bindText(dimensionKey.rawValue, to: 4, in: statement)
+        sqlite3_bind_int64(statement, 5, startTimestamp)
+        sqlite3_bind_int64(statement, 6, endTimestamp)
 
         var accumulators = [TokenDashboardAccumulatorKey: TokenDashboardAccumulator]()
 
@@ -951,29 +970,46 @@ extension UsageHistoryStore {
 
         let statement = try prepare(
             """
-            SELECT DISTINCT dimensions.dimension_key
-            FROM token_usage_dimensions AS dimensions
-            JOIN token_usage_samples AS samples
-                ON samples.thread_id = dimensions.thread_id
-                AND samples.turn_id = dimensions.turn_id
-                AND samples.total_total_tokens = dimensions.total_total_tokens
-            WHERE samples.received_at >= ? AND samples.received_at < ?
-                AND (
-                    \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
-                )
-                AND dimensions.dimension_value IS NOT NULL
-                AND trim(dimensions.dimension_value) <> ''
-                AND NOT (
-                    dimensions.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
-                    AND dimensions.dimension_value = 'codex-log'
-                )
-            ORDER BY dimensions.dimension_key ASC
+            SELECT dimension_key
+            FROM (
+                SELECT DISTINCT dimensions.dimension_key
+                FROM token_usage_dimensions AS dimensions
+                JOIN token_usage_samples AS samples
+                    ON samples.thread_id = dimensions.thread_id
+                    AND samples.turn_id = dimensions.turn_id
+                    AND samples.total_total_tokens = dimensions.total_total_tokens
+                WHERE samples.is_retention_baseline = 0
+                    AND samples.received_at >= ? AND samples.received_at < ?
+                    AND (
+                        \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
+                    )
+                    AND dimensions.dimension_value IS NOT NULL
+                    AND trim(dimensions.dimension_value) <> ''
+                    AND NOT (
+                        dimensions.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                        AND dimensions.dimension_value = 'codex-log'
+                    )
+
+                UNION
+
+                SELECT DISTINCT dimension_key
+                FROM token_dimension_hourly_rollups
+                WHERE period_start >= ? AND period_start < ?
+                    AND dimension_value <> ''
+                    AND NOT (
+                        dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                        AND dimension_value = 'codex-log'
+                    )
+            )
+            ORDER BY dimension_key ASC
             """
         )
         defer { sqlite3_finalize(statement) }
 
         sqlite3_bind_int64(statement, 1, periodStart.timeIntervalSince1970Int)
         sqlite3_bind_int64(statement, 2, periodEnd.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 3, periodStart.timeIntervalSince1970Int)
+        sqlite3_bind_int64(statement, 4, periodEnd.timeIntervalSince1970Int)
 
         var meaningfulKeys = Set<TokenDashboardBreakdownDimension>()
         while true {
@@ -1006,7 +1042,7 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT 1
-            FROM token_usage_samples
+            FROM token_usage_query_samples
             WHERE received_at >= ? AND received_at < ?
                 AND \(column) IS NOT NULL
                 AND trim(\(column)) <> ''
@@ -1165,19 +1201,33 @@ extension UsageHistoryStore {
         let periodFilter: String
         if periodStart != nil, periodEnd != nil {
             periodFilter = """
-                AND EXISTS (
-                    SELECT 1
-                    FROM token_usage_dimensions AS dimensions
-                    JOIN token_usage_samples AS samples
-                        ON samples.thread_id = dimensions.thread_id
-                        AND samples.turn_id = dimensions.turn_id
-                        AND samples.total_total_tokens = dimensions.total_total_tokens
-                    WHERE dimensions.dimension_key = token_dimension_catalog.dimension_key
-                        AND dimensions.dimension_value = token_dimension_catalog.dimension_value
-                        AND samples.received_at >= ? AND samples.received_at < ?
-                        AND (
-                            \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
-                        )
+                AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM token_usage_dimensions AS dimensions
+                        JOIN token_usage_samples AS samples
+                            ON samples.thread_id = dimensions.thread_id
+                            AND samples.turn_id = dimensions.turn_id
+                            AND samples.total_total_tokens = dimensions.total_total_tokens
+                        WHERE samples.is_retention_baseline = 0
+                            AND dimensions.dimension_key = token_dimension_catalog.dimension_key
+                            AND dimensions.dimension_value = token_dimension_catalog.dimension_value
+                            AND samples.received_at >= ? AND samples.received_at < ?
+                            AND (
+                                \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
+                            )
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM token_dimension_hourly_rollups AS rollups
+                        WHERE rollups.dimension_key = token_dimension_catalog.dimension_key
+                            AND rollups.dimension_value = token_dimension_catalog.dimension_value
+                            AND rollups.period_start >= ? AND rollups.period_start < ?
+                            AND NOT (
+                                rollups.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                                AND rollups.dimension_value = 'codex-log'
+                            )
+                    )
                 )
             """
         } else {
@@ -1199,6 +1249,8 @@ extension UsageHistoryStore {
         if let periodStart, let periodEnd {
             sqlite3_bind_int64(statement, 2, periodStart.timeIntervalSince1970Int)
             sqlite3_bind_int64(statement, 3, periodEnd.timeIntervalSince1970Int)
+            sqlite3_bind_int64(statement, 4, periodStart.timeIntervalSince1970Int)
+            sqlite3_bind_int64(statement, 5, periodEnd.timeIntervalSince1970Int)
         }
 
         var values = Set<String>()
@@ -1316,8 +1368,8 @@ extension UsageHistoryStore {
                 project_path,
                 effort,
                 source
-            FROM token_usage_samples
-            WHERE received_at >= ? AND received_at < ?
+            FROM token_usage_query_samples
+            WHERE received_at >= ?1 AND received_at < ?2
                 AND (
                     \(observedTokenComponentsPredicate)
                 )
@@ -1398,7 +1450,18 @@ extension UsageHistoryStore {
                             THEN value
                     END
                 ) AS distinct_value_count
-            FROM dimension_sample_values
+            FROM (
+                SELECT dimension_key, value, token_count
+                FROM dimension_sample_values
+
+                UNION ALL
+
+                SELECT dimension_key,
+                    NULLIF(dimension_value, '') AS value,
+                    \(observedTokenVolumeSQLExpression()) AS token_count
+                FROM token_dimension_hourly_rollups
+                WHERE period_start >= ?1 AND period_start < ?2
+            )
             GROUP BY dimension_key
         )
         SELECT coverage.id,

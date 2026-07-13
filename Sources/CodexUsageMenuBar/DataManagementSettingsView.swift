@@ -38,6 +38,25 @@ final class DataManagementSettingsViewModel: ObservableObject {
             UsageHistoryRawRetentionStore.save(selectedRetention, to: defaults)
             statusMessage = "Raw sample retention updated."
             errorMessage = nil
+            applySelectedRetention()
+        }
+    }
+
+    private func applySelectedRetention() {
+        Task { [weak self, database, now] in
+            do {
+                try await database.enforceTelemetryRetention(referenceDate: now())
+                guard let self else {
+                    return
+                }
+                statusMessage = "Raw sample retention updated and applied."
+                await refreshDatabaseInfo()
+            } catch {
+                guard let self else {
+                    return
+                }
+                errorMessage = "Retention cleanup failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -742,7 +761,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
         } catch {
             localSourceStoredMetrics = .empty
         }
-        localSourceProbeSnapshot = localSourceCoverageProbe.probeSnapshot(now: now())
+        localSourceProbeSnapshot = await localSourceCoverageProbe.probeSnapshot(now: now())
         rebuildLocalSourceCoverageSnapshot()
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
 
 extension UsageHistoryStoreTests {
     func makeStore() throws -> UsageHistoryStore {

@@ -233,8 +233,8 @@ struct UsageHistoryView: View {
             }
             .buttonStyle(.bordered)
             .disabled(!viewModel.canExport)
-            .help("Export CSV")
-            .accessibilityLabel("Export CSV")
+            .help(AppAccessibilitySemantics.exportCSVLabel)
+            .accessibilityLabel(AppAccessibilitySemantics.exportCSVLabel)
 
             Button(role: .destructive) {
                 isConfirmingClear = true

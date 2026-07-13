@@ -1,4 +1,5 @@
 import XCTest
+@testable import CodexUsageCore
 
 final class CodexUsageDiagnosticsTests: XCTestCase {
     func testBuildsSanitizedDiagnosticsSnapshotWithComparableSummary() throws {

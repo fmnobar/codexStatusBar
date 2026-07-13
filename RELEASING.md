@@ -22,8 +22,10 @@ when CI-based releases are needed again.
 
 The manual `Release` workflow is disabled. When enabled, it bumps versions,
 runs validation and tests, builds a Developer ID signed and notarized app,
-pushes the release commit and `vX.Y.Z` tag, and publishes the zip asset to a
-GitHub Release.
+pushes the release commit and `vX.Y.Z` tag, and creates a draft GitHub Release.
+It uploads or replaces the verified zip and checksum before publishing the
+draft. A rerun can resume an existing matching tag or draft after a partial
+failure, but it will not overwrite a published release.
 
 Required repository secrets:
 
@@ -93,11 +95,15 @@ scripts/prepare_release.sh 1.0.0 1
 
 `prepare_release.sh` will:
 
+- fetch and require exact local `main` parity with `origin/main`
 - update `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`
-- run shell syntax checks
-- run `git diff --check`
-- run the Xcode test suite
+- run the canonical `scripts/verify.sh` shell, test, coverage, analyzer, and
+  Release-build checks
+- create the version commit before packaging so public provenance identifies
+  the exact clean source revision
 - create `dist/CodexStatusBar-vX.Y.Z-buildN.zip`
+- remove the unpushed version commit and restore the original metadata if
+  verification or packaging fails
 
 ## Signing And Notarization Setup
 
@@ -119,9 +125,13 @@ xcrun notarytool store-credentials codex-status-bar \
 ```
 
 `scripts/package_release.sh --signed --notarize` builds with hardened runtime,
-verifies the Developer ID signature, submits a temporary upload zip, staples the
-accepted ticket to `CodexStatusBar.app`, validates the staple, then creates the
-final GitHub Release zip.
+adds the privacy-safe public build provenance and app icon, re-signs the final
+bundle, verifies the expected Developer ID team/designated requirement, submits
+a temporary upload zip, staples the accepted ticket to `CodexStatusBar.app`,
+validates the staple and Gatekeeper result, then creates and round-trip validates
+the final GitHub Release zip plus its `.sha256` file. Public packaging refuses a
+dirty checkout, and artifact validation pins the fingerprint to the packaged
+HEAD commit.
 
 ## Publish A Local Release
 
@@ -129,12 +139,15 @@ After release prep succeeds:
 
 ```bash
 git status
-git add CodexUsageMenuBar.xcodeproj/project.pbxproj
-git commit -m "Bump version to X.Y.Z"
 git tag vX.Y.Z
 git push origin main
 git push origin vX.Y.Z
 ```
+
+If you amend the version commit or change any source after preparation, rerun
+the same `scripts/package_release.sh` command from the resulting clean commit
+before tagging or uploading. Artifact validation pins the embedded fingerprint
+to the current HEAD.
 
 Then create a GitHub Release:
 
@@ -157,11 +170,14 @@ an asset named:
 CodexStatusBar-vX.Y.Z-buildN.zip
 ```
 
-When that asset exists, the app can download it, verify a `sha256:` digest when
-GitHub exposes one, unzip it, check the bundle identifier and version, validate
-the app with `codesign` and `spctl`, then guide the user through replacing the
-currently installed app. If the current app location is not writable, the app
-reveals the verified download and leaves replacement manual.
+When that asset exists, the app can download it only when GitHub supplies a
+well-formed `sha256:` digest. It checks the bundle identifier, release version,
+and asset build number, then requires the downloaded app to match the installed
+Developer ID team and designated requirement before Gatekeeper validation. The
+detached installer re-verifies a sibling copy, waits a bounded time for the old
+process, retains a backup during replacement, confirms the expected executable
+relaunched, and rolls back on failure. Local ad-hoc source builds cannot establish
+Developer ID signer continuity and should continue to update with `./install.sh`.
 
 ## Validate The Artifact
 
@@ -179,6 +195,17 @@ The app bundle should be present at:
 ```text
 CodexStatusBar.app
 ```
+
+The packaging scripts perform the complete validation automatically. For the
+canonical repository-wide developer gate, run:
+
+```bash
+scripts/verify.sh
+```
+
+Successful local verification removes its temporary DerivedData. Failed local
+runs and CI preserve the log, result bundle, warning report, and coverage report
+path printed by the script.
 
 For a signed release, also validate the unzipped app:
 

@@ -2,6 +2,9 @@ import Foundation
 import SQLite3
 
 extension UsageHistoryStore {
+    static let telemetryRollupValueByteLimit = 4_096
+    static let telemetryRollupRepresentativeSampleLimit = 192
+
     func record(snapshot: CodexUsageSnapshot, at date: Date) throws {
         let timestamp = Self.roundedToMinute(date).timeIntervalSince1970Int
 
@@ -115,6 +118,663 @@ extension UsageHistoryStore {
             repairedContextCount: repairedContextCount,
             repairedDimensionCount: repairedDimensionCount
         )
+    }
+
+    /// Rolls old high-cardinality telemetry into durable hourly summaries, then removes raw rows.
+    /// The newest cumulative token row per inactive thread is retained as a query-hidden baseline so
+    /// future deltas remain correct when a long-running session becomes active again.
+    func enforceTelemetryRetention(referenceDate: Date, force: Bool = false) throws {
+        let retention = max(rawRetentionProvider(), 60 * 60)
+        let referenceTimestamp = Self.roundedToSecond(referenceDate).timeIntervalSince1970Int
+        let metadataKey = "telemetry_retention_last_run"
+        if !force,
+           let lastRun = try metadataValue(for: metadataKey).flatMap(Int64.init),
+           referenceTimestamp - lastRun < 6 * 60 * 60
+        {
+            return
+        }
+
+        let requestedCutoff = referenceTimestamp - Int64(retention.rounded(.down))
+        // Compact complete local-calendar hours only. Besides keeping the rollup boundary aligned
+        // with dashboard buckets (including DST), this prevents a moving cutoff from repeatedly
+        // merging partial samples into the same hour and biasing its representative quantiles.
+        let cutoff = UsageHistoryRange.bucketStart(
+            for: Date(timeIntervalSince1970: TimeInterval(requestedCutoff)),
+            component: .hour,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        try transaction {
+            try compactTokenTelemetry(olderThan: cutoff)
+            try compactPerformanceTelemetry(olderThan: cutoff)
+            try setMetadataValue(String(referenceTimestamp), for: metadataKey)
+        }
+        if force {
+            notificationCenter.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+
+    private func compactTokenTelemetry(olderThan cutoff: Int64) throws {
+        if let earliestTimestamp = try earliestUncompactedTokenTimestamp(olderThan: cutoff) {
+            var bucketStart = UsageHistoryRange.bucketStart(
+                for: Date(timeIntervalSince1970: TimeInterval(earliestTimestamp)),
+                component: .hour,
+                calendar: calendar
+            )
+            let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoff))
+
+            while bucketStart < cutoffDate {
+                guard let nextBucketStart = calendar.date(byAdding: .hour, value: 1, to: bucketStart),
+                      nextBucketStart > bucketStart
+                else {
+                    break
+                }
+                let rangeEnd = min(nextBucketStart, cutoffDate)
+                try compactTokenTelemetryHour(
+                    periodStart: bucketStart.timeIntervalSince1970Int,
+                    rangeEnd: rangeEnd.timeIntervalSince1970Int
+                )
+                bucketStart = nextBucketStart
+            }
+        }
+
+        // A prior baseline is already represented in a rollup. Demote it only when a newer raw
+        // row exists; deletion below then removes it without counting it a second time.
+        try execute(
+            """
+            UPDATE token_usage_samples AS baseline
+            SET is_retention_baseline = 0
+            WHERE baseline.is_retention_baseline = 1
+              AND EXISTS (
+                  SELECT 1
+                  FROM token_usage_samples AS newer
+                  WHERE newer.thread_id = baseline.thread_id
+                    AND (
+                        newer.received_at > baseline.received_at
+                        OR (newer.received_at = baseline.received_at AND newer.rowid > baseline.rowid)
+                    )
+              )
+            """
+        )
+        try execute(
+            """
+            UPDATE token_usage_samples AS candidate
+            SET is_retention_baseline = 1
+            WHERE candidate.received_at < \(cutoff)
+              AND NOT EXISTS (
+                  SELECT 1 FROM token_usage_samples AS recent
+                  WHERE recent.thread_id = candidate.thread_id
+                    AND recent.received_at >= \(cutoff)
+              )
+              AND candidate.rowid = (
+                  SELECT newest.rowid
+                  FROM token_usage_samples AS newest
+                  WHERE newest.thread_id = candidate.thread_id
+                    AND newest.received_at < \(cutoff)
+                  ORDER BY newest.received_at DESC, newest.total_total_tokens DESC, newest.rowid DESC
+                  LIMIT 1
+              )
+            """
+        )
+        try execute(
+            """
+            DELETE FROM token_usage_dimensions
+            WHERE EXISTS (
+                SELECT 1
+                FROM token_usage_samples AS samples
+                WHERE samples.thread_id = token_usage_dimensions.thread_id
+                  AND samples.turn_id = token_usage_dimensions.turn_id
+                  AND samples.total_total_tokens = token_usage_dimensions.total_total_tokens
+                  AND samples.received_at < \(cutoff)
+                  AND samples.is_retention_baseline = 0
+            )
+            """
+        )
+        try execute(
+            "DELETE FROM token_usage_samples WHERE received_at < \(cutoff) AND is_retention_baseline = 0"
+        )
+    }
+
+    private func compactTokenTelemetryHour(periodStart: Int64, rangeEnd: Int64) throws {
+        try execute(
+            """
+            INSERT INTO token_usage_hourly_rollups (
+                period_start, model, project_path, project_name, effort, source,
+                model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            )
+            SELECT \(periodStart),
+                COALESCE(model, ''), COALESCE(project_path, ''), COALESCE(project_name, ''),
+                COALESCE(effort, ''), COALESCE(source, ''), COALESCE(model_context_window, -1),
+                SUM(MAX(COALESCE(observed_input_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_cached_input_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_output_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_reasoning_output_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_total_tokens, 0), 0)),
+                COUNT(*)
+            FROM token_usage_samples
+            WHERE received_at >= \(periodStart)
+              AND received_at < \(rangeEnd)
+              AND is_retention_baseline = 0
+            GROUP BY COALESCE(model, ''), COALESCE(project_path, ''), COALESCE(project_name, ''),
+                COALESCE(effort, ''), COALESCE(source, ''), COALESCE(model_context_window, -1)
+            ON CONFLICT(
+                period_start, model, project_path, project_name,
+                effort, source, model_context_window
+            ) DO UPDATE SET
+                observed_input_tokens = observed_input_tokens + excluded.observed_input_tokens,
+                observed_cached_input_tokens = observed_cached_input_tokens + excluded.observed_cached_input_tokens,
+                observed_output_tokens = observed_output_tokens + excluded.observed_output_tokens,
+                observed_reasoning_output_tokens = observed_reasoning_output_tokens + excluded.observed_reasoning_output_tokens,
+                observed_total_tokens = observed_total_tokens + excluded.observed_total_tokens,
+                sample_count = sample_count + excluded.sample_count
+            """
+        )
+
+        for dimensionKey in TokenUsageDimensionKey.allCases {
+            try compactTokenDimensionTelemetryHour(
+                dimensionKey: dimensionKey,
+                periodStart: periodStart,
+                rangeEnd: rangeEnd
+            )
+        }
+    }
+
+    private func compactTokenDimensionTelemetryHour(
+        dimensionKey: TokenUsageDimensionKey,
+        periodStart: Int64,
+        rangeEnd: Int64
+    ) throws {
+        let rawKey = dimensionKey.rawValue
+        try execute(
+            """
+            INSERT INTO token_dimension_hourly_rollups (
+                period_start, dimension_key, dimension_value,
+                observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            )
+            SELECT \(periodStart), '\(rawKey)', COALESCE(dimension_values.dimension_value, ''),
+                SUM(MAX(COALESCE(samples.observed_input_tokens, 0), 0)),
+                SUM(MAX(COALESCE(samples.observed_cached_input_tokens, 0), 0)),
+                SUM(MAX(COALESCE(samples.observed_output_tokens, 0), 0)),
+                SUM(MAX(COALESCE(samples.observed_reasoning_output_tokens, 0), 0)),
+                SUM(MAX(COALESCE(samples.observed_total_tokens, 0), 0)),
+                COUNT(*)
+            FROM token_usage_samples AS samples
+            LEFT JOIN (
+                SELECT thread_id, turn_id, total_total_tokens,
+                    COALESCE(
+                        MIN(CASE
+                            WHEN NOT (
+                                dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
+                                AND dimension_value = 'codex-log'
+                            ) THEN dimension_value
+                        END),
+                        MIN(dimension_value)
+                    ) AS dimension_value
+                FROM token_usage_dimensions
+                WHERE dimension_key = '\(rawKey)'
+                GROUP BY thread_id, turn_id, total_total_tokens
+            ) AS dimension_values
+                ON dimension_values.thread_id = samples.thread_id
+                AND dimension_values.turn_id = samples.turn_id
+                AND dimension_values.total_total_tokens = samples.total_total_tokens
+            WHERE samples.received_at >= \(periodStart)
+              AND samples.received_at < \(rangeEnd)
+              AND samples.is_retention_baseline = 0
+            GROUP BY COALESCE(dimension_values.dimension_value, '')
+            ON CONFLICT(period_start, dimension_key, dimension_value) DO UPDATE SET
+                observed_input_tokens = observed_input_tokens + excluded.observed_input_tokens,
+                observed_cached_input_tokens = observed_cached_input_tokens + excluded.observed_cached_input_tokens,
+                observed_output_tokens = observed_output_tokens + excluded.observed_output_tokens,
+                observed_reasoning_output_tokens = observed_reasoning_output_tokens + excluded.observed_reasoning_output_tokens,
+                observed_total_tokens = observed_total_tokens + excluded.observed_total_tokens,
+                sample_count = sample_count + excluded.sample_count
+            """
+        )
+    }
+
+    private func earliestUncompactedTokenTimestamp(olderThan cutoff: Int64) throws -> Int64? {
+        let statement = try prepare(
+            "SELECT MIN(received_at) FROM token_usage_samples WHERE received_at < ? AND is_retention_baseline = 0"
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, cutoff)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_type(statement, 0) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+    }
+
+    private func compactPerformanceTelemetry(olderThan cutoff: Int64) throws {
+        guard let earliestTimestamp = try earliestUncompactedPerformanceTimestamp(olderThan: cutoff) else {
+            return
+        }
+        var bucketStart = UsageHistoryRange.bucketStart(
+            for: Date(timeIntervalSince1970: TimeInterval(earliestTimestamp)),
+            component: .hour,
+            calendar: calendar
+        )
+        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoff))
+        while bucketStart < cutoffDate {
+            guard let nextBucketStart = calendar.date(byAdding: .hour, value: 1, to: bucketStart),
+                  nextBucketStart > bucketStart
+            else {
+                break
+            }
+            let rangeEnd = min(nextBucketStart, cutoffDate)
+            try compactPerformanceTelemetryHour(
+                periodStart: bucketStart.timeIntervalSince1970Int,
+                rangeEnd: rangeEnd.timeIntervalSince1970Int
+            )
+            bucketStart = nextBucketStart
+        }
+
+        try execute(
+            """
+            DELETE FROM codex_turn_performance_dimensions
+            WHERE EXISTS (
+                SELECT 1 FROM codex_turn_performance_events AS events
+                WHERE events.source_key = codex_turn_performance_dimensions.source_key
+                  AND events.source_row_id = codex_turn_performance_dimensions.source_row_id
+                  AND events.event_timestamp < \(cutoff)
+            )
+            """
+        )
+        try execute("DELETE FROM codex_turn_performance_events WHERE event_timestamp < \(cutoff)")
+        try execute("DELETE FROM codex_session_task_timing_events WHERE event_timestamp < \(cutoff)")
+    }
+
+    private func compactPerformanceTelemetryHour(periodStart: Int64, rangeEnd: Int64) throws {
+        try execute(
+            """
+            WITH RECURSIVE
+            sample_positions(position) AS (
+                SELECT 0
+                UNION ALL
+                SELECT position + 1
+                FROM sample_positions
+                WHERE position + 1 < \(Self.telemetryRollupRepresentativeSampleLimit)
+            ),
+            base AS (
+                SELECT rowid AS tie_id,
+                    COALESCE(model, '') AS model,
+                    COALESCE(project_path, '') AS project_path,
+                    COALESCE(project_name, '') AS project_name,
+                    COALESCE(effort, '') AS effort,
+                    COALESCE(source, '') AS source,
+                    COALESCE(transport, '') AS transport,
+                    COALESCE(wire_api, '') AS wire_api,
+                    event_timestamp, success,
+                    CASE WHEN duration_ms IS NOT NULL THEN MAX(duration_ms, 0) END AS duration_value
+                FROM codex_turn_performance_events
+                WHERE event_timestamp >= \(periodStart) AND event_timestamp < \(rangeEnd)
+            ),
+            aggregates AS (
+                SELECT model, project_path, project_name, effort, source, transport, wire_api,
+                    COUNT(*) AS sample_count,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failure_count,
+                    SUM(CASE WHEN duration_value IS NOT NULL THEN 1 ELSE 0 END) AS duration_sample_count,
+                    SUM(COALESCE(duration_value, 0)) AS duration_total_ms
+                FROM base
+                GROUP BY model, project_path, project_name, effort, source, transport, wire_api
+            ),
+            duration_ranked AS (
+                SELECT model, project_path, project_name, effort, source, transport, wire_api,
+                    duration_value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY model, project_path, project_name, effort, source, transport, wire_api
+                        ORDER BY duration_value ASC, event_timestamp ASC, tie_id ASC
+                    ) AS sample_rank,
+                    COUNT(*) OVER (
+                        PARTITION BY model, project_path, project_name, effort, source, transport, wire_api
+                    ) AS value_count
+                FROM base
+                WHERE duration_value IS NOT NULL
+            ),
+            duration_samples AS (
+                SELECT model, project_path, project_name, effort, source, transport, wire_api,
+                    GROUP_CONCAT(CAST(duration_value AS TEXT) || ',', '') AS duration_values
+                FROM duration_ranked
+                WHERE value_count <= \(Self.telemetryRollupRepresentativeSampleLimit)
+                    OR EXISTS (
+                        SELECT 1
+                        FROM sample_positions
+                        WHERE sample_rank = 1 + CAST(ROUND(
+                            position * (value_count - 1) * 1.0
+                                / \(Self.telemetryRollupRepresentativeSampleLimit - 1)
+                        ) AS INTEGER)
+                    )
+                GROUP BY model, project_path, project_name, effort, source, transport, wire_api
+            )
+            INSERT INTO telemetry_hourly_rollups (
+                metric, period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, sample_count, success_count, failure_count,
+                duration_sample_count, duration_total_ms,
+                first_token_sample_count, first_token_total_ms,
+                completed_count, incomplete_count, duration_values, first_token_values
+            )
+            SELECT 'turn_performance', \(periodStart),
+                aggregates.model, aggregates.project_path, aggregates.project_name,
+                aggregates.effort, aggregates.source, aggregates.transport, aggregates.wire_api,
+                aggregates.sample_count, aggregates.success_count, aggregates.failure_count,
+                aggregates.duration_sample_count, aggregates.duration_total_ms,
+                0, 0, 0, 0, duration_samples.duration_values, NULL
+            FROM aggregates
+            LEFT JOIN duration_samples USING (
+                model, project_path, project_name, effort, source, transport, wire_api
+            )
+            ON CONFLICT(
+                metric, period_start, model, project_path, project_name,
+                effort, source, transport, wire_api
+            ) DO UPDATE SET
+                sample_count = sample_count + excluded.sample_count,
+                success_count = success_count + excluded.success_count,
+                failure_count = failure_count + excluded.failure_count,
+                duration_sample_count = duration_sample_count + excluded.duration_sample_count,
+                duration_total_ms = duration_total_ms + excluded.duration_total_ms,
+                duration_values = \(Self.representativeTelemetrySampleMergeSQL(
+                    existing: "duration_values",
+                    incoming: "excluded.duration_values"
+                ))
+            """
+        )
+        try execute(
+            """
+            INSERT INTO telemetry_error_hourly_rollups (
+                period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, error_summary, event_count
+            )
+            SELECT \(periodStart), COALESCE(model, ''), COALESCE(project_path, ''),
+                COALESCE(project_name, ''), COALESCE(effort, ''), COALESCE(source, ''),
+                COALESCE(transport, ''), COALESCE(wire_api, ''), error_summary, COUNT(*)
+            FROM codex_turn_performance_events
+            WHERE event_timestamp >= \(periodStart) AND event_timestamp < \(rangeEnd)
+                AND success = 0 AND error_summary IS NOT NULL
+            GROUP BY COALESCE(model, ''), COALESCE(project_path, ''),
+                COALESCE(project_name, ''), COALESCE(effort, ''), COALESCE(source, ''),
+                COALESCE(transport, ''), COALESCE(wire_api, ''), error_summary
+            ON CONFLICT(
+                period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, error_summary
+            ) DO UPDATE SET event_count = event_count + excluded.event_count
+            """
+        )
+        try execute(
+            """
+            WITH RECURSIVE
+            sample_positions(position) AS (
+                SELECT 0
+                UNION ALL
+                SELECT position + 1
+                FROM sample_positions
+                WHERE position + 1 < \(Self.telemetryRollupRepresentativeSampleLimit)
+            ),
+            base AS (
+                SELECT rowid AS tie_id,
+                    COALESCE(model, '') AS model,
+                    COALESCE(project_path, '') AS project_path,
+                    COALESCE(project_name, '') AS project_name,
+                    COALESCE(effort, '') AS effort,
+                    COALESCE(source, '') AS source,
+                    event_timestamp, completed_at,
+                    CASE WHEN duration_ms IS NOT NULL THEN MAX(duration_ms, 0) END AS duration_value,
+                    CASE WHEN time_to_first_token_ms IS NOT NULL
+                        THEN MAX(time_to_first_token_ms, 0)
+                    END AS first_token_value
+                FROM codex_session_task_timing_events
+                WHERE event_timestamp >= \(periodStart) AND event_timestamp < \(rangeEnd)
+            ),
+            aggregates AS (
+                SELECT model, project_path, project_name, effort, source,
+                    COUNT(*) AS sample_count,
+                    SUM(CASE WHEN duration_value IS NOT NULL THEN 1 ELSE 0 END) AS duration_sample_count,
+                    SUM(COALESCE(duration_value, 0)) AS duration_total_ms,
+                    SUM(CASE WHEN first_token_value IS NOT NULL THEN 1 ELSE 0 END) AS first_token_sample_count,
+                    SUM(COALESCE(first_token_value, 0)) AS first_token_total_ms,
+                    SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed_count,
+                    SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END) AS incomplete_count
+                FROM base
+                GROUP BY model, project_path, project_name, effort, source
+            ),
+            duration_ranked AS (
+                SELECT model, project_path, project_name, effort, source, duration_value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY model, project_path, project_name, effort, source
+                        ORDER BY duration_value ASC, event_timestamp ASC, tie_id ASC
+                    ) AS sample_rank,
+                    COUNT(*) OVER (
+                        PARTITION BY model, project_path, project_name, effort, source
+                    ) AS value_count
+                FROM base
+                WHERE duration_value IS NOT NULL
+            ),
+            first_token_ranked AS (
+                SELECT model, project_path, project_name, effort, source, first_token_value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY model, project_path, project_name, effort, source
+                        ORDER BY first_token_value ASC, event_timestamp ASC, tie_id ASC
+                    ) AS sample_rank,
+                    COUNT(*) OVER (
+                        PARTITION BY model, project_path, project_name, effort, source
+                    ) AS value_count
+                FROM base
+                WHERE first_token_value IS NOT NULL
+            ),
+            duration_samples AS (
+                SELECT model, project_path, project_name, effort, source,
+                    GROUP_CONCAT(CAST(duration_value AS TEXT) || ',', '') AS duration_values
+                FROM duration_ranked
+                WHERE value_count <= \(Self.telemetryRollupRepresentativeSampleLimit)
+                    OR EXISTS (
+                        SELECT 1 FROM sample_positions
+                        WHERE sample_rank = 1 + CAST(ROUND(
+                            position * (value_count - 1) * 1.0
+                                / \(Self.telemetryRollupRepresentativeSampleLimit - 1)
+                        ) AS INTEGER)
+                    )
+                GROUP BY model, project_path, project_name, effort, source
+            ),
+            first_token_samples AS (
+                SELECT model, project_path, project_name, effort, source,
+                    GROUP_CONCAT(CAST(first_token_value AS TEXT) || ',', '') AS first_token_values
+                FROM first_token_ranked
+                WHERE value_count <= \(Self.telemetryRollupRepresentativeSampleLimit)
+                    OR EXISTS (
+                        SELECT 1 FROM sample_positions
+                        WHERE sample_rank = 1 + CAST(ROUND(
+                            position * (value_count - 1) * 1.0
+                                / \(Self.telemetryRollupRepresentativeSampleLimit - 1)
+                        ) AS INTEGER)
+                    )
+                GROUP BY model, project_path, project_name, effort, source
+            )
+            INSERT INTO telemetry_hourly_rollups (
+                metric, period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, sample_count, success_count, failure_count,
+                duration_sample_count, duration_total_ms,
+                first_token_sample_count, first_token_total_ms,
+                completed_count, incomplete_count, duration_values, first_token_values
+            )
+            SELECT 'session_timing', \(periodStart),
+                aggregates.model, aggregates.project_path, aggregates.project_name,
+                aggregates.effort, aggregates.source, '', '', aggregates.sample_count, 0, 0,
+                aggregates.duration_sample_count, aggregates.duration_total_ms,
+                aggregates.first_token_sample_count, aggregates.first_token_total_ms,
+                aggregates.completed_count, aggregates.incomplete_count,
+                duration_samples.duration_values, first_token_samples.first_token_values
+            FROM aggregates
+            LEFT JOIN duration_samples USING (model, project_path, project_name, effort, source)
+            LEFT JOIN first_token_samples USING (model, project_path, project_name, effort, source)
+            ON CONFLICT(
+                metric, period_start, model, project_path, project_name,
+                effort, source, transport, wire_api
+            ) DO UPDATE SET
+                sample_count = sample_count + excluded.sample_count,
+                duration_sample_count = duration_sample_count + excluded.duration_sample_count,
+                duration_total_ms = duration_total_ms + excluded.duration_total_ms,
+                first_token_sample_count = first_token_sample_count + excluded.first_token_sample_count,
+                first_token_total_ms = first_token_total_ms + excluded.first_token_total_ms,
+                completed_count = completed_count + excluded.completed_count,
+                incomplete_count = incomplete_count + excluded.incomplete_count,
+                duration_values = \(Self.representativeTelemetrySampleMergeSQL(
+                    existing: "duration_values",
+                    incoming: "excluded.duration_values"
+                )),
+                first_token_values = \(Self.representativeTelemetrySampleMergeSQL(
+                    existing: "first_token_values",
+                    incoming: "excluded.first_token_values"
+                ))
+            """
+        )
+    }
+
+    /// Re-samples an existing and incoming CSV as evenly spaced order statistics. This keeps late
+    /// imports representative instead of retaining the first values that happened to be compacted.
+    static func representativeTelemetrySampleMergeSQL(
+        existing: String,
+        incoming: String
+    ) -> String {
+        let normalizedExisting = normalizedRepresentativeTelemetrySampleSQL(value: existing)
+        let normalizedIncoming = normalizedRepresentativeTelemetrySampleSQL(value: incoming)
+        return """
+        (
+        WITH normalized(existing_values, incoming_values) AS (
+            SELECT \(normalizedExisting), \(normalizedIncoming)
+        )
+        SELECT CASE
+            WHEN existing_values IS NULL THEN incoming_values
+            WHEN incoming_values IS NULL THEN existing_values
+            WHEN LENGTH(CAST(existing_values AS BLOB))
+                    + LENGTH(CAST(incoming_values AS BLOB)) <= \(telemetryRollupValueByteLimit)
+                AND (
+                    LENGTH(existing_values) - LENGTH(REPLACE(existing_values, ',', ''))
+                    + LENGTH(incoming_values) - LENGTH(REPLACE(incoming_values, ',', ''))
+                ) <= \(telemetryRollupRepresentativeSampleLimit)
+                THEN existing_values || incoming_values
+            ELSE (
+                WITH RECURSIVE
+                csv(rest, value) AS (
+                    SELECT existing_values || incoming_values, NULL
+                    UNION ALL
+                    SELECT SUBSTR(rest, INSTR(rest, ',') + 1),
+                        CAST(SUBSTR(rest, 1, INSTR(rest, ',') - 1) AS INTEGER)
+                    FROM csv
+                    WHERE INSTR(rest, ',') > 0
+                ),
+                sample_positions(position) AS (
+                    SELECT 0
+                    UNION ALL
+                    SELECT position + 1
+                    FROM sample_positions
+                    WHERE position + 1 < \(telemetryRollupRepresentativeSampleLimit)
+                ),
+                ranked AS (
+                    SELECT value,
+                        ROW_NUMBER() OVER (ORDER BY value ASC) AS sample_rank,
+                        COUNT(*) OVER () AS value_count
+                    FROM csv
+                    WHERE value IS NOT NULL
+                )
+                SELECT GROUP_CONCAT(CAST(value AS TEXT) || ',', '')
+                FROM ranked
+                WHERE value_count <= \(telemetryRollupRepresentativeSampleLimit)
+                    OR EXISTS (
+                        SELECT 1 FROM sample_positions
+                        WHERE sample_rank = 1 + CAST(ROUND(
+                            position * (value_count - 1) * 1.0
+                                / \(telemetryRollupRepresentativeSampleLimit - 1)
+                        ) AS INTEGER)
+                    )
+            )
+        END
+        FROM normalized
+        )
+        """
+    }
+
+    /// Returns a scalar SQL expression that independently bounds one legacy representative-sample
+    /// CSV. Sampling the operands before conflict handling also covers inserts into a new key and
+    /// merges where the existing target column is NULL.
+    static func normalizedRepresentativeTelemetrySampleSQL(value: String) -> String {
+        """
+        CASE
+            WHEN \(value) IS NULL THEN NULL
+            WHEN LENGTH(CAST(\(value) AS BLOB)) <= \(telemetryRollupValueByteLimit)
+                AND LENGTH(\(value)) - LENGTH(REPLACE(\(value), ',', ''))
+                    <= \(telemetryRollupRepresentativeSampleLimit)
+                THEN \(value)
+            ELSE (
+                WITH RECURSIVE
+                csv(rest, value) AS (
+                    SELECT \(value), NULL
+                    UNION ALL
+                    SELECT SUBSTR(rest, INSTR(rest, ',') + 1),
+                        CAST(SUBSTR(rest, 1, INSTR(rest, ',') - 1) AS INTEGER)
+                    FROM csv
+                    WHERE INSTR(rest, ',') > 0
+                ),
+                sample_positions(position) AS (
+                    SELECT 0
+                    UNION ALL
+                    SELECT position + 1
+                    FROM sample_positions
+                    WHERE position + 1 < \(telemetryRollupRepresentativeSampleLimit)
+                ),
+                ranked AS (
+                    SELECT value,
+                        ROW_NUMBER() OVER (ORDER BY value ASC) AS sample_rank,
+                        COUNT(*) OVER () AS value_count
+                    FROM csv
+                    WHERE value IS NOT NULL
+                )
+                SELECT GROUP_CONCAT(CAST(value AS TEXT) || ',', '')
+                FROM ranked
+                WHERE value_count <= \(telemetryRollupRepresentativeSampleLimit)
+                    OR EXISTS (
+                        SELECT 1 FROM sample_positions
+                        WHERE sample_rank = 1 + CAST(ROUND(
+                            position * (value_count - 1) * 1.0
+                                / \(telemetryRollupRepresentativeSampleLimit - 1)
+                        ) AS INTEGER)
+                    )
+            )
+        END
+        """
+    }
+
+    private func earliestUncompactedPerformanceTimestamp(olderThan cutoff: Int64) throws -> Int64? {
+        let statement = try prepare(
+            """
+            SELECT MIN(timestamp)
+            FROM (
+                SELECT MIN(event_timestamp) AS timestamp
+                FROM codex_turn_performance_events
+                WHERE event_timestamp < ?
+                UNION ALL
+                SELECT MIN(event_timestamp) AS timestamp
+                FROM codex_session_task_timing_events
+                WHERE event_timestamp < ?
+            )
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, cutoff)
+        sqlite3_bind_int64(statement, 2, cutoff)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW:
+            return sqlite3_column_type(statement, 0) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 0)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
     }
 
     func metadataValue(for key: String) throws -> String? {

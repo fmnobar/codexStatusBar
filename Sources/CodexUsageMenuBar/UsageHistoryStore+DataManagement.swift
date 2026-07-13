@@ -31,6 +31,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
+            try execute("DELETE FROM token_usage_hourly_rollups")
+            try execute("DELETE FROM token_dimension_hourly_rollups")
             try execute("DELETE FROM token_usage_dimensions")
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
@@ -47,6 +49,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_task_timing_events")
             try execute("DELETE FROM codex_session_task_timing_import_files")
             try execute("DELETE FROM codex_session_task_timing_capture_state")
+            try execute("DELETE FROM telemetry_hourly_rollups")
+            try execute("DELETE FROM telemetry_error_hourly_rollups")
             try execute("DELETE FROM codex_thread_catalog")
             try execute("DELETE FROM codex_thread_spawn_edges")
             try execute("DELETE FROM codex_thread_dynamic_tools")
@@ -98,11 +102,15 @@ extension UsageHistoryStore {
         CodexLocalSourceStoredMetrics(
             tokenSamples: try localSourceStoredMetric(
                 table: "token_usage_samples",
-                latestTimestampExpression: "received_at"
+                latestTimestampExpression: "received_at",
+                rollupTable: "token_usage_hourly_rollups",
+                rawWhereClause: "is_retention_baseline = 0"
             ),
             turnPerformanceEvents: try localSourceStoredMetric(
                 table: "codex_turn_performance_events",
-                latestTimestampExpression: "event_timestamp"
+                latestTimestampExpression: "event_timestamp",
+                rollupTable: "telemetry_hourly_rollups",
+                rollupMetric: "turn_performance"
             ),
             runtimeDimensions: try localSourceStoredMetric(
                 table: "codex_turn_performance_dimensions",
@@ -110,7 +118,9 @@ extension UsageHistoryStore {
             ),
             sessionTaskTimingEvents: try localSourceStoredMetric(
                 table: "codex_session_task_timing_events",
-                latestTimestampExpression: "COALESCE(event_timestamp, started_at, completed_at, recorded_at)"
+                latestTimestampExpression: "COALESCE(event_timestamp, started_at, completed_at, recorded_at)",
+                rollupTable: "telemetry_hourly_rollups",
+                rollupMetric: "session_timing"
             ),
             threadCatalog: try localSourceStoredMetric(
                 table: "codex_thread_catalog",
@@ -125,16 +135,30 @@ extension UsageHistoryStore {
 
     private func localSourceStoredMetric(
         table: String,
-        latestTimestampExpression: String
+        latestTimestampExpression: String,
+        rollupTable: String? = nil,
+        rollupMetric: String? = nil,
+        rawWhereClause: String? = nil
     ) throws -> CodexLocalSourceStoredMetric {
         guard try tableExists(table: table) else {
             return .missingSchema
         }
 
+        let rollupCount = rollupTable.map { table in
+            "(SELECT IFNULL(SUM(sample_count), 0) FROM \(table)\(rollupMetric.map { " WHERE metric = '\($0)'" } ?? ""))"
+        } ?? "0"
+        let rollupLatest = rollupTable.map { table in
+            "(SELECT MAX(period_start) FROM \(table)\(rollupMetric.map { " WHERE metric = '\($0)'" } ?? ""))"
+        } ?? "NULL"
+        let rawWhere = rawWhereClause.map { " WHERE \($0)" } ?? ""
         let statement = try prepare(
             """
-            SELECT COUNT(*), MAX(\(latestTimestampExpression))
-            FROM \(table)
+            SELECT (SELECT COUNT(*) FROM \(table)\(rawWhere)) + \(rollupCount),
+                COALESCE(
+                    MAX((SELECT MAX(\(latestTimestampExpression)) FROM \(table)\(rawWhere)), \(rollupLatest)),
+                    (SELECT MAX(\(latestTimestampExpression)) FROM \(table)\(rawWhere)),
+                    \(rollupLatest)
+                )
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -162,6 +186,12 @@ extension UsageHistoryStore {
             throw UsageHistoryStoreError.fileOperationFailed("Backup destination cannot be the active database.")
         }
 
+        // Treat export as another privacy boundary. This also repairs a current-schema database
+        // that was modified by an older build or external tooling before any bytes are copied.
+        try transaction {
+            try sanitizeStoredGitOrigins()
+            try sanitizeStoredSensitiveMetadata()
+        }
         try checkpointWriteAheadLog()
 
         do {
@@ -213,6 +243,22 @@ extension UsageHistoryStore {
         ) ? "consumed_percent" : "NULL"
         let importedHasTokenUsageSamples = try tableExists(
             table: "token_usage_samples",
+            schema: "imported_usage_history"
+        )
+        let importedHasTokenUsageHourlyRollups = try tableExists(
+            table: "token_usage_hourly_rollups",
+            schema: "imported_usage_history"
+        )
+        let importedHasTokenDimensionHourlyRollups = try tableExists(
+            table: "token_dimension_hourly_rollups",
+            schema: "imported_usage_history"
+        )
+        let importedHasTelemetryHourlyRollups = try tableExists(
+            table: "telemetry_hourly_rollups",
+            schema: "imported_usage_history"
+        )
+        let importedHasTelemetryErrorHourlyRollups = try tableExists(
+            table: "telemetry_error_hourly_rollups",
             schema: "imported_usage_history"
         )
         let importedHasTokenUsageDimensions = try tableExists(
@@ -268,11 +314,36 @@ extension UsageHistoryStore {
             column: "source",
             schema: "imported_usage_history"
         ) ? "source" : "NULL"
+        let importedRetentionBaselineExpression = try importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "is_retention_baseline",
+            schema: "imported_usage_history"
+        ) ? "is_retention_baseline" : "0"
         let importedContextVersionExpression = try importedHasSessionTokenImports && tableHasColumn(
             table: "codex_session_token_imports",
             column: "context_version",
             schema: "imported_usage_history"
         ) ? "context_version" : "NULL"
+        let importedByteOffsetExpression = try importedHasSessionTokenImports && tableHasColumn(
+            table: "codex_session_token_imports",
+            column: "byte_offset",
+            schema: "imported_usage_history"
+        ) ? "byte_offset" : "file_size"
+        let importedNextLineNumberExpression = try importedHasSessionTokenImports && tableHasColumn(
+            table: "codex_session_token_imports",
+            column: "next_line_number",
+            schema: "imported_usage_history"
+        ) ? "next_line_number" : "NULL"
+        let importedFilePrefixHashExpression = try importedHasSessionTokenImports && tableHasColumn(
+            table: "codex_session_token_imports",
+            column: "file_prefix_hash",
+            schema: "imported_usage_history"
+        ) ? "file_prefix_hash" : "NULL"
+        let importedTailStateExpression = try importedHasSessionTokenImports && tableHasColumn(
+            table: "codex_session_token_imports",
+            column: "tail_state_json",
+            schema: "imported_usage_history"
+        ) ? "tail_state_json" : "NULL"
         let importedHasProjectDisplayNames = try tableExists(
             table: "token_project_catalog",
             schema: "imported_usage_history"
@@ -310,6 +381,26 @@ extension UsageHistoryStore {
             table: "codex_session_task_timing_import_files",
             schema: "imported_usage_history"
         )
+        let importedTaskTimingByteOffsetExpression = try importedHasSessionTaskTimingImportFiles && tableHasColumn(
+            table: "codex_session_task_timing_import_files",
+            column: "byte_offset",
+            schema: "imported_usage_history"
+        ) ? "byte_offset" : "file_size"
+        let importedTaskTimingNextLineNumberExpression = try importedHasSessionTaskTimingImportFiles && tableHasColumn(
+            table: "codex_session_task_timing_import_files",
+            column: "next_line_number",
+            schema: "imported_usage_history"
+        ) ? "next_line_number" : "NULL"
+        let importedTaskTimingFilePrefixHashExpression = try importedHasSessionTaskTimingImportFiles && tableHasColumn(
+            table: "codex_session_task_timing_import_files",
+            column: "file_prefix_hash",
+            schema: "imported_usage_history"
+        ) ? "file_prefix_hash" : "NULL"
+        let importedTaskTimingTailStateExpression = try importedHasSessionTaskTimingImportFiles && tableHasColumn(
+            table: "codex_session_task_timing_import_files",
+            column: "tail_state_json",
+            schema: "imported_usage_history"
+        ) ? "tail_state_json" : "NULL"
         let importedHasSessionTaskTimingCaptureState = try tableExists(
             table: "codex_session_task_timing_capture_state",
             schema: "imported_usage_history"
@@ -363,6 +454,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
+            try execute("DELETE FROM token_usage_hourly_rollups")
+            try execute("DELETE FROM token_dimension_hourly_rollups")
             try execute("DELETE FROM token_usage_dimensions")
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
@@ -379,6 +472,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_task_timing_events")
             try execute("DELETE FROM codex_session_task_timing_import_files")
             try execute("DELETE FROM codex_session_task_timing_capture_state")
+            try execute("DELETE FROM telemetry_hourly_rollups")
+            try execute("DELETE FROM telemetry_error_hourly_rollups")
             try execute("DELETE FROM codex_thread_catalog")
             try execute("DELETE FROM codex_thread_spawn_edges")
             try execute("DELETE FROM codex_thread_dynamic_tools")
@@ -424,7 +519,8 @@ extension UsageHistoryStore {
                         total_input_tokens, total_cached_input_tokens, total_output_tokens,
                         total_reasoning_output_tokens, total_total_tokens,
                         observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
-                        observed_reasoning_output_tokens, observed_total_tokens
+                        observed_reasoning_output_tokens, observed_total_tokens,
+                        is_retention_baseline
                     )
                     SELECT thread_id, turn_id, model,
                         \(importedSessionIDExpression), \(importedProjectPathExpression),
@@ -436,8 +532,74 @@ extension UsageHistoryStore {
                         total_reasoning_output_tokens, total_total_tokens,
                         \(importedObservedInputExpression), \(importedObservedCachedExpression),
                         \(importedObservedOutputExpression), \(importedObservedReasoningExpression),
-                        observed_total_tokens
+                        observed_total_tokens, \(importedRetentionBaselineExpression)
                     FROM imported_usage_history.token_usage_samples
+                    """
+                )
+            }
+            if importedHasTokenUsageHourlyRollups {
+                try execute(
+                    """
+                    INSERT INTO token_usage_hourly_rollups (
+                        period_start, model, project_path, project_name, effort, source,
+                        model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                        observed_output_tokens, observed_reasoning_output_tokens,
+                        observed_total_tokens, sample_count
+                    )
+                    SELECT period_start, model, project_path, project_name, effort, source,
+                        model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                        observed_output_tokens, observed_reasoning_output_tokens,
+                        observed_total_tokens, sample_count
+                    FROM imported_usage_history.token_usage_hourly_rollups
+                    """
+                )
+            }
+            if importedHasTokenDimensionHourlyRollups {
+                try execute(
+                    """
+                    INSERT INTO token_dimension_hourly_rollups (
+                        period_start, dimension_key, dimension_value,
+                        observed_input_tokens, observed_cached_input_tokens,
+                        observed_output_tokens, observed_reasoning_output_tokens,
+                        observed_total_tokens, sample_count
+                    )
+                    SELECT period_start, dimension_key, dimension_value,
+                        observed_input_tokens, observed_cached_input_tokens,
+                        observed_output_tokens, observed_reasoning_output_tokens,
+                        observed_total_tokens, sample_count
+                    FROM imported_usage_history.token_dimension_hourly_rollups
+                    """
+                )
+            }
+            if importedHasTelemetryHourlyRollups {
+                try execute(
+                    """
+                    INSERT INTO telemetry_hourly_rollups (
+                        metric, period_start, model, project_path, project_name, effort, source,
+                        transport, wire_api, sample_count, success_count, failure_count,
+                        duration_sample_count, duration_total_ms,
+                        first_token_sample_count, first_token_total_ms,
+                        completed_count, incomplete_count, duration_values, first_token_values
+                    )
+                    SELECT metric, period_start, model, project_path, project_name, effort, source,
+                        transport, wire_api, sample_count, success_count, failure_count,
+                        duration_sample_count, duration_total_ms,
+                        first_token_sample_count, first_token_total_ms,
+                        completed_count, incomplete_count, duration_values, first_token_values
+                    FROM imported_usage_history.telemetry_hourly_rollups
+                    """
+                )
+            }
+            if importedHasTelemetryErrorHourlyRollups {
+                try execute(
+                    """
+                    INSERT INTO telemetry_error_hourly_rollups (
+                        period_start, model, project_path, project_name, effort, source,
+                        transport, wire_api, error_summary, event_count
+                    )
+                    SELECT period_start, model, project_path, project_name, effort, source,
+                        transport, wire_api, error_summary, event_count
+                    FROM imported_usage_history.telemetry_error_hourly_rollups
                     """
                 )
             }
@@ -462,9 +624,13 @@ extension UsageHistoryStore {
                 try execute(
                     """
                     INSERT INTO codex_session_token_imports (
-                        file_path, file_size, modified_at, imported_at, status, context_version
+                        file_path, file_size, modified_at, imported_at, status, context_version,
+                        byte_offset, next_line_number, file_prefix_hash, tail_state_json
                     )
-                    SELECT file_path, file_size, modified_at, imported_at, status, \(importedContextVersionExpression)
+                    SELECT file_path, file_size, modified_at, imported_at, status,
+                        \(importedContextVersionExpression), \(importedByteOffsetExpression),
+                        \(importedNextLineNumberExpression), \(importedFilePrefixHashExpression),
+                        \(importedTailStateExpression)
                     FROM imported_usage_history.codex_session_token_imports
                     """
                 )
@@ -547,9 +713,14 @@ extension UsageHistoryStore {
                 try execute(
                     """
                     INSERT OR REPLACE INTO codex_session_task_timing_import_files (
-                        file_path, file_size, modified_at, imported_at, status, timing_version
+                        file_path, file_size, modified_at, imported_at, status, timing_version,
+                        byte_offset, next_line_number, file_prefix_hash, tail_state_json
                     )
-                    SELECT file_path, file_size, modified_at, imported_at, status, timing_version
+                    SELECT file_path, file_size, modified_at, imported_at, status, timing_version,
+                        \(importedTaskTimingByteOffsetExpression),
+                        \(importedTaskTimingNextLineNumberExpression),
+                        \(importedTaskTimingFilePrefixHashExpression),
+                        \(importedTaskTimingTailStateExpression)
                     FROM imported_usage_history.codex_session_task_timing_import_files
                     """
                 )
@@ -730,6 +901,10 @@ extension UsageHistoryStore {
                     """
                 )
             }
+            // Imported rows are not allowed to become committed database state until remotes have
+            // crossed the same sanitizer used by live capture and schema migration.
+            try sanitizeStoredGitOrigins()
+            try sanitizeStoredSensitiveMetadata()
         }
 
         try rebuildTurnPerformanceRuntimeDimensionCatalog()
@@ -937,7 +1112,15 @@ extension UsageHistoryStore {
         defer { sqlite3_close(backupDatabase) }
 
         var errorMessage: UnsafeMutablePointer<Int8>?
-        let result = sqlite3_exec(backupDatabase, "PRAGMA journal_mode=DELETE", nil, nil, &errorMessage)
+        // VACUUM rebuilds the copied file after privacy repairs so credential canaries cannot
+        // survive in freelist or unused page bytes even though no query can reach them.
+        let result = sqlite3_exec(
+            backupDatabase,
+            "PRAGMA journal_mode=DELETE; VACUUM;",
+            nil,
+            nil,
+            &errorMessage
+        )
         guard result == SQLITE_OK else {
             let message = errorMessage.map { String(cString: $0) } ?? "unknown error"
             sqlite3_free(errorMessage)

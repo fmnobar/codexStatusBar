@@ -1294,7 +1294,41 @@ struct WhamRateLimitWindowPayload: Decodable {
 }
 
 enum CodexAppServerListenSupport {
+    struct Capabilities: Equatable, Sendable {
+        let supportsStandardIO: Bool
+        let supportsWebSocket: Bool
+        let explicitlyPrefersStandardIO: Bool
+
+        var preferredTransport: Transport? {
+            if supportsStandardIO, explicitlyPrefersStandardIO || !supportsWebSocket {
+                return .standardIO
+            }
+            if supportsWebSocket {
+                return .legacyWebSocket
+            }
+            if supportsStandardIO {
+                return .standardIO
+            }
+            return nil
+        }
+
+        enum Transport: Equatable, Sendable {
+            case standardIO
+            case legacyWebSocket
+        }
+    }
+
+    static func capabilities(helpText: String) -> Capabilities {
+        Capabilities(
+            supportsStandardIO: helpText.contains("stdio://") || helpText.contains("--stdio"),
+            supportsWebSocket: helpText.contains("ws://"),
+            // Newer CLIs expose an explicit stdio switch and should be owned over pipes.
+            // Older CLIs only advertised listen URLs; retain their WebSocket path.
+            explicitlyPrefersStandardIO: helpText.contains("--stdio")
+        )
+    }
+
     static func supportsWebSocket(helpText: String) -> Bool {
-        helpText.contains("ws://")
+        capabilities(helpText: helpText).supportsWebSocket
     }
 }

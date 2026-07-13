@@ -1,6 +1,30 @@
 import CoreGraphics
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
+
+private final class SessionImportReadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [CodexSessionImportReadKind] = []
+
+    func record(_ event: CodexSessionImportReadKind) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func snapshot() -> [CodexSessionImportReadKind] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+
+    func reset() {
+        lock.lock()
+        events.removeAll()
+        lock.unlock()
+    }
+}
 
 extension UsageHistoryStoreTests {
     func testSessionTokenBackfillImportsMetadataOnlyTokenEvents() async throws {
@@ -251,6 +275,64 @@ extension UsageHistoryStoreTests {
             try store.tokenDimensionCatalogEntries().map { "\($0.key.rawValue)=\($0.value)" },
             ["source_kind=cli"]
         )
+    }
+
+    func testSessionTokenBackfillNeverCheckpointsSensitiveContextMetadata() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-sensitive-context.jsonl")
+        try writeSessionLines(
+            [
+                sessionMetaLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    sessionID: "acct_session_checkpoint_123",
+                    source: "acct_source_checkpoint_456"
+                ),
+                turnContextLine(
+                    timestamp: "2026-05-17T15:00:01Z",
+                    model: "gpt-5.4",
+                    effort: "private_effort@example.com",
+                    source: "private_source@example.com"
+                ),
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:10Z",
+                    lastInput: 100,
+                    lastCached: 40,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 165,
+                    totalInput: 100,
+                    totalCached: 40,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 165
+                ),
+            ],
+            to: sessionURL
+        )
+
+        _ = try CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+            .importTokenHistory(into: store)
+
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+        XCTAssertEqual(sample.sessionID, "session:rollout-sensitive-context")
+        XCTAssertNil(sample.effort)
+        XCTAssertNil(sample.source)
+        let tailState = try XCTUnwrap(
+            sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT tail_state_json FROM codex_session_token_imports"
+            ).first
+        )
+        for canary in [
+            "acct_session_checkpoint_123",
+            "acct_source_checkpoint_456",
+            "private_effort@example.com",
+            "private_source@example.com",
+        ] {
+            XCTAssertFalse(tailState.contains(canary))
+        }
     }
 
     func testSessionTokenBackfillAppliesTurnContextProjectAndEffortChanges() async throws {
@@ -657,13 +739,60 @@ extension UsageHistoryStoreTests {
         )
 
         XCTAssertEqual(summary.filesDiscovered, 3)
-        XCTAssertEqual(summary.filesSkippedByBounds, 2)
-        XCTAssertEqual(summary.filesScanned, 1)
-        XCTAssertEqual(summary.tokenEventsImported, 1)
-        XCTAssertEqual(try store.tokenUsageSamples().map(\.receivedAt), [date("2026-05-10T18:00:00Z")])
+        XCTAssertEqual(summary.filesSkippedByBounds, 1)
+        XCTAssertEqual(summary.filesScanned, 2)
+        XCTAssertEqual(summary.tokenEventsImported, 2)
+        XCTAssertEqual(
+            try store.tokenUsageSamples().map(\.receivedAt),
+            [date("2026-05-10T18:00:00Z"), date("2026-05-12T18:00:00Z")]
+        )
     }
 
-    func testSessionTokenBackfillSkipsOversizedFilesWhenRequestIsBounded() async throws {
+    func testSessionTokenBackfillPrunesOldDateDirectoriesBeforeFileDiscovery() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        let oldDirectory = sessionsURL.appendingPathComponent("2020/01/01", isDirectory: true)
+        let recentDirectory = sessionsURL.appendingPathComponent("2026/05/17", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recentDirectory, withIntermediateDirectories: true)
+        for index in 0..<100 {
+            try Data("{}\n".utf8).write(
+                to: oldDirectory.appendingPathComponent("rollout-2020-01-01T00-00-00-old-\(index).jsonl")
+            )
+        }
+        let recentURL = recentDirectory.appendingPathComponent("rollout-2026-05-17T08-00-00-recent.jsonl")
+        try writeSessionLines(
+            [
+                tokenCountLine(
+                    timestamp: "2026-05-17T15:00:00Z",
+                    lastInput: 100,
+                    lastCached: 20,
+                    lastOutput: 10,
+                    lastReasoning: 5,
+                    lastTotal: 115,
+                    totalInput: 100,
+                    totalCached: 20,
+                    totalOutput: 10,
+                    totalReasoning: 5,
+                    totalTotal: 115
+                ),
+            ],
+            to: recentURL
+        )
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(
+            into: store,
+            request: .recent(now: date("2026-05-18T12:00:00Z"), days: 30)
+        )
+
+        XCTAssertEqual(summary.filesDiscovered, 1)
+        XCTAssertEqual(summary.filesSkippedByBounds, 0)
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+    }
+
+    func testSessionTokenBackfillUsesBoundedTailCursorForOversizedFiles() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
@@ -698,9 +827,712 @@ extension UsageHistoryStoreTests {
         )
 
         XCTAssertEqual(summary.filesDiscovered, 1)
-        XCTAssertEqual(summary.filesScanned, 0)
-        XCTAssertEqual(summary.filesSkippedByBounds, 1)
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.filesSkippedByBounds, 0)
         XCTAssertTrue(try store.tokenUsageSamples().isEmpty)
+    }
+
+    func testSessionTokenBackfillKeepsCompleteLineAtTailWindowBoundary() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-boundary.jsonl")
+        let tokenLine = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 20,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 115,
+            totalInput: 100,
+            totalCached: 20,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 115
+        ) + "\n"
+        try ("{}\n" + tokenLine).write(to: sessionURL, atomically: true, encoding: .utf8)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(
+            into: store,
+            request: .recent(
+                now: date("2026-05-18T12:00:00Z"),
+                days: 30,
+                maximumFileSize: Int64(tokenLine.utf8.count)
+            )
+        )
+
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [115])
+    }
+
+    func testSessionTokenBackfillImportsTailOfSparseFileAboveFormerCap() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-large-tail.jsonl")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sessionURL.path, contents: nil))
+        let line = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 20,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 115,
+            totalInput: 100,
+            totalCached: 20,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 115
+        )
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 129 * 1_024 * 1_024)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + line + "\n").utf8))
+        try handle.close()
+        try setModificationDate(date("2026-05-17T15:01:00Z"), for: sessionURL)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(
+            into: store,
+            request: .recent(
+                now: date("2026-05-18T12:00:00Z"),
+                days: 30,
+                maximumFileSize: 1_024 * 1_024
+            )
+        )
+
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [115])
+        let record = try XCTUnwrap(try store.codexSessionTokenImportFileRecords().first)
+        XCTAssertGreaterThan(record.metadata.fileSize, 128 * 1_024 * 1_024)
+        XCTAssertEqual(record.tailCursor?.byteOffset, record.metadata.fileSize)
+    }
+
+    func testLiveSessionFallbackClamps128MiBTailRequestTo64MiBAndResumes() throws {
+        let store = try makeStore()
+        let temporaryDirectory = try makeTemporaryDirectory()
+        let sessionsURL = temporaryDirectory.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-live-window.jsonl")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sessionURL.path, contents: nil))
+        let line = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 175,
+            lastCached: 25,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 190,
+            totalInput: 175,
+            totalCached: 25,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 190
+        )
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: UInt64(CodexSessionTokenBackfillImporter.maximumParserReadSize - 1))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + line + "\n").utf8))
+        try handle.close()
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+        let emptyLogsURL = temporaryDirectory.appendingPathComponent("empty-logs.sqlite3")
+        try createCodexLogsDatabase(at: emptyLogsURL, rows: [])
+
+        let firstState = store.captureLiveCodexLogTokenHistory(
+            at: date("2026-05-18T12:00:00Z"),
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: emptyLogsURL,
+            sessionTokenBackfillImporter: importer
+        )
+        XCTAssertNil(firstState.lastErrorText, firstState.lastErrorText ?? "unexpected capture failure")
+        let firstRecord = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+
+        XCTAssertEqual(UsageHistoryStore.liveSessionTokenFallbackMaximumFileSize, 128 * 1_024 * 1_024)
+        XCTAssertEqual(firstState.result.insertedCount, 0)
+        XCTAssertEqual(
+            firstRecord.tailCursor?.byteOffset,
+            CodexSessionTokenBackfillImporter.maximumParserReadSize
+        )
+        XCTAssertLessThan(try XCTUnwrap(firstRecord.tailCursor?.byteOffset), firstRecord.metadata.fileSize)
+
+        let secondState = store.captureLiveCodexLogTokenHistory(
+            at: date("2026-05-18T12:01:00Z"),
+            calendar: calendar,
+            force: true,
+            logsDatabaseURL: emptyLogsURL,
+            sessionTokenBackfillImporter: importer
+        )
+        let completedRecord = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+
+        XCTAssertEqual(secondState.result.insertedCount, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [190])
+        XCTAssertEqual(completedRecord.tailCursor?.byteOffset, completedRecord.metadata.fileSize)
+    }
+
+    func testSessionTokenBackfillAllHistoryDrainsMultipleBoundedWindows() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-multi-window.jsonl")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sessionURL.path, contents: nil))
+        let line = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 125,
+            lastCached: 25,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 140,
+            totalInput: 125,
+            totalCached: 25,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 140
+        )
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 64 * 1_024 * 1_024 - 1)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + line + "\n").utf8))
+        try handle.close()
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(into: store, request: .allHistory())
+
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [140])
+        let record = try XCTUnwrap(try store.codexSessionTokenImportFileRecords().first)
+        XCTAssertEqual(record.tailCursor?.byteOffset, record.metadata.fileSize)
+    }
+
+    func testSessionTokenBackfillCheckpointsEachAllHistoryWindowBeforeContinuing() throws {
+        enum ExpectedInterruption: Error { case afterFirstCheckpoint }
+
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-checkpoint.jsonl")
+        let firstLine = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 0,
+            lastOutput: 0,
+            lastReasoning: 0,
+            lastTotal: 100,
+            totalInput: 100,
+            totalCached: 0,
+            totalOutput: 0,
+            totalReasoning: 0,
+            totalTotal: 100
+        )
+        let secondLine = tokenCountLine(
+            timestamp: "2026-05-17T15:01:00Z",
+            lastInput: 200,
+            lastCached: 0,
+            lastOutput: 0,
+            lastReasoning: 0,
+            lastTotal: 200,
+            totalInput: 200,
+            totalCached: 0,
+            totalOutput: 0,
+            totalReasoning: 0,
+            totalTotal: 200
+        )
+        XCTAssertTrue(FileManager.default.createFile(atPath: sessionURL.path, contents: Data((firstLine + "\n").utf8)))
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: UInt64(CodexSessionTokenBackfillImporter.maximumParserReadSize - 1))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + secondLine + "\n").utf8))
+        try handle.close()
+        let interruptedImporter = CodexSessionTokenBackfillImporter(
+            sourceDirectories: [sessionsURL],
+            afterWindowCheckpoint: { window in
+                if window == 1 {
+                    throw ExpectedInterruption.afterFirstCheckpoint
+                }
+            }
+        )
+
+        XCTAssertThrowsError(
+            try interruptedImporter.importTokenHistory(into: store, request: .allHistory())
+        )
+        let checkpoint = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+        XCTAssertEqual(checkpoint.tailCursor?.byteOffset, CodexSessionTokenBackfillImporter.maximumParserReadSize)
+        XCTAssertLessThan(try XCTUnwrap(checkpoint.tailCursor?.byteOffset), checkpoint.metadata.fileSize)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [100])
+
+        let resumedSummary = try CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+            .importTokenHistory(into: store, request: .allHistory())
+        let completed = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+
+        XCTAssertEqual(resumedSummary.tokenEventsImported, 1)
+        XCTAssertEqual(resumedSummary.duplicateEventsSkipped, 0)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.total.totalTokens), [100, 200])
+        XCTAssertEqual(completed.tailCursor?.byteOffset, completed.metadata.fileSize)
+    }
+
+    func testSessionTokenBackfillLargeAppendUsesBoundedReadsAndIncrementalFingerprint() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-large-append.jsonl")
+        let firstLine = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 0,
+            lastOutput: 0,
+            lastReasoning: 0,
+            lastTotal: 100,
+            totalInput: 100,
+            totalCached: 0,
+            totalOutput: 0,
+            totalReasoning: 0,
+            totalTotal: 100
+        )
+        let secondLine = tokenCountLine(
+            timestamp: "2026-05-17T15:01:00Z",
+            lastInput: 200,
+            lastCached: 0,
+            lastOutput: 0,
+            lastReasoning: 0,
+            lastTotal: 200,
+            totalInput: 200,
+            totalCached: 0,
+            totalOutput: 0,
+            totalReasoning: 0,
+            totalTotal: 200
+        )
+        try (firstLine + "\n").write(to: sessionURL, atomically: true, encoding: .utf8)
+        let request = CodexSessionTokenBackfillRequest.recent(
+            now: date("2026-05-18T12:00:00Z"),
+            days: 30,
+            maximumFileSize: UsageHistoryStore.liveSessionTokenFallbackMaximumFileSize
+        )
+        XCTAssertEqual(
+            try CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+                .importTokenHistory(into: store, request: request).tokenEventsImported,
+            1
+        )
+        let originalSize = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first?.metadata.fileSize)
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(
+            atOffset: UInt64(originalSize + CodexSessionTokenBackfillImporter.maximumParserReadSize - 1)
+        )
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + secondLine + "\n").utf8))
+        try handle.close()
+        let recorder = SessionImportReadRecorder()
+        let importer = CodexSessionTokenBackfillImporter(
+            sourceDirectories: [sessionsURL],
+            readObserver: { recorder.record($0) }
+        )
+
+        let paddingSummary = try importer.importTokenHistory(into: store, request: request)
+        let paddingReads = recorder.snapshot()
+
+        XCTAssertEqual(paddingSummary.tokenEventsImported, 0)
+        XCTAssertEqual(
+            paddingReads.reduce(0) { total, read in
+                if case let .fullFingerprintChunk(count) = read { total + count } else { total }
+            },
+            Int(originalSize)
+        )
+        XCTAssertTrue(paddingReads.contains(.parserWindow(CodexSessionTokenBackfillImporter.maximumParserReadSize)))
+        XCTAssertTrue(paddingReads.allSatisfy { read in
+            switch read {
+            case let .parserWindow(count): count <= CodexSessionTokenBackfillImporter.maximumParserReadSize
+            case let .fullFingerprintChunk(count), let .suffixFingerprintChunk(count): count <= 1_024 * 1_024
+            case let .boundaryFingerprintChunk(count), let .oversizedDiscardChunk(count): count <= 64 * 1_024
+            }
+        })
+
+        recorder.reset()
+        let finalSummary = try importer.importTokenHistory(into: store, request: request)
+
+        XCTAssertEqual(finalSummary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.total.totalTokens), [100, 200])
+        XCTAssertFalse(recorder.snapshot().contains { if case .fullFingerprintChunk = $0 { true } else { false } })
+    }
+
+    func testSessionTokenBackfillDiscardsOneAboveWindowLineAndResumes() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-huge-line.jsonl")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sessionURL.path, contents: nil))
+        let validLine = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 125,
+            lastCached: 25,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 140,
+            totalInput: 125,
+            totalCached: 25,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 140
+        )
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 64 * 1_024 * 1_024 + 17)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + validLine + "\n").utf8))
+        try handle.close()
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(into: store, request: .allHistory())
+
+        XCTAssertEqual(summary.filesScanned, 1)
+        XCTAssertEqual(summary.failedLinesSkipped, 1)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [140])
+        let record = try XCTUnwrap(try store.codexSessionTokenImportFileRecords().first)
+        XCTAssertEqual(record.tailCursor?.byteOffset, record.metadata.fileSize)
+
+        let unchanged = try importer.importTokenHistory(into: store, request: .allHistory())
+        XCTAssertEqual(unchanged.filesSkippedUnchanged, 1)
+        XCTAssertEqual(unchanged.failedLinesSkipped, 0)
+    }
+
+    func testSessionTokenBackfillScansCompleteAcceptedLineBeyondInitialPrefix() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-full-scan.jsonl")
+        let tokenLine = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 125,
+            lastCached: 25,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 140,
+            totalInput: 125,
+            totalCached: 25,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 140
+        )
+        let paddedLine = #"{"padding":""# + String(repeating: "x", count: 5_000) + #"","# + tokenLine.dropFirst()
+        try writeSessionLines([paddedLine], to: sessionURL)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTokenHistory(into: store, request: .allHistory())
+
+        XCTAssertEqual(summary.failedLinesSkipped, 0)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.observedTotalTokens), [140])
+    }
+
+    func testSessionTokenBackfillResumesAppendAfterPartialLineWithRestoredContext() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-partial.jsonl")
+        let firstLine = tokenCountLine(
+            timestamp: "2026-05-17T15:00:00Z",
+            lastInput: 100,
+            lastCached: 20,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 115,
+            totalInput: 100,
+            totalCached: 20,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 115
+        )
+        let secondLine = tokenCountLine(
+            timestamp: "2026-05-17T15:01:00Z",
+            lastInput: 50,
+            lastCached: 10,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 65,
+            totalInput: 150,
+            totalCached: 30,
+            totalOutput: 20,
+            totalReasoning: 10,
+            totalTotal: 180
+        )
+        let splitIndex = secondLine.index(secondLine.startIndex, offsetBy: secondLine.count / 2)
+        let completePrefix = [
+            sessionMetaLine(
+                timestamp: "2026-05-17T14:59:00Z",
+                sessionID: "partial-session",
+                cwd: "/Users/example/Projects/partial",
+                source: "cli"
+            ),
+            turnContextLine(
+                timestamp: "2026-05-17T14:59:30Z",
+                model: "gpt-5.5",
+                cwd: "/Users/example/Projects/partial",
+                effort: "high",
+                source: "cli"
+            ),
+            firstLine,
+        ].joined(separator: "\n") + "\n"
+        try (completePrefix + secondLine[..<splitIndex]).write(to: sessionURL, atomically: true, encoding: .utf8)
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+        let request = CodexSessionTokenBackfillRequest.allHistory(maximumFileSize: 1_024 * 1_024)
+
+        let firstSummary = try importer.importTokenHistory(into: store, request: request)
+        let firstRecord = try XCTUnwrap(try store.codexSessionTokenImportFileRecords().first)
+
+        XCTAssertEqual(firstSummary.tokenEventsImported, 1)
+        XCTAssertLessThan(try XCTUnwrap(firstRecord.tailCursor?.byteOffset), firstRecord.metadata.fileSize)
+
+        let appendHandle = try FileHandle(forWritingTo: sessionURL)
+        try appendHandle.seekToEnd()
+        try appendHandle.write(contentsOf: Data((String(secondLine[splitIndex...]) + "\n").utf8))
+        try appendHandle.close()
+
+        let secondSummary = try importer.importTokenHistory(into: store, request: request)
+
+        XCTAssertEqual(secondSummary.tokenEventsImported, 1)
+        XCTAssertEqual(secondSummary.duplicateEventsSkipped, 0)
+        let samples = try store.tokenUsageSamples()
+        XCTAssertEqual(samples.map(\.observedTotalTokens), [115, 65])
+        XCTAssertEqual(samples.last?.projectName, "partial")
+        XCTAssertEqual(samples.last?.effort, "high")
+        let secondRecord = try XCTUnwrap(try store.codexSessionTokenImportFileRecords().first)
+        XCTAssertEqual(secondRecord.tailCursor?.byteOffset, secondRecord.metadata.fileSize)
+    }
+
+    func testSessionTokenBackfillRecoversFromTruncationAndSamePathRotation() async throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-rotated.jsonl")
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+        let request = CodexSessionTokenBackfillRequest.allHistory(maximumFileSize: 1_024 * 1_024)
+        func line(timestamp: String, total: Int64, padding: String = "") -> String {
+            tokenCountLine(
+                timestamp: timestamp,
+                lastInput: total,
+                lastCached: 0,
+                lastOutput: 0,
+                lastReasoning: 0,
+                lastTotal: total,
+                totalInput: total,
+                totalCached: 0,
+                totalOutput: 0,
+                totalReasoning: 0,
+                totalTotal: total,
+                extraInfo: padding
+            )
+        }
+
+        try writeSessionLines(
+            [line(timestamp: "2026-05-17T15:00:00Z", total: 100, padding: #", "padding":"initial-long-row""#)],
+            to: sessionURL
+        )
+        XCTAssertEqual(try importer.importTokenHistory(into: store, request: request).tokenEventsImported, 1)
+
+        try writeSessionLines([line(timestamp: "2026-05-17T15:01:00Z", total: 200)], to: sessionURL)
+        let truncationSummary = try importer.importTokenHistory(into: store, request: request)
+        XCTAssertEqual(truncationSummary.tokenEventsImported, 1)
+
+        try writeSessionLines(
+            [line(timestamp: "2026-05-17T15:02:00Z", total: 300, padding: #", "padding":"replacement-row-of-similar-size""#)],
+            to: sessionURL
+        )
+        let rotationSummary = try importer.importTokenHistory(into: store, request: request)
+
+        XCTAssertEqual(rotationSummary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.total.totalTokens), [100, 200, 300])
+    }
+
+    func testSessionTokenBackfillDetectsConsumedMiddleRewriteBeyondSampledEdges() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-middle-rewrite.jsonl")
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+        let request = CodexSessionTokenBackfillRequest.allHistory(maximumFileSize: 1_024 * 1_024)
+        let prefix = #"{"padding":""# + String(repeating: "p", count: 5_000) + #""}"#
+        let suffix = #"{"padding":""# + String(repeating: "s", count: 5_000) + #""}"#
+        func line(timestamp: String, total: Int64) -> String {
+            tokenCountLine(
+                timestamp: timestamp,
+                lastInput: total,
+                lastCached: 0,
+                lastOutput: 0,
+                lastReasoning: 0,
+                lastTotal: total,
+                totalInput: total,
+                totalCached: 0,
+                totalOutput: 0,
+                totalReasoning: 0,
+                totalTotal: total
+            )
+        }
+        let originalLine = line(timestamp: "2026-05-17T15:00:00Z", total: 100)
+        let replacementLine = line(timestamp: "2026-05-17T15:01:00Z", total: 200)
+        XCTAssertEqual(originalLine.utf8.count, replacementLine.utf8.count)
+        try writeSessionLines([prefix, originalLine, suffix], to: sessionURL)
+        XCTAssertGreaterThan(try Data(contentsOf: sessionURL).count, 8 * 1_024)
+
+        XCTAssertEqual(try importer.importTokenHistory(into: store, request: request).tokenEventsImported, 1)
+        let originalRecord = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.seek(toOffset: UInt64(prefix.utf8.count + 1))
+        try handle.write(contentsOf: Data(replacementLine.utf8))
+        try handle.close()
+        try setModificationDate(
+            Date(timeIntervalSince1970: TimeInterval(originalRecord.metadata.modifiedAt)),
+            for: sessionURL
+        )
+
+        let rewriteSummary = try importer.importTokenHistory(into: store, request: request)
+
+        XCTAssertEqual(rewriteSummary.filesSkippedUnchanged, 0)
+        XCTAssertEqual(rewriteSummary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.total.totalTokens), [100, 200])
+    }
+
+    func testSessionTokenBackfillInvalidatesSameInodeTruncateAndRegrowLarger() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-regrown.jsonl")
+        let importer = CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+        let request = CodexSessionTokenBackfillRequest.allHistory(maximumFileSize: 1_024 * 1_024)
+        func line(timestamp: String, total: Int64) -> String {
+            tokenCountLine(
+                timestamp: timestamp,
+                lastInput: total,
+                lastCached: 0,
+                lastOutput: 0,
+                lastReasoning: 0,
+                lastTotal: total,
+                totalInput: total,
+                totalCached: 0,
+                totalOutput: 0,
+                totalReasoning: 0,
+                totalTotal: total
+            )
+        }
+        let original = [
+            line(timestamp: "2026-05-17T15:00:00Z", total: 100),
+            #"{"padding":""# + String(repeating: "o", count: 70_000) + #""}"#,
+        ].joined(separator: "\n") + "\n"
+        try Data(original.utf8).write(to: sessionURL)
+        let originalInode = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: sessionURL.path))[.systemFileNumber] as? NSNumber
+        )
+        XCTAssertEqual(try importer.importTokenHistory(into: store, request: request).tokenEventsImported, 1)
+        let originalRecord = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+
+        let originalData = Data(original.utf8)
+        let boundarySize = CodexSessionTokenBackfillImporter.fingerprintBoundarySize
+        let preservedBoundary = originalData.suffix(boundarySize)
+        let replacementToken = line(timestamp: "2026-05-17T15:01:00Z", total: 200) + "\n"
+        let rewrittenPrefixCount = originalData.count - boundarySize - replacementToken.utf8.count
+        XCTAssertGreaterThan(rewrittenPrefixCount, 0)
+        var replacementData = Data(replacementToken.utf8)
+        replacementData.append(Data(repeating: 0x72, count: rewrittenPrefixCount))
+        replacementData.append(preservedBoundary)
+        replacementData.append(Data((#"{"padding":"regrown-larger"}"# + "\n").utf8))
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 0)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: replacementData)
+        try handle.close()
+        let replacementInode = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: sessionURL.path))[.systemFileNumber] as? NSNumber
+        )
+
+        XCTAssertEqual(replacementInode, originalInode)
+        XCTAssertGreaterThan(Int64(replacementData.count), originalRecord.metadata.fileSize)
+        XCTAssertEqual(
+            replacementData.subdata(
+                in: (originalData.count - boundarySize)..<originalData.count
+            ),
+            Data(preservedBoundary)
+        )
+        let summary = try importer.importTokenHistory(into: store, request: request)
+
+        XCTAssertEqual(summary.filesSkippedUnchanged, 0)
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.total.totalTokens), [100, 200])
+    }
+
+    func testSessionTokenBackfillStreamsOversizedAppendedLineIntoFingerprint() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-appended-huge-line.jsonl")
+        func line(timestamp: String, total: Int64) -> String {
+            tokenCountLine(
+                timestamp: timestamp,
+                lastInput: total,
+                lastCached: 0,
+                lastOutput: 0,
+                lastReasoning: 0,
+                lastTotal: total,
+                totalInput: total,
+                totalCached: 0,
+                totalOutput: 0,
+                totalReasoning: 0,
+                totalTotal: total
+            )
+        }
+        try (line(timestamp: "2026-05-17T15:00:00Z", total: 100) + "\n")
+            .write(to: sessionURL, atomically: true, encoding: .utf8)
+        let request = CodexSessionTokenBackfillRequest.recent(
+            now: date("2026-05-18T12:00:00Z"),
+            days: 30,
+            maximumFileSize: UsageHistoryStore.liveSessionTokenFallbackMaximumFileSize
+        )
+        XCTAssertEqual(
+            try CodexSessionTokenBackfillImporter(sourceDirectories: [sessionsURL])
+                .importTokenHistory(into: store, request: request).tokenEventsImported,
+            1
+        )
+        let prefixRecord = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(
+            atOffset: UInt64(prefixRecord.metadata.fileSize + CodexSessionTokenBackfillImporter.maximumReadWindowSize + 17)
+        )
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("\n" + line(timestamp: "2026-05-17T15:01:00Z", total: 200) + "\n").utf8))
+        try handle.close()
+        let recorder = SessionImportReadRecorder()
+        let importer = CodexSessionTokenBackfillImporter(
+            sourceDirectories: [sessionsURL],
+            readObserver: { recorder.record($0) }
+        )
+
+        let discardSummary = try importer.importTokenHistory(into: store, request: request)
+        let discardRecord = try XCTUnwrap(store.codexSessionTokenImportFileRecords().first)
+        let reads = recorder.snapshot()
+
+        XCTAssertEqual(discardSummary.failedLinesSkipped, 1)
+        XCTAssertEqual(discardSummary.tokenEventsImported, 0)
+        XCTAssertLessThan(try XCTUnwrap(discardRecord.tailCursor?.byteOffset), discardRecord.metadata.fileSize)
+        XCTAssertEqual(
+            reads.reduce(0) { total, read in
+                if case let .fullFingerprintChunk(count) = read { total + count } else { total }
+            },
+            Int(prefixRecord.metadata.fileSize)
+        )
+        XCTAssertFalse(reads.contains { if case .suffixFingerprintChunk = $0 { true } else { false } })
+        XCTAssertTrue(reads.contains { if case .oversizedDiscardChunk = $0 { true } else { false } })
+        XCTAssertTrue(reads.allSatisfy { read in
+            switch read {
+            case let .parserWindow(count): count <= CodexSessionTokenBackfillImporter.maximumParserReadSize
+            case let .fullFingerprintChunk(count), let .suffixFingerprintChunk(count): count <= 1_024 * 1_024
+            case let .boundaryFingerprintChunk(count), let .oversizedDiscardChunk(count): count <= 64 * 1_024
+            }
+        })
+
+        recorder.reset()
+        let resumedSummary = try importer.importTokenHistory(into: store, request: request)
+
+        XCTAssertEqual(resumedSummary.tokenEventsImported, 1)
+        XCTAssertEqual(try store.tokenUsageSamples().map(\.total.totalTokens), [100, 200])
+        XCTAssertFalse(recorder.snapshot().contains { if case .fullFingerprintChunk = $0 { true } else { false } })
     }
 
     func testSessionTokenBackfillReimportsChangedFilesAndRepairsModel() async throws {
@@ -982,6 +1814,155 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(try store.sessionTaskTimingEvents().isEmpty)
     }
 
+    func testSessionTaskTimingImporterStreamsFileAboveFormerDefaultCap() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-large.jsonl")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sessionURL.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: sessionURL)
+        try handle.truncate(atOffset: 64 * 1_024 * 1_024 + 17)
+        try handle.seekToEnd()
+        let validLines = [
+            taskStartedLine(
+                timestamp: "2026-05-17T15:00:02Z",
+                turnID: "turn-large",
+                startedAt: "2026-05-17T15:00:02Z"
+            ),
+            taskCompleteLine(
+                timestamp: "2026-05-17T15:00:05Z",
+                turnID: "turn-large",
+                completedAt: "2026-05-17T15:00:05Z",
+                durationMilliseconds: 3_000
+            ),
+        ].joined(separator: "\n")
+        try handle.write(contentsOf: Data(("\n" + validLines + "\n").utf8))
+        try handle.close()
+        let importer = CodexSessionTaskTimingImporter(sourceDirectories: [sessionsURL])
+
+        let firstSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        XCTAssertEqual(firstSummary.filesDiscovered, 1)
+        XCTAssertEqual(firstSummary.filesScanned, 1)
+        let firstRecord = try XCTUnwrap(store.codexSessionTaskTimingImportFileRecords().first)
+        let secondSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        let completedRecord = try XCTUnwrap(store.codexSessionTaskTimingImportFileRecords().first)
+
+        XCTAssertEqual(firstSummary.filesScanned, 1)
+        XCTAssertEqual(firstSummary.filesSkippedByBounds, 0)
+        XCTAssertEqual(firstSummary.failedLinesSkipped, 1)
+        XCTAssertEqual(firstSummary.insertedCount, 0)
+        XCTAssertGreaterThan(try XCTUnwrap(firstRecord.tailCursor?.byteOffset), 64 * 1_024 * 1_024)
+        XCTAssertLessThan(try XCTUnwrap(firstRecord.tailCursor?.byteOffset), firstRecord.metadata.fileSize)
+        XCTAssertEqual(secondSummary.filesScanned, 1)
+        XCTAssertEqual(secondSummary.failedLinesSkipped, 0)
+        XCTAssertEqual(secondSummary.insertedCount, 1)
+        XCTAssertEqual(completedRecord.tailCursor?.byteOffset, completedRecord.metadata.fileSize)
+        let event = try XCTUnwrap(try store.sessionTaskTimingEvents().first)
+        XCTAssertEqual(event.turnID, "turn-large")
+        XCTAssertEqual(event.durationMilliseconds, 3_000)
+    }
+
+    func testSessionTaskTimingImporterResumesBoundedWindowWithDurableContext() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-windowed.jsonl")
+        let firstWindow = [
+            sessionMetaLine(
+                timestamp: "2026-05-17T15:00:00Z",
+                sessionID: "session-windowed",
+                cwd: "/Users/example/Projects/windowed",
+                source: "cli"
+            ),
+            turnContextLine(
+                timestamp: "2026-05-17T15:00:01Z",
+                model: "gpt-5.5",
+                effort: "xhigh"
+            ),
+            taskStartedLine(
+                timestamp: "2026-05-17T15:00:02Z",
+                turnID: "turn-windowed",
+                startedAt: "2026-05-17T15:00:02Z"
+            ),
+        ].joined(separator: "\n") + "\n"
+        let finalLine = taskCompleteLine(
+            timestamp: "2026-05-17T15:00:05Z",
+            turnID: "turn-windowed",
+            completedAt: "2026-05-17T15:00:05Z",
+            durationMilliseconds: 3_000
+        ) + "\n"
+        try Data((firstWindow + finalLine).utf8).write(to: sessionURL)
+        let importer = CodexSessionTaskTimingImporter(
+            sourceDirectories: [sessionsURL],
+            readWindowSize: Int64(firstWindow.utf8.count)
+        )
+
+        let firstSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        XCTAssertEqual(firstSummary.filesDiscovered, 1)
+        XCTAssertEqual(firstSummary.filesScanned, 1)
+        let firstRecord = try XCTUnwrap(store.codexSessionTaskTimingImportFileRecords().first)
+        let startedEvent = try XCTUnwrap(try store.sessionTaskTimingEvents().first)
+
+        XCTAssertEqual(firstSummary.insertedCount, 1)
+        XCTAssertEqual(startedEvent.sessionID, "session-windowed")
+        XCTAssertEqual(startedEvent.model, "gpt-5.5")
+        XCTAssertEqual(startedEvent.projectPath, "/Users/example/Projects/windowed")
+        XCTAssertEqual(startedEvent.effort, "xhigh")
+        XCTAssertNil(startedEvent.completedAt)
+        XCTAssertEqual(firstRecord.tailCursor?.byteOffset, Int64(firstWindow.utf8.count))
+        XCTAssertEqual(firstRecord.tailCursor?.nextLineNumber, 4)
+        XCTAssertNotNil(firstRecord.tailCursor?.stateJSON)
+
+        let secondSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        let completedRecord = try XCTUnwrap(store.codexSessionTaskTimingImportFileRecords().first)
+        let completedEvent = try XCTUnwrap(try store.sessionTaskTimingEvents().first)
+
+        XCTAssertEqual(secondSummary.updatedCount, 1)
+        XCTAssertEqual(completedEvent.completedAt, date("2026-05-17T15:00:05Z"))
+        XCTAssertEqual(completedEvent.durationMilliseconds, 3_000)
+        XCTAssertEqual(completedEvent.model, "gpt-5.5")
+        XCTAssertEqual(completedEvent.projectPath, "/Users/example/Projects/windowed")
+        XCTAssertEqual(completedRecord.tailCursor?.byteOffset, completedRecord.metadata.fileSize)
+        XCTAssertEqual(completedRecord.tailCursor?.nextLineNumber, 5)
+
+        let thirdSummary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+        XCTAssertEqual(thirdSummary.filesScanned, 0)
+        XCTAssertEqual(thirdSummary.filesSkippedUnchanged, 1)
+    }
+
+    func testSessionTaskTimingImporterScansAcceptedLineBeyondInitialPrefix() throws {
+        let store = try makeStore()
+        let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let sessionURL = sessionsURL.appendingPathComponent("rollout-2026-05-17T08-00-00-task-full-scan.jsonl")
+        func padded(_ line: String) -> String {
+            #"{"padding":""# + String(repeating: "x", count: 5_000) + #"","# + line.dropFirst()
+        }
+        try writeSessionLines(
+            [
+                padded(taskStartedLine(
+                    timestamp: "2026-05-17T15:00:02Z",
+                    turnID: "turn-full-scan",
+                    startedAt: "2026-05-17T15:00:02Z"
+                )),
+                padded(taskCompleteLine(
+                    timestamp: "2026-05-17T15:00:05Z",
+                    turnID: "turn-full-scan",
+                    completedAt: "2026-05-17T15:00:05Z",
+                    durationMilliseconds: 3_000
+                )),
+            ],
+            to: sessionURL
+        )
+        let importer = CodexSessionTaskTimingImporter(sourceDirectories: [sessionsURL])
+
+        let summary = try importer.importTaskTiming(into: store, now: date("2026-05-18T12:00:00Z"))
+
+        XCTAssertEqual(summary.failedLinesSkipped, 0)
+        XCTAssertEqual(summary.insertedCount, 1)
+        XCTAssertEqual(try store.sessionTaskTimingEvents().first?.durationMilliseconds, 3_000)
+    }
+
     func testSessionTaskTimingImporterSkipsUnchangedAndForceRescanIsIdempotent() async throws {
         let store = try makeStore()
         let sessionsURL = try makeTemporaryDirectory().appendingPathComponent("sessions", isDirectory: true)
@@ -1087,6 +2068,66 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testGitRemoteSanitizerPreservesOnlyPortableRemoteIdentity() {
+        XCTAssertEqual(
+            CodexGitRemoteSanitizer.sanitized(
+                "https://oauth2:github_pat_secret@github.com/example/app.git?token=also-secret#fragment"
+            ),
+            "https://github.com/example/app.git"
+        )
+        XCTAssertEqual(
+            CodexGitRemoteSanitizer.sanitized("ssh://git@github.com:2222/example/app.git?secret=yes#fragment"),
+            "ssh://github.com:2222/example/app.git"
+        )
+        XCTAssertEqual(
+            CodexGitRemoteSanitizer.sanitized("git@github.com:example/app.git?secret=yes#fragment"),
+            "github.com:example/app.git"
+        )
+        XCTAssertEqual(
+            CodexGitRemoteSanitizer.sanitized("https://github.com/example/app.git"),
+            "https://github.com/example/app.git"
+        )
+        XCTAssertNil(CodexGitRemoteSanitizer.sanitized("file:///Users/example/private/app.git"))
+        XCTAssertNil(CodexGitRemoteSanitizer.sanitized("not a remote"))
+        XCTAssertNil(CodexGitRemoteSanitizer.sanitized("ftp://user:secret@example.com/app.git"))
+        XCTAssertNil(CodexGitRemoteSanitizer.sanitized("https://github.com"))
+        XCTAssertNil(CodexGitRemoteSanitizer.sanitized("ssh://git@github.com:2222/"))
+        XCTAssertNil(CodexGitRemoteSanitizer.sanitized(#"C:\Users\example\private.git"#))
+    }
+
+    func testMetadataDimensionsRejectEmailAndAccountLikeIdentifiers() {
+        for key in TokenUsageDimensionKey.allCases {
+            XCTAssertNil(TokenUsageDimension(key, "private@example.com"), key.rawValue)
+            XCTAssertNil(TokenUsageDimension(key, "acct_private_1234"), key.rawValue)
+        }
+
+        XCTAssertEqual(TokenUsageDimension(.originator, "vscode")?.value, "vscode")
+        XCTAssertEqual(TokenUsageDimension(.modelProvider, "openai")?.value, "openai")
+        XCTAssertEqual(TokenUsageDimension(.agentNickname, "Build")?.value, "Build")
+        XCTAssertEqual(TokenUsageDimension(.cliVersion, "0.78.0")?.value, "0.78.0")
+        XCTAssertEqual(TokenUsageDimension(.agentRole, "explorer")?.value, "explorer")
+        let rejectedContext = TokenUsageContext(
+            sessionID: "acct_session_context_123",
+            effort: "private_effort@example.com",
+            source: "acct_source_context_456"
+        )
+        XCTAssertNil(rejectedContext.sessionID)
+        XCTAssertNil(rejectedContext.effort)
+        XCTAssertNil(rejectedContext.source)
+        let safeContext = TokenUsageContext(sessionID: "session-123", effort: "high", source: "cli")
+        XCTAssertEqual(safeContext.sessionID, "session-123")
+        XCTAssertEqual(safeContext.effort, "high")
+        XCTAssertEqual(safeContext.source, "cli")
+        XCTAssertEqual(
+            CodexGitRemoteSanitizer.sanitized("https://github.com/example/private-repo.git"),
+            "https://github.com/example/private-repo.git"
+        )
+        XCTAssertEqual(
+            CodexTokenContextNormalizer.normalizedProjectDisplayName("Private workspace alias"),
+            "Private workspace alias"
+        )
+    }
+
     func testThreadCatalogImporterReadsSafeMetadataOnly() async throws {
         let (store, databaseURL) = try makeTemporaryStore()
         let sourceURL = try makeTemporaryDirectory().appendingPathComponent("state_5.sqlite")
@@ -1185,6 +2226,7 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(firstThread.model, "gpt-5.6-future")
         XCTAssertEqual(firstThread.reasoningEffort, "xhigh")
         XCTAssertEqual(firstThread.threadSource, "cli")
+        XCTAssertEqual(firstThread.gitOriginURL, "github.com:example/app.git")
         XCTAssertEqual(firstThread.tokensUsed, 12345)
         XCTAssertEqual(firstThread.createdAt, Date(timeIntervalSince1970: 1_770_000_000))
         XCTAssertEqual(firstThread.updatedAt, Date(timeIntervalSince1970: 1_770_000_010))

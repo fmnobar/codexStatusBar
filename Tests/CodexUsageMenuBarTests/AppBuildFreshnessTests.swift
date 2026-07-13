@@ -1,8 +1,8 @@
 import XCTest
+@testable import CodexUsageCore
 
-@MainActor
 final class AppBuildFreshnessTests: XCTestCase {
-    private var temporaryDirectory: URL!
+    nonisolated(unsafe) private var temporaryDirectory: URL!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -52,6 +52,56 @@ final class AppBuildFreshnessTests: XCTestCase {
         XCTAssertNil(AppBuildFingerprint.knownValue(decoded.gitCommit))
         XCTAssertEqual(decoded.shortCommitText, "Unknown")
         XCTAssertEqual(decoded.sourceRootText, "Unknown")
+    }
+
+    func testPublicReleaseFingerprintDoesNotRequireLocalPaths() throws {
+        let data = Data("""
+        {
+          "schemaVersion": 2,
+          "provenanceKind": "public-release",
+          "appVersion": "1.2.3",
+          "appBuild": "7",
+          "architectures": "arm64",
+          "gitCommit": "abcdef1234567890",
+          "buildTime": "2026-07-10T20:00:00Z"
+        }
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(AppBuildFingerprint.self, from: data)
+
+        XCTAssertTrue(decoded.isPublicRelease)
+        XCTAssertNil(decoded.sourceRootURL)
+        XCTAssertNil(decoded.installedBundleURL)
+        XCTAssertEqual(decoded.shortCommitText, "abcdef1")
+    }
+
+    func testPublicReleaseFreshnessDoesNotProbeForSourceCheckout() throws {
+        let publicFingerprint = AppBuildFingerprint(
+            schemaVersion: 2,
+            provenanceKind: "public-release",
+            appVersion: "1.2.3",
+            appBuild: "7",
+            architectures: "arm64",
+            gitCommit: "abcdef1234567890",
+            buildTime: "2026-07-10T20:00:00Z"
+        )
+        let bundleURL = try makeBundleFixture(fingerprint: publicFingerprint)
+        let checker = AppFreshnessChecker(
+            runningFingerprint: publicFingerprint,
+            bundleURL: bundleURL,
+            sourceHeadReader: { _ in
+                XCTFail("Public release freshness must not probe a local source checkout.")
+                return nil
+            }
+        )
+
+        guard case .current(let running, let installed, let sourceCommit) = checker.check(includeSourceCheckout: true) else {
+            return XCTFail("Expected public release freshness to remain current without local paths.")
+        }
+        XCTAssertTrue(running?.isPublicRelease == true)
+        XCTAssertTrue(installed?.isPublicRelease == true)
+        XCTAssertNil(sourceCommit)
+        XCTAssertEqual(checker.check(includeSourceCheckout: true).statusText, "Installed release is current.")
     }
 
     func testFreshnessIsCurrentWhenRunningInstalledAndSourceCommitsMatch() throws {
@@ -169,6 +219,7 @@ final class AppBuildFreshnessTests: XCTestCase {
         XCTAssertTrue(reason.contains("Source checkout"))
     }
 
+    @MainActor
     func testFreshnessViewModelExposesStatusAndRelaunchAction() throws {
         let bundleURL = temporaryDirectory.appendingPathComponent("CodexStatusBar.app", isDirectory: true)
         let runningFingerprint = fingerprint(gitCommit: "oldcommit")
@@ -199,6 +250,7 @@ final class AppBuildFreshnessTests: XCTestCase {
         XCTAssertEqual(relaunchedURL?.path, bundleURL.path)
     }
 
+    @MainActor
     func testFreshnessViewModelReadsSourceOnlyAfterExplicitCheck() throws {
         let installedState = AppFreshnessState.current(
             running: nil,

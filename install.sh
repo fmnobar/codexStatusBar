@@ -3,10 +3,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/lib/safe_paths.sh"
+source "$SCRIPT_DIR/scripts/lib/codex_resolver.sh"
 PROJECT_PATH="$SCRIPT_DIR/CodexUsageMenuBar.xcodeproj"
 SCHEME_NAME="CodexUsageMenuBar"
 DEFAULT_DERIVED_DATA_PATH="$SCRIPT_DIR/.build/DerivedData"
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$DEFAULT_DERIVED_DATA_PATH}"
+DERIVED_DATA_IS_MANAGED=0
+BUILD_SENTINEL=".codex-status-bar-derived-data"
+if [[ "$DERIVED_DATA_PATH" == "$DEFAULT_DERIVED_DATA_PATH" ]]; then
+  DERIVED_DATA_IS_MANAGED=1
+  if [[ -d "$DERIVED_DATA_PATH" && ! -f "$DERIVED_DATA_PATH/$BUILD_SENTINEL" ]]; then
+    DERIVED_DATA_PATH="$SCRIPT_DIR/.build/DerivedData.install.$$"
+    echo "Preserving legacy build output without an ownership sentinel: $DEFAULT_DERIVED_DATA_PATH"
+    echo "Using isolated build output instead: $DERIVED_DATA_PATH"
+  fi
+fi
 BUILT_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/CodexStatusBar.app"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 INSTALLED_APP_PATH="$INSTALL_DIR/CodexStatusBar.app"
@@ -16,123 +28,21 @@ BUILT_EXECUTABLE_PATH="$BUILT_APP_PATH/Contents/MacOS/$APP_PROCESS_NAME"
 INSTALLED_EXECUTABLE_PATH="$INSTALLED_APP_PATH/Contents/MacOS/$APP_PROCESS_NAME"
 BUILT_FINGERPRINT_PATH="$BUILT_APP_PATH/Contents/Resources/BuildFingerprint.json"
 INSTALLED_FINGERPRINT_PATH="$INSTALLED_APP_PATH/Contents/Resources/BuildFingerprint.json"
+INSTALL_STAGE_PATH="$INSTALL_DIR/.CodexStatusBar.install.$$"
+INSTALL_BACKUP_PATH="$INSTALL_DIR/.CodexStatusBar.backup.$$"
+INSTALL_FAILED_PATH="$INSTALL_DIR/.CodexStatusBar.failed.$$"
 BUILD_ARCH="${BUILD_ARCH:-$(uname -m)}"
 OPEN_AFTER_INSTALL="${OPEN_AFTER_INSTALL:-1}"
 VERIFY_OPEN_AFTER_INSTALL="${VERIFY_OPEN_AFTER_INSTALL:-1}"
 CLEAN_AFTER_INSTALL="${CLEAN_AFTER_INSTALL:-1}"
 PROCESS_WAIT_ATTEMPTS="${PROCESS_WAIT_ATTEMPTS:-50}"
 PROCESS_WAIT_INTERVAL="${PROCESS_WAIT_INTERVAL:-0.2}"
-
-json_string() {
-  local value="$1"
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  value="${value//$'\n'/\\n}"
-  printf '"%s"' "$value"
-}
-
-json_nullable_string() {
-  local value="$1"
-  if [[ -n "$value" ]]; then
-    json_string "$value"
-  else
-    json_string "unknown"
-  fi
-}
-
-git_value() {
-  local git_args=("$@")
-  git -C "$SCRIPT_DIR" "${git_args[@]}" 2>/dev/null || true
-}
-
-git_dirty_flag() {
-  if ! git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    printf 'null'
-    return
-  fi
-
-  if [[ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]]; then
-    printf 'true'
-  else
-    printf 'false'
-  fi
-}
-
-write_build_fingerprint() {
-  local commit
-  local branch
-  local build_time
-  local dirty
-  local executable_hash
-  local source_root
-
-  commit="$(git_value rev-parse HEAD)"
-  branch="$(git_value rev-parse --abbrev-ref HEAD)"
-  dirty="$(git_dirty_flag)"
-  build_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  executable_hash="$(shasum -a 256 "$BUILT_EXECUTABLE_PATH" | awk '{print $1}')"
-
-  if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    source_root="$SCRIPT_DIR"
-  else
-    source_root=""
-  fi
-
-  mkdir -p "$(dirname "$BUILT_FINGERPRINT_PATH")"
-  {
-    printf '{\n'
-    printf '  "schemaVersion": 1,\n'
-    printf '  "sourceRoot": %s,\n' "$(json_nullable_string "$source_root")"
-    printf '  "gitCommit": %s,\n' "$(json_nullable_string "$commit")"
-    printf '  "gitBranch": %s,\n' "$(json_nullable_string "$branch")"
-    printf '  "isDirty": %s,\n' "$dirty"
-    printf '  "buildTime": %s,\n' "$(json_nullable_string "$build_time")"
-    printf '  "installedBundlePath": %s,\n' "$(json_nullable_string "$INSTALLED_APP_PATH")"
-    printf '  "executableSHA256": %s\n' "$(json_nullable_string "$executable_hash")"
-    printf '}\n'
-  } > "$BUILT_FINGERPRINT_PATH"
-
-  echo
-  echo "Wrote build fingerprint:"
-  echo "  $BUILT_FINGERPRINT_PATH"
-}
-
-resolve_codex_path() {
-  local candidate
-
-  for candidate in \
-    /Applications/Codex.app/Contents/Resources/codex \
-    /opt/homebrew/bin/codex \
-    /usr/local/bin/codex
-  do
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  while IFS= read -r bundle; do
-    candidate="$bundle/Contents/Resources/codex"
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done < <(find /Applications -maxdepth 1 -type d -name 'Codex*.app' | sort)
-
-  if command -v codex >/dev/null 2>&1; then
-    command -v codex
-    return 0
-  fi
-
-  return 1
-}
-
 cleanup_build_output() {
   if [[ "$CLEAN_AFTER_INSTALL" != "1" ]]; then
     return
   fi
 
-  if [[ "$DERIVED_DATA_PATH" != "$DEFAULT_DERIVED_DATA_PATH" ]]; then
+  if [[ "$DERIVED_DATA_IS_MANAGED" != "1" ]]; then
     echo
     echo "Skipping build cache cleanup because DERIVED_DATA_PATH was customized:"
     echo "  $DERIVED_DATA_PATH"
@@ -140,12 +50,135 @@ cleanup_build_output() {
     return
   fi
 
-  rm -rf "$DERIVED_DATA_PATH"
+  safe_remove_owned_directory "$DERIVED_DATA_PATH" "$SCRIPT_DIR/.build" "$BUILD_SENTINEL"
   rmdir "$SCRIPT_DIR/.build" >/dev/null 2>&1 || true
 
   echo
   echo "Cleaned build cache:"
   echo "  $DERIVED_DATA_PATH"
+}
+
+prepare_install_directory() {
+  if [[ -L "$INSTALL_DIR" || ( -e "$INSTALL_DIR" && ! -d "$INSTALL_DIR" ) ]]; then
+    echo "Refusing a symlinked or non-directory install root: $INSTALL_DIR" >&2
+    return 1
+  fi
+  mkdir -p "$INSTALL_DIR"
+  [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] || {
+    echo "Could not create a safe install root: $INSTALL_DIR" >&2
+    return 1
+  }
+}
+
+remove_install_sibling() {
+  safe_remove_managed_child "$1" "$INSTALL_DIR" '.CodexStatusBar.*.*'
+}
+
+verify_staged_app() {
+  local staged_app="$1"
+  local staged_executable="$staged_app/Contents/MacOS/$APP_PROCESS_NAME"
+  local staged_fingerprint="$staged_app/Contents/Resources/BuildFingerprint.json"
+
+  [[ -x "$staged_executable" ]] || {
+    echo "Staged app executable was not found: $staged_executable" >&2
+    return 1
+  }
+  cmp -s "$BUILT_EXECUTABLE_PATH" "$staged_executable" || {
+    echo "Staged executable does not match the just-built executable." >&2
+    return 1
+  }
+  [[ -f "$staged_fingerprint" ]] || {
+    echo "Staged build fingerprint was not found: $staged_fingerprint" >&2
+    return 1
+  }
+  "$SCRIPT_DIR/scripts/validate_app_bundle.sh" \
+    --app "$staged_app" \
+    --provenance source-checkout \
+    --arch "$BUILD_ARCH"
+}
+
+restore_previous_install() {
+  local had_backup="$1"
+  local restore_failed=0
+
+  pkill -x "$APP_PROCESS_NAME" >/dev/null 2>&1 || true
+
+  if [[ -e "$INSTALLED_APP_PATH" ]]; then
+    if ! mv "$INSTALLED_APP_PATH" "$INSTALL_FAILED_PATH"; then
+      echo "Could not move the failed new app aside; backup remains at: $INSTALL_BACKUP_PATH" >&2
+      restore_failed=1
+    fi
+  fi
+
+  if [[ "$had_backup" == "1" && -e "$INSTALL_BACKUP_PATH" ]]; then
+    if [[ -e "$INSTALLED_APP_PATH" ]]; then
+      echo "Could not restore the previous app because the target path is still occupied." >&2
+      restore_failed=1
+    elif ! mv "$INSTALL_BACKUP_PATH" "$INSTALLED_APP_PATH"; then
+      echo "Could not restore the previous app; backup remains at: $INSTALL_BACKUP_PATH" >&2
+      restore_failed=1
+    else
+      open "$INSTALLED_APP_PATH" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  remove_install_sibling "$INSTALL_STAGE_PATH" || true
+  if [[ "$restore_failed" == "0" ]]; then
+    remove_install_sibling "$INSTALL_FAILED_PATH" || true
+  fi
+  return "$restore_failed"
+}
+
+install_transactionally() {
+  local had_backup=0
+
+  remove_install_sibling "$INSTALL_STAGE_PATH"
+  remove_install_sibling "$INSTALL_BACKUP_PATH"
+  remove_install_sibling "$INSTALL_FAILED_PATH"
+
+  ditto "$BUILT_APP_PATH" "$INSTALL_STAGE_PATH"
+  if ! verify_staged_app "$INSTALL_STAGE_PATH"; then
+    remove_install_sibling "$INSTALL_STAGE_PATH" || true
+    return 1
+  fi
+
+  if ! terminate_running_app; then
+    remove_install_sibling "$INSTALL_STAGE_PATH" || true
+    return 1
+  fi
+
+  if [[ -e "$INSTALLED_APP_PATH" ]]; then
+    if [[ -L "$INSTALLED_APP_PATH" || ! -d "$INSTALLED_APP_PATH" ]]; then
+      echo "Refusing to replace a non-directory or symlinked installed app: $INSTALLED_APP_PATH" >&2
+      remove_install_sibling "$INSTALL_STAGE_PATH" || true
+      return 1
+    fi
+    mv "$INSTALLED_APP_PATH" "$INSTALL_BACKUP_PATH"
+    had_backup=1
+  fi
+
+  if ! mv "$INSTALL_STAGE_PATH" "$INSTALLED_APP_PATH"; then
+    restore_previous_install "$had_backup"
+    return 1
+  fi
+
+  if ! verify_staged_app "$INSTALLED_APP_PATH"; then
+    restore_previous_install "$had_backup"
+    return 1
+  fi
+
+  if [[ "$OPEN_AFTER_INSTALL" == "1" ]]; then
+    if ! open "$INSTALLED_APP_PATH"; then
+      restore_previous_install "$had_backup"
+      return 1
+    fi
+    if [[ "$VERIFY_OPEN_AFTER_INSTALL" == "1" ]] && ! verify_installed_app_is_running; then
+      restore_previous_install "$had_backup"
+      return 1
+    fi
+  fi
+
+  remove_install_sibling "$INSTALL_BACKUP_PATH"
 }
 
 wait_for_process_name_to_exit() {
@@ -180,7 +213,7 @@ terminate_running_app() {
     pkill -9 -x "$process_name" >/dev/null 2>&1 || true
     if ! wait_for_process_name_to_exit "$process_name"; then
       echo "Could not stop the existing '$process_name' process."
-      exit 1
+      return 1
     fi
   done
 }
@@ -236,7 +269,7 @@ verify_installed_app_is_running() {
   echo "  $INSTALLED_EXECUTABLE_PATH"
   echo "Running CodexStatusBar processes:"
   print_running_app_processes
-  exit 1
+  return 1
 }
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -249,9 +282,17 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! resolve_codex_path >/dev/null; then
+prepare_install_directory
+
+if ! RESOLVED_CODEX_PATH="$(codex_resolve_executable)"; then
   echo "Codex was not found. Install Codex before using Codex Status Bar."
   exit 1
+fi
+
+echo "Using Codex executable: $RESOLVED_CODEX_PATH"
+
+if [[ "$DERIVED_DATA_IS_MANAGED" == "1" ]]; then
+  safe_prepare_owned_directory "$DERIVED_DATA_PATH" "$SCRIPT_DIR/.build" "$BUILD_SENTINEL"
 fi
 
 echo "Building Codex Status Bar..."
@@ -276,40 +317,18 @@ if [[ ! -x "$BUILT_EXECUTABLE_PATH" ]]; then
   exit 1
 fi
 
-write_build_fingerprint
+"$SCRIPT_DIR/scripts/finalize_app_bundle.sh" \
+  --app "$BUILT_APP_PATH" \
+  --provenance source-checkout \
+  --source-root "$SCRIPT_DIR" \
+  --installed-path "$INSTALLED_APP_PATH"
 
-mkdir -p "$INSTALL_DIR"
-
-terminate_running_app
-
-rm -rf "$INSTALLED_APP_PATH"
-ditto "$BUILT_APP_PATH" "$INSTALLED_APP_PATH"
-
-if [[ ! -x "$INSTALLED_EXECUTABLE_PATH" ]]; then
-  echo "Install failed because the copied app executable was not found at:"
-  echo "  $INSTALLED_EXECUTABLE_PATH"
-  exit 1
-fi
-
-if ! cmp -s "$BUILT_EXECUTABLE_PATH" "$INSTALLED_EXECUTABLE_PATH"; then
-  echo "Install failed because the installed executable does not match the just-built executable."
-  exit 1
-fi
-
-if [[ ! -f "$INSTALLED_FINGERPRINT_PATH" ]]; then
-  echo "Install failed because the build fingerprint was not copied to:"
-  echo "  $INSTALLED_FINGERPRINT_PATH"
+if ! install_transactionally; then
+  echo "Install failed; the previous app was restored when one existed." >&2
   exit 1
 fi
 
 cleanup_build_output
-
-if [[ "$OPEN_AFTER_INSTALL" == "1" ]]; then
-  open "$INSTALLED_APP_PATH"
-  if [[ "$VERIFY_OPEN_AFTER_INSTALL" == "1" ]]; then
-    verify_installed_app_is_running
-  fi
-fi
 
 echo
 echo "Installed to:"

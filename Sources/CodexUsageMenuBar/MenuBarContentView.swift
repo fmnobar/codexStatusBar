@@ -2,9 +2,50 @@ import AppKit
 import Charts
 import SwiftUI
 
-private enum MenuBarPopoverExpandedSection: Equatable {
+enum MenuBarPopoverExpandedSection: Equatable {
     case history
     case settings
+}
+
+@MainActor
+final class MenuBarPopoverInteractionModel: ObservableObject {
+    @Published private(set) var expandedSection: MenuBarPopoverExpandedSection?
+
+    private let onHistoryExpanded: () -> Void
+    private let onOpenHistory: () -> Void
+    private let onOpenSettings: () -> Void
+
+    init(
+        expandedSection: MenuBarPopoverExpandedSection? = nil,
+        onHistoryExpanded: @escaping () -> Void,
+        onOpenHistory: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void
+    ) {
+        self.expandedSection = expandedSection
+        self.onHistoryExpanded = onHistoryExpanded
+        self.onOpenHistory = onOpenHistory
+        self.onOpenSettings = onOpenSettings
+    }
+
+    func toggle(_ section: MenuBarPopoverExpandedSection) {
+        if expandedSection == section {
+            expandedSection = nil
+            return
+        }
+
+        expandedSection = section
+        if section == .history {
+            onHistoryExpanded()
+        }
+    }
+
+    func openFullHistory() {
+        onOpenHistory()
+    }
+
+    func openFullSettings() {
+        onOpenSettings()
+    }
 }
 
 struct MenuBarContentView: View {
@@ -25,7 +66,8 @@ struct MenuBarContentView: View {
     var appVersionInfo: AppVersionInfo
     @StateObject private var freshnessViewModel: AppFreshnessStatusViewModel
     @StateObject private var historyViewModel: UsageHistoryViewModel
-    @State private var expandedSection: MenuBarPopoverExpandedSection?
+    @StateObject private var interactionModel: MenuBarPopoverInteractionModel
+    let interactionModelForTesting: MenuBarPopoverInteractionModel
     @State private var resetCreditRefreshTask: Task<Void, Never>?
 
     init(
@@ -37,6 +79,7 @@ struct MenuBarContentView: View {
         appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
         resetCreditStore: CodexResetCreditStore = .applicationSupportStore(),
         resetCreditClient: CodexResetCreditFetching? = nil,
+        onOpenHistory: @escaping () -> Void = {},
         onOpenTokenDashboard: @escaping () -> Void = {},
         onOpenPerformanceDashboard: @escaping () -> Void = {},
         onOpenUpdatesSettings: @escaping () -> Void = {},
@@ -44,7 +87,8 @@ struct MenuBarContentView: View {
         onFirstRendered: @escaping () -> Void = {},
         onContentSizeChange: @escaping (NSSize) -> Void = { _ in },
         appVersionInfo: AppVersionInfo = .current(),
-        freshnessViewModel: AppFreshnessStatusViewModel = .current()
+        freshnessViewModel: AppFreshnessStatusViewModel = .current(),
+        historyViewModel: UsageHistoryViewModel? = nil
     ) {
         self.viewModel = viewModel
         self.updateMonitor = updateMonitor
@@ -62,12 +106,22 @@ struct MenuBarContentView: View {
         self.onContentSizeChange = onContentSizeChange
         self.appVersionInfo = appVersionInfo
         _freshnessViewModel = StateObject(wrappedValue: freshnessViewModel)
-        _historyViewModel = StateObject(
-            wrappedValue: UsageHistoryViewModel(
-                database: historyDatabase,
-                performanceInstrumentationStore: performanceInstrumentationStore
-            )
+        let resolvedHistoryViewModel = historyViewModel ?? UsageHistoryViewModel(
+            database: historyDatabase,
+            performanceInstrumentationStore: performanceInstrumentationStore
         )
+        _historyViewModel = StateObject(
+            wrappedValue: resolvedHistoryViewModel
+        )
+        let resolvedInteractionModel = MenuBarPopoverInteractionModel(
+            onHistoryExpanded: { [weak resolvedHistoryViewModel] in
+                resolvedHistoryViewModel?.activateCurrentPeriod()
+            },
+            onOpenHistory: onOpenHistory,
+            onOpenSettings: onOpenDataSettings
+        )
+        _interactionModel = StateObject(wrappedValue: resolvedInteractionModel)
+        interactionModelForTesting = resolvedInteractionModel
     }
 
     var body: some View {
@@ -125,7 +179,6 @@ struct MenuBarContentView: View {
         .background(contentSizeReader)
         .onAppear {
             freshnessViewModel.refresh()
-            historyViewModel.activateCurrentPeriod()
             DispatchQueue.main.async {
                 onFirstRendered()
             }
@@ -167,7 +220,9 @@ struct MenuBarContentView: View {
     }
 
     private func compactSelectableRow(_ row: MenuBarLimitRowPresentation) -> some View {
-        Button {
+        let accessibility = AppAccessibilitySemantics.limitRow(row)
+
+        return Button {
             viewModel.selectMenuBarDisplayWindow(row.displayWindow)
         } label: {
             HStack(alignment: .top, spacing: 6) {
@@ -207,13 +262,23 @@ struct MenuBarContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibility.label)
+        .accessibilityValue(accessibility.value)
+        .accessibilityAddTraits(accessibility.isSelected ? .isSelected : [])
     }
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            expandableHeader(title: "History", systemImage: "chart.xyaxis.line", section: .history)
+            sectionHeader(
+                title: "History",
+                systemImage: "chart.xyaxis.line",
+                section: .history,
+                openAccessibilityLabel: AppAccessibilitySemantics.openFullHistoryLabel,
+                onOpen: interactionModel.openFullHistory
+            )
 
-            if expandedSection == .history {
+            if interactionModel.expandedSection == .history {
                 CompactUsageHistoryPanel(viewModel: historyViewModel)
             }
         }
@@ -305,9 +370,15 @@ struct MenuBarContentView: View {
 
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            expandableHeader(title: "Settings", systemImage: "gearshape", section: .settings)
+            sectionHeader(
+                title: "Settings",
+                systemImage: "gearshape",
+                section: .settings,
+                openAccessibilityLabel: AppAccessibilitySemantics.openFullSettingsLabel,
+                onOpen: interactionModel.openFullSettings
+            )
 
-            if expandedSection == .settings {
+            if interactionModel.expandedSection == .settings {
                 inlineSettings
             }
         }
@@ -370,8 +441,13 @@ struct MenuBarContentView: View {
         systemImage: String,
         section: MenuBarPopoverExpandedSection
     ) -> some View {
-        Button {
-            expandedSection = expandedSection == section ? nil : section
+        let accessibility = AppAccessibilitySemantics.expandableSection(
+            title: title,
+            isExpanded: interactionModel.expandedSection == section
+        )
+
+        return Button {
+            interactionModel.toggle(section)
         } label: {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: systemImage)
@@ -383,7 +459,7 @@ struct MenuBarContentView: View {
 
                 Spacer(minLength: 0)
 
-                Image(systemName: expandedSection == section ? "chevron.down" : "chevron.right")
+                Image(systemName: interactionModel.expandedSection == section ? "chevron.down" : "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -392,6 +468,32 @@ struct MenuBarContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibility.label)
+        .accessibilityValue(accessibility.value)
+    }
+
+    private func sectionHeader(
+        title: String,
+        systemImage: String,
+        section: MenuBarPopoverExpandedSection,
+        openAccessibilityLabel: String,
+        onOpen: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            expandableHeader(title: title, systemImage: systemImage, section: section)
+
+            Button(action: onOpen) {
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(openAccessibilityLabel)
+            .help(openAccessibilityLabel)
+        }
     }
 
     private var inlineSettings: some View {
@@ -427,6 +529,9 @@ struct MenuBarContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Launch at login")
+            .accessibilityValue(viewModel.launchAtLoginEnabled ? "On" : "Off")
         }
         .padding(8)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -888,9 +993,6 @@ private struct CompactUsageHistoryPanel: View {
         }
         .padding(8)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onAppear {
-            viewModel.activateCurrentPeriod()
-        }
     }
 
     private var controls: some View {

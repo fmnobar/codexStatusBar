@@ -87,15 +87,11 @@ jobs:
             fi
           done
 
+          source scripts/lib/release_state.sh
           if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-            echo "::error::Tag v$VERSION already exists."
-            exit 1
+            echo "Tag v$VERSION already exists; validating it during the idempotent commit/tag step."
           fi
-
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "::error::GitHub Release v$VERSION already exists."
-            exit 1
-          fi
+          release_assert_resumable_github_release "$VERSION"
 
           xcodebuild -version
           gh --version
@@ -143,6 +139,8 @@ jobs:
       - name: Prepare signed notarized release
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           scripts/prepare_release.sh "$VERSION" "$BUILD_NUMBER" --signed --notarize
 
       - name: Validate release artifact
@@ -154,27 +152,17 @@ jobs:
             echo "::error::Expected release artifact was not created: $ARTIFACT_PATH"
             exit 1
           fi
-
-          tmpdir="$(mktemp -d)"
-          ditto -x -k "$ARTIFACT_PATH" "$tmpdir"
-
-          APP_PATH="$tmpdir/CodexStatusBar.app"
-          if [[ ! -d "$APP_PATH" ]]; then
-            echo "::error::Release zip did not contain CodexStatusBar.app."
-            exit 1
-          fi
-
-          actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
-          actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
-
-          if [[ "$actual_version" != "$VERSION" || "$actual_build" != "$BUILD_NUMBER" ]]; then
-            echo "::error::Artifact has version $actual_version ($actual_build), expected $VERSION ($BUILD_NUMBER)."
-            exit 1
-          fi
-
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          xcrun stapler validate "$APP_PATH"
-          spctl -a -vv --type execute "$APP_PATH"
+          scripts/validate_release_artifact.sh \
+            --artifact "$ARTIFACT_PATH" \
+            --version "$VERSION" \
+            --build "$BUILD_NUMBER" \
+            --arch "$(uname -m)" \
+            --provenance public-release \
+            --commit "$(git rev-parse HEAD)" \
+            --signed \
+            --team "$DEVELOPMENT_TEAM" \
+            --signer "$DEVELOPER_ID_APPLICATION" \
+            --notarized
 
       - name: Build release notes
         run: |
@@ -185,7 +173,7 @@ jobs:
             exit 0
           fi
 
-          previous_tag="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
+          previous_tag="$(git tag --merged HEAD --sort=-version:refname --list 'v*' | grep -v -x "v$VERSION" | head -1 || true)"
           if [[ -n "$previous_tag" ]]; then
             range="$previous_tag..HEAD"
             heading="Changes since $previous_tag"
@@ -205,7 +193,7 @@ jobs:
             printf 'Release v%s.\n' "$VERSION" > release-notes.md
           fi
 
-      - name: Commit version and tag
+      - name: Validate version commit and tag
         run: |
           set -euo pipefail
 
@@ -213,26 +201,49 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add CodexUsageMenuBar.xcodeproj/project.pbxproj
-          if git diff --cached --quiet; then
-            echo "Version metadata already matched v$VERSION build $BUILD_NUMBER; no commit created."
-          else
-            git commit -m "Bump version to $VERSION"
+          if ! git diff --cached --quiet; then
+            echo "::error::Version metadata was not committed before public packaging."
+            exit 1
           fi
+          echo "Version metadata is committed at $(git rev-parse HEAD)."
 
-          git tag -a "v$VERSION" -m "Codex Status Bar v$VERSION"
+          source scripts/lib/release_state.sh
+          release_assert_existing_tag_matches_head "$VERSION"
+          if git rev-parse "v$VERSION^{commit}" >/dev/null 2>&1; then
+            echo "Existing tag v$VERSION matches the prepared release commit."
+          else
+            git tag -a "v$VERSION" -m "Codex Status Bar v$VERSION"
+          fi
           git push origin HEAD:main
           git push origin "v$VERSION"
 
-      - name: Publish GitHub Release
+      - name: Create or update draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           ARTIFACT_PATH="dist/CodexStatusBar-v$VERSION-build$BUILD_NUMBER.zip"
-          gh release create "v$VERSION" "$ARTIFACT_PATH" \
-            --title "Codex Status Bar v$VERSION" \
-            --notes-file release-notes.md
+          CHECKSUM_PATH="$ARTIFACT_PATH.sha256"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" "$ARTIFACT_PATH" "$CHECKSUM_PATH" --clobber
+            gh release edit "v$VERSION" \
+              --title "Codex Status Bar v$VERSION" \
+              --notes-file release-notes.md
+          else
+            gh release create "v$VERSION" "$ARTIFACT_PATH" "$CHECKSUM_PATH" \
+              --draft \
+              --verify-tag \
+              --title "Codex Status Bar v$VERSION" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Publish verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "v$VERSION" --draft=false --latest
 
       - name: Clean up temporary keychain
         if: always()

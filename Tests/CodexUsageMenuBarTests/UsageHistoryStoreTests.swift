@@ -1,6 +1,7 @@
 import CoreGraphics
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
 
 final class UsageHistoryStoreTests: XCTestCase {
     var calendar: Calendar!

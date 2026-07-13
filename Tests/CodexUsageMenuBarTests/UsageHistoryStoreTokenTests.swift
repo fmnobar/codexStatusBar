@@ -1,8 +1,372 @@
 import CoreGraphics
 import SQLite3
 import XCTest
+@testable import CodexUsageCore
 
 extension UsageHistoryStoreTests {
+    func testTokenImportsDoNotRunFullTelemetryRetentionInline() throws {
+        let store = try UsageHistoryStore(
+            databaseURL: try makeTemporaryDirectory().appendingPathComponent("inline-retention.sqlite3"),
+            notificationCenter: NotificationCenter(),
+            calendar: calendar,
+            rawRetentionProvider: { 60 * 60 }
+        )
+        let receivedAt = date("2026-06-15T12:00:00Z")
+
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "inline-retention-thread",
+                    turnID: "inline-retention-turn",
+                    lastTotal: 10,
+                    totalTotal: 10
+                ),
+                receivedAt: receivedAt
+            ),
+        ])
+        _ = try store.importSessionTaskTimingEvents([
+            try XCTUnwrap(CodexSessionTaskTimingEvent(
+                sessionID: "inline-retention-session",
+                turnID: "inline-retention-turn",
+                startedAt: receivedAt,
+                recordedAt: receivedAt
+            )),
+        ])
+        _ = try store.importTurnPerformanceEvents([
+            CodexTurnPerformanceEvent(
+                sourceKey: "inline-retention-otel",
+                sourceRowID: 1,
+                target: "codex_otel.trace_safe",
+                eventTimestamp: receivedAt,
+                eventName: "response.completed",
+                eventKind: "response.completed",
+                durationMilliseconds: nil,
+                success: true,
+                errorSummary: nil,
+                threadID: nil,
+                turnID: nil,
+                model: nil,
+                sessionID: nil,
+                projectPath: nil,
+                effort: nil,
+                source: nil,
+                originator: nil,
+                appVersion: nil,
+                terminalType: nil,
+                transport: nil,
+                wireAPI: nil,
+                apiPath: nil,
+                recordedAt: receivedAt
+            ),
+        ])
+
+        XCTAssertNil(try store.metadataValue(for: "telemetry_retention_last_run"))
+        XCTAssertEqual(try store.localSourceStoredMetrics().tokenSamples.rowCount, 1)
+        XCTAssertEqual(try store.sessionTaskTimingEvents().count, 1)
+        XCTAssertEqual(try store.turnPerformanceEvents().count, 1)
+    }
+
+    func testPerformanceTelemetryHourlyRollupBoundsQuantilePayloadSize() async throws {
+        var retention: TimeInterval = 365 * 24 * 60 * 60
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("bounded-performance-rollup.sqlite3")
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar,
+            rawRetentionProvider: { retention }
+        )
+        let hourStart = date("2026-05-02T10:00:00Z")
+        let events = (0..<1_500).compactMap { index in
+            let startedAt = hourStart.addingTimeInterval(TimeInterval(index))
+            return CodexSessionTaskTimingEvent(
+                sessionID: "bounded-session",
+                turnID: "turn-\(index)",
+                startedAt: startedAt,
+                completedAt: startedAt.addingTimeInterval(1),
+                durationMilliseconds: Int64(100_000 + index),
+                timeToFirstTokenMilliseconds: Int64(50_000 + index),
+                model: "gpt-5.5",
+                projectPath: "/Users/example/Projects/bounded",
+                effort: "high",
+                source: "cli",
+                recordedAt: startedAt.addingTimeInterval(1)
+            )
+        }
+        XCTAssertEqual(try store.importSessionTaskTimingEvents(events).insertedCount, events.count)
+
+        retention = 24 * 60 * 60
+        try store.enforceTelemetryRetention(referenceDate: date("2026-06-15T12:00:00Z"), force: true)
+
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT sample_count FROM telemetry_hourly_rollups WHERE metric = 'session_timing'"
+            ),
+            ["1500"]
+        )
+        for column in ["duration_values", "first_token_values"] {
+            let values = try XCTUnwrap(
+                try sqliteStrings(
+                    at: databaseURL,
+                    sql: "SELECT \(column) FROM telemetry_hourly_rollups WHERE metric = 'session_timing'"
+                ).first
+            )
+            let length = try XCTUnwrap(
+                try sqliteStrings(at: databaseURL, sql: "SELECT LENGTH(\(column)) FROM telemetry_hourly_rollups WHERE metric = 'session_timing'")
+                    .first.flatMap(Int.init)
+            )
+            XCTAssertLessThanOrEqual(length, UsageHistoryStore.telemetryRollupValueByteLimit)
+            XCTAssertLessThanOrEqual(
+                values.split(separator: ",").count,
+                UsageHistoryStore.telemetryRollupRepresentativeSampleLimit
+            )
+        }
+    }
+
+    func testPerformanceTelemetryLateMergeIndependentlyBoundsRepresentativeSampleCount() throws {
+        var retention: TimeInterval = 365 * 24 * 60 * 60
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("late-merge-rollup.sqlite3")
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar,
+            rawRetentionProvider: { retention }
+        )
+        let hourStart = date("2026-05-02T10:00:00Z")
+
+        func timingEvents(batch: String, values: Range<Int>) -> [CodexSessionTaskTimingEvent] {
+            values.compactMap { value in
+                let startedAt = hourStart.addingTimeInterval(TimeInterval(value % 3_000))
+                return CodexSessionTaskTimingEvent(
+                    sessionID: "late-merge-\(batch)",
+                    turnID: "turn-\(value)",
+                    startedAt: startedAt,
+                    completedAt: startedAt.addingTimeInterval(1),
+                    durationMilliseconds: Int64(value),
+                    timeToFirstTokenMilliseconds: Int64(value),
+                    model: "gpt-5.5",
+                    projectPath: "/Users/example/Projects/late-merge",
+                    effort: "high",
+                    source: "cli",
+                    recordedAt: startedAt.addingTimeInterval(1)
+                )
+            }
+        }
+
+        let firstBatch = timingEvents(batch: "first", values: 1..<101)
+        XCTAssertEqual(try store.importSessionTaskTimingEvents(firstBatch).insertedCount, firstBatch.count)
+        retention = 24 * 60 * 60
+        try store.enforceTelemetryRetention(referenceDate: date("2026-06-15T12:00:00Z"), force: true)
+
+        let lateBatch = timingEvents(batch: "late", values: 10_000..<10_100)
+        XCTAssertEqual(try store.importSessionTaskTimingEvents(lateBatch).insertedCount, lateBatch.count)
+        try store.enforceTelemetryRetention(referenceDate: date("2026-06-15T13:00:00Z"), force: true)
+
+        let csv = try XCTUnwrap(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT duration_values FROM telemetry_hourly_rollups WHERE metric = 'session_timing'"
+            ).first
+        )
+        let values = csv.split(separator: ",").compactMap { Int64($0) }
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT sample_count FROM telemetry_hourly_rollups WHERE metric = 'session_timing'"
+            ),
+            ["200"]
+        )
+        XCTAssertLessThanOrEqual(values.count, UsageHistoryStore.telemetryRollupRepresentativeSampleLimit)
+        XCTAssertLessThanOrEqual(csv.utf8.count, UsageHistoryStore.telemetryRollupValueByteLimit)
+        XCTAssertEqual(values.min(), 1)
+        XCTAssertEqual(values.max(), 10_099)
+        XCTAssertGreaterThan(values.filter { $0 >= 10_000 }.count, 80)
+    }
+
+    func testPerformanceTelemetryRetentionAndBackupPreserveDashboardPresentation() async throws {
+        var retention: TimeInterval = 365 * 24 * 60 * 60
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("performance-retention.sqlite3")
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar,
+            rawRetentionProvider: { retention }
+        )
+        try seedPerformanceDashboardFixture(in: store)
+        let periodStart = date("2026-05-01T00:00:00Z")
+        let periodEnd = date("2026-06-01T00:00:00Z")
+        let before = try store.performanceDashboardPresentation(
+            breakdownDimension: .model,
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+
+        retention = 24 * 60 * 60
+        try store.enforceTelemetryRetention(referenceDate: date("2026-06-15T12:00:00Z"), force: true)
+
+        let after = try store.performanceDashboardPresentation(
+            breakdownDimension: .model,
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        XCTAssertEqual(after.durationPoints, before.durationPoints)
+        XCTAssertEqual(after.reliabilityPoints, before.reliabilityPoints)
+        XCTAssertEqual(after.breakdownRows, before.breakdownRows)
+        XCTAssertEqual(after.series, before.series)
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM codex_turn_performance_events"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM codex_session_task_timing_events"),
+            ["0"]
+        )
+
+        let backupURL = try makeTemporaryDirectory().appendingPathComponent("performance-retention-backup.sqlite3")
+        try store.exportBackup(to: backupURL)
+        let destinationURL = try makeTemporaryDirectory().appendingPathComponent("performance-retention-restored.sqlite3")
+        let destinationStore = try UsageHistoryStore(
+            databaseURL: destinationURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        try destinationStore.importBackup(from: backupURL)
+
+        let restored = try destinationStore.performanceDashboardPresentation(
+            breakdownDimension: .model,
+            range: .month,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            calendar: calendar
+        )
+        XCTAssertEqual(restored.durationPoints, after.durationPoints)
+        XCTAssertEqual(restored.reliabilityPoints, after.reliabilityPoints)
+        XCTAssertEqual(restored.breakdownRows, after.breakdownRows)
+        XCTAssertEqual(restored.series, after.series)
+    }
+
+    func testTokenTelemetryRetentionPreservesLocalCalendarDashboardAndDimensionTotals() async throws {
+        var pacificCalendar = Calendar(identifier: .gregorian)
+        pacificCalendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        var retention: TimeInterval = 365 * 24 * 60 * 60
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("retention.sqlite3")
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: pacificCalendar,
+            rawRetentionProvider: { retention }
+        )
+        let firstEventDate = date("2026-03-08T09:30:00Z") // 1:30 AM PST before the DST jump.
+        let secondEventDate = date("2026-03-08T10:30:00Z") // 3:30 AM PDT after the DST jump.
+        let referenceDate = date("2026-06-15T12:00:00Z")
+        _ = try store.importTokenUsageSamples([
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "retained-thread",
+                    turnID: "retained-turn-1",
+                    model: "gpt-5.5",
+                    lastInput: 120,
+                    lastCached: 80,
+                    lastOutput: 20,
+                    lastReasoning: 5,
+                    lastTotal: 145,
+                    totalInput: 120,
+                    totalCached: 80,
+                    totalOutput: 20,
+                    totalReasoning: 5,
+                    totalTotal: 145,
+                    dimensions: [TokenUsageDimension(.originator, "vscode")!]
+                ),
+                receivedAt: firstEventDate,
+                context: TokenUsageContext(
+                    projectPath: "/Users/example/Projects/retention",
+                    effort: "high",
+                    source: "desktop",
+                    dimensions: [TokenUsageDimension(.originator, "vscode")!]
+                )
+            ),
+            ImportedCodexTokenUsageSample(
+                notification: tokenNotification(
+                    threadID: "retained-thread",
+                    turnID: "retained-turn-2",
+                    model: "gpt-5.5",
+                    lastInput: 60,
+                    lastCached: 30,
+                    lastOutput: 15,
+                    lastReasoning: 5,
+                    lastTotal: 80,
+                    totalInput: 180,
+                    totalCached: 110,
+                    totalOutput: 35,
+                    totalReasoning: 10,
+                    totalTotal: 225,
+                    dimensions: [TokenUsageDimension(.originator, "vscode")!]
+                ),
+                receivedAt: secondEventDate,
+                context: TokenUsageContext(
+                    projectPath: "/Users/example/Projects/retention",
+                    effort: "high",
+                    source: "desktop",
+                    dimensions: [TokenUsageDimension(.originator, "vscode")!]
+                )
+            ),
+        ])
+        let localDay = UsageHistoryRange.day.period(containing: firstEventDate, calendar: pacificCalendar)
+        let beforeTotals = try store.tokenCategoryTotals(
+            periodStart: localDay.start,
+            periodEnd: localDay.end
+        )
+        let beforePoints = try store.tokenDashboardPoints(
+            breakdownDimension: .originator,
+            range: .day,
+            periodStart: localDay.start,
+            periodEnd: localDay.end
+        )
+
+        retention = 24 * 60 * 60
+        try store.enforceTelemetryRetention(referenceDate: referenceDate, force: true)
+
+        XCTAssertEqual(
+            try store.tokenCategoryTotals(periodStart: localDay.start, periodEnd: localDay.end),
+            beforeTotals
+        )
+        XCTAssertEqual(
+            try store.tokenDashboardPoints(
+                breakdownDimension: .originator,
+                range: .day,
+                periodStart: localDay.start,
+                periodEnd: localDay.end
+            ),
+            beforePoints
+        )
+        XCTAssertTrue(
+            try store.tokenDashboardSeries(
+                breakdownDimension: .originator,
+                periodStart: localDay.start,
+                periodEnd: localDay.end
+            ).map(\.id).contains("dimension:originator:vscode")
+        )
+        XCTAssertEqual(try store.localSourceStoredMetrics().tokenSamples.rowCount, 2)
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM token_usage_samples WHERE is_retention_baseline = 1"
+            ),
+            ["1"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT SUM(sample_count) FROM token_usage_hourly_rollups"
+            ),
+            ["2"]
+        )
+    }
+
     func testRecordsAllTokenUsageFields() async throws {
         let store = try makeStore()
 
@@ -1882,7 +2246,7 @@ extension UsageHistoryStoreTests {
                 context: TokenUsageContext(effort: "high")
             ),
         ])
-        try store.importCodexModelCapabilities(
+        _ = try store.importCodexModelCapabilities(
             CodexModelCapabilitiesImportBatch(
                 models: [
                     try XCTUnwrap(CodexModelCapability(
@@ -3357,6 +3721,80 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(openSequence.openAttempts, 2)
     }
 
+    func testDatabaseWorkerSerializesConcurrentTokenWrites() async throws {
+        let (store, _) = try makeTemporaryStore()
+        let worker = UsageHistoryDatabaseWorker(store: store)
+        let timestamp = date("2026-05-17T12:00:00Z")
+        var notifications: [CodexTokenUsageNotification] = []
+        for index in 0..<100 {
+            let tokenCount = Int64(index + 1)
+            let threadID = "concurrent-thread-\(index)"
+            notifications.append(tokenNotification(
+                threadID: threadID,
+                turnID: "turn",
+                lastInput: tokenCount,
+                lastTotal: tokenCount,
+                totalInput: tokenCount,
+                totalTotal: tokenCount
+            ))
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for notification in notifications {
+                group.addTask {
+                    _ = await worker.record(tokenUsage: notification, at: timestamp)
+                }
+            }
+        }
+
+        XCTAssertEqual(try store.tokenUsageSamples().count, notifications.count)
+    }
+
+    func testApplicationSupportFallbackWorkerSurvivesRepeatedFailureThenRecoversDurably() async throws {
+        let fallbackStore = try makeStore()
+        let unusedSecondFallbackStore = try makeStore()
+        let (durableStore, _) = try makeTemporaryStore()
+        let timestamp = date("2026-05-17T12:00:00Z")
+        for (store, total) in [(fallbackStore, Int64(100)), (durableStore, Int64(200))] {
+            try store.record(
+                tokenUsage: tokenNotification(
+                    threadID: "thread-\(total)",
+                    turnID: "turn-\(total)",
+                    lastInput: total,
+                    lastTotal: total,
+                    totalInput: total,
+                    totalTotal: total
+                ),
+                at: timestamp
+            )
+            try store.recordCodexLiveTokenCaptureState(
+                CodexLiveTokenCaptureState(lastCheckedAt: timestamp, status: .noNewEvents)
+            )
+        }
+        let openSequence = RecoveringStoreOpenSequence(
+            outcomes: [
+                .failure,
+                .failure,
+                .store(durableStore),
+            ]
+        )
+        let fallbackSequence = StoreOpenSequence(stores: [fallbackStore, unusedSecondFallbackStore])
+        let worker = UsageHistoryDatabaseWorker(
+            storeFactory: { try openSequence.nextStore() },
+            fallbackStoreFactory: { fallbackSequence.nextStore() }
+        )
+
+        let fallbackTotal = await worker.todayTotalTokens(at: timestamp, calendar: calendar)
+        let retainedFallbackTotal = await worker.todayTotalTokens(at: timestamp, calendar: calendar)
+        let recoveredTotal = await worker.todayTotalTokens(at: timestamp, calendar: calendar)
+
+        XCTAssertEqual(fallbackTotal, 100)
+        XCTAssertEqual(retainedFallbackTotal, 100)
+        XCTAssertEqual(recoveredTotal, 200)
+        XCTAssertEqual(openSequence.openAttempts, 3)
+        XCTAssertEqual(fallbackSequence.openAttempts, 1)
+    }
+
     func testCodexLogTokenImporterExtractsDottedContextAndSafeDimensions() async throws {
         let store = try makeStore()
         let databaseURL = try makeTemporaryDirectory().appendingPathComponent("logs_2.sqlite")
@@ -3518,7 +3956,7 @@ extension UsageHistoryStoreTests {
                 "unknown-model",
             ].joined(separator: ":"),
         ].joined(separator: ":")
-        try store.importTokenUsageSamples([
+        _ = try store.importTokenUsageSamples([
             ImportedCodexTokenUsageSample(
                 notification: tokenNotification(
                     threadID: threadID,
@@ -3599,7 +4037,7 @@ extension UsageHistoryStoreTests {
                 "gpt-5.5",
             ].joined(separator: ":"),
         ].joined(separator: ":")
-        try store.importTokenUsageSamples([
+        _ = try store.importTokenUsageSamples([
             ImportedCodexTokenUsageSample(
                 notification: tokenNotification(
                     threadID: threadID,
@@ -4278,7 +4716,7 @@ extension UsageHistoryStoreTests {
 
     func testPerformanceDashboardReliabilityQueryPreservesErrorCountsAndUnknownRows() throws {
         let store = try makeStore()
-        try store.importTurnPerformanceEvents([
+        _ = try store.importTurnPerformanceEvents([
             performanceDashboardReliabilityEvent(
                 rowID: 1,
                 timestamp: date("2026-05-02T10:00:00Z"),
@@ -4715,32 +5153,44 @@ extension UsageHistoryStoreTests {
 
     func testDashboardQueryWorkerMissingDatabaseReturnsEmptySnapshot() async throws {
         let currentCalendar = try XCTUnwrap(calendar)
+        let fallbackStore = try UsageHistoryStore.inMemory(
+            notificationCenter: NotificationCenter(),
+            calendar: currentCalendar
+        )
+        let unusedSecondFallbackStore = try UsageHistoryStore.inMemory(
+            notificationCenter: NotificationCenter(),
+            calendar: currentCalendar
+        )
+        let openSequence = RecoveringStoreOpenSequence(outcomes: [.failure])
+        let fallbackSequence = StoreOpenSequence(stores: [fallbackStore, unusedSecondFallbackStore])
         let queryWorker = UsageHistoryDashboardQueryWorker(
             storeFactory: {
-                throw UsageHistoryStoreError.databaseOpenFailed("missing fixture")
+                try openSequence.nextStore()
             },
             fallbackStoreFactory: {
-                try UsageHistoryStore.inMemory(
-                    notificationCenter: NotificationCenter(),
-                    calendar: currentCalendar
-                )
+                fallbackSequence.nextStore()
             }
         )
-        let result = try await queryWorker.usageHistorySnapshot(
-            for: UsageHistoryLoadRequest(
-                chartKind: .capacity,
-                range: .day,
-                window: .sevenDay,
-                periodStart: date("2026-05-02T00:00:00Z"),
-                periodEnd: date("2026-05-03T00:00:00Z"),
-                now: date("2026-05-02T12:00:00Z"),
-                calendar: calendar
-            )
+        let request = UsageHistoryLoadRequest(
+            chartKind: .capacity,
+            range: .day,
+            window: .sevenDay,
+            periodStart: date("2026-05-02T00:00:00Z"),
+            periodEnd: date("2026-05-03T00:00:00Z"),
+            now: date("2026-05-02T12:00:00Z"),
+            calendar: calendar
         )
+        let result = try await queryWorker.usageHistorySnapshot(
+            for: request
+        )
+        let repeatedResult = try await queryWorker.usageHistorySnapshot(for: request)
 
         XCTAssertFalse(result.hasAnyHistory)
         XCTAssertTrue(result.points.isEmpty)
         XCTAssertTrue(result.series.isEmpty)
+        XCTAssertEqual(repeatedResult, result)
+        XCTAssertEqual(openSequence.openAttempts, 2)
+        XCTAssertEqual(fallbackSequence.openAttempts, 1)
     }
 
     func testDatabaseRouterRoutesSnapshotsToQueryWorkerAndWritesToWriter() async throws {
@@ -5439,7 +5889,7 @@ extension UsageHistoryStoreTests {
     }
 
     private func seedPerformanceDashboardFixture(in store: UsageHistoryStore) throws {
-        try store.importSessionTaskTimingEvents([
+        _ = try store.importSessionTaskTimingEvents([
             try XCTUnwrap(CodexSessionTaskTimingEvent(
                 sessionID: "session-a",
                 turnID: "turn-a",
@@ -5498,7 +5948,7 @@ extension UsageHistoryStoreTests {
             )),
         ])
 
-        try store.importTurnPerformanceEvents([
+        _ = try store.importTurnPerformanceEvents([
             CodexTurnPerformanceEvent(
                 sourceKey: "otel",
                 sourceRowID: 1,
@@ -5644,7 +6094,7 @@ extension UsageHistoryStoreTests {
             ),
         ])
 
-        try store.importCodexModelCapabilities(
+        _ = try store.importCodexModelCapabilities(
             CodexModelCapabilitiesImportBatch(
                 models: [
                     try XCTUnwrap(CodexModelCapability(
@@ -5747,6 +6197,40 @@ private final class StoreOpenSequence: @unchecked Sendable {
         let store = stores[min(index, stores.count - 1)]
         index += 1
         return store
+    }
+}
+
+private final class RecoveringStoreOpenSequence: @unchecked Sendable {
+    enum Outcome {
+        case store(UsageHistoryStore)
+        case failure
+    }
+
+    private let lock = NSLock()
+    private let outcomes: [Outcome]
+    private var index = 0
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
+    }
+
+    var openAttempts: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return index
+    }
+
+    func nextStore() throws -> UsageHistoryStore {
+        lock.lock()
+        defer { lock.unlock() }
+        let outcome = outcomes[min(index, outcomes.count - 1)]
+        index += 1
+        switch outcome {
+        case let .store(store):
+            return store
+        case .failure:
+            throw UsageHistoryStoreError.databaseOpenFailed("configured transient failure")
+        }
     }
 }
 
