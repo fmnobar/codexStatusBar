@@ -206,8 +206,19 @@ struct MenuBarStatusPresentation: Equatable {
     let tightestRow: MenuBarLimitRowPresentation
 }
 
+enum MenuBarAccountTokenFreshness: Equatable {
+    case current
+    case stale
+    case refreshFailed
+}
+
 enum MenuBarTokenDisplaySource: Equatable {
-    case accountDate(String)
+    case accountDate(
+        date: String,
+        fetchedAt: Date,
+        isCurrentDay: Bool,
+        freshness: MenuBarAccountTokenFreshness
+    )
     case localCapturedToday
 }
 
@@ -216,10 +227,21 @@ struct MenuBarTokenDisplay: Equatable {
     let source: MenuBarTokenDisplaySource
     let localCapturedTotals: TokenCategoryTotals?
 
-    static func accountDate(_ date: String, tokens: Int64) -> MenuBarTokenDisplay {
+    static func accountDate(
+        _ date: String,
+        tokens: Int64,
+        fetchedAt: Date,
+        isCurrentDay: Bool,
+        freshness: MenuBarAccountTokenFreshness
+    ) -> MenuBarTokenDisplay {
         MenuBarTokenDisplay(
             tokenCount: tokens,
-            source: .accountDate(date),
+            source: .accountDate(
+                date: date,
+                fetchedAt: fetchedAt,
+                isCurrentDay: isCurrentDay,
+                freshness: freshness
+            ),
             localCapturedTotals: nil
         )
     }
@@ -262,7 +284,8 @@ enum MenuBarStatusFormatter {
             ),
             menuBarToolTipText: menuBarToolTipText(
                 options: menuBarDisplayOptions,
-                tokenDisplay: tokenDisplay
+                tokenDisplay: tokenDisplay,
+                now: now
             ),
             fiveHourRow: row(
                 title: "5h limit",
@@ -453,7 +476,8 @@ enum MenuBarStatusFormatter {
 
     static func menuBarToolTipText(
         options: MenuBarDisplayOptions,
-        tokenDisplay: MenuBarTokenDisplay?
+        tokenDisplay: MenuBarTokenDisplay?,
+        now: Date = Date()
     ) -> String? {
         guard options.showsTokens else {
             return nil
@@ -464,8 +488,23 @@ enum MenuBarStatusFormatter {
         }
 
         switch tokenDisplay.source {
-        case .accountDate(let date):
-            return "Codex account tokens for \(date): \(compactTokenText(tokenDisplay.tokenCount))."
+        case .accountDate(let date, let fetchedAt, let isCurrentDay, let freshness):
+            let bucketText = if isCurrentDay {
+                "Codex account tokens for \(date)"
+            } else {
+                "Latest available Codex account tokens are for \(date)"
+            }
+            let ageText = relativeAgeText(since: fetchedAt, now: now)
+            let freshnessText = switch freshness {
+            case .current:
+                " Fetched \(ageText)."
+            case .stale:
+                " Cached account data fetched \(ageText); a refresh is due."
+            case .refreshFailed:
+                " Refresh failed; showing account data fetched \(ageText)."
+            }
+
+            return "\(bucketText): \(compactTokenText(tokenDisplay.tokenCount)).\(freshnessText)"
         case .localCapturedToday:
             guard let totals = tokenDisplay.localCapturedTotals else {
                 return "Local captured tokens are available."
