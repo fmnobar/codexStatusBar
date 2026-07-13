@@ -76,6 +76,10 @@ scripts/verify.sh
 
 The gate checks scripts and project structure, builds and analyzes the app, and runs the complete test suite. Release publication remains a separate, explicitly enabled workflow.
 
+## License
+
+Codex Status Bar is available under the [MIT License](LICENSE).
+
 ## Notes
 
 - The app launches and owns its local `codex app-server` transport. It never attaches to a pre-existing loopback listener.

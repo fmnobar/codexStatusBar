@@ -1,10 +1,11 @@
 # Backlog
 
-Last reconciled: July 12, 2026 against implementation commit `005036f`.
+Last reconciled: July 13, 2026 after resolving the final owner decision.
 
 ## Current status
 
 - No executable engineering item remains in the canonical backlog.
+- No blocked product or distribution decision remains. The repository is licensed under MIT.
 - Public release, signing, notarization, tagging, upload, and publication were not performed. The release workflow remains disabled.
 - Ordinary implementation is complete and pushed to `main`. The active owner task's final report carries the post-commit verifier, build-local UI, process-cleanup, and upstream-parity evidence.
 - Historical detail remains available with `git show 43bd86d:BACKLOG.md`; do not restore the former audit queue or Done ledger here.
@@ -42,14 +43,13 @@ Items `AUDIT-20260710-01` through `AUDIT-20260710-15` were reviewed against the 
 - Token-freshness focused suites: 68 tests passed. Full imported-module XCTest suite: 534 tests passed. Evidence root: `/tmp/codex-token-freshness-20260712`.
 - Independent reviews found no remaining blocking issue in either intake implementation.
 
-## Blocked decision
+## Completed decision
 
 ### `DECISION-20260711-01` — Public repository license
 
-- **Status:** `blocked-decision`; this does not block local engineering or verification.
-- **Evidence:** No repository metadata establishes the owner's intended public-license or distribution terms.
-- **Exact owner input required:** Name the license or distribution policy (for example, MIT, Apache-2.0, GPL, or proprietary/no public license).
-- Until then, do not add a license or infer policy.
+- **Status:** `completed` on July 13, 2026.
+- **Decision:** MIT License, selected by the owner from Codex's permissive-license recommendation.
+- **Repository contract:** The canonical license text is in `LICENSE`; README and contribution guidance link to it.
 
 ## Conditional watchlist
 
