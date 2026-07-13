@@ -1895,14 +1895,3 @@ extension UsageHistoryStore {
         }
     }
 }
-
-extension CodexRateLimitSnapshot {
-    func window(for usageWindow: UsageLimitWindow) -> CodexRateLimitWindow? {
-        switch usageWindow {
-        case .fiveHour:
-            return primary
-        case .sevenDay:
-            return secondary
-        }
-    }
-}

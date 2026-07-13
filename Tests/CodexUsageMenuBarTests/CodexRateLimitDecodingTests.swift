@@ -367,7 +367,9 @@ final class CodexRateLimitDecodingTests: XCTestCase {
             pidFileURL: pidFileURL
         )
         let client = CodexAppServerClient(
-            requestTimeout: 2,
+            // This fixture validates process retirement/reconnect, not request deadlines.
+            // Match the production deadline because it launches an external interpreter.
+            requestTimeout: 10,
             executableResolver: StubResolvedCodexExecutableResolver(
                 resolution: ResolvedCodexExecutable(
                     url: executableURL,
@@ -407,7 +409,9 @@ final class CodexRateLimitDecodingTests: XCTestCase {
             methodFileURL: methodFileURL
         )
         let client = CodexAppServerClient(
-            requestTimeout: 2,
+            // This fixture validates connection coalescing, not request deadlines.
+            // Match the production deadline because it launches an external interpreter.
+            requestTimeout: 10,
             executableResolver: StubResolvedCodexExecutableResolver(
                 resolution: ResolvedCodexExecutable(
                     url: executableURL,
@@ -476,7 +480,9 @@ final class CodexRateLimitDecodingTests: XCTestCase {
                 argumentFileURL: argumentFileURL
             )
             let client = CodexAppServerClient(
-                requestTimeout: 2,
+                // This fixture validates invocation selection, not request deadlines.
+                // Match the production deadline because it launches an external interpreter.
+                requestTimeout: 10,
                 executableResolver: StubResolvedCodexExecutableResolver(
                     resolution: ResolvedCodexExecutable(
                         url: executableURL,
@@ -757,6 +763,62 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.secondary?.windowDurationMinutes, 10080)
     }
 
+    func testAccountPayloadClassifiesPrimaryOnlySevenDayByDuration() throws {
+        let data = Data(
+            """
+            {
+              "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                  "usedPercent": 43,
+                  "windowDurationMins": 10080,
+                  "resetsAt": 1776208813
+                },
+                "secondary": null,
+                "planType": "pro"
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AccountRateLimitsResponse.self, from: data)
+        let snapshot = response.selectedSnapshot()
+
+        XCTAssertNil(snapshot.classifiedWindow(for: .fiveHour))
+        XCTAssertEqual(snapshot.classifiedWindow(for: .sevenDay)?.usedPercent, 43)
+        XCTAssertEqual(snapshot.windowReferences.map(\.slot), [.primary])
+    }
+
+    func testAccountPayloadPreservesNonstandardAndMissingDurationWindows() throws {
+        let data = Data(
+            """
+            {
+              "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                  "usedPercent": 80,
+                  "windowDurationMins": 90,
+                  "resetsAt": 1775622013
+                },
+                "secondary": {
+                  "usedPercent": 35,
+                  "resetsAt": 1775624694
+                },
+                "planType": "pro"
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AccountRateLimitsResponse.self, from: data)
+        let snapshot = response.selectedSnapshot()
+
+        XCTAssertNil(snapshot.classifiedWindow(for: .fiveHour))
+        XCTAssertNil(snapshot.classifiedWindow(for: .sevenDay))
+        XCTAssertEqual(snapshot.windowReferences.map(\.sourceTitle), ["90m", "Secondary"])
+        XCTAssertEqual(snapshot.windowReferences.map(\.window.usedPercent), [80, 35])
+    }
+
     func testBuildsUsageSnapshotWithAggregateAndModelBuckets() throws {
         let data = Data(
             """
@@ -867,6 +929,95 @@ final class CodexRateLimitDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.primary?.windowDurationMinutes, 300)
         XCTAssertEqual(snapshot.secondary?.usedPercent, 8)
         XCTAssertEqual(snapshot.secondary?.windowDurationMinutes, 10080)
+    }
+
+    func testWhamPayloadClassifiesSecondaryOnlySevenDayByDuration() throws {
+        let data = Data(
+            """
+            {
+              "plan_type": "pro",
+              "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": null,
+                "secondary_window": {
+                  "used_percent": 43,
+                  "limit_window_seconds": 604800,
+                  "reset_at": 1776208813
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(WhamUsageResponse.self, from: data)
+        let snapshot = try XCTUnwrap(response.selectedSnapshot())
+
+        XCTAssertNil(snapshot.classifiedWindow(for: .fiveHour))
+        XCTAssertEqual(snapshot.classifiedWindow(for: .sevenDay)?.usedPercent, 43)
+        XCTAssertEqual(snapshot.windowReferences.map(\.slot), [.secondary])
+    }
+
+    func testWhamFractionalMinuteBoundariesRemainUnclassifiedAndVisibleToTightest() throws {
+        let fixtures: [(json: String, expectedTitle: String, expectedPercent: String)] = [
+            (
+                """
+                {
+                  "rate_limit": {
+                    "primary_window": {
+                      "used_percent": 25,
+                      "limit_window_seconds": 18001,
+                      "reset_at": 1775622013
+                    },
+                    "secondary_window": null
+                  }
+                }
+                """,
+                "Primary",
+                "75%"
+            ),
+            (
+                """
+                {
+                  "rate_limit": {
+                    "primary_window": null,
+                    "secondary_window": {
+                      "used_percent": 43,
+                      "limit_window_seconds": 604801,
+                      "reset_at": 1776208813
+                    }
+                  }
+                }
+                """,
+                "Secondary",
+                "57%"
+            ),
+        ]
+
+        for fixture in fixtures {
+            let response = try JSONDecoder().decode(
+                WhamUsageResponse.self,
+                from: Data(fixture.json.utf8)
+            )
+            let snapshot = try XCTUnwrap(response.selectedSnapshot())
+
+            XCTAssertNil(snapshot.classifiedWindow(for: .fiveHour))
+            XCTAssertNil(snapshot.classifiedWindow(for: .sevenDay))
+            XCTAssertEqual(snapshot.windowReferences.count, 1)
+            XCTAssertNil(snapshot.windowReferences.first?.window.windowDurationMinutes)
+
+            let presentation = MenuBarStatusFormatter.presentation(
+                snapshot: snapshot,
+                now: Date(timeIntervalSince1970: 0),
+                selectedMenuBarDisplayWindow: .tightest
+            )
+
+            XCTAssertEqual(
+                presentation.menuBarPercentText,
+                "\(fixture.expectedTitle): \(fixture.expectedPercent)"
+            )
+            XCTAssertEqual(presentation.tightestRow.title, "Tightest: \(fixture.expectedTitle)")
+        }
     }
 
     func testDecodesThreadTokenUsageNotification() throws {

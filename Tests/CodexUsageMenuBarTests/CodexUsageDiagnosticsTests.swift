@@ -95,6 +95,47 @@ final class CodexUsageDiagnosticsTests: XCTestCase {
         XCTAssertTrue(diagnostics.summaries.allSatisfy { $0.modelBucketCount == 0 })
     }
 
+    func testDiagnosticsClassifiesReversedSlotsByDuration() throws {
+        let data = Data(
+            """
+            {
+              "rateLimits": {
+                "limitId": "codex",
+                "primary": { "usedPercent": 40, "windowDurationMins": 10080, "resetsAt": 1776208813 },
+                "secondary": { "usedPercent": 20, "windowDurationMins": 300, "resetsAt": 1775622013 },
+                "planType": "pro"
+              },
+              "rateLimitsByLimitId": {
+                "codex": {
+                  "limitId": "codex",
+                  "primary": { "usedPercent": 40, "windowDurationMins": 10080, "resetsAt": 1776208813 },
+                  "secondary": { "usedPercent": 20, "windowDurationMins": 300, "resetsAt": 1775622013 },
+                  "planType": "pro"
+                },
+                "codex_gpt55": {
+                  "limitId": "codex_gpt55",
+                  "limitName": "GPT-5.5",
+                  "primary": { "usedPercent": 10, "windowDurationMins": 10080, "resetsAt": 1776208813 },
+                  "secondary": { "usedPercent": 5, "windowDurationMins": 300, "resetsAt": 1775622013 },
+                  "planType": "pro"
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AccountRateLimitsResponse.self, from: data)
+        let diagnostics = response.diagnosticsSnapshot(generatedAt: Date(timeIntervalSince1970: 0))
+        let fiveHour = try XCTUnwrap(diagnostics.summaries.first { $0.window == .fiveHour })
+        let sevenDay = try XCTUnwrap(diagnostics.summaries.first { $0.window == .sevenDay })
+
+        XCTAssertEqual(fiveHour.aggregateUsedPercent, 20)
+        XCTAssertEqual(fiveHour.modelUsedPercentSum, 5)
+        XCTAssertEqual(sevenDay.aggregateUsedPercent, 40)
+        XCTAssertEqual(sevenDay.modelUsedPercentSum, 10)
+        XCTAssertEqual(diagnostics.summaries.map(\.classification), [.comparableCandidate, .comparableCandidate])
+    }
+
     func testDiagnosticsExporterUsesSanitizedJSON() throws {
         let response = try decodeResponse(
             aggregatePrimaryReset: 1775622013,

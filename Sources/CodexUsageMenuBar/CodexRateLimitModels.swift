@@ -14,9 +14,97 @@ struct CodexRateLimitWindow: Equatable {
     }
 }
 
+enum CodexRateLimitWindowKind: Equatable {
+    case fiveHour
+    case sevenDay
+
+    init?(windowDurationMinutes: Int?) {
+        switch windowDurationMinutes {
+        case 300:
+            self = .fiveHour
+        case 10_080:
+            self = .sevenDay
+        default:
+            return nil
+        }
+    }
+
+    init(usageWindow: UsageLimitWindow) {
+        switch usageWindow {
+        case .fiveHour:
+            self = .fiveHour
+        case .sevenDay:
+            self = .sevenDay
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .fiveHour:
+            return "5h"
+        case .sevenDay:
+            return "7d"
+        }
+    }
+}
+
+enum CodexRateLimitWindowSlot: Equatable {
+    case primary
+    case secondary
+
+    var fallbackTitle: String {
+        switch self {
+        case .primary:
+            return "Primary"
+        case .secondary:
+            return "Secondary"
+        }
+    }
+}
+
+struct CodexRateLimitWindowReference: Equatable {
+    let slot: CodexRateLimitWindowSlot
+    let window: CodexRateLimitWindow
+
+    var kind: CodexRateLimitWindowKind? {
+        CodexRateLimitWindowKind(windowDurationMinutes: window.windowDurationMinutes)
+    }
+
+    var sourceTitle: String {
+        if let kind {
+            return kind.displayTitle
+        }
+
+        if let duration = window.windowDurationMinutes, duration > 0 {
+            return "\(duration)m"
+        }
+
+        return slot.fallbackTitle
+    }
+}
+
 struct CodexRateLimitSnapshot: Equatable {
     let primary: CodexRateLimitWindow?
     let secondary: CodexRateLimitWindow?
+
+    var windowReferences: [CodexRateLimitWindowReference] {
+        [
+            primary.map { CodexRateLimitWindowReference(slot: .primary, window: $0) },
+            secondary.map { CodexRateLimitWindowReference(slot: .secondary, window: $0) },
+        ].compactMap(\.self)
+    }
+
+    func windowReference(for kind: CodexRateLimitWindowKind) -> CodexRateLimitWindowReference? {
+        windowReferences.first { $0.kind == kind }
+    }
+
+    func classifiedWindow(for kind: CodexRateLimitWindowKind) -> CodexRateLimitWindow? {
+        windowReference(for: kind)?.window
+    }
+
+    func window(for usageWindow: UsageLimitWindow) -> CodexRateLimitWindow? {
+        classifiedWindow(for: CodexRateLimitWindowKind(usageWindow: usageWindow))
+    }
 }
 
 enum CodexUsageBucketKind: String, Codable, Equatable {
@@ -1285,9 +1373,17 @@ struct WhamRateLimitWindowPayload: Decodable {
     }
 
     func toDomainWindow() -> CodexRateLimitWindow {
-        CodexRateLimitWindow(
+        let windowDurationMinutes: Int? = limitWindowSeconds.flatMap { seconds -> Int? in
+            guard seconds.isMultiple(of: 60) else {
+                return nil
+            }
+
+            return seconds / 60
+        }
+
+        return CodexRateLimitWindow(
             usedPercent: usedPercent,
-            windowDurationMinutes: limitWindowSeconds.map { $0 / 60 },
+            windowDurationMinutes: windowDurationMinutes,
             resetsAt: resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
         )
     }

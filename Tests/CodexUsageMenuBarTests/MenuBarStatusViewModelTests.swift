@@ -57,6 +57,66 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         viewModel.stop()
     }
 
+    func testPrimaryOnlySevenDayDrivesViewModelEvenWhenFiveHourWasSelected() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 43, windowDurationMinutes: 10_080, resetsAt: nil),
+            secondary: nil
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            selectedMenuBarDisplayWindow: .fiveHour,
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+
+        XCTAssertEqual(viewModel.selectedMenuBarDisplayWindow, .fiveHour)
+        XCTAssertEqual(viewModel.menuBarPercentText, "7d: 57%")
+        XCTAssertEqual(viewModel.fiveHourRow.remainingPercentText, "--% left")
+        XCTAssertFalse(viewModel.fiveHourRow.isSelected)
+        XCTAssertEqual(viewModel.sevenDayRow.remainingPercentText, "57% left")
+        XCTAssertTrue(viewModel.sevenDayRow.isSelected)
+        XCTAssertEqual(viewModel.tightestRow.title, "Tightest: 7d")
+
+        viewModel.stop()
+    }
+
+    func testFiveHourOnlyDrivesViewModelEvenWhenSevenDayWasSelected() async {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: nil,
+            secondary: CodexRateLimitWindow(usedPercent: 6, windowDurationMinutes: 300, resetsAt: nil)
+        )
+        let client = MockCodexRateLimitClient(snapshot: snapshot)
+
+        let viewModel = MenuBarStatusViewModel(
+            client: client,
+            now: Date.init,
+            refreshInterval: 3_600,
+            selectedMenuBarDisplayWindow: .sevenDay,
+            persistSelection: { _ in },
+            loadLaunchAtLoginEnabled: { false },
+            setLaunchAtLoginEnabledAction: { _ in }
+        )
+
+        await viewModel.start()
+
+        XCTAssertEqual(viewModel.selectedMenuBarDisplayWindow, .sevenDay)
+        XCTAssertEqual(viewModel.menuBarPercentText, "5h: 94%")
+        XCTAssertEqual(viewModel.fiveHourRow.remainingPercentText, "94% left")
+        XCTAssertTrue(viewModel.fiveHourRow.isSelected)
+        XCTAssertEqual(viewModel.sevenDayRow.remainingPercentText, "--% left")
+        XCTAssertFalse(viewModel.sevenDayRow.isSelected)
+        XCTAssertEqual(viewModel.tightestRow.title, "Tightest: 5h")
+
+        viewModel.stop()
+    }
+
     func testStartFailureShowsExplicitOfflineStateWithoutUsageValues() async {
         let now = ISO8601DateFormatter().date(from: "2026-05-19T14:18:00Z")!
         let client = MockCodexRateLimitClient(

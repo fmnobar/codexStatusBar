@@ -18,6 +18,64 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(points.map(\.timestamp), [date("2026-04-14T20:00:00Z"), date("2026-04-14T20:00:00Z")])
     }
 
+    func testRecordsReversedRateLimitSlotsByDuration() async throws {
+        let store = try makeStore()
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 70, windowDurationMinutes: 10_080, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 25, windowDurationMinutes: 300, resetsAt: nil)
+        )
+
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot),
+            at: date("2026-04-14T20:00:10Z")
+        )
+
+        let fiveHourPoints = try store.points(
+            range: .day,
+            window: .fiveHour,
+            now: date("2026-04-14T21:00:00Z"),
+            calendar: calendar
+        )
+        let sevenDayPoints = try store.points(
+            range: .day,
+            window: .sevenDay,
+            now: date("2026-04-14T21:00:00Z"),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(fiveHourPoints.map(\.usedPercent), [25])
+        XCTAssertEqual(sevenDayPoints.map(\.usedPercent), [70])
+    }
+
+    func testRecordsFiveHourOnlySnapshotAsFiveHourAndNotSevenDay() async throws {
+        let store = try makeStore()
+        let snapshot = CodexRateLimitSnapshot(
+            primary: nil,
+            secondary: CodexRateLimitWindow(usedPercent: 6, windowDurationMinutes: 300, resetsAt: nil)
+        )
+
+        try store.record(
+            snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot),
+            at: date("2026-04-14T20:00:10Z")
+        )
+
+        let fiveHourPoints = try store.points(
+            range: .day,
+            window: .fiveHour,
+            now: date("2026-04-14T21:00:00Z"),
+            calendar: calendar
+        )
+        let sevenDayPoints = try store.points(
+            range: .day,
+            window: .sevenDay,
+            now: date("2026-04-14T21:00:00Z"),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(fiveHourPoints.map(\.usedPercent), [6])
+        XCTAssertTrue(sevenDayPoints.isEmpty)
+    }
+
     func testRecordsDisplaySnapshotForAggregateWhenBucketAggregateDiffers() async throws {
         let store = try makeStore()
         let now = date("2026-04-14T20:00:10Z")

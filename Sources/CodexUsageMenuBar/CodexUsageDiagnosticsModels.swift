@@ -5580,12 +5580,11 @@ private extension RateLimitWindowPayload {
 
 private extension CodexUsageDiagnosticsBucket {
     func window(for usageWindow: UsageLimitWindow) -> CodexUsageDiagnosticsWindow? {
-        switch usageWindow {
-        case .fiveHour:
-            return primary
-        case .sevenDay:
-            return secondary
-        }
+        let kind = CodexRateLimitWindowKind(usageWindow: usageWindow)
+
+        return [primary, secondary]
+            .compactMap(\.self)
+            .first { CodexRateLimitWindowKind(windowDurationMinutes: $0.windowDurationMinutes) == kind }
     }
 }
 

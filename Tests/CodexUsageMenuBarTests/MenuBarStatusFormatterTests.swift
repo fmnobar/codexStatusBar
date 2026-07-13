@@ -186,7 +186,7 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertTrue(formatted.contains("14"))
     }
 
-    func testPresentationUsesPlaceholderWhenSevenDayWindowIsMissing() {
+    func testPresentationFallsBackToFiveHourWhenSelectedSevenDayIsUnavailable() {
         let snapshot = CodexRateLimitSnapshot(
             primary: CodexRateLimitWindow(usedPercent: 6, windowDurationMinutes: 300, resetsAt: nil),
             secondary: nil
@@ -200,9 +200,14 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             locale: Locale(identifier: "en_US_POSIX")
         )
 
-        XCTAssertEqual(presentation.menuBarPercentText, "--")
+        XCTAssertEqual(presentation.menuBarPercentText, "5h: 94%")
+        XCTAssertEqual(presentation.fiveHourRow.remainingPercentText, "94% left")
+        XCTAssertTrue(presentation.fiveHourRow.isSelected)
+        XCTAssertFalse(presentation.sevenDayRow.isSelected)
         XCTAssertEqual(presentation.sevenDayRow.remainingPercentText, "--% left")
         XCTAssertEqual(presentation.sevenDayRow.detailText, "Resets --")
+        XCTAssertEqual(presentation.tightestRow.title, "Tightest: 5h")
+        XCTAssertFalse(presentation.tightestRow.isSelected)
     }
 
     func testPresentationShowsExplicitTextWhenAllLimitWindowsAreMissing() {
@@ -271,6 +276,113 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(presentation.menuBarPercentText, "7d: 98%")
         XCTAssertEqual(presentation.fiveHourRow.remainingPercentText, "--% left")
         XCTAssertEqual(presentation.sevenDayRow.remainingPercentText, "98% left")
+    }
+
+    func testPrimaryOnlySevenDayOverridesUnavailableFiveHourSelectionWithoutRelabeling() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = ISO8601DateFormatter().date(from: "2026-04-07T16:00:00Z")!
+        let resetAt = ISO8601DateFormatter().date(from: "2026-04-07T21:20:00Z")!
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(
+                usedPercent: 43,
+                windowDurationMinutes: 10_080,
+                resetsAt: resetAt
+            ),
+            secondary: nil
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: now,
+            selectedMenuBarDisplayWindow: .fiveHour,
+            menuBarDisplayOptions: MenuBarDisplayOptions(
+                showsLimitLabel: true,
+                showsResetDate: true,
+                showsResetTime: false
+            ),
+            calendar: calendar,
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertTrue(presentation.menuBarPercentText.hasPrefix("7d: 57%"))
+        XCTAssertTrue(presentation.menuBarPercentText.contains("9:20PM"))
+        XCTAssertEqual(presentation.fiveHourRow.remainingPercentText, "--% left")
+        XCTAssertFalse(presentation.fiveHourRow.isSelected)
+        XCTAssertEqual(presentation.sevenDayRow.remainingPercentText, "57% left")
+        XCTAssertTrue(presentation.sevenDayRow.isSelected)
+        XCTAssertEqual(presentation.tightestRow.title, "Tightest: 7d")
+    }
+
+    func testReversedSlotsUseDurationsForRowsSelectionAndTightestLabel() {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 70, windowDurationMinutes: 10_080, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 25, windowDurationMinutes: 300, resetsAt: nil)
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: Date(timeIntervalSince1970: 0),
+            selectedMenuBarDisplayWindow: .tightest,
+            calendar: Calendar(identifier: .gregorian),
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(presentation.fiveHourRow.remainingPercentText, "75% left")
+        XCTAssertEqual(presentation.sevenDayRow.remainingPercentText, "30% left")
+        XCTAssertEqual(presentation.menuBarPercentText, "7d: 30%")
+        XCTAssertEqual(presentation.tightestRow.title, "Tightest: 7d")
+    }
+
+    func testUnknownDurationsStayAvailableToTightestWithoutGuessingKnownRows() {
+        let nonstandardSnapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 80, windowDurationMinutes: 90, resetsAt: nil),
+            secondary: nil
+        )
+        let nonstandardPresentation = MenuBarStatusFormatter.presentation(
+            snapshot: nonstandardSnapshot,
+            now: Date(timeIntervalSince1970: 0),
+            selectedMenuBarDisplayWindow: .fiveHour,
+            calendar: Calendar(identifier: .gregorian),
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(nonstandardPresentation.menuBarPercentText, "90m: 20%")
+        XCTAssertEqual(nonstandardPresentation.fiveHourRow.remainingPercentText, "--% left")
+        XCTAssertEqual(nonstandardPresentation.sevenDayRow.remainingPercentText, "--% left")
+        XCTAssertEqual(nonstandardPresentation.tightestRow.title, "Tightest: 90m")
+        XCTAssertTrue(nonstandardPresentation.tightestRow.isSelected)
+
+        let missingDurationSnapshot = CodexRateLimitSnapshot(
+            primary: nil,
+            secondary: CodexRateLimitWindow(usedPercent: 35, windowDurationMinutes: nil, resetsAt: nil)
+        )
+        let missingDurationPresentation = MenuBarStatusFormatter.presentation(
+            snapshot: missingDurationSnapshot,
+            now: Date(timeIntervalSince1970: 0),
+            selectedMenuBarDisplayWindow: .tightest,
+            calendar: Calendar(identifier: .gregorian),
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+
+        XCTAssertEqual(missingDurationPresentation.menuBarPercentText, "Secondary: 65%")
+        XCTAssertEqual(missingDurationPresentation.tightestRow.title, "Tightest: Secondary")
+    }
+
+    func testTightestPreservesPrimaryPrecedenceWhenRemainingPercentTies() {
+        let snapshot = CodexRateLimitSnapshot(
+            primary: CodexRateLimitWindow(usedPercent: 50, windowDurationMinutes: 10_080, resetsAt: nil),
+            secondary: CodexRateLimitWindow(usedPercent: 50, windowDurationMinutes: 300, resetsAt: nil)
+        )
+
+        let presentation = MenuBarStatusFormatter.presentation(
+            snapshot: snapshot,
+            now: Date(timeIntervalSince1970: 0),
+            selectedMenuBarDisplayWindow: .tightest
+        )
+
+        XCTAssertEqual(presentation.menuBarPercentText, "7d: 50%")
+        XCTAssertEqual(presentation.tightestRow.title, "Tightest: 7d")
     }
 
     func testTightestRowShowsActiveLimitSource() {

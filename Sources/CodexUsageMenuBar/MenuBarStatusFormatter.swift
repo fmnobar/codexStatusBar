@@ -243,6 +243,8 @@ enum MenuBarStatusFormatter {
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
+        let fiveHourWindow = snapshot?.classifiedWindow(for: .fiveHour)
+        let sevenDayWindow = snapshot?.classifiedWindow(for: .sevenDay)
         let menuBarWindow = resolvedMenuBarWindow(
             snapshot: snapshot,
             selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow
@@ -264,26 +266,25 @@ enum MenuBarStatusFormatter {
             ),
             fiveHourRow: row(
                 title: "5h limit",
-                window: snapshot?.primary,
+                window: fiveHourWindow,
                 displayWindow: .fiveHour,
-                isSelected: selectedMenuBarDisplayWindow == .fiveHour,
+                isSelected: menuBarWindow.effectiveDisplayWindow == .fiveHour,
                 now: now,
                 calendar: calendar,
                 locale: locale
             ),
             sevenDayRow: row(
                 title: "7d limit",
-                window: snapshot?.secondary,
+                window: sevenDayWindow,
                 displayWindow: .sevenDay,
-                isSelected: selectedMenuBarDisplayWindow == .sevenDay,
+                isSelected: menuBarWindow.effectiveDisplayWindow == .sevenDay,
                 now: now,
                 calendar: calendar,
                 locale: locale
             ),
             tightestRow: tightestRow(
-                primary: snapshot?.primary,
-                secondary: snapshot?.secondary,
-                isSelected: selectedMenuBarDisplayWindow == .tightest
+                snapshot: snapshot,
+                isSelected: menuBarWindow.effectiveDisplayWindow == .tightest
             )
         )
     }
@@ -404,11 +405,10 @@ enum MenuBarStatusFormatter {
     }
 
     static func tightestRow(
-        primary: CodexRateLimitWindow?,
-        secondary: CodexRateLimitWindow?,
+        snapshot: CodexRateLimitSnapshot?,
         isSelected: Bool
     ) -> MenuBarLimitRowPresentation {
-        let sourceTitle = tightestWindowWithSource(primary: primary, secondary: secondary)?.sourceTitle
+        let sourceTitle = tightestWindowWithSource(snapshot: snapshot)?.sourceTitle
 
         return MenuBarLimitRowPresentation(
             title: "Tightest: \(sourceTitle ?? "--")",
@@ -448,7 +448,7 @@ enum MenuBarStatusFormatter {
     }
 
     static func tightestWindow(primary: CodexRateLimitWindow?, secondary: CodexRateLimitWindow?) -> CodexRateLimitWindow? {
-        tightestWindowWithSource(primary: primary, secondary: secondary)?.window
+        tightestWindowWithSource(snapshot: CodexRateLimitSnapshot(primary: primary, secondary: secondary))?.window
     }
 
     static func menuBarToolTipText(
@@ -485,36 +485,51 @@ enum MenuBarStatusFormatter {
     private static func resolvedMenuBarWindow(
         snapshot: CodexRateLimitSnapshot?,
         selectedMenuBarDisplayWindow: MenuBarDisplayWindow
-    ) -> (sourceTitle: String?, window: CodexRateLimitWindow?) {
+    ) -> (
+        sourceTitle: String?,
+        window: CodexRateLimitWindow?,
+        effectiveDisplayWindow: MenuBarDisplayWindow
+    ) {
         switch selectedMenuBarDisplayWindow {
         case .fiveHour:
-            return ("5h", snapshot?.primary)
+            if let window = snapshot?.classifiedWindow(for: .fiveHour) {
+                return ("5h", window, .fiveHour)
+            }
         case .sevenDay:
-            return ("7d", snapshot?.secondary)
+            if let window = snapshot?.classifiedWindow(for: .sevenDay) {
+                return ("7d", window, .sevenDay)
+            }
         case .tightest:
-            let tightest = tightestWindowWithSource(primary: snapshot?.primary, secondary: snapshot?.secondary)
-            return (tightest?.sourceTitle, tightest?.window)
+            let tightest = tightestWindowWithSource(snapshot: snapshot)
+            return (tightest?.sourceTitle, tightest?.window, .tightest)
         }
+
+        guard let tightest = tightestWindowWithSource(snapshot: snapshot) else {
+            return (nil, nil, selectedMenuBarDisplayWindow)
+        }
+
+        let effectiveDisplayWindow: MenuBarDisplayWindow = switch tightest.kind {
+        case .fiveHour: .fiveHour
+        case .sevenDay: .sevenDay
+        case nil: .tightest
+        }
+
+        return (tightest.sourceTitle, tightest.window, effectiveDisplayWindow)
     }
 
     private static func tightestWindowWithSource(
-        primary: CodexRateLimitWindow?,
-        secondary: CodexRateLimitWindow?
-    ) -> (sourceTitle: String, window: CodexRateLimitWindow)? {
-        switch (primary, secondary) {
-        case (.none, .none):
+        snapshot: CodexRateLimitSnapshot?
+    ) -> CodexRateLimitWindowReference? {
+        guard let references = snapshot?.windowReferences, var tightest = references.first else {
             return nil
-        case (.some(let primary), .none):
-            return ("5h", primary)
-        case (.none, .some(let secondary)):
-            return ("7d", secondary)
-        case (.some(let primary), .some(let secondary)):
-            if primary.remainingPercent <= secondary.remainingPercent {
-                return ("5h", primary)
-            }
-
-            return ("7d", secondary)
         }
+
+        for reference in references.dropFirst()
+        where reference.window.remainingPercent < tightest.window.remainingPercent {
+            tightest = reference
+        }
+
+        return tightest
     }
 
     static func resetText(
@@ -597,7 +612,7 @@ enum MenuBarStatusFormatter {
         now: Date,
         calendar: Calendar
     ) -> Bool {
-        window.windowDurationMinutes == 10_080
+        CodexRateLimitWindowKind(windowDurationMinutes: window.windowDurationMinutes) == .sevenDay
             && calendar.isDate(resetDate, inSameDayAs: now)
             && !options.showsResetTime
     }
