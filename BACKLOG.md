@@ -68,6 +68,8 @@ Primary source gates for the later drain:
 
 ### [ ] `STORAGE-20260717-01` — Lightweight collection policy and runtime composition
 
+**Status:** `parked` — implementation is present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+
 **Outcome:** ordinary app launch performs only the work needed for a dependable status bar; detailed analytics becomes explicit opt-in functionality.
 
 **Requirements**
@@ -93,6 +95,8 @@ Primary source gates for the later drain:
 
 ### [ ] `STORAGE-20260717-02` — Bounded automatic lifecycle and tiered rollups
 
+**Status:** `parked` — implementation is present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+
 **Outcome:** retention is guaranteed during ordinary use and can safely catch up from a multi-gigabyte database without freezing launch or holding one enormous transaction.
 
 **Requirements**
@@ -116,6 +120,8 @@ Primary source gates for the later drain:
 **Depends on:** `STORAGE-20260717-01`.
 
 ### [ ] `STORAGE-20260717-03` — Schema-v3 dimension-set normalization and index diet
+
+**Status:** `parked` — implementation and the production-shaped measurement gate are present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
 
 **Outcome:** repeated strings are stored once while sample-specific attribution remains exact.
 
@@ -149,6 +155,8 @@ Primary source gates for the later drain:
 
 ### [ ] `STORAGE-20260717-04` — Enforced operational storage budgets
 
+**Status:** `parked` — implementation is present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+
 **Outcome:** the operational database cannot silently grow without bound.
 
 **Requirements**
@@ -172,6 +180,8 @@ Primary source gates for the later drain:
 **Depends on:** `STORAGE-20260717-03`.
 
 ### [ ] `STORAGE-20260717-05` — Failure-safe migration and physical reclamation
+
+**Status:** `parked` — implementation and phase-injection coverage are present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
 
 **Outcome:** logical cleanup returns real disk space without risking the user's only valid history database.
 
@@ -197,6 +207,8 @@ Primary source gates for the later drain:
 
 ### [ ] `STORAGE-20260717-06` — Bounded imports and separate historical archives
 
+**Status:** `parked` — implementation and archive/restore coverage are present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+
 **Outcome:** manual imports cannot inflate the status-bar database indefinitely.
 
 **Requirements**
@@ -221,6 +233,8 @@ Primary source gates for the later drain:
 **Depends on:** `STORAGE-20260717-05`.
 
 ### [ ] `STORAGE-20260717-07` — Simple storage UI, accessibility, and documentation
+
+**Status:** `parked` — implementation, documentation, accessibility text, and the deterministic Debug renderer are present in `a24b5b5`; final native inspection is blocked by verifier execution availability.
 
 **Outcome:** storage behavior is understandable without turning Settings or the popover into a database console.
 
@@ -251,6 +265,8 @@ Primary source gates for the later drain:
 **Depends on:** `STORAGE-20260717-06`.
 
 ### [ ] `STORAGE-20260717-08` — Full verification, production-copy rehearsal, installation, and soak
+
+**Status:** `parked` — the canonical verifier cannot start because the execution approval service reports exhausted quota until July 24, 2026 at 8:24 PM. The live database and installed app were intentionally left unchanged.
 
 **Outcome:** the initiative ships only after proving correctness, substantial storage reduction, lightweight runtime behavior, and safe migration on production-shaped data.
 
@@ -308,6 +324,13 @@ Items `AUDIT-20260710-01` through `AUDIT-20260710-15` were reviewed against the 
 15. README, release, security, contribution, privacy, retention, uninstall, and interaction documentation aligned to the accepted code.
 
 ## Verification recorded during the drain
+
+### Lightweight storage drain — July 19, 2026
+
+- Implementation checkpoint `a24b5b5` is pushed to `main`. Swift parser checks, focused storage-core type-checking, project-file validation, shell syntax, release-script fixtures, and `git diff --check` passed.
+- `scripts/measure_storage_fixture.py` passed the frozen 10,000-turn, 140,000-sample, 1,680,000-dimension synthetic benchmark. Dimension objects fell from 466,599,936 bytes in v2 to 188,416 bytes in v3 (99.96% reduction); total optimized v3 size was 49,926,144 bytes versus 514,957,312 bytes for v2 (9.70%). Evidence: `/tmp/codex-storage-fixture-20260719.json`.
+- The final `./scripts/verify.sh` attempt was rejected before execution by the external approval service because the account execution quota is exhausted. No test, analyzer, Release bundle, migration rehearsal, install, native inspection, or soak claim is made from that attempt.
+- Resume condition: execution quota or explicit execution approval becomes available. Then run `./scripts/verify.sh`; rehearse v3 on a SQLite-consistent live-store copy; require parity, integrity, normalization, query-plan, latency, and `<250 MiB` gates; install only the resulting verified source bundle; run installed mode/runtime/UI/storage/resource soaks; then check `STORAGE-01` through `-08` and remove their `parked` labels.
 
 - Canonical verifier after the audit program and duration fix: 525 tests, analyzer, warning gate, universal arm64/x86_64 Release build, source-bundle finalization/validation, and 63.65% production-core coverage. Evidence root: `/private/tmp/codex-owner-all-final-20260712-180301/DerivedData`.
 - Token-freshness focused suites: 68 tests passed. Full imported-module XCTest suite: 534 tests passed. Evidence root: `/tmp/codex-token-freshness-20260712`.
