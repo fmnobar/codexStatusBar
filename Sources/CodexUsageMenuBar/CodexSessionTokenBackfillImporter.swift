@@ -2163,36 +2163,41 @@ struct CodexSessionTokenBackfillRequest: Equatable, Sendable {
         case allHistory
     }
 
-    static let defaultRecentDayCount = 30
+    static let defaultRecentDayCount = 7
 
     let mode: Mode
     let since: Date?
     let forceRescan: Bool
     let maximumFileSize: Int64?
+    let includeDetailedContext: Bool
 
     static func recent(
         now: Date = Date(),
         days: Int = Self.defaultRecentDayCount,
         forceRescan: Bool = false,
-        maximumFileSize: Int64? = nil
+        maximumFileSize: Int64? = nil,
+        includeDetailedContext: Bool = true
     ) -> CodexSessionTokenBackfillRequest {
         CodexSessionTokenBackfillRequest(
             mode: .recent,
             since: Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: now) ?? now,
             forceRescan: forceRescan,
-            maximumFileSize: maximumFileSize
+            maximumFileSize: maximumFileSize,
+            includeDetailedContext: includeDetailedContext
         )
     }
 
     static func allHistory(
         forceRescan: Bool = false,
-        maximumFileSize: Int64? = nil
+        maximumFileSize: Int64? = nil,
+        includeDetailedContext: Bool = true
     ) -> CodexSessionTokenBackfillRequest {
         CodexSessionTokenBackfillRequest(
             mode: .allHistory,
             since: nil,
             forceRescan: forceRescan,
-            maximumFileSize: maximumFileSize
+            maximumFileSize: maximumFileSize,
+            includeDetailedContext: includeDetailedContext
         )
     }
 
@@ -2414,6 +2419,7 @@ struct CodexSessionTaskTimingImporter: @unchecked Sendable {
         }
 
         for candidate in sessionFiles {
+            try Task.checkCancellation()
             let storedRecord = try? store.codexSessionTaskTimingImportFileRecord(path: candidate.metadata.path)
             let priorRecord: CodexSessionTaskTimingImportFileRecord?
             if !forceRescan,
@@ -2771,7 +2777,8 @@ struct CodexLogTokenUsageImporter {
     func importTokenHistory(
         into store: UsageHistoryStore,
         containing date: Date,
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        includeDetailedContext: Bool = true
     ) throws -> TokenUsageImportResult {
         guard FileManager.default.fileExists(atPath: logsDatabaseURL.path),
               let interval = calendar.dateInterval(of: .day, for: date)
@@ -2860,14 +2867,18 @@ struct CodexLogTokenUsageImporter {
             samples.append(sample)
         }
 
-        return try store.importTokenUsageSamples(samples)
+        return try store.importTokenUsageSamples(
+            samples,
+            includeDetailedContext: includeDetailedContext
+        )
     }
 
     func importTokenHistory(
         into store: UsageHistoryStore,
         afterLogRowID: Int64,
         containing date: Date,
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        includeDetailedContext: Bool = true
     ) throws -> CodexLiveTokenCaptureRunResult {
         guard FileManager.default.fileExists(atPath: logsDatabaseURL.path) else {
             throw UsageHistoryStoreError.fileOperationFailed("Codex log database not found.")
@@ -2989,7 +3000,10 @@ struct CodexLogTokenUsageImporter {
             }
         }
 
-        let importResult = try store.importTokenUsageSamples(samples)
+        let importResult = try store.importTokenUsageSamples(
+            samples,
+            includeDetailedContext: includeDetailedContext
+        )
         return CodexLiveTokenCaptureRunResult(
             importResult: importResult,
             maxLogRowID: maxLogRowID,
@@ -4020,6 +4034,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
         }
 
         for candidate in sessionFiles {
+            try Task.checkCancellation()
             let storedRecord = try? store.codexSessionTokenImportFileRecord(path: candidate.metadata.path)
             var priorRecord: CodexSessionTokenImportFileRecord?
             if !request.forceRescan,
@@ -4031,6 +4046,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
             }
             var windowCount = 0
             repeat {
+                try Task.checkCancellation()
                 let previousOffset = priorRecord?.tailCursor?.byteOffset ?? 0
                 let fileResult = parseSessionFileWindow(
                     candidate.url,
@@ -4039,7 +4055,10 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                     maximumBytes: request.maximumFileSize
                 )
                 failedLinesSkipped += fileResult.failedLinesSkipped
-                let importResult = try store.importTokenUsageSamples(fileResult.samples)
+                let importResult = try store.importTokenUsageSamples(
+                    fileResult.samples,
+                    includeDetailedContext: request.includeDetailedContext
+                )
                 tokenEventsImported += importResult.insertedCount
                 duplicateEventsSkipped += importResult.duplicateCount
                 modelEventsRepaired += importResult.repairedModelCount
@@ -4054,6 +4073,7 @@ struct CodexSessionTokenBackfillImporter: CodexSessionTokenBackfillImporting, @u
                 )
                 windowCount += 1
                 try afterWindowCheckpoint?(windowCount)
+                try Task.checkCancellation()
 
                 let shouldContinueAllHistory = request.mode == .allHistory
                     && request.maximumFileSize == nil

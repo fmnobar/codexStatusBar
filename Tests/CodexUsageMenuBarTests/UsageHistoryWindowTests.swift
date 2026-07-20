@@ -7,6 +7,78 @@ import XCTest
 
 extension UsageHistoryStoreTests {
     @MainActor
+    func testUsageCollectionModeDefaultsToLightweightAndPersistsDetailedOptIn() throws {
+        let suiteName = "UsageCollectionModeTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(UsageCollectionModeStore.load(from: defaults), .lightweight)
+
+        defaults.set("future-invalid-value", forKey: UsageCollectionModeStore.key)
+        XCTAssertEqual(UsageCollectionModeStore.load(from: defaults), .lightweight)
+
+        let controller = UsageCollectionModeController(defaults: defaults)
+        XCTAssertEqual(controller.mode, .lightweight)
+
+        controller.setMode(.detailedAnalytics)
+        XCTAssertEqual(controller.mode, .detailedAnalytics)
+        XCTAssertEqual(UsageCollectionModeStore.load(from: defaults), .detailedAnalytics)
+
+        controller.setMode(.lightweight)
+        XCTAssertEqual(UsageCollectionModeStore.load(from: defaults), .lightweight)
+    }
+
+    func testUsageCollectionPlansFreezeLightweightAndDetailedCollectorBehavior() {
+        XCTAssertEqual(
+            UsageCollectionPlan.plan(for: .lightweight),
+            UsageCollectionPlan(
+                mode: .lightweight,
+                liveTokenCaptureInterval: 300,
+                capturesDetailedTokenContext: false,
+                capturesAdvancedMetadata: false
+            )
+        )
+        XCTAssertEqual(
+            UsageCollectionPlan.plan(for: .detailedAnalytics),
+            UsageCollectionPlan(
+                mode: .detailedAnalytics,
+                liveTokenCaptureInterval: 30,
+                capturesDetailedTokenContext: true,
+                capturesAdvancedMetadata: true
+            )
+        )
+    }
+
+    func testUsageCollectionDetailGateUpdatesSynchronously() {
+        let gate = UsageCollectionDetailGate(mode: .lightweight)
+        XCTAssertFalse(gate.capturesDetailedTokenContext)
+
+        gate.update(mode: .detailedAnalytics)
+        XCTAssertTrue(gate.capturesDetailedTokenContext)
+
+        gate.update(mode: .lightweight)
+        XCTAssertFalse(gate.capturesDetailedTokenContext)
+    }
+
+    func testStorageReplacementGateIsBalancedAndReportsRetryableState() {
+        let gate = UsageHistoryStoreReplacementGate()
+        XCTAssertFalse(gate.isActive)
+        gate.begin()
+        gate.begin()
+        XCTAssertTrue(gate.isActive)
+        gate.end()
+        XCTAssertTrue(gate.isActive)
+        gate.end()
+        XCTAssertFalse(gate.isActive)
+        gate.end()
+        XCTAssertFalse(gate.isActive)
+        XCTAssertTrue(
+            UsageHistoryStoreError.storageMaintenanceInProgress.localizedDescription
+                .contains("retried shortly")
+        )
+    }
+
+    @MainActor
     func testAppDelegateForwardsLaunchAndTerminationToRuntime() {
         let runtime = AppDelegateRuntimeSpy()
         let delegate = AppDelegate(runtime: runtime)

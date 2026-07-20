@@ -15,7 +15,8 @@ extension UsageHistoryStore {
             }
 
             try compactRawSamples(
-                olderThan: Date(timeIntervalSince1970: TimeInterval(timestamp)).addingTimeInterval(-rawRetentionProvider())
+                olderThan: Date(timeIntervalSince1970: TimeInterval(timestamp))
+                    .addingTimeInterval(-StorageLifecyclePolicy.rateLimitRawRetention)
             )
         }
 
@@ -41,7 +42,10 @@ extension UsageHistoryStore {
         notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
 
-    func importTokenUsageSamples(_ samples: [ImportedCodexTokenUsageSample]) throws -> TokenUsageImportResult {
+    func importTokenUsageSamples(
+        _ samples: [ImportedCodexTokenUsageSample],
+        includeDetailedContext: Bool = true
+    ) throws -> TokenUsageImportResult {
         var insertedCount = 0
         var duplicateCount = 0
         var repairedModelCount = 0
@@ -50,7 +54,10 @@ extension UsageHistoryStore {
 
         try transaction {
             for sample in samples {
-                let notification = sample.notification
+                let notification = includeDetailedContext
+                    ? sample.notification
+                    : sample.notification.lightweightStorageValue
+                let context = includeDetailedContext ? sample.context : nil
                 let cumulativeTotal = notification.tokenUsage.total.totalTokens
                 let receivedAt = Self.roundedToSecond(sample.receivedAt).timeIntervalSince1970Int
 
@@ -71,13 +78,13 @@ extension UsageHistoryStore {
                         threadID: notification.threadID,
                         turnID: notification.turnID,
                         cumulativeTotalTokens: cumulativeTotal,
-                        context: sample.context
+                        context: context
                     ) {
                         repairedContextCount += 1
                     }
                     repairedDimensionCount += try upsertTokenUsageDimensions(
                         notification: notification,
-                        context: sample.context,
+                        context: context,
                         seenAt: receivedAt
                     )
 
@@ -94,7 +101,7 @@ extension UsageHistoryStore {
                     notification: notification,
                     timestamp: receivedAt,
                     observedTokens: observedTokens,
-                    context: sample.context
+                    context: context
                 )
                 insertedCount += 1
             }
@@ -120,40 +127,500 @@ extension UsageHistoryStore {
         )
     }
 
-    /// Rolls old high-cardinality telemetry into durable hourly summaries, then removes raw rows.
-    /// The newest cumulative token row per inactive thread is retained as a query-hidden baseline so
-    /// future deltas remain correct when a long-running session becomes active again.
+    /// Rolls old high-cardinality telemetry into durable hourly summaries in restartable batches.
+    /// Each transaction covers at most 24 completed local-calendar hours so a long catch-up cannot
+    /// monopolize the writer or create one multi-gigabyte WAL transaction.
     func enforceTelemetryRetention(referenceDate: Date, force: Bool = false) throws {
-        let retention = max(rawRetentionProvider(), 60 * 60)
-        let referenceTimestamp = Self.roundedToSecond(referenceDate).timeIntervalSince1970Int
-        let metadataKey = "telemetry_retention_last_run"
-        if !force,
-           let lastRun = try metadataValue(for: metadataKey).flatMap(Int64.init),
-           referenceTimestamp - lastRun < 6 * 60 * 60
-        {
+        guard try beginTelemetryRetention(referenceDate: referenceDate, force: force) else {
             return
         }
 
-        let requestedCutoff = referenceTimestamp - Int64(retention.rounded(.down))
-        // Compact complete local-calendar hours only. Besides keeping the rollup boundary aligned
-        // with dashboard buckets (including DST), this prevents a moving cutoff from repeatedly
-        // merging partial samples into the same hour and biasing its representative quantiles.
-        let cutoff = UsageHistoryRange.bucketStart(
-            for: Date(timeIntervalSince1970: TimeInterval(requestedCutoff)),
-            component: .hour,
-            calendar: calendar
-        ).timeIntervalSince1970Int
-        try transaction {
-            try compactTokenTelemetry(olderThan: cutoff)
-            try compactPerformanceTelemetry(olderThan: cutoff)
-            try setMetadataValue(String(referenceTimestamp), for: metadataKey)
-        }
-        if force {
-            notificationCenter.post(name: Self.didChangeNotification, object: self)
+        do {
+            while try enforceNextTelemetryRetentionBatch(referenceDate: referenceDate) {}
+            try finishTelemetryRetention(referenceDate: referenceDate)
+            if force {
+                notificationCenter.post(name: Self.didChangeNotification, object: self)
+            }
+        } catch {
+            try? failTelemetryRetention(referenceDate: referenceDate, error: error)
+            throw error
         }
     }
 
-    private func compactTokenTelemetry(olderThan cutoff: Int64) throws {
+    func beginTelemetryRetention(referenceDate: Date, force: Bool) throws -> Bool {
+        let referenceTimestamp = Self.roundedToSecond(referenceDate).timeIntervalSince1970Int
+        if !force,
+           let lastRun = try metadataValue(for: Self.telemetryRetentionLastSuccessMetadataKey).flatMap(Int64.init),
+           referenceTimestamp - lastRun < Int64(StorageLifecyclePolicy.maintenanceInterval)
+        {
+            return false
+        }
+
+        var state = try storageMaintenanceState()
+        state.lastAttemptAt = referenceDate
+        state.stage = .rawToHourly
+        state.lastErrorText = nil
+        try transaction {
+            try setMetadataValue(String(referenceTimestamp), for: Self.telemetryRetentionLastAttemptMetadataKey)
+            try recordStorageMaintenanceState(state)
+        }
+        return true
+    }
+
+    /// Returns true when another raw-to-hourly batch remains.
+    func enforceNextTelemetryRetentionBatch(referenceDate: Date) throws -> Bool {
+        let retention = max(rawRetentionProvider(), 60 * 60)
+        let referenceTimestamp = Self.roundedToSecond(referenceDate).timeIntervalSince1970Int
+        let requestedCutoff = referenceTimestamp - Int64(retention.rounded(.down))
+        let targetCutoff = UsageHistoryRange.bucketStart(
+            for: Date(timeIntervalSince1970: TimeInterval(requestedCutoff)),
+            component: .hour,
+            calendar: calendar
+        )
+
+        let earliestToken = try earliestUncompactedTokenTimestamp(olderThan: targetCutoff.timeIntervalSince1970Int)
+        let earliestPerformance = try earliestUncompactedPerformanceTimestamp(olderThan: targetCutoff.timeIntervalSince1970Int)
+        guard let earliestTimestamp = [earliestToken, earliestPerformance].compactMap({ $0 }).min() else {
+            if try foldNextHourlyRetentionBatch(referenceDate: referenceDate) {
+                return true
+            }
+            try finalizeTelemetryRetentionTiers(referenceDate: referenceDate)
+            return false
+        }
+
+        let batchStart = UsageHistoryRange.bucketStart(
+            for: Date(timeIntervalSince1970: TimeInterval(earliestTimestamp)),
+            component: .hour,
+            calendar: calendar
+        )
+        let proposedBatchEnd = calendar.date(
+            byAdding: .hour,
+            value: StorageLifecyclePolicy.maximumHourlyBucketsPerTransaction,
+            to: batchStart
+        ) ?? targetCutoff
+        let batchEnd = min(proposedBatchEnd, targetCutoff)
+        let beforeChanges = sqlite3_total_changes64(database)
+
+        try transaction {
+            try compactTokenTelemetry(olderThan: batchEnd.timeIntervalSince1970Int)
+            try compactPerformanceTelemetry(olderThan: batchEnd.timeIntervalSince1970Int)
+            var state = try storageMaintenanceState()
+            state.stage = .rawToHourly
+            state.cursor = batchEnd
+            state.rowsCompacted += max(sqlite3_total_changes64(database) - beforeChanges, 0)
+            try setMetadataValue(
+                String(batchEnd.timeIntervalSince1970Int),
+                for: Self.telemetryRetentionCursorMetadataKey
+            )
+            try recordStorageMaintenanceState(state)
+        }
+
+        return batchEnd < targetCutoff
+    }
+
+    func finishTelemetryRetention(referenceDate: Date) throws {
+        let referenceTimestamp = Self.roundedToSecond(referenceDate).timeIntervalSince1970Int
+        var state = try storageMaintenanceState()
+        state.lastSuccessAt = referenceDate
+        state.stage = .idle
+        state.cursor = nil
+        state.lastErrorText = nil
+        try transaction {
+            try setMetadataValue(String(referenceTimestamp), for: Self.telemetryRetentionLastSuccessMetadataKey)
+            // Preserve the v2 key for backup and diagnostics compatibility.
+            try setMetadataValue(String(referenceTimestamp), for: "telemetry_retention_last_run")
+            try setMetadataValue("", for: Self.telemetryRetentionCursorMetadataKey)
+            try recordStorageMaintenanceState(state)
+        }
+    }
+
+    func failTelemetryRetention(referenceDate: Date, error: Error) throws {
+        var state = try storageMaintenanceState()
+        state.lastAttemptAt = referenceDate
+        state.stage = .failed
+        state.lastErrorText = StorageMaintenanceErrorSanitizer.text(for: error)
+        try transaction {
+            try recordStorageMaintenanceState(state)
+        }
+    }
+
+    func storageMaintenanceState() throws -> StorageMaintenanceState {
+        guard let encoded = try metadataValue(for: Self.storageMaintenanceStateMetadataKey),
+              let data = encoded.data(using: .utf8),
+              let state = try? JSONDecoder().decode(StorageMaintenanceState.self, from: data)
+        else {
+            return .idle
+        }
+        return state
+    }
+
+    func recordStorageMaintenanceState(_ state: StorageMaintenanceState) throws {
+        let data = try JSONEncoder().encode(state)
+        guard let encoded = String(data: data, encoding: .utf8) else {
+            throw UsageHistoryStoreError.databaseOperationFailed("Maintenance state could not be encoded.")
+        }
+        try setMetadataValue(encoded, for: Self.storageMaintenanceStateMetadataKey)
+    }
+
+    private func finalizeTelemetryRetentionTiers(referenceDate: Date) throws {
+        let rateCutoff = referenceDate.addingTimeInterval(-StorageLifecyclePolicy.rateLimitRawRetention)
+        let baselineCutoff = referenceDate.addingTimeInterval(-StorageLifecyclePolicy.inactiveTokenBaselineRetention)
+        let hourlyCutoff = UsageHistoryRange.bucketStart(
+            for: referenceDate.addingTimeInterval(-StorageLifecyclePolicy.hourlyRetention),
+            component: .hour,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        let dailyCutoff = UsageHistoryRange.bucketStart(
+            for: referenceDate.addingTimeInterval(-StorageLifecyclePolicy.dailyRetention),
+            component: .day,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        try transaction {
+            var state = try storageMaintenanceState()
+            state.stage = .pruning
+            try compactRawSamples(olderThan: rateCutoff)
+            try expireInactiveTokenBaselines(olderThan: baselineCutoff.timeIntervalSince1970Int)
+            try execute(
+                "DELETE FROM usage_rollups WHERE granularity = 'hourly' AND period_start < \(hourlyCutoff)"
+            )
+            try execute(
+                "DELETE FROM usage_rollups WHERE granularity = 'daily' AND period_start < \(dailyCutoff)"
+            )
+            try execute("DELETE FROM token_usage_daily_rollups WHERE period_start < \(dailyCutoff)")
+            try execute("DELETE FROM token_dimension_daily_rollups WHERE period_start < \(dailyCutoff)")
+            try execute("DELETE FROM telemetry_daily_rollups WHERE period_start < \(dailyCutoff)")
+            try execute("DELETE FROM telemetry_error_daily_rollups WHERE period_start < \(dailyCutoff)")
+            try execute("DELETE FROM token_series_catalog WHERE seen_at < \(dailyCutoff)")
+            try execute("DELETE FROM token_project_catalog WHERE last_seen_at < \(dailyCutoff)")
+            try execute("DELETE FROM token_effort_catalog WHERE last_seen_at < \(dailyCutoff)")
+            try execute("DELETE FROM token_source_catalog WHERE last_seen_at < \(dailyCutoff)")
+            try execute("DELETE FROM token_dimension_catalog WHERE last_seen_at < \(dailyCutoff)")
+            try execute(
+                """
+                DELETE FROM token_dimension_sets
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM token_usage_samples
+                    WHERE token_usage_samples.dimension_set_id = token_dimension_sets.set_id
+                )
+                """
+            )
+            try execute(
+                """
+                DELETE FROM token_dimension_values
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM token_dimension_set_members
+                    WHERE token_dimension_set_members.value_id = token_dimension_values.value_id
+                )
+                """
+            )
+            try recordStorageMaintenanceState(state)
+        }
+    }
+
+    private func foldNextHourlyRetentionBatch(referenceDate: Date) throws -> Bool {
+        let hourlyCutoff = UsageHistoryRange.bucketStart(
+            for: referenceDate.addingTimeInterval(-StorageLifecyclePolicy.hourlyRetention),
+            component: .hour,
+            calendar: calendar
+        )
+        guard let earliest = try earliestHourlyRollupTimestamp(olderThan: hourlyCutoff.timeIntervalSince1970Int) else {
+            return false
+        }
+
+        let batchStart = UsageHistoryRange.bucketStart(
+            for: Date(timeIntervalSince1970: TimeInterval(earliest)),
+            component: .hour,
+            calendar: calendar
+        )
+        let proposedEnd = calendar.date(
+            byAdding: .hour,
+            value: StorageLifecyclePolicy.maximumHourlyBucketsPerTransaction,
+            to: batchStart
+        ) ?? hourlyCutoff
+        let batchEnd = min(proposedEnd, hourlyCutoff)
+
+        try transaction {
+            var hourStart = batchStart
+            while hourStart < batchEnd {
+                guard let nextHour = calendar.date(byAdding: .hour, value: 1, to: hourStart),
+                      nextHour > hourStart
+                else {
+                    break
+                }
+                let dayStart = UsageHistoryRange.bucketStart(
+                    for: hourStart,
+                    component: .day,
+                    calendar: calendar
+                )
+                try foldHourlyRollups(
+                    hourStart: hourStart.timeIntervalSince1970Int,
+                    dayStart: dayStart.timeIntervalSince1970Int
+                )
+                hourStart = nextHour
+            }
+
+            let start = batchStart.timeIntervalSince1970Int
+            let end = batchEnd.timeIntervalSince1970Int
+            try execute("DELETE FROM token_usage_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+            try execute("DELETE FROM token_dimension_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+            try execute("DELETE FROM telemetry_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+            try execute("DELETE FROM telemetry_error_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+
+            var state = try storageMaintenanceState()
+            state.stage = .hourlyToDaily
+            state.cursor = batchEnd
+            try recordStorageMaintenanceState(state)
+        }
+        return true
+    }
+
+    /// Folds at most 24 of the oldest hourly buckets even when they are still inside the normal
+    /// 90-day tier. This is the budget-wins escape hatch and is intentionally separate from the
+    /// ordinary time-retention cursor.
+    func foldHourlyBudgetBatch(startingAt earliest: Date) throws -> Bool {
+        let batchStart = UsageHistoryRange.bucketStart(
+            for: earliest,
+            component: .hour,
+            calendar: calendar
+        )
+        let batchEnd = calendar.date(
+            byAdding: .hour,
+            value: StorageLifecyclePolicy.maximumHourlyBucketsPerTransaction,
+            to: batchStart
+        ) ?? batchStart.addingTimeInterval(24 * 60 * 60)
+
+        let beforeChanges = sqlite3_total_changes64(database)
+        try transaction {
+            var hourStart = batchStart
+            while hourStart < batchEnd {
+                guard let nextHour = calendar.date(byAdding: .hour, value: 1, to: hourStart),
+                      nextHour > hourStart
+                else {
+                    break
+                }
+                let dayStart = UsageHistoryRange.bucketStart(
+                    for: hourStart,
+                    component: .day,
+                    calendar: calendar
+                )
+                try foldHourlyRollups(
+                    hourStart: hourStart.timeIntervalSince1970Int,
+                    dayStart: dayStart.timeIntervalSince1970Int
+                )
+                hourStart = nextHour
+            }
+
+            let start = batchStart.timeIntervalSince1970Int
+            let end = batchEnd.timeIntervalSince1970Int
+            try execute("DELETE FROM token_usage_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+            try execute("DELETE FROM token_dimension_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+            try execute("DELETE FROM telemetry_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+            try execute("DELETE FROM telemetry_error_hourly_rollups WHERE period_start >= \(start) AND period_start < \(end)")
+        }
+        return sqlite3_total_changes64(database) > beforeChanges
+    }
+
+    func compactOldestRawBudgetBatch(referenceDate: Date = Date()) throws -> Bool {
+        let completedHourCutoff = UsageHistoryRange.bucketStart(
+            for: referenceDate,
+            component: .hour,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        let earliestToken = try earliestUncompactedTokenTimestamp(olderThan: completedHourCutoff)
+        let earliestPerformance = try earliestUncompactedPerformanceTimestamp(olderThan: completedHourCutoff)
+        guard let earliest = [earliestToken, earliestPerformance].compactMap({ $0 }).min() else {
+            return false
+        }
+        let start = UsageHistoryRange.bucketStart(
+            for: Date(timeIntervalSince1970: TimeInterval(earliest)),
+            component: .hour,
+            calendar: calendar
+        )
+        let proposedEnd = calendar.date(
+            byAdding: .hour,
+            value: StorageLifecyclePolicy.maximumHourlyBucketsPerTransaction,
+            to: start
+        ) ?? start.addingTimeInterval(24 * 60 * 60)
+        let end = min(proposedEnd.timeIntervalSince1970Int, completedHourCutoff)
+        guard end > earliest else {
+            return false
+        }
+
+        let beforeChanges = sqlite3_total_changes64(database)
+        try transaction {
+            try compactTokenTelemetry(olderThan: end)
+            try compactPerformanceTelemetry(olderThan: end)
+        }
+        return sqlite3_total_changes64(database) > beforeChanges
+    }
+
+    private func earliestHourlyRollupTimestamp(olderThan cutoff: Int64) throws -> Int64? {
+        let statement = try prepare(
+            """
+            SELECT MIN(period_start) FROM (
+                SELECT period_start FROM token_usage_hourly_rollups WHERE period_start < ?
+                UNION ALL
+                SELECT period_start FROM token_dimension_hourly_rollups WHERE period_start < ?
+                UNION ALL
+                SELECT period_start FROM telemetry_hourly_rollups WHERE period_start < ?
+                UNION ALL
+                SELECT period_start FROM telemetry_error_hourly_rollups WHERE period_start < ?
+            )
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        for index in 1...4 {
+            sqlite3_bind_int64(statement, Int32(index), cutoff)
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              sqlite3_column_type(statement, 0) != SQLITE_NULL
+        else {
+            return nil
+        }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func foldHourlyRollups(hourStart: Int64, dayStart: Int64) throws {
+        try execute(
+            """
+            INSERT INTO token_usage_daily_rollups (
+                period_start, model, project_path, project_name, effort, source,
+                model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            )
+            SELECT \(dayStart), model, project_path, project_name, effort, source,
+                model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            FROM token_usage_hourly_rollups WHERE period_start = \(hourStart)
+            ON CONFLICT(
+                period_start, model, project_path, project_name,
+                effort, source, model_context_window
+            ) DO UPDATE SET
+                observed_input_tokens = observed_input_tokens + excluded.observed_input_tokens,
+                observed_cached_input_tokens = observed_cached_input_tokens + excluded.observed_cached_input_tokens,
+                observed_output_tokens = observed_output_tokens + excluded.observed_output_tokens,
+                observed_reasoning_output_tokens = observed_reasoning_output_tokens + excluded.observed_reasoning_output_tokens,
+                observed_total_tokens = observed_total_tokens + excluded.observed_total_tokens,
+                sample_count = sample_count + excluded.sample_count
+            """
+        )
+        try execute(
+            """
+            INSERT INTO token_dimension_daily_rollups (
+                period_start, dimension_key, dimension_value,
+                observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            )
+            SELECT \(dayStart), dimension_key, dimension_value,
+                observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            FROM token_dimension_hourly_rollups WHERE period_start = \(hourStart)
+            ON CONFLICT(period_start, dimension_key, dimension_value) DO UPDATE SET
+                observed_input_tokens = observed_input_tokens + excluded.observed_input_tokens,
+                observed_cached_input_tokens = observed_cached_input_tokens + excluded.observed_cached_input_tokens,
+                observed_output_tokens = observed_output_tokens + excluded.observed_output_tokens,
+                observed_reasoning_output_tokens = observed_reasoning_output_tokens + excluded.observed_reasoning_output_tokens,
+                observed_total_tokens = observed_total_tokens + excluded.observed_total_tokens,
+                sample_count = sample_count + excluded.sample_count
+            """
+        )
+        try execute(
+            """
+            INSERT INTO telemetry_daily_rollups (
+                metric, period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, sample_count, success_count, failure_count,
+                duration_sample_count, duration_total_ms,
+                first_token_sample_count, first_token_total_ms,
+                completed_count, incomplete_count, duration_values, first_token_values
+            )
+            SELECT metric, \(dayStart), model, project_path, project_name, effort, source,
+                transport, wire_api, sample_count, success_count, failure_count,
+                duration_sample_count, duration_total_ms,
+                first_token_sample_count, first_token_total_ms,
+                completed_count, incomplete_count, duration_values, first_token_values
+            FROM telemetry_hourly_rollups WHERE period_start = \(hourStart)
+            ON CONFLICT(
+                metric, period_start, model, project_path, project_name,
+                effort, source, transport, wire_api
+            ) DO UPDATE SET
+                sample_count = sample_count + excluded.sample_count,
+                success_count = success_count + excluded.success_count,
+                failure_count = failure_count + excluded.failure_count,
+                duration_sample_count = duration_sample_count + excluded.duration_sample_count,
+                duration_total_ms = duration_total_ms + excluded.duration_total_ms,
+                first_token_sample_count = first_token_sample_count + excluded.first_token_sample_count,
+                first_token_total_ms = first_token_total_ms + excluded.first_token_total_ms,
+                completed_count = completed_count + excluded.completed_count,
+                incomplete_count = incomplete_count + excluded.incomplete_count,
+                duration_values = \(Self.representativeTelemetrySampleMergeSQL(
+                    existing: "duration_values",
+                    incoming: "excluded.duration_values"
+                )),
+                first_token_values = \(Self.representativeTelemetrySampleMergeSQL(
+                    existing: "first_token_values",
+                    incoming: "excluded.first_token_values"
+                ))
+            """
+        )
+        try execute(
+            """
+            INSERT INTO telemetry_error_daily_rollups (
+                period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, error_summary, event_count
+            )
+            SELECT \(dayStart), model, project_path, project_name, effort, source,
+                transport, wire_api, error_summary, event_count
+            FROM telemetry_error_hourly_rollups WHERE period_start = \(hourStart)
+            ON CONFLICT(
+                period_start, model, project_path, project_name, effort, source,
+                transport, wire_api, error_summary
+            ) DO UPDATE SET event_count = event_count + excluded.event_count
+            """
+        )
+    }
+
+    private func expireInactiveTokenBaselines(olderThan cutoff: Int64) throws {
+        try execute(
+            """
+            INSERT INTO token_expired_baselines(thread_id, expired_at)
+            SELECT thread_id, MAX(received_at)
+            FROM token_usage_samples
+            WHERE is_retention_baseline = 1 AND received_at < \(cutoff)
+            GROUP BY thread_id
+            ON CONFLICT(thread_id) DO UPDATE SET
+                expired_at = MAX(expired_at, excluded.expired_at)
+            """
+        )
+        if try tableExists(table: "token_usage_dimensions") {
+            try execute(
+                """
+                DELETE FROM token_usage_dimensions
+                WHERE EXISTS (
+                    SELECT 1 FROM token_usage_samples AS samples
+                    WHERE samples.thread_id = token_usage_dimensions.thread_id
+                      AND samples.turn_id = token_usage_dimensions.turn_id
+                      AND samples.total_total_tokens = token_usage_dimensions.total_total_tokens
+                      AND samples.is_retention_baseline = 1
+                      AND samples.received_at < \(cutoff)
+                )
+                """
+            )
+        }
+        try execute(
+            "DELETE FROM token_usage_samples WHERE is_retention_baseline = 1 AND received_at < \(cutoff)"
+        )
+    }
+
+    private static let telemetryRetentionLastAttemptMetadataKey = "telemetry_retention_last_attempt"
+    private static let telemetryRetentionLastSuccessMetadataKey = "telemetry_retention_last_success"
+    private static let telemetryRetentionCursorMetadataKey = "telemetry_retention_cursor"
+    private static let storageMaintenanceStateMetadataKey = "storage_maintenance_state"
+
+    func compactTokenTelemetry(olderThan cutoff: Int64) throws {
         if let earliestTimestamp = try earliestUncompactedTokenTimestamp(olderThan: cutoff) {
             var bucketStart = UsageHistoryRange.bucketStart(
                 for: Date(timeIntervalSince1970: TimeInterval(earliestTimestamp)),
@@ -215,20 +682,22 @@ extension UsageHistoryStore {
               )
             """
         )
-        try execute(
-            """
-            DELETE FROM token_usage_dimensions
-            WHERE EXISTS (
-                SELECT 1
-                FROM token_usage_samples AS samples
-                WHERE samples.thread_id = token_usage_dimensions.thread_id
-                  AND samples.turn_id = token_usage_dimensions.turn_id
-                  AND samples.total_total_tokens = token_usage_dimensions.total_total_tokens
-                  AND samples.received_at < \(cutoff)
-                  AND samples.is_retention_baseline = 0
+        if try tableExists(table: "token_usage_dimensions") {
+            try execute(
+                """
+                DELETE FROM token_usage_dimensions
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM token_usage_samples AS samples
+                    WHERE samples.thread_id = token_usage_dimensions.thread_id
+                      AND samples.turn_id = token_usage_dimensions.turn_id
+                      AND samples.total_total_tokens = token_usage_dimensions.total_total_tokens
+                      AND samples.received_at < \(cutoff)
+                      AND samples.is_retention_baseline = 0
+                )
+                """
             )
-            """
-        )
+        }
         try execute(
             "DELETE FROM token_usage_samples WHERE received_at < \(cutoff) AND is_retention_baseline = 0"
         )
@@ -313,7 +782,7 @@ extension UsageHistoryStore {
                         END),
                         MIN(dimension_value)
                     ) AS dimension_value
-                FROM token_usage_dimensions
+                FROM token_usage_dimension_query_values
                 WHERE dimension_key = '\(rawKey)'
                 GROUP BY thread_id, turn_id, total_total_tokens
             ) AS dimension_values
@@ -1170,6 +1639,16 @@ extension UsageHistoryStore {
             )
         }
 
+        if try hasExpiredTokenBaseline(threadID: threadID) {
+            return CodexTokenUsageBreakdown(
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                totalTokens: 0
+            )
+        }
+
         return CodexTokenUsageBreakdown(
             inputTokens: max(last.inputTokens, 0),
             cachedInputTokens: max(last.cachedInputTokens, 0),
@@ -1177,6 +1656,18 @@ extension UsageHistoryStore {
             reasoningOutputTokens: max(last.reasoningOutputTokens, 0),
             totalTokens: max(last.totalTokens, 0)
         )
+    }
+
+    private func hasExpiredTokenBaseline(threadID: String) throws -> Bool {
+        let statement = try prepare(
+            "SELECT EXISTS(SELECT 1 FROM token_expired_baselines WHERE thread_id = ? LIMIT 1)"
+        )
+        defer { sqlite3_finalize(statement) }
+        bindText(threadID, to: 1, in: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        return sqlite3_column_int(statement, 0) != 0
     }
 
     func hasTokenSampleAtOrAbove(threadID: String, cumulativeTotalTokens: Int64) throws -> Bool {
@@ -1610,20 +2101,211 @@ extension UsageHistoryStore {
         }
 
         var insertedCount = 0
+        let writesLegacyDimensions = try tableExists(table: "token_usage_dimensions")
         for dimension in dimensions {
-            if try insertTokenUsageDimension(
-                threadID: notification.threadID,
-                turnID: notification.turnID,
-                totalTotalTokens: notification.tokenUsage.total.totalTokens,
-                dimension: dimension,
-                seenAt: seenAt
-            ) {
-                insertedCount += 1
+            if writesLegacyDimensions {
+                if try insertTokenUsageDimension(
+                    threadID: notification.threadID,
+                    turnID: notification.turnID,
+                    totalTotalTokens: notification.tokenUsage.total.totalTokens,
+                    dimension: dimension,
+                    seenAt: seenAt
+                ) {
+                    insertedCount += 1
+                }
             }
             try upsertTokenDimensionCatalog(dimension: dimension, seenAt: seenAt)
         }
+        try assignTokenDimensionSet(
+            dimensions: dimensions,
+            threadID: notification.threadID,
+            turnID: notification.turnID,
+            totalTotalTokens: notification.tokenUsage.total.totalTokens,
+            seenAt: seenAt
+        )
 
         return insertedCount
+    }
+
+    func assignTokenDimensionSet(
+        dimensions: [TokenUsageDimension],
+        threadID: String,
+        turnID: String,
+        totalTotalTokens: Int64,
+        seenAt: Int64
+    ) throws {
+        let dimensions = TokenUsageDimension.unique(dimensions)
+        guard !dimensions.isEmpty else {
+            return
+        }
+
+        let valueIDs = try dimensions.map { dimension in
+            try upsertTokenDimensionValue(dimension, seenAt: seenAt)
+        }.sorted()
+        let signature = try JSONEncoder().encode(valueIDs)
+        let setID = try upsertTokenDimensionSet(signature: signature, valueIDs: valueIDs)
+
+        let statement = try prepare(
+            """
+            UPDATE token_usage_samples
+            SET dimension_set_id = ?
+            WHERE thread_id = ? AND turn_id = ? AND total_total_tokens = ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, setID)
+        bindText(threadID, to: 2, in: statement)
+        bindText(turnID, to: 3, in: statement)
+        sqlite3_bind_int64(statement, 4, totalTotalTokens)
+        try step(statement)
+    }
+
+    private func upsertTokenDimensionValue(
+        _ dimension: TokenUsageDimension,
+        seenAt: Int64
+    ) throws -> Int64 {
+        let insert = try prepare(
+            """
+            INSERT INTO token_dimension_values (
+                dimension_key, dimension_value, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(dimension_key, dimension_value) DO UPDATE SET
+                first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(last_seen_at, excluded.last_seen_at)
+            """
+        )
+        bindText(dimension.key.rawValue, to: 1, in: insert)
+        bindText(dimension.value, to: 2, in: insert)
+        sqlite3_bind_int64(insert, 3, seenAt)
+        sqlite3_bind_int64(insert, 4, seenAt)
+        try step(insert)
+        sqlite3_finalize(insert)
+
+        let select = try prepare(
+            "SELECT value_id FROM token_dimension_values WHERE dimension_key = ? AND dimension_value = ?"
+        )
+        defer { sqlite3_finalize(select) }
+        bindText(dimension.key.rawValue, to: 1, in: select)
+        bindText(dimension.value, to: 2, in: select)
+        guard sqlite3_step(select) == SQLITE_ROW else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        return sqlite3_column_int64(select, 0)
+    }
+
+    private func upsertTokenDimensionSet(signature: Data, valueIDs: [Int64]) throws -> Int64 {
+        let insert = try prepare("INSERT OR IGNORE INTO token_dimension_sets(signature) VALUES (?)")
+        _ = signature.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(insert, 1, bytes.baseAddress, Int32(bytes.count), SQLITE_TRANSIENT)
+        }
+        try step(insert)
+        sqlite3_finalize(insert)
+
+        let select = try prepare("SELECT set_id FROM token_dimension_sets WHERE signature = ?")
+        _ = signature.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(select, 1, bytes.baseAddress, Int32(bytes.count), SQLITE_TRANSIENT)
+        }
+        guard sqlite3_step(select) == SQLITE_ROW else {
+            sqlite3_finalize(select)
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        let setID = sqlite3_column_int64(select, 0)
+        sqlite3_finalize(select)
+
+        let memberInsert = try prepare(
+            "INSERT OR IGNORE INTO token_dimension_set_members(set_id, value_id) VALUES (?, ?)"
+        )
+        defer { sqlite3_finalize(memberInsert) }
+        for valueID in valueIDs {
+            sqlite3_reset(memberInsert)
+            sqlite3_clear_bindings(memberInsert)
+            sqlite3_bind_int64(memberInsert, 1, setID)
+            sqlite3_bind_int64(memberInsert, 2, valueID)
+            try step(memberInsert)
+        }
+        return setID
+    }
+
+    /// Backfills at most `sampleLimit` retained samples and persists the rowid cursor in the same
+    /// transaction. Returns true when another chunk may remain.
+    func backfillNextTokenDimensionSetChunk(sampleLimit: Int = 500) throws -> Bool {
+        struct BackfillSample {
+            let rowID: Int64
+            let threadID: String
+            let turnID: String
+            let totalTotalTokens: Int64
+            let seenAt: Int64
+            var dimensions: [TokenUsageDimension]
+        }
+
+        var samplesByRowID = [Int64: BackfillSample]()
+        let statement = try prepare(
+            """
+            WITH selected_samples AS (
+                SELECT rowid, thread_id, turn_id, total_total_tokens, received_at
+                FROM token_usage_samples
+                WHERE dimension_set_id IS NULL
+                  AND is_retention_baseline = 0
+                  AND EXISTS (
+                      SELECT 1 FROM token_usage_dimensions AS legacy
+                      WHERE legacy.thread_id = token_usage_samples.thread_id
+                        AND legacy.turn_id = token_usage_samples.turn_id
+                        AND legacy.total_total_tokens = token_usage_samples.total_total_tokens
+                  )
+                ORDER BY rowid
+                LIMIT ?
+            )
+            SELECT selected.rowid, selected.thread_id, selected.turn_id,
+                selected.total_total_tokens, selected.received_at,
+                legacy.dimension_key, legacy.dimension_value
+            FROM selected_samples AS selected
+            JOIN token_usage_dimensions AS legacy
+              ON legacy.thread_id = selected.thread_id
+             AND legacy.turn_id = selected.turn_id
+             AND legacy.total_total_tokens = selected.total_total_tokens
+            ORDER BY selected.rowid, legacy.dimension_key, legacy.dimension_value
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int(statement, 1, Int32(max(sampleLimit, 1)))
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let rowID = sqlite3_column_int64(statement, 0)
+            guard let key = TokenUsageDimensionKey(rawValue: columnText(statement, index: 5)),
+                  let dimension = TokenUsageDimension(key, columnText(statement, index: 6))
+            else {
+                continue
+            }
+            var sample = samplesByRowID[rowID] ?? BackfillSample(
+                rowID: rowID,
+                threadID: columnText(statement, index: 1),
+                turnID: columnText(statement, index: 2),
+                totalTotalTokens: sqlite3_column_int64(statement, 3),
+                seenAt: sqlite3_column_int64(statement, 4),
+                dimensions: []
+            )
+            sample.dimensions.append(dimension)
+            samplesByRowID[rowID] = sample
+        }
+
+        let orderedSamples = samplesByRowID.values.sorted { $0.rowID < $1.rowID }
+        guard !orderedSamples.isEmpty else {
+            return false
+        }
+        try transaction {
+            for sample in orderedSamples {
+                try assignTokenDimensionSet(
+                    dimensions: sample.dimensions,
+                    threadID: sample.threadID,
+                    turnID: sample.turnID,
+                    totalTotalTokens: sample.totalTotalTokens,
+                    seenAt: sample.seenAt
+                )
+            }
+            if let cursor = orderedSamples.last?.rowID {
+                try setMetadataValue(String(cursor), for: "token_dimension_v3_backfill_cursor")
+            }
+        }
+        return orderedSamples.count >= max(sampleLimit, 1)
     }
 
     @discardableResult

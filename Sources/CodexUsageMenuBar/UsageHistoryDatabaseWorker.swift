@@ -1,5 +1,30 @@
 import Foundation
 
+final class UsageHistoryStoreReplacementGate: @unchecked Sendable {
+    static let shared = UsageHistoryStoreReplacementGate()
+
+    private let lock = NSLock()
+    private var activeOperationCount = 0
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeOperationCount > 0
+    }
+
+    func begin() {
+        lock.lock()
+        activeOperationCount += 1
+        lock.unlock()
+    }
+
+    func end() {
+        lock.lock()
+        activeOperationCount = max(activeOperationCount - 1, 0)
+        lock.unlock()
+    }
+}
+
 struct UsageHistoryLoadRequest: Equatable {
     let chartKind: UsageHistoryChartKind
     let range: UsageHistoryRange
@@ -109,13 +134,24 @@ protocol UsageHistoryViewModelDatabaseWorking: Sendable {
     func clearHistory() async throws
 }
 
-protocol UsageHistoryDatabaseWorking: UsageHistoryViewModelDatabaseWorking {
+protocol TokenDashboardViewModelDatabaseWorking: Sendable {
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) async throws -> TokenDashboardLoadResult
+    func tokenAttributionCoverageRows(periodStart: Date, periodEnd: Date) async throws -> [TokenAttributionCoverageRow]
+}
+
+protocol UsageHistoryDatabaseWorking: UsageHistoryViewModelDatabaseWorking, TokenDashboardViewModelDatabaseWorking {
     func record(snapshot: CodexUsageSnapshot, at date: Date) async
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals?
     func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals?
     func todayTokenCategoryTotals(at date: Date, calendar: Calendar) async -> TokenCategoryTotals?
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64?
     func captureLiveTokenHistoryIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexLiveTokenCaptureState
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool,
+        includeDetailedContext: Bool
+    ) async -> CodexLiveTokenCaptureState
     func liveTokenCaptureState() async -> CodexLiveTokenCaptureState
     func captureTurnPerformanceIfNeeded(at date: Date, calendar: Calendar, force: Bool) async -> CodexTurnPerformanceCaptureState
     func turnPerformanceCaptureState() async -> CodexTurnPerformanceCaptureState
@@ -132,9 +168,11 @@ protocol UsageHistoryDatabaseWorking: UsageHistoryViewModelDatabaseWorking {
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
     func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics
     func enforceTelemetryRetention(referenceDate: Date) async throws
+    func optimizeStorage(reason: StorageOptimizationReason) async throws -> StorageOptimizationResult
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo
     func exportBackup(to destinationURL: URL) async throws
     func importBackup(from sourceURL: URL) async throws
+    func clearAnalyticsData() async throws
     func tokenProjectCatalogEntries() async throws -> [TokenProjectCatalogEntry]
     func tokenDimensionCatalogEntries() async throws -> [TokenUsageDimensionCatalogEntry]
     func updateTokenProjectDisplayName(projectPath: String, displayName: String?) async throws
@@ -142,6 +180,11 @@ protocol UsageHistoryDatabaseWorking: UsageHistoryViewModelDatabaseWorking {
         importer: CodexSessionTokenBackfillImporting,
         request: CodexSessionTokenBackfillRequest
     ) async throws -> CodexSessionTokenBackfillSummary
+    func buildHistoricalTokenArchive(
+        importer: CodexSessionTokenBackfillImporting,
+        destinationURL: URL,
+        replaceExisting: Bool
+    ) async throws -> HistoricalTokenArchiveBuildResult
 }
 
 protocol UsageHistoryDashboardQueryWorking: Sendable {
@@ -151,9 +194,19 @@ protocol UsageHistoryDashboardQueryWorking: Sendable {
     func localTokenComparisonTotals(now: Date) async throws -> LocalTokenComparisonTotals
     func performanceDashboardSnapshot(for request: PerformanceDashboardLoadRequest) async throws -> PerformanceDashboardLoadResult
     func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics
+    func invalidateCachedStore() async
 }
 
 extension UsageHistoryDatabaseWorking {
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool,
+        includeDetailedContext: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        await captureLiveTokenHistoryIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
     func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
         nil
     }
@@ -175,6 +228,22 @@ extension UsageHistoryDatabaseWorking {
     }
 
     func enforceTelemetryRetention(referenceDate: Date) async throws {}
+
+    func optimizeStorage(reason: StorageOptimizationReason) async throws -> StorageOptimizationResult {
+        throw UsageHistoryStoreError.databaseUnavailable
+    }
+
+    func clearAnalyticsData() async throws {
+        try await clearHistory()
+    }
+
+    func buildHistoricalTokenArchive(
+        importer: CodexSessionTokenBackfillImporting,
+        destinationURL: URL,
+        replaceExisting: Bool
+    ) async throws -> HistoricalTokenArchiveBuildResult {
+        throw UsageHistoryStoreError.databaseUnavailable
+    }
 }
 
 extension UsageHistoryDashboardQueryWorking {
@@ -189,6 +258,8 @@ extension UsageHistoryDashboardQueryWorking {
     func localSourceStoredMetrics() async throws -> CodexLocalSourceStoredMetrics {
         throw UsageHistoryStoreError.databaseOperationFailed("Local source stored metrics are unavailable.")
     }
+
+    func invalidateCachedStore() async {}
 }
 
 enum UsageHistorySnapshotReader {
@@ -377,6 +448,47 @@ enum UsageHistorySnapshotReader {
     }
 }
 
+actor HistoricalTokenArchiveQueryWorker: UsageHistoryViewModelDatabaseWorking, TokenDashboardViewModelDatabaseWorking {
+    private let descriptor: HistoricalTokenArchiveDescriptor
+    private var cachedStore: UsageHistoryStore?
+
+    init(descriptor: HistoricalTokenArchiveDescriptor) {
+        self.descriptor = descriptor
+    }
+
+    func usageHistorySnapshot(for request: UsageHistoryLoadRequest) throws -> UsageHistoryLoadResult {
+        try UsageHistorySnapshotReader.usageHistorySnapshot(store: store(), request: request)
+    }
+
+    func tokenDashboardSnapshot(for request: TokenDashboardLoadRequest) throws -> TokenDashboardLoadResult {
+        try UsageHistorySnapshotReader.tokenDashboardSnapshot(store: store(), request: request)
+    }
+
+    func tokenAttributionCoverageRows(
+        periodStart: Date,
+        periodEnd: Date
+    ) throws -> [TokenAttributionCoverageRow] {
+        try store().tokenAttributionCoverageRows(periodStart: periodStart, periodEnd: periodEnd)
+    }
+
+    func clearHistory() throws {
+        throw UsageHistoryStoreError.databaseOperationFailed("Historical archives are read-only.")
+    }
+
+    private func store() throws -> UsageHistoryStore {
+        if let cachedStore {
+            return cachedStore
+        }
+        let current = try UsageHistoryStore.historicalTokenArchiveDescriptor(at: descriptor.url)
+        guard current.fileIdentifier == descriptor.fileIdentifier else {
+            throw HistoricalTokenArchiveError.pathChanged
+        }
+        let store = try UsageHistoryStore(databaseURL: descriptor.url, openMode: .readOnly)
+        cachedStore = store
+        return store
+    }
+}
+
 actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
     typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
 
@@ -441,7 +553,14 @@ actor UsageHistoryDashboardQueryWorker: UsageHistoryDashboardQueryWorking {
         try store().localSourceStoredMetrics()
     }
 
+    func invalidateCachedStore() {
+        cachedStore = nil
+    }
+
     private func store() throws -> UsageHistoryStore {
+        guard !UsageHistoryStoreReplacementGate.shared.isActive else {
+            throw UsageHistoryStoreError.storageMaintenanceInProgress
+        }
         if let cachedStore {
             guard cachedStore.databaseURL == nil else {
                 return cachedStore
@@ -498,6 +617,20 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
         force: Bool
     ) async -> CodexLiveTokenCaptureState {
         await writer.captureLiveTokenHistoryIfNeeded(at: date, calendar: calendar, force: force)
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool,
+        includeDetailedContext: Bool
+    ) async -> CodexLiveTokenCaptureState {
+        await writer.captureLiveTokenHistoryIfNeeded(
+            at: date,
+            calendar: calendar,
+            force: force,
+            includeDetailedContext: includeDetailedContext
+        )
     }
 
     func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {
@@ -584,6 +717,18 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
         try await writer.enforceTelemetryRetention(referenceDate: referenceDate)
     }
 
+    func optimizeStorage(reason: StorageOptimizationReason) async throws -> StorageOptimizationResult {
+        await dashboardQueryWorker.invalidateCachedStore()
+        do {
+            let result = try await writer.optimizeStorage(reason: reason)
+            await dashboardQueryWorker.invalidateCachedStore()
+            return result
+        } catch {
+            await dashboardQueryWorker.invalidateCachedStore()
+            throw error
+        }
+    }
+
     func databaseInfo() async throws -> UsageHistoryDatabaseInfo {
         try await writer.databaseInfo()
     }
@@ -593,7 +738,18 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
     }
 
     func importBackup(from sourceURL: URL) async throws {
-        try await writer.importBackup(from: sourceURL)
+        await dashboardQueryWorker.invalidateCachedStore()
+        do {
+            try await writer.importBackup(from: sourceURL)
+            await dashboardQueryWorker.invalidateCachedStore()
+        } catch {
+            await dashboardQueryWorker.invalidateCachedStore()
+            throw error
+        }
+    }
+
+    func clearAnalyticsData() async throws {
+        try await writer.clearAnalyticsData()
     }
 
     func clearHistory() async throws {
@@ -616,7 +772,21 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
         importer: CodexSessionTokenBackfillImporting,
         request: CodexSessionTokenBackfillRequest
     ) async throws -> CodexSessionTokenBackfillSummary {
-        try await writer.importTokenHistory(importer: importer, request: request)
+        let result = try await writer.importTokenHistory(importer: importer, request: request)
+        await dashboardQueryWorker.invalidateCachedStore()
+        return result
+    }
+
+    func buildHistoricalTokenArchive(
+        importer: CodexSessionTokenBackfillImporting,
+        destinationURL: URL,
+        replaceExisting: Bool
+    ) async throws -> HistoricalTokenArchiveBuildResult {
+        try await writer.buildHistoricalTokenArchive(
+            importer: importer,
+            destinationURL: destinationURL,
+            replaceExisting: replaceExisting
+        )
     }
 }
 
@@ -724,17 +894,18 @@ final class CodexBackgroundMetadataCaptureCoordinator {
 
 actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     typealias StoreFactory = @Sendable () throws -> UsageHistoryStore
-    typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexLiveTokenCaptureState
+    typealias RecentTokenHistoryImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool, Bool) -> CodexLiveTokenCaptureState
     typealias TurnPerformanceImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexTurnPerformanceCaptureState
     typealias SessionTaskTimingImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexSessionTaskTimingCaptureState
     typealias ThreadCatalogImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexThreadCatalogCaptureState
     typealias ModelCapabilitiesImporter = @Sendable (UsageHistoryStore, Date, Calendar, Bool) -> CodexModelCapabilitiesCaptureState
 
-    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
+    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force, includeDetailedContext in
         store.captureLiveCodexLogTokenHistory(
             at: date,
             calendar: calendar,
             force: force,
+            includeDetailedContext: includeDetailedContext,
             sessionTokenBackfillImporter: CodexSessionTokenBackfillImporter(
                 sourceDirectories: CodexSessionTokenBackfillImporter.defaultActiveSourceDirectories()
             )
@@ -765,12 +936,15 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     private let modelCapabilitiesImporter: ModelCapabilitiesImporter
     private let fallbackStoreFactory: StoreFactory?
     private let cacheStoreOnOpen: Bool
+    private let canReleaseStoreForReplacement: Bool
+    private let collectionModeProvider: @Sendable () -> UsageCollectionMode
     private var cachedStore: UsageHistoryStore?
     private var lastRecentTokenImportAt: Date?
     private var lastTurnPerformanceImportAt: Date?
     private var lastSessionTaskTimingImportAt: Date?
     private var lastThreadCatalogImportAt: Date?
     private var lastModelCapabilitiesImportAt: Date?
+    private var storageReplacementInProgress = false
 
     init(
         store: UsageHistoryStore,
@@ -778,7 +952,8 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         turnPerformanceImporter: @escaping TurnPerformanceImporter = UsageHistoryDatabaseWorker.liveTurnPerformanceImporter,
         sessionTaskTimingImporter: @escaping SessionTaskTimingImporter = UsageHistoryDatabaseWorker.liveSessionTaskTimingImporter,
         threadCatalogImporter: @escaping ThreadCatalogImporter = UsageHistoryDatabaseWorker.liveThreadCatalogImporter,
-        modelCapabilitiesImporter: @escaping ModelCapabilitiesImporter = UsageHistoryDatabaseWorker.liveModelCapabilitiesImporter
+        modelCapabilitiesImporter: @escaping ModelCapabilitiesImporter = UsageHistoryDatabaseWorker.liveModelCapabilitiesImporter,
+        collectionModeProvider: @escaping @Sendable () -> UsageCollectionMode = { .detailedAnalytics }
     ) {
         self.storeFactory = { store }
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
@@ -788,6 +963,8 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         self.modelCapabilitiesImporter = modelCapabilitiesImporter
         self.fallbackStoreFactory = nil
         self.cacheStoreOnOpen = true
+        self.canReleaseStoreForReplacement = false
+        self.collectionModeProvider = collectionModeProvider
         self.cachedStore = store
     }
 
@@ -799,7 +976,8 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         threadCatalogImporter: @escaping ThreadCatalogImporter = UsageHistoryDatabaseWorker.liveThreadCatalogImporter,
         modelCapabilitiesImporter: @escaping ModelCapabilitiesImporter = UsageHistoryDatabaseWorker.liveModelCapabilitiesImporter,
         fallbackStoreFactory: StoreFactory? = nil,
-        cacheStoreOnOpen: Bool = true
+        cacheStoreOnOpen: Bool = true,
+        collectionModeProvider: @escaping @Sendable () -> UsageCollectionMode = { .detailedAnalytics }
     ) {
         self.storeFactory = storeFactory
         self.recentTokenHistoryImporter = recentTokenHistoryImporter
@@ -809,20 +987,26 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         self.modelCapabilitiesImporter = modelCapabilitiesImporter
         self.fallbackStoreFactory = fallbackStoreFactory
         self.cacheStoreOnOpen = cacheStoreOnOpen
+        self.canReleaseStoreForReplacement = true
+        self.collectionModeProvider = collectionModeProvider
     }
 
-    static func applicationSupportStore() -> UsageHistoryDatabaseWorker {
+    static func applicationSupportStore(
+        collectionModeProvider: @escaping @Sendable () -> UsageCollectionMode = { .lightweight }
+    ) -> UsageHistoryDatabaseWorker {
         UsageHistoryDatabaseWorker(storeFactory: {
             try UsageHistoryStore.applicationSupportStore()
-        })
+        }, collectionModeProvider: collectionModeProvider)
     }
 
-    static func applicationSupportStoreWithInMemoryFallback() -> UsageHistoryDatabaseWorker {
+    static func applicationSupportStoreWithInMemoryFallback(
+        collectionModeProvider: @escaping @Sendable () -> UsageCollectionMode = { .lightweight }
+    ) -> UsageHistoryDatabaseWorker {
         UsageHistoryDatabaseWorker(storeFactory: {
             try UsageHistoryStore.applicationSupportStore()
         }, fallbackStoreFactory: {
             try UsageHistoryStore.inMemory()
-        })
+        }, collectionModeProvider: collectionModeProvider)
     }
 
     static func inMemory() throws -> UsageHistoryDatabaseWorker {
@@ -841,7 +1025,16 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) -> TokenCategoryTotals? {
         do {
             let store = try store()
-            try store.record(tokenUsage: tokenUsage, at: date)
+            let mode = collectionModeProvider()
+            let persistedNotification: CodexTokenUsageNotification
+            if mode == .detailedAnalytics,
+               try !store.preflightAdvancedIngestion(mode: mode, batchKind: .tokenNotification)
+            {
+                persistedNotification = tokenUsage.lightweightStorageValue
+            } else {
+                persistedNotification = tokenUsage
+            }
+            try store.record(tokenUsage: persistedNotification, at: date)
             return try store.tokenCategoryTotalsForDay(containing: date, calendar: .autoupdatingCurrent)
         } catch {
             // Token telemetry should never interrupt the live menu bar status.
@@ -894,9 +1087,38 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     }
 
     func captureLiveTokenHistoryIfNeeded(at date: Date, calendar: Calendar, force: Bool = false) -> CodexLiveTokenCaptureState {
+        captureLiveTokenHistoryIfNeeded(
+            at: date,
+            calendar: calendar,
+            force: force,
+            includeDetailedContext: true
+        )
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool = false,
+        includeDetailedContext: Bool
+    ) -> CodexLiveTokenCaptureState {
         do {
             let store = try store()
-            return importRecentTokenHistoryIfNeeded(store: store, at: date, calendar: calendar, force: force)
+            let shouldIncludeDetailedContext: Bool
+            if includeDetailedContext, collectionModeProvider() == .detailedAnalytics {
+                shouldIncludeDetailedContext = try store.preflightAdvancedIngestion(
+                    mode: .detailedAnalytics,
+                    batchKind: .tokenCapture
+                )
+            } else {
+                shouldIncludeDetailedContext = false
+            }
+            return importRecentTokenHistoryIfNeeded(
+                store: store,
+                at: date,
+                calendar: calendar,
+                force: force,
+                includeDetailedContext: shouldIncludeDetailedContext
+            )
         } catch {
             return CodexLiveTokenCaptureState(status: .failed, lastErrorText: error.localizedDescription)
         }
@@ -918,6 +1140,13 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     ) -> CodexTurnPerformanceCaptureState {
         do {
             let store = try store()
+            guard try advancedIngestionAllowed(store: store, batchKind: .turnPerformance) else {
+                return CodexTurnPerformanceCaptureState(
+                    lastCheckedAt: date,
+                    status: .failed,
+                    lastErrorText: UsageHistoryStoreError.storageBudgetExceeded.localizedDescription
+                )
+            }
             return importTurnPerformanceIfNeeded(store: store, at: date, calendar: calendar, force: force)
         } catch {
             return CodexTurnPerformanceCaptureState(status: .failed, lastErrorText: error.localizedDescription)
@@ -948,6 +1177,13 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     ) -> CodexSessionTaskTimingCaptureState {
         do {
             let store = try store()
+            guard try advancedIngestionAllowed(store: store, batchKind: .sessionTiming) else {
+                return CodexSessionTaskTimingCaptureState(
+                    lastCheckedAt: date,
+                    status: .failed,
+                    lastErrorText: UsageHistoryStoreError.storageBudgetExceeded.localizedDescription
+                )
+            }
             return importSessionTaskTimingIfNeeded(store: store, at: date, calendar: calendar, force: force)
         } catch {
             return CodexSessionTaskTimingCaptureState(status: .failed, lastErrorText: error.localizedDescription)
@@ -970,6 +1206,13 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     ) -> CodexThreadCatalogCaptureState {
         do {
             let store = try store()
+            guard try advancedIngestionAllowed(store: store, batchKind: .threadCatalog) else {
+                return CodexThreadCatalogCaptureState(
+                    lastCheckedAt: date,
+                    status: .failed,
+                    lastErrorText: UsageHistoryStoreError.storageBudgetExceeded.localizedDescription
+                )
+            }
             return importThreadCatalogIfNeeded(store: store, at: date, calendar: calendar, force: force)
         } catch {
             return CodexThreadCatalogCaptureState(status: .failed, lastErrorText: error.localizedDescription)
@@ -992,6 +1235,13 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
     ) -> CodexModelCapabilitiesCaptureState {
         do {
             let store = try store()
+            guard try advancedIngestionAllowed(store: store, batchKind: .modelCapabilities) else {
+                return CodexModelCapabilitiesCaptureState(
+                    lastCheckedAt: date,
+                    status: .failed,
+                    lastErrorText: UsageHistoryStoreError.storageBudgetExceeded.localizedDescription
+                )
+            }
             return importModelCapabilitiesIfNeeded(store: store, at: date, calendar: calendar, force: force)
         } catch {
             return CodexModelCapabilitiesCaptureState(status: .failed, lastErrorText: error.localizedDescription)
@@ -1031,13 +1281,87 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         try store().localSourceStoredMetrics()
     }
 
-    func enforceTelemetryRetention(referenceDate: Date) throws {
-        try store().enforceTelemetryRetention(referenceDate: referenceDate, force: true)
+    func enforceTelemetryRetention(referenceDate: Date) async throws {
+        var optimizationReason: StorageOptimizationReason?
+        do {
+            let store = try store()
+            guard try store.beginTelemetryRetention(referenceDate: referenceDate, force: true) else {
+                return
+            }
+            do {
+                while try store.enforceNextTelemetryRetentionBatch(referenceDate: referenceDate) {
+                    try Task.checkCancellation()
+                    await Task.yield()
+                }
+                try Task.checkCancellation()
+
+                var maintenance = try store.storageMaintenanceState()
+                maintenance.stage = .backfilling
+                try store.recordStorageMaintenanceState(maintenance)
+                let neededV3Finalization = try store.metadataValue(
+                    for: "token_dimension_v3_finalized"
+                ) != "1"
+                while try store.backfillNextTokenDimensionSetChunk(sampleLimit: 1_000) {
+                    try Task.checkCancellation()
+                    await Task.yield()
+                }
+                try Task.checkCancellation()
+                let finalized = try store.finalizeTokenDimensionSetMigrationIfReady()
+                try store.finishTelemetryRetention(referenceDate: referenceDate)
+                let info = try store.enforceStorageBudget(mode: collectionModeProvider())
+                if finalized, neededV3Finalization {
+                    optimizationReason = .schemaMigration
+                } else if info.totalByteSize > info.hardMaximumByteSize {
+                    optimizationReason = .hardBudgetRecovery
+                }
+            } catch {
+                try? store.failTelemetryRetention(referenceDate: referenceDate, error: error)
+                throw error
+            }
+        } catch {
+            throw error
+        }
+
+        if let optimizationReason {
+            _ = try await optimizeStorage(reason: optimizationReason)
+        }
+    }
+
+    func optimizeStorage(reason: StorageOptimizationReason) async throws -> StorageOptimizationResult {
+        guard canReleaseStoreForReplacement, !storageReplacementInProgress else {
+            throw UsageHistoryStoreError.storageMaintenanceInProgress
+        }
+        let databaseURL: URL
+        do {
+            let openedStore = try store()
+            guard let url = openedStore.databaseURL else {
+                throw UsageHistoryStoreError.databaseUnavailable
+            }
+            try openedStore.checkpointWriteAheadLog()
+            databaseURL = url
+        }
+        cachedStore = nil
+        storageReplacementInProgress = true
+        UsageHistoryStoreReplacementGate.shared.begin()
+        defer {
+            UsageHistoryStoreReplacementGate.shared.end()
+            storageReplacementInProgress = false
+        }
+        do {
+            let result = try await Task.detached(priority: .utility) {
+                try UsageHistoryStore.optimizeDatabase(at: databaseURL, reason: reason)
+            }.value
+            cachedStore = try self.storeFactory()
+            return result
+        } catch {
+            cachedStore = try? self.storeFactory()
+            throw error
+        }
     }
 
     func databaseInfo() throws -> UsageHistoryDatabaseInfo {
         let store = try store()
-        return try store.databaseInfo()
+        return try store.databaseInfo(collectionMode: collectionModeProvider())
     }
 
     func exportBackup(to destinationURL: URL) throws {
@@ -1045,9 +1369,53 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         try store.exportBackup(to: destinationURL)
     }
 
-    func importBackup(from sourceURL: URL) throws {
+    func importBackup(from sourceURL: URL) async throws {
+        guard canReleaseStoreForReplacement else {
+            let store = try store()
+            try store.importBackup(from: sourceURL)
+            requestMaintenance(.backupImport)
+            return
+        }
+
+        let canonicalURL: URL
+        do {
+            let openedStore = try store()
+            guard let databaseURL = openedStore.databaseURL else {
+                throw UsageHistoryStoreError.databaseUnavailable
+            }
+            try openedStore.checkpointWriteAheadLog()
+            canonicalURL = databaseURL
+        }
+        cachedStore = nil
+        guard !storageReplacementInProgress else {
+            throw UsageHistoryStoreError.storageMaintenanceInProgress
+        }
+        storageReplacementInProgress = true
+        UsageHistoryStoreReplacementGate.shared.begin()
+        defer {
+            UsageHistoryStoreReplacementGate.shared.end()
+            storageReplacementInProgress = false
+        }
+        let mode = collectionModeProvider()
+        do {
+            try await Task.detached(priority: .utility) {
+                try UsageHistoryStore.restoreOperationalBackup(
+                    from: sourceURL,
+                    to: canonicalURL,
+                    mode: mode
+                )
+            }.value
+            cachedStore = try self.storeFactory()
+            requestMaintenance(.backupImport)
+        } catch {
+            cachedStore = try? self.storeFactory()
+            throw error
+        }
+    }
+
+    func clearAnalyticsData() throws {
         let store = try store()
-        try store.importBackup(from: sourceURL)
+        try store.clearAnalyticsData()
     }
 
     func clearHistory() throws {
@@ -1075,10 +1443,50 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         request: CodexSessionTokenBackfillRequest
     ) throws -> CodexSessionTokenBackfillSummary {
         let store = try store()
-        return try importer.importTokenHistory(into: store, request: request)
+        guard try advancedIngestionAllowed(store: store, batchKind: .operationalImport) else {
+            throw UsageHistoryStoreError.storageBudgetExceeded
+        }
+        let summary = try importer.importTokenHistory(into: store, request: request)
+        requestMaintenance(.operationalImport)
+        return summary
+    }
+
+    func buildHistoricalTokenArchive(
+        importer: CodexSessionTokenBackfillImporting,
+        destinationURL: URL,
+        replaceExisting: Bool
+    ) throws -> HistoricalTokenArchiveBuildResult {
+        let (descriptor, summary) = try UsageHistoryStore.buildHistoricalTokenArchive(
+            at: destinationURL,
+            importer: importer,
+            replaceExisting: replaceExisting
+        )
+        return HistoricalTokenArchiveBuildResult(descriptor: descriptor, summary: summary)
+    }
+
+    private func advancedIngestionAllowed(
+        store: UsageHistoryStore,
+        batchKind: AdvancedIngestionBatchKind
+    ) throws -> Bool {
+        let mode = collectionModeProvider()
+        guard mode == .detailedAnalytics else {
+            return false
+        }
+        return try store.preflightAdvancedIngestion(mode: mode, batchKind: batchKind)
+    }
+
+    private func requestMaintenance(_ trigger: StorageMaintenanceTrigger) {
+        NotificationCenter.default.post(
+            name: UsageHistoryStore.maintenanceRequestedNotification,
+            object: nil,
+            userInfo: [UsageHistoryStore.maintenanceTriggerUserInfoKey: trigger.rawValue]
+        )
     }
 
     private func store() throws -> UsageHistoryStore {
+        guard !storageReplacementInProgress else {
+            throw UsageHistoryStoreError.storageMaintenanceInProgress
+        }
         if let cachedStore {
             guard cachedStore.databaseURL == nil else {
                 return cachedStore
@@ -1120,7 +1528,8 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
         store: UsageHistoryStore,
         at date: Date,
         calendar: Calendar,
-        force: Bool = false
+        force: Bool = false,
+        includeDetailedContext: Bool = true
     ) -> CodexLiveTokenCaptureState {
         if let lastRecentTokenImportAt,
            date.timeIntervalSince(lastRecentTokenImportAt) < 30,
@@ -1130,7 +1539,7 @@ actor UsageHistoryDatabaseWorker: UsageHistoryDatabaseWorking {
             return (try? store.codexLiveTokenCaptureState()) ?? CodexLiveTokenCaptureState()
         }
 
-        let state = recentTokenHistoryImporter(store, date, calendar, force)
+        let state = recentTokenHistoryImporter(store, date, calendar, force, includeDetailedContext)
         lastRecentTokenImportAt = date
         return state
     }

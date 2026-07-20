@@ -60,16 +60,22 @@ private struct UsageHistoryLayoutMetrics {
 
 struct UsageHistoryView: View {
     @StateObject private var viewModel: UsageHistoryViewModel
+    @ObservedObject private var archiveController: HistoricalTokenArchiveController
     @State private var isConfirmingClear = false
+    @State private var selectedSourceID = Self.operationalSourceID
+    private let operationalDatabase: UsageHistoryViewModelDatabaseWorking
 
-    init(
+    @MainActor init(
         database: UsageHistoryDatabaseWorking,
-        chartSemantics: UsageHistoryChartSemantics = .independentSignals
+        chartSemantics: UsageHistoryChartSemantics = .independentSignals,
+        archiveController: HistoricalTokenArchiveController? = nil
     ) {
         _viewModel = StateObject(wrappedValue: UsageHistoryViewModel(
             database: database,
             chartSemantics: chartSemantics
         ))
+        self.operationalDatabase = database
+        self.archiveController = archiveController ?? .shared
     }
 
     var body: some View {
@@ -85,6 +91,14 @@ struct UsageHistoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             viewModel.activateCurrentPeriod()
+        }
+        .onReceive(archiveController.$openedArchive) { archive in
+            guard archive != nil || selectedSourceID != Self.archiveSourceID else {
+                return
+            }
+            if archive == nil {
+                selectOperationalSource()
+            }
         }
         .confirmationDialog(
             "Clear all local usage history?",
@@ -132,6 +146,9 @@ struct UsageHistoryView: View {
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
+                if archiveController.openedArchive != nil {
+                    sourcePicker
+                }
                 rangePicker
                 secondaryHistorySelector
                 chartKindPicker
@@ -141,6 +158,9 @@ struct UsageHistoryView: View {
             }
 
             HStack(spacing: 10) {
+                if archiveController.openedArchive != nil {
+                    sourcePicker
+                }
                 rangePicker
                 secondaryHistorySelector
                 chartKindPicker
@@ -148,6 +168,41 @@ struct UsageHistoryView: View {
                 historyActions
             }
         }
+    }
+
+    private static let operationalSourceID = "operational"
+    private static let archiveSourceID = "archive"
+
+    private var sourcePicker: some View {
+        Picker("History data source", selection: Binding(
+            get: { selectedSourceID },
+            set: { selectSource($0) }
+        )) {
+            Text("Operational").tag(Self.operationalSourceID)
+            if let archive = archiveController.openedArchive {
+                Text(archive.displayName).tag(Self.archiveSourceID)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 150)
+        .help("Choose the live operational store or the opened read-only archive")
+        .accessibilityLabel("History data source")
+    }
+
+    private func selectSource(_ sourceID: String) {
+        if sourceID == Self.archiveSourceID, let archive = archiveController.openedArchive {
+            selectedSourceID = Self.archiveSourceID
+            viewModel.selectedChartKind = .tokens
+            viewModel.replaceDatabase(HistoricalTokenArchiveQueryWorker(descriptor: archive))
+        } else {
+            selectOperationalSource()
+        }
+    }
+
+    private func selectOperationalSource() {
+        selectedSourceID = Self.operationalSourceID
+        viewModel.replaceDatabase(operationalDatabase)
     }
 
     private var chartHeader: some View {
@@ -236,16 +291,18 @@ struct UsageHistoryView: View {
             .help(AppAccessibilitySemantics.exportCSVLabel)
             .accessibilityLabel(AppAccessibilitySemantics.exportCSVLabel)
 
-            Button(role: .destructive) {
-                isConfirmingClear = true
-            } label: {
-                Image(systemName: "trash")
-                    .frame(width: 18, height: 18)
+            if selectedSourceID == Self.operationalSourceID {
+                Button(role: .destructive) {
+                    isConfirmingClear = true
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!viewModel.hasHistory)
+                .help("Clear History")
+                .accessibilityLabel("Clear History")
             }
-            .buttonStyle(.bordered)
-            .disabled(!viewModel.hasHistory)
-            .help("Clear History")
-            .accessibilityLabel("Clear History")
         }
     }
 

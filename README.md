@@ -1,6 +1,6 @@
 # Codex Status Bar
 
-Small macOS menu bar app that shows the selected Codex usage percentage in the status bar, the 5-hour and 7-day limits in a click popover, and local usage history over time.
+Small macOS menu bar app that shows the selected Codex usage percentage in the status bar, the 5-hour and 7-day limits in a click popover, and lightweight local usage history over time. Detailed local analytics are an explicit opt-in.
 
 ## Install
 
@@ -52,7 +52,7 @@ Turn off **Launch at login** in the popover first, then run:
 ./uninstall.sh
 ```
 
-The uninstall script removes the installed app but intentionally preserves local history and preferences. For a complete data reset after uninstalling:
+The uninstall script removes the installed app but intentionally preserves the operational history database and preferences. User-selected historical archives live outside the app's data directory and must be removed separately. For a complete operational-data reset after uninstalling:
 
 ```bash
 rm -rf "$HOME/Library/Application Support/CodexStatusBar"
@@ -61,9 +61,13 @@ defaults delete com.farzad.codexstatusbar 2>/dev/null || true
 
 ## Privacy and local data
 
-- Usage history, performance telemetry, source-health snapshots, and app-server diagnostics are stored locally under `~/Library/Application Support/CodexStatusBar`.
+- Lightweight collection is the default. It keeps rate limits, reset information, account-token status, current-day local token totals, and a seven-day daily token trend current. **Detailed Analytics** in **Settings > Data** opts into model, project, session, thread, and performance breakdowns.
+- Operational history, optional detailed telemetry, source-health snapshots, and app-server diagnostics are stored locally under `~/Library/Application Support/CodexStatusBar`. Historical token archives are separate read-only SQLite files created only at a location the user selects.
 - Capture is metadata-only: the app excludes prompts, messages, summaries, tool payloads, credentials, account identifiers, and arbitrary raw protocol payloads.
-- Raw-history retention can be set to 7, 14, 30, or 90 days in **Settings > Data**; the default is 14 days. Local history can also be cleared there. Backups and dashboard CSV exports can include project paths or aliases and should be reviewed before sharing.
+- Retention is fixed: rate-limit raw samples are kept for 7 days; detailed token and performance samples for 72 hours; hourly summaries for 90 days; and daily summaries for 365 days. The operational store targets 100 MiB in Lightweight mode and 250 MiB in Detailed Analytics, with hard maximums of 250 MiB and 500 MiB respectively.
+- **Clear Analytics Data** removes optional dimensions and detailed telemetry while preserving rate-limit History, lightweight token totals, preferences, status state, backups, and archives. A full operational reset still uses the uninstall instructions above.
+- Operational backups use SQLite-consistent copies and can restore v2 or v3 data through an offline, retained, budgeted, validated candidate. Historical archives are a distinct format and cannot be restored into live collection. Backups, archives, and dashboard CSV exports can include approved project paths or aliases and should be reviewed before sharing.
+- Contributors can run `python3 scripts/measure_storage_fixture.py` for the frozen synthetic 10,000-turn normalization gate. It measures post-checkpoint v2/v3 dimension and total physical bytes without reading the live application database.
 - The app talks to the local Codex app-server, the Codex account-usage service for current limits, and GitHub Releases for update checks. It does not operate a separate analytics service.
 
 ## Development verification
@@ -87,7 +91,7 @@ Codex Status Bar is available under the [MIT License](LICENSE).
 - The popover shows `5h`, `7d`, and `Tightest`, along with reset times, freshness state, and app version.
 - The History window charts locally sampled usage by rolling day, week, month, and year ranges. It can be opened directly from the popover or expanded inline.
 - History can include per-model series when Codex exposes model-specific rate-limit buckets.
-- Settings includes local history data management plus install/update visibility, live release checks, guided update installs, and release notes.
+- Settings leads with the Lightweight/Detailed Analytics choice, operational storage and maintenance status, fixed retention, backups, historical archives, and optional advanced diagnostics. Install/update visibility, live release checks, guided update installs, and release notes remain available.
 - The popover includes always-visible routes to full History and Settings, inline controls, and a `Launch at login` toggle.
 - Right click intentionally contains only Quit; primary actions remain in the left-click popover.
 - Left click opens the popover. Clicking outside closes it.

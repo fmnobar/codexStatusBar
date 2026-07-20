@@ -3086,11 +3086,13 @@ private enum PerformanceDashboardLayout {
 
 struct PerformanceDashboardView: View {
     @StateObject private var viewModel: PerformanceDashboardViewModel
+    @ObservedObject private var collectionModeController: UsageCollectionModeController
     private let onFirstRendered: () -> Void
 
     init(
         database: UsageHistoryDatabaseWorking,
         performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
+        collectionModeController: UsageCollectionModeController = UsageCollectionModeController(),
         onFirstRendered: @escaping () -> Void = {}
     ) {
         _viewModel = StateObject(
@@ -3099,6 +3101,7 @@ struct PerformanceDashboardView: View {
                 performanceInstrumentationStore: performanceInstrumentationStore
             )
         )
+        self.collectionModeController = collectionModeController
         self.onFirstRendered = onFirstRendered
     }
 
@@ -3106,6 +3109,10 @@ struct PerformanceDashboardView: View {
         VStack(spacing: PerformanceDashboardLayout.sectionSpacing) {
             header
                 .layoutPriority(2)
+            if collectionModeController.mode == .lightweight {
+                collectionPausedNotice
+                    .layoutPriority(2)
+            }
             summaryTiles
                 .frame(height: PerformanceDashboardLayout.summaryHeight)
                 .layoutPriority(1)
@@ -3243,11 +3250,18 @@ struct PerformanceDashboardView: View {
             dashboardLoadingView(viewModel.loadingState)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if !viewModel.hasVisibleData {
-            ContentUnavailableView(
-                viewModel.emptyState.title,
-                systemImage: viewModel.emptyState.systemImage,
-                description: Text(viewModel.emptyState.message)
-            )
+            VStack(spacing: 12) {
+                ContentUnavailableView(
+                    viewModel.emptyState.title,
+                    systemImage: viewModel.emptyState.systemImage,
+                    description: Text(viewModel.emptyState.message)
+                )
+                if collectionModeController.mode == .lightweight && !viewModel.hasAnyData {
+                    Button("Enable Detailed Analytics") {
+                        collectionModeController.setMode(.detailedAnalytics)
+                    }
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -3271,6 +3285,13 @@ struct PerformanceDashboardView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    private var collectionPausedNotice: some View {
+        Label("Collection paused. Existing performance analytics remain available.", systemImage: "pause.circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Collection paused. Existing performance analytics remain available.")
     }
 
     private func dashboardLoadingView(_ state: PerformanceDashboardLoadingState) -> some View {

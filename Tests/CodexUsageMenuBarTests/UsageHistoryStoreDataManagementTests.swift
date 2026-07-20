@@ -3,6 +3,8 @@ import SQLite3
 import XCTest
 @testable import CodexUsageCore
 
+private struct InjectedStorageMaintenanceFailure: Error {}
+
 extension UsageHistoryStoreTests {
     func testClearHistoryDeletesTokenUsageSamples() async throws {
         let store = try makeStore()
@@ -168,18 +170,166 @@ extension UsageHistoryStoreTests {
         XCTAssertGreaterThan(info.totalByteSize, 0)
     }
 
-    func testRawRetentionDefaultsAndPersists() async throws {
-        let defaults = makeIsolatedDefaults()
+    func testStorageLifecycleUsesFixedRetentionTiers() {
+        XCTAssertEqual(StorageLifecyclePolicy.rateLimitRawRetention, 7 * 24 * 60 * 60)
+        XCTAssertEqual(StorageLifecyclePolicy.detailedRawRetention, 72 * 60 * 60)
+        XCTAssertEqual(StorageLifecyclePolicy.hourlyRetention, 90 * 24 * 60 * 60)
+        XCTAssertEqual(StorageLifecyclePolicy.dailyRetention, 365 * 24 * 60 * 60)
+        XCTAssertEqual(StorageLifecyclePolicy.inactiveTokenBaselineRetention, 30 * 24 * 60 * 60)
+    }
 
-        XCTAssertEqual(UsageHistoryRawRetentionStore.load(from: defaults), .fourteenDays)
+    func testStorageBudgetPoliciesEnforceReserveAndThresholdsExactly() {
+        let lightweight = StorageBudgetPolicy.policy(for: .lightweight)
+        let detailed = StorageBudgetPolicy.policy(for: .detailedAnalytics)
+        XCTAssertEqual(lightweight.softTargetByteSize, 100 * StorageBudgetPolicy.mebibyte)
+        XCTAssertEqual(lightweight.hardMaximumByteSize, 250 * StorageBudgetPolicy.mebibyte)
+        XCTAssertEqual(detailed.softTargetByteSize, 250 * StorageBudgetPolicy.mebibyte)
+        XCTAssertEqual(detailed.hardMaximumByteSize, 500 * StorageBudgetPolicy.mebibyte)
+        XCTAssertEqual(StorageBudgetPolicy.physicalReserveByteSize, 64 * 1_024)
 
-        UsageHistoryRawRetentionStore.save(.ninetyDays, to: defaults)
+        let growth: Int64 = 2 * StorageBudgetPolicy.mebibyte
+        let exactAllowedCurrent = detailed.hardMaximumByteSize
+            - growth
+            - StorageBudgetPolicy.physicalReserveByteSize
+        XCTAssertTrue(detailed.allowsAdvancedBatch(current: exactAllowedCurrent, conservativeBatchGrowth: growth))
+        XCTAssertFalse(detailed.allowsAdvancedBatch(current: exactAllowedCurrent + 1, conservativeBatchGrowth: growth))
+        XCTAssertFalse(detailed.allowsAdvancedBatch(current: Int64.max, conservativeBatchGrowth: Int64.max))
 
-        XCTAssertEqual(UsageHistoryRawRetentionStore.load(from: defaults), .ninetyDays)
+        let pressureBoundary = detailed.hardMaximumByteSize * 9 / 10
+        XCTAssertFalse(detailed.isAtMaintenancePressure(pressureBoundary - 1))
+        XCTAssertTrue(detailed.isAtMaintenancePressure(pressureBoundary))
+    }
+
+    func testStorageMaintenanceErrorsNeverPersistPrivateDatabaseDetails() {
+        let privateText = "/Users/private/secret.sqlite contained thread-secret and raw SQL"
+        let sanitized = StorageMaintenanceErrorSanitizer.text(
+            for: UsageHistoryStoreError.databaseOperationFailed(privateText)
+        )
+        XCTAssertFalse(sanitized.contains("/Users/private"))
+        XCTAssertFalse(sanitized.contains("thread-secret"))
+        XCTAssertFalse(sanitized.contains("SQL"))
+        XCTAssertTrue(sanitized.contains("retried safely"))
+
+        let insufficient = StorageMaintenanceErrorSanitizer.text(
+            for: UsageHistoryStoreError.insufficientStorage(
+                requiredByteSize: 300,
+                availableByteSize: 200
+            )
+        )
+        XCTAssertTrue(insufficient.contains("300"))
+        XCTAssertTrue(insufficient.contains("200"))
+    }
+
+    func testFailedMaintenancePreservesLastSuccessAndRecordsSafeRetryState() throws {
+        let store = try makeStore()
+        let lastSuccess = date("2026-06-14T12:00:00Z")
+        try store.recordStorageMaintenanceState(
+            StorageMaintenanceState(
+                lastAttemptAt: lastSuccess,
+                lastSuccessAt: lastSuccess,
+                stage: .idle,
+                cursor: nil,
+                rowsCompacted: 42,
+                bytesReclaimed: 1_024,
+                lastErrorText: nil
+            )
+        )
+
+        try store.failTelemetryRetention(
+            referenceDate: date("2026-06-15T12:00:00Z"),
+            error: UsageHistoryStoreError.databaseOperationFailed("private row contents")
+        )
+
+        let state = try store.storageMaintenanceState()
+        XCTAssertEqual(state.lastSuccessAt, lastSuccess)
+        XCTAssertEqual(state.stage, .failed)
+        XCTAssertEqual(state.rowsCompacted, 42)
+        XCTAssertEqual(state.bytesReclaimed, 1_024)
+        XCTAssertFalse(state.lastErrorText?.contains("private row contents") ?? true)
+    }
+
+    func testStorageLifecyclePrunesRateLimitRollupsAtFixedTierBoundaries() throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let expiredDailyDate = date("2025-05-01T12:00:00Z")
+        let dailyOnlyDate = date("2026-01-01T12:00:00Z")
+        let hourlyAndDailyDate = date("2026-06-01T12:00:00Z")
+        let referenceDate = date("2026-06-15T12:00:00Z")
+
+        for (usedPercent, sampleDate) in [
+            (10, expiredDailyDate),
+            (20, dailyOnlyDate),
+            (30, hourlyAndDailyDate),
+        ] {
+            try store.record(
+                snapshot: CodexUsageSnapshot.aggregateOnly(
+                    displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: usedPercent)
+                ),
+                at: sampleDate
+            )
+        }
+
+        try store.enforceTelemetryRetention(referenceDate: referenceDate, force: true)
+
+        let expiredDailyStart = UsageHistoryRange.bucketStart(
+            for: expiredDailyDate,
+            component: .day,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        let dailyOnlyStart = UsageHistoryRange.bucketStart(
+            for: dailyOnlyDate,
+            component: .day,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        let recentDayStart = UsageHistoryRange.bucketStart(
+            for: hourlyAndDailyDate,
+            component: .day,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        let recentHourStart = UsageHistoryRange.bucketStart(
+            for: hourlyAndDailyDate,
+            component: .hour,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'daily' AND period_start = \(expiredDailyStart)"
+            ),
+            ["0"]
+        )
+        XCTAssertNotEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'daily' AND period_start = \(dailyOnlyStart)"
+            ),
+            ["0"]
+        )
+        XCTAssertNotEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'daily' AND period_start = \(recentDayStart)"
+            ),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'hourly' AND period_start < \(recentHourStart)"
+            ),
+            ["0"]
+        )
+        XCTAssertNotEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'hourly' AND period_start = \(recentHourStart)"
+            ),
+            ["0"]
+        )
     }
 
     func testRecordUsesUpdatedRawRetentionProvider() async throws {
-        var retention = UsageHistoryRawRetention.thirtyDays.timeInterval
+        var retention: TimeInterval = 30 * 24 * 60 * 60
         let store = try UsageHistoryStore.inMemory(
             notificationCenter: NotificationCenter(),
             calendar: calendar,
@@ -189,7 +339,7 @@ extension UsageHistoryStoreTests {
         let currentDate = date("2026-04-14T20:00:00Z")
 
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 12)), at: oldDate)
-        retention = UsageHistoryRawRetention.sevenDays.timeInterval
+        retention = 7 * 24 * 60 * 60
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 40)), at: currentDate)
 
         let oldDayPoints = try store.points(range: .day, window: .sevenDay, now: date("2026-04-01T13:00:00Z"), calendar: calendar)
@@ -213,6 +363,303 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(hourlyBounds?.latest, date("2026-04-14T20:00:00Z"))
         XCTAssertEqual(dailyBounds?.earliest, date("2026-04-01T12:30:00Z"))
         XCTAssertEqual(dailyBounds?.latest, date("2026-04-14T20:00:00Z"))
+    }
+
+    func testHistoricalTokenArchiveIsReadOnlyAndOperationallyIsolated() async throws {
+        let archiveURL = try makeTemporaryDirectory().appendingPathComponent("token-history.sqlite3")
+        let importedAt = date("2026-04-14T20:10:00Z")
+        let importer = StubTokenBackfillImporter { store, request in
+            XCTAssertEqual(request.mode, .allHistory)
+            try store.record(
+                snapshot: CodexUsageSnapshot.aggregateOnly(
+                    displaySnapshot: self.rateLimitSnapshot(sevenDayUsedPercent: 20)
+                ),
+                at: importedAt
+            )
+            _ = try store.importTokenUsageSamples([
+                ImportedCodexTokenUsageSample(
+                    notification: self.tokenNotification(
+                        threadID: "archive-thread",
+                        turnID: "archive-turn",
+                        model: "gpt-5.5",
+                        lastInput: 120,
+                        lastTotal: 120,
+                        totalInput: 120,
+                        totalTotal: 120,
+                        dimensions: [TokenUsageDimension(.cliVersion, "1.0")].compactMap(\.self)
+                    ),
+                    receivedAt: importedAt,
+                    context: TokenUsageContext(
+                        sessionID: "archive-session",
+                        projectPath: "/Users/example/Projects/archive",
+                        effort: "high",
+                        source: "cli"
+                    )
+                ),
+            ])
+            return CodexSessionTokenBackfillSummary(
+                request: request,
+                filesScanned: 1,
+                tokenEventsImported: 1,
+                duplicateEventsSkipped: 0,
+                failedLinesSkipped: 0
+            )
+        }
+
+        let (descriptor, summary) = try UsageHistoryStore.buildHistoricalTokenArchive(
+            at: archiveURL,
+            importer: importer,
+            replaceExisting: false
+        )
+
+        XCTAssertEqual(summary.tokenEventsImported, 1)
+        XCTAssertGreaterThan(descriptor.byteSize, 0)
+        let archivePermissions = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: archiveURL.path)[.posixPermissions] as? NSNumber)?.intValue
+        )
+        XCTAssertEqual(archivePermissions & 0o222, 0)
+        let archiveStore = try UsageHistoryStore(databaseURL: archiveURL, openMode: .readOnly)
+        XCTAssertEqual(try archiveStore.metadataValue(for: "archive_format"), UsageHistoryStore.historicalArchiveFormat)
+        XCTAssertEqual(try archiveStore.tokenUsageSamples().count, 1)
+        XCTAssertEqual(
+            try sqliteStrings(at: archiveURL, sql: "SELECT COUNT(*) FROM usage_samples"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: archiveURL, sql: "SELECT COUNT(*) FROM codex_session_token_imports"),
+            ["0"]
+        )
+
+        let worker = HistoricalTokenArchiveQueryWorker(descriptor: descriptor)
+        let period = UsageHistoryRange.day.period(containing: importedAt, calendar: calendar)
+        let dashboard = try await worker.tokenDashboardSnapshot(
+            for: TokenDashboardLoadRequest(
+                breakdownDimension: .cliVersion,
+                range: .day,
+                periodStart: period.start,
+                periodEnd: period.end
+            )
+        )
+        XCTAssertTrue(dashboard.series.map(\.name).contains("1.0"))
+        do {
+            try await worker.clearHistory()
+            XCTFail("Historical archives must reject mutation.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("read-only"))
+        }
+        XCTAssertEqual(try archiveStore.tokenUsageSamples().count, 1)
+    }
+
+    func testHistoricalArchiveDeletionRejectsPathSubstitution() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let archiveURL = directoryURL.appendingPathComponent("token-history.sqlite3")
+        let replacementURL = directoryURL.appendingPathComponent("replacement.sqlite3")
+        let importer = StubTokenBackfillImporter { _, request in
+            CodexSessionTokenBackfillSummary(
+                request: request,
+                filesScanned: 0,
+                tokenEventsImported: 0,
+                duplicateEventsSkipped: 0,
+                failedLinesSkipped: 0
+            )
+        }
+        let (descriptor, _) = try UsageHistoryStore.buildHistoricalTokenArchive(
+            at: archiveURL,
+            importer: importer,
+            replaceExisting: false
+        )
+        try UsageHistoryStore.exportHistoricalTokenArchive(descriptor, to: replacementURL)
+        try FileManager.default.removeItem(at: archiveURL)
+        try FileManager.default.moveItem(at: replacementURL, to: archiveURL)
+
+        XCTAssertThrowsError(try UsageHistoryStore.deleteHistoricalTokenArchive(descriptor)) { error in
+            XCTAssertEqual(error as? HistoricalTokenArchiveError, .pathChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archiveURL.path))
+    }
+
+    func testCancelledHistoricalArchiveBuildLeavesNoPublishedOrPartialFile() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let archiveURL = directoryURL.appendingPathComponent("token-history.sqlite3")
+        let importer = StubTokenBackfillImporter { _, _ in
+            throw CancellationError()
+        }
+
+        XCTAssertThrowsError(
+            try UsageHistoryStore.buildHistoricalTokenArchive(
+                at: archiveURL,
+                importer: importer,
+                replaceExisting: false
+            )
+        ) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archiveURL.path))
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)
+                .filter { $0.contains(".partial") }
+                .isEmpty
+        )
+    }
+
+    func testFullStorageOptimizationPreservesDataAndClearsJournal() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+        var store: UsageHistoryStore? = try UsageHistoryStore(databaseURL: databaseURL)
+        try store?.record(
+            tokenUsage: tokenNotification(
+                threadID: "optimization-thread",
+                turnID: "optimization-turn",
+                lastTotal: 120,
+                totalTotal: 120
+            ),
+            at: date("2026-04-14T20:10:00Z")
+        )
+        store = nil
+
+        let result = try UsageHistoryStore.optimizeDatabase(
+            at: databaseURL,
+            reason: .schemaMigration
+        )
+
+        XCTAssertTrue(result.performed)
+        XCTAssertGreaterThan(result.beforeByteSize, 0)
+        XCTAssertGreaterThan(result.afterByteSize, 0)
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "PRAGMA quick_check"),
+            ["ok"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM pragma_foreign_key_check"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_usage_samples"),
+            ["1"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM storage_maintenance_journal"),
+            ["0"]
+        )
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)
+                .filter { $0.contains(".candidate.") || $0.contains(".rollback.") }
+                .isEmpty
+        )
+    }
+
+    func testStorageOptimizationRecoversEveryInjectedFailurePhase() throws {
+        for failurePoint in StorageOptimizationFailurePoint.allCases {
+            let directoryURL = try makeTemporaryDirectory()
+            let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+            var store: UsageHistoryStore? = try UsageHistoryStore(databaseURL: databaseURL)
+            try store?.record(
+                tokenUsage: tokenNotification(
+                    threadID: "failure-thread",
+                    turnID: failurePoint.rawValue,
+                    lastTotal: 50,
+                    totalTotal: 50
+                ),
+                at: date("2026-04-14T20:10:00Z")
+            )
+            store = nil
+
+            XCTAssertThrowsError(
+                try UsageHistoryStore.optimizeDatabase(
+                    at: databaseURL,
+                    reason: .schemaMigration,
+                    failureInjector: { point in
+                        if point == failurePoint {
+                            throw InjectedStorageMaintenanceFailure()
+                        }
+                    }
+                ),
+                "Expected injected failure at \(failurePoint.rawValue)"
+            )
+
+            try UsageHistoryStore.recoverStorageMaintenanceIfNeeded(at: databaseURL)
+            XCTAssertEqual(
+                try sqliteStrings(at: databaseURL, sql: "PRAGMA quick_check"),
+                ["ok"],
+                "Invalid canonical database after \(failurePoint.rawValue)"
+            )
+            XCTAssertEqual(
+                try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM pragma_foreign_key_check"),
+                ["0"]
+            )
+            XCTAssertEqual(
+                try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_usage_samples"),
+                ["1"]
+            )
+            XCTAssertEqual(
+                try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM storage_maintenance_journal"),
+                ["0"]
+            )
+            XCTAssertTrue(
+                try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)
+                    .filter { $0.contains(".candidate.") || $0.contains(".rollback.") }
+                    .isEmpty
+            )
+        }
+    }
+
+    func testOfflineBackupRestorePublishesValidatedCandidateAtomically() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+        let sourceURL = directoryURL.appendingPathComponent("source.sqlite3")
+        let backupURL = directoryURL.appendingPathComponent("backup.sqlite3")
+        let sampleDate = date("2026-04-14T20:10:00Z")
+
+        var canonicalStore: UsageHistoryStore? = try UsageHistoryStore(databaseURL: databaseURL)
+        try canonicalStore?.record(
+            tokenUsage: tokenNotification(
+                threadID: "canonical-thread",
+                turnID: "canonical-turn",
+                lastTotal: 10,
+                totalTotal: 10
+            ),
+            at: sampleDate
+        )
+        canonicalStore = nil
+
+        var sourceStore: UsageHistoryStore? = try UsageHistoryStore(databaseURL: sourceURL)
+        for index in 1...2 {
+            try sourceStore?.record(
+                tokenUsage: tokenNotification(
+                    threadID: "source-thread-\(index)",
+                    turnID: "source-turn-\(index)",
+                    lastTotal: 20,
+                    totalTotal: 20
+                ),
+                at: sampleDate.addingTimeInterval(TimeInterval(index))
+            )
+        }
+        try sourceStore?.exportBackup(to: backupURL)
+        sourceStore = nil
+
+        try UsageHistoryStore.restoreOperationalBackup(
+            from: backupURL,
+            to: databaseURL,
+            mode: .lightweight,
+            referenceDate: sampleDate.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_usage_samples"),
+            ["2"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "PRAGMA quick_check"),
+            ["ok"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: backupURL, sql: "SELECT COUNT(*) FROM token_usage_samples"),
+            ["2"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM storage_maintenance_journal"),
+            ["0"]
+        )
     }
 
     func testBackupExportProducesImportableDatabase() async throws {
@@ -1026,7 +1473,7 @@ extension UsageHistoryStoreTests {
     }
 
     @MainActor
-    func testSettingsViewModelFormatsDatabaseInfoAndPersistsRetention() async throws {
+    func testSettingsViewModelFormatsStorageBudgetAndMaintenanceState() async throws {
         let defaults = makeIsolatedDefaults()
         let (store, databaseURL) = try makeTemporaryStore()
         try store.record(snapshot: CodexUsageSnapshot.aggregateOnly(displaySnapshot: rateLimitSnapshot(sevenDayUsedPercent: 20)), at: date("2026-04-14T20:00:00Z"))
@@ -1036,16 +1483,40 @@ extension UsageHistoryStoreTests {
 
         XCTAssertEqual(viewModel.databasePathText, databaseURL.path)
         XCTAssertNotEqual(viewModel.databaseSizeText, "--")
-
-        viewModel.selectedRetention = .ninetyDays
-        for _ in 0..<100 where viewModel.statusMessage != "Raw sample retention updated and applied." {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        XCTAssertEqual(UsageHistoryRawRetentionStore.load(from: defaults), .ninetyDays)
-        XCTAssertEqual(viewModel.statusMessage, "Raw sample retention updated and applied.")
+        XCTAssertTrue(viewModel.storageLimitText.hasPrefix("Storage: "))
+        XCTAssertTrue(viewModel.storageLimitText.contains("maximum"))
+        XCTAssertEqual(viewModel.maintenanceStatusText, "Maintenance scheduled automatically")
         XCTAssertNil(viewModel.errorMessage)
     }
+
+#if DEBUG
+    func testStorageSettingsFixtureRendererCoversFrozenVisualStatesWithoutDiskMutation() {
+        XCTAssertEqual(
+            StorageSettingsFixtureState.allCases,
+            [
+                .lightweight,
+                .detailedAnalytics,
+                .migrating,
+                .overBudgetPaused,
+                .insufficientSpace,
+                .archiveOpen,
+                .empty,
+                .failure,
+            ]
+        )
+        let presentations = StorageSettingsFixtureState.allCases.map(\.presentation)
+        XCTAssertTrue(presentations.allSatisfy { $0.storageText.contains("maximum") })
+        XCTAssertTrue(presentations.allSatisfy { !$0.maintenanceText.isEmpty })
+        XCTAssertEqual(presentations.filter(\.detailedAnalyticsEnabled).count, 2)
+        XCTAssertEqual(presentations.compactMap(\.archiveName), ["codex-token-history-2026"])
+        XCTAssertTrue(
+            StorageSettingsFixtureState.insufficientSpace.presentation.detailText.contains("data is safe")
+        )
+        XCTAssertTrue(
+            StorageSettingsFixtureState.overBudgetPaused.presentation.maintenanceText.contains("paused")
+        )
+    }
+#endif
 
     @MainActor
     func testSettingsViewModelExportImportClearAndFailureMessages() async throws {
@@ -1060,10 +1531,10 @@ extension UsageHistoryStoreTests {
         XCTAssertNil(viewModel.errorMessage)
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
 
-        await viewModel.clearHistory()
+        await viewModel.clearAnalyticsData()
 
-        XCTAssertEqual(viewModel.statusMessage, "History cleared.")
-        XCTAssertFalse(try store.hasAnyHistory())
+        XCTAssertEqual(viewModel.statusMessage, "Detailed analytics data cleared.")
+        XCTAssertTrue(try store.hasAnyHistory())
 
         await viewModel.importBackup(from: backupURL)
 

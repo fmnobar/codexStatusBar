@@ -73,7 +73,7 @@ enum AppReleaseNotes {
         AppReleaseNote(
             id: "data-management",
             title: "Data management settings",
-            detail: "View the local history database, choose raw retention, export backups, import backups, and clear local history."
+            detail: "Use Lightweight storage by default, opt into Detailed Analytics, manage fixed retention, safe backups, and read-only historical archives."
         ),
         AppReleaseNote(
             id: "history-polish",

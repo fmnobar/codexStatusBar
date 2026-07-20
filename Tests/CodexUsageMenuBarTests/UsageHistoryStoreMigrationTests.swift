@@ -241,7 +241,10 @@ extension UsageHistoryStoreTests {
             ),
             ["|||||5"]
         )
-        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"), ["2"])
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"),
+            [String(UsageHistoryStore.currentSchemaVersion)]
+        )
     }
 
     func testNumberedMigrationRollsBackAndRecoversAfterInterruption() async throws {
@@ -304,7 +307,10 @@ extension UsageHistoryStoreTests {
             calendar: calendar
         )
 
-        XCTAssertEqual(try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"), ["2"])
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "PRAGMA user_version"),
+            [String(UsageHistoryStore.currentSchemaVersion)]
+        )
         XCTAssertEqual(try recoveredStore.busyTimeoutMilliseconds(), UsageHistoryStore.defaultBusyTimeoutMilliseconds)
         XCTAssertTrue(
             try sqliteStrings(at: databaseURL, sql: "SELECT name FROM pragma_table_info('token_usage_samples')")
@@ -375,6 +381,14 @@ extension UsageHistoryStoreTests {
         XCTAssertTrue(tables.contains("token_dimension_hourly_rollups"))
         XCTAssertTrue(tables.contains("telemetry_hourly_rollups"))
         XCTAssertTrue(tables.contains("telemetry_error_hourly_rollups"))
+        XCTAssertTrue(tables.contains("token_dimension_values"))
+        XCTAssertTrue(tables.contains("token_dimension_sets"))
+        XCTAssertTrue(tables.contains("token_dimension_set_members"))
+        XCTAssertTrue(tables.contains("token_usage_daily_rollups"))
+        XCTAssertTrue(tables.contains("token_dimension_daily_rollups"))
+        XCTAssertTrue(tables.contains("telemetry_daily_rollups"))
+        XCTAssertTrue(tables.contains("telemetry_error_daily_rollups"))
+        XCTAssertTrue(tables.contains("storage_maintenance_journal"))
         XCTAssertEqual(
             Set(try sqliteStrings(
                 at: databaseURL,

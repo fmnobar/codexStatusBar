@@ -8,10 +8,15 @@ enum MenuBarApplicationLifecycle {
 @MainActor
 final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
     private let database: UsageHistoryDatabaseWorking
+    private let archiveController: HistoricalTokenArchiveController
     private var window: NSWindow?
 
-    init(database: UsageHistoryDatabaseWorking) {
+    init(
+        database: UsageHistoryDatabaseWorking,
+        archiveController: HistoricalTokenArchiveController? = nil
+    ) {
         self.database = database
+        self.archiveController = archiveController ?? .shared
     }
 
     func showWindow() {
@@ -33,7 +38,10 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.setFrameAutosaveName("CodexUsageHistoryWindow")
-        window.contentViewController = NSHostingController(rootView: UsageHistoryView(database: database))
+        window.contentViewController = NSHostingController(
+            rootView: UsageHistoryView(database: database, archiveController: archiveController)
+        )
+        archiveController.beginViewing()
         window.center()
         enforceMinimumFrame(for: window)
         window.makeKeyAndOrderFront(nil)
@@ -60,6 +68,7 @@ final class UsageHistoryWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         window = nil
+        archiveController.endViewing()
     }
 }
 

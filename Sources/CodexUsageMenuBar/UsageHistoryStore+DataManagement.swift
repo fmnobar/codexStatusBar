@@ -27,13 +27,22 @@ extension UsageHistoryStore {
     }
 
     func clearHistory() throws {
+        let hasLegacyTokenDimensions = try tableExists(table: "token_usage_dimensions")
         try transaction {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
             try execute("DELETE FROM token_usage_hourly_rollups")
+            try execute("DELETE FROM token_usage_daily_rollups")
             try execute("DELETE FROM token_dimension_hourly_rollups")
-            try execute("DELETE FROM token_usage_dimensions")
+            try execute("DELETE FROM token_dimension_daily_rollups")
+            if hasLegacyTokenDimensions {
+                try execute("DELETE FROM token_usage_dimensions")
+            }
+            try execute("DELETE FROM token_dimension_set_members")
+            try execute("DELETE FROM token_dimension_sets")
+            try execute("DELETE FROM token_dimension_values")
+            try execute("DELETE FROM token_expired_baselines")
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
             try execute("DELETE FROM token_series_catalog")
@@ -51,6 +60,8 @@ extension UsageHistoryStore {
             try execute("DELETE FROM codex_session_task_timing_capture_state")
             try execute("DELETE FROM telemetry_hourly_rollups")
             try execute("DELETE FROM telemetry_error_hourly_rollups")
+            try execute("DELETE FROM telemetry_daily_rollups")
+            try execute("DELETE FROM telemetry_error_daily_rollups")
             try execute("DELETE FROM codex_thread_catalog")
             try execute("DELETE FROM codex_thread_spawn_edges")
             try execute("DELETE FROM codex_thread_dynamic_tools")
@@ -65,6 +76,103 @@ extension UsageHistoryStore {
         }
 
         notificationCenter.post(name: Self.didChangeNotification, object: self)
+    }
+
+    /// Removes optional analytics while preserving rate-limit History, lightweight token totals,
+    /// cumulative baselines, preferences, capture freshness, and independently managed archives.
+    func clearAnalyticsData() throws {
+        let hasLegacyTokenDimensions = try tableExists(table: "token_usage_dimensions")
+        try transaction {
+            try execute(
+                """
+                UPDATE token_usage_samples
+                SET model = NULL,
+                    session_id = NULL,
+                    project_path = NULL,
+                    project_name = NULL,
+                    effort = NULL,
+                    source = NULL,
+                    model_context_window = NULL,
+                    dimension_set_id = NULL
+                """
+            )
+            if hasLegacyTokenDimensions {
+                try execute("DELETE FROM token_usage_dimensions")
+            }
+            try execute("DELETE FROM token_dimension_set_members")
+            try execute("DELETE FROM token_dimension_sets")
+            try execute("DELETE FROM token_dimension_values")
+            try collapseTokenRollupsToLightweight(table: "token_usage_hourly_rollups")
+            try collapseTokenRollupsToLightweight(table: "token_usage_daily_rollups")
+            try execute("DELETE FROM token_dimension_hourly_rollups")
+            try execute("DELETE FROM token_dimension_daily_rollups")
+            try execute("DELETE FROM token_project_catalog")
+            try execute("DELETE FROM token_effort_catalog")
+            try execute("DELETE FROM token_source_catalog")
+            try execute("DELETE FROM token_dimension_catalog")
+            try execute("DELETE FROM codex_turn_performance_dimensions")
+            try execute("DELETE FROM codex_turn_performance_events")
+            try execute("DELETE FROM codex_turn_performance_dimension_catalog")
+            try execute("DELETE FROM codex_turn_performance_capture_state")
+            try execute("DELETE FROM codex_session_task_timing_events")
+            try execute("DELETE FROM codex_session_task_timing_import_files")
+            try execute("DELETE FROM codex_session_task_timing_capture_state")
+            try execute("DELETE FROM telemetry_hourly_rollups")
+            try execute("DELETE FROM telemetry_error_hourly_rollups")
+            try execute("DELETE FROM telemetry_daily_rollups")
+            try execute("DELETE FROM telemetry_error_daily_rollups")
+            try execute("DELETE FROM codex_thread_spawn_edges")
+            try execute("DELETE FROM codex_thread_dynamic_tools")
+            try execute("DELETE FROM codex_thread_catalog")
+            try execute("DELETE FROM codex_thread_catalog_capture_state")
+            try execute("DELETE FROM codex_model_capability_reasoning_levels")
+            try execute("DELETE FROM codex_model_capability_service_tiers")
+            try execute("DELETE FROM codex_model_capability_speed_tiers")
+            try execute("DELETE FROM codex_model_capability_input_modalities")
+            try execute("DELETE FROM codex_model_capability_tools")
+            try execute("DELETE FROM codex_model_capabilities")
+            try execute("DELETE FROM codex_model_capabilities_capture_state")
+        }
+        try rebuildSeriesCatalogs()
+        notificationCenter.post(name: Self.didChangeNotification, object: self)
+    }
+
+    private func collapseTokenRollupsToLightweight(table: String) throws {
+        try execute(
+            """
+            INSERT INTO \(table) (
+                period_start, model, project_path, project_name, effort, source,
+                model_context_window, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, sample_count
+            )
+            SELECT period_start, '', '', '', '', '', -1,
+                SUM(observed_input_tokens), SUM(observed_cached_input_tokens),
+                SUM(observed_output_tokens), SUM(observed_reasoning_output_tokens),
+                SUM(observed_total_tokens), SUM(sample_count)
+            FROM \(table)
+            WHERE model != '' OR project_path != '' OR project_name != ''
+                OR effort != '' OR source != '' OR model_context_window != -1
+            GROUP BY period_start
+            ON CONFLICT(
+                period_start, model, project_path, project_name,
+                effort, source, model_context_window
+            ) DO UPDATE SET
+                observed_input_tokens = observed_input_tokens + excluded.observed_input_tokens,
+                observed_cached_input_tokens = observed_cached_input_tokens + excluded.observed_cached_input_tokens,
+                observed_output_tokens = observed_output_tokens + excluded.observed_output_tokens,
+                observed_reasoning_output_tokens = observed_reasoning_output_tokens + excluded.observed_reasoning_output_tokens,
+                observed_total_tokens = observed_total_tokens + excluded.observed_total_tokens,
+                sample_count = sample_count + excluded.sample_count
+            """
+        )
+        try execute(
+            """
+            DELETE FROM \(table)
+            WHERE model != '' OR project_path != '' OR project_name != ''
+                OR effort != '' OR source != '' OR model_context_window != -1
+            """
+        )
     }
 
     func hasAnyHistory() throws -> Bool {
@@ -87,15 +195,397 @@ extension UsageHistoryStore {
         }
     }
 
-    func databaseInfo(fileManager: FileManager = .default) throws -> UsageHistoryDatabaseInfo {
+    func databaseInfo(
+        collectionMode: UsageCollectionMode = .lightweight,
+        fileManager: FileManager = .default
+    ) throws -> UsageHistoryDatabaseInfo {
         guard let databaseURL else {
             throw UsageHistoryStoreError.databaseUnavailable
         }
 
+        let databaseByteSize = Self.fileByteSize(databaseURL, fileManager: fileManager)
+        let walByteSize = Self.fileByteSize(
+            URL(fileURLWithPath: databaseURL.path + "-wal"),
+            fileManager: fileManager
+        )
+        let sharedMemoryByteSize = Self.fileByteSize(
+            URL(fileURLWithPath: databaseURL.path + "-shm"),
+            fileManager: fileManager
+        )
+        let pageSize = try databasePragmaInt64("page_size")
+        let pageCount = try databasePragmaInt64("page_count")
+        let freePageCount = try databasePragmaInt64("freelist_count")
+
         return UsageHistoryDatabaseInfo(
             databaseURL: databaseURL,
-            totalByteSize: Self.totalByteSize(for: databaseURL, fileManager: fileManager)
+            totalByteSize: databaseByteSize + walByteSize + sharedMemoryByteSize,
+            databaseByteSize: databaseByteSize,
+            walByteSize: walByteSize,
+            sharedMemoryByteSize: sharedMemoryByteSize,
+            logicalLiveByteSize: max(pageCount - freePageCount, 0) * pageSize,
+            reclaimableByteSize: max(freePageCount, 0) * pageSize,
+            collectionMode: collectionMode,
+            oldestRawBucket: try oldestTimestampDate(
+                """
+                SELECT MIN(value) FROM (
+                    SELECT MIN(timestamp) AS value FROM usage_samples
+                    UNION ALL SELECT MIN(received_at) FROM token_usage_samples WHERE is_retention_baseline = 0
+                    UNION ALL SELECT MIN(event_timestamp) FROM codex_turn_performance_events
+                    UNION ALL SELECT MIN(event_timestamp) FROM codex_session_task_timing_events
+                )
+                """
+            ),
+            oldestHourlyBucket: try oldestTimestampDate(
+                """
+                SELECT MIN(value) FROM (
+                    SELECT MIN(period_start) AS value FROM usage_rollups WHERE granularity = 'hourly'
+                    UNION ALL SELECT MIN(period_start) FROM token_usage_hourly_rollups
+                    UNION ALL SELECT MIN(period_start) FROM token_dimension_hourly_rollups
+                    UNION ALL SELECT MIN(period_start) FROM telemetry_hourly_rollups
+                    UNION ALL SELECT MIN(period_start) FROM telemetry_error_hourly_rollups
+                )
+                """
+            ),
+            oldestDailyBucket: try oldestTimestampDate(
+                """
+                SELECT MIN(value) FROM (
+                    SELECT MIN(period_start) AS value FROM usage_rollups WHERE granularity = 'daily'
+                    UNION ALL SELECT MIN(period_start) FROM token_usage_daily_rollups
+                    UNION ALL SELECT MIN(period_start) FROM token_dimension_daily_rollups
+                    UNION ALL SELECT MIN(period_start) FROM telemetry_daily_rollups
+                    UNION ALL SELECT MIN(period_start) FROM telemetry_error_daily_rollups
+                )
+                """
+            ),
+            maintenanceState: try storageMaintenanceState()
         )
+    }
+
+    func preflightAdvancedIngestion(
+        mode: UsageCollectionMode,
+        batchKind: AdvancedIngestionBatchKind
+    ) throws -> Bool {
+        guard mode == .detailedAnalytics else {
+            return false
+        }
+        // In-memory stores are test/preview stores with no persistent physical budget.
+        guard databaseURL != nil else {
+            return true
+        }
+        let info = try databaseInfo(collectionMode: mode)
+        let policy = StorageBudgetPolicy.policy(for: mode)
+        let wasPaused = try metadataValue(for: "advanced_ingestion_paused") == "1"
+
+        if wasPaused {
+            guard info.totalByteSize < policy.softTargetByteSize else {
+                return false
+            }
+            try setMetadataValue("0", for: "advanced_ingestion_paused")
+        }
+
+        guard policy.allowsAdvancedBatch(
+            current: info.totalByteSize,
+            conservativeBatchGrowth: batchKind.conservativeGrowthByteSize
+        ) else {
+            try setMetadataValue("1", for: "advanced_ingestion_paused")
+            try setMetadataValue("1", for: "storage_budget_pressure_pending")
+            return false
+        }
+
+        if policy.isAtMaintenancePressure(info.totalByteSize) {
+            try setMetadataValue("1", for: "storage_budget_pressure_pending")
+        }
+        return true
+    }
+
+    /// Applies the frozen pressure sequence after normal time-tier retention has caught up.
+    /// Every destructive step is bounded and preserves the low-cardinality status tables and
+    /// token cumulative baselines needed by Lightweight mode.
+    @discardableResult
+    func enforceStorageBudget(mode: UsageCollectionMode) throws -> UsageHistoryDatabaseInfo {
+        guard databaseURL != nil else {
+            throw UsageHistoryStoreError.databaseUnavailable
+        }
+
+        let policy = StorageBudgetPolicy.policy(for: mode)
+        try checkpointWriteAheadLog()
+        var info = try databaseInfo(collectionMode: mode)
+        guard info.totalByteSize > policy.softTargetByteSize else {
+            try setMetadataValue("0", for: "storage_budget_pressure_pending")
+            try setMetadataValue("0", for: "advanced_ingestion_paused")
+            return info
+        }
+
+        try pruneStorageBudgetOrphans()
+        info = try databaseInfo(collectionMode: mode)
+
+        var madeProgress = true
+        while info.logicalLiveByteSize > policy.softTargetByteSize, madeProgress {
+            madeProgress = try shedOldestOptionalRawDetail()
+            if !madeProgress {
+                madeProgress = try foldOldestInTierHourlyBudgetBatch()
+            }
+            if !madeProgress {
+                madeProgress = try shedOldestDailyAnalytics(mode: mode)
+            }
+            if madeProgress {
+                try checkpointWriteAheadLog()
+                info = try databaseInfo(collectionMode: mode)
+            }
+        }
+
+        if mode == .lightweight, info.logicalLiveByteSize > policy.hardMaximumByteSize {
+            try retainSevereLightweightCore(referenceDate: Date())
+            try checkpointWriteAheadLog()
+            info = try databaseInfo(collectionMode: mode)
+        }
+
+        // Ordinary lifecycle passes only reclaim a bounded number of pages. A full rebuild is
+        // coordinated separately because it requires quiescing and atomic file replacement.
+        try execute("PRAGMA incremental_vacuum(512)")
+        try checkpointWriteAheadLog()
+        info = try databaseInfo(collectionMode: mode)
+
+        let remainsPressured = info.totalByteSize > policy.softTargetByteSize
+        try setMetadataValue(remainsPressured ? "1" : "0", for: "storage_budget_pressure_pending")
+        try setMetadataValue(remainsPressured ? "1" : "0", for: "advanced_ingestion_paused")
+        return info
+    }
+
+    /// Last-resort Lightweight pressure policy. Lifecycle and ordinary pressure shedding run
+    /// first; this path retains the newest limit/reset sample, current-day token counters, and
+    /// cumulative baselines so core status and the next delta remain correct.
+    private func retainSevereLightweightCore(referenceDate: Date) throws {
+        let dayStart = UsageHistoryRange.bucketStart(
+            for: referenceDate,
+            component: .day,
+            calendar: calendar
+        ).timeIntervalSince1970Int
+        try transaction {
+            try compactTokenTelemetry(olderThan: dayStart)
+            try execute(
+                """
+                DELETE FROM usage_samples
+                WHERE timestamp < \(dayStart)
+                  AND EXISTS (
+                      SELECT 1 FROM usage_samples AS newer
+                      WHERE newer.bucket_id = usage_samples.bucket_id
+                        AND newer.window = usage_samples.window
+                        AND newer.timestamp > usage_samples.timestamp
+                  )
+                """
+            )
+            try execute(
+                """
+                DELETE FROM usage_rollups
+                WHERE period_start < \(dayStart)
+                  AND EXISTS (
+                      SELECT 1 FROM usage_rollups AS newer
+                      WHERE newer.granularity = usage_rollups.granularity
+                        AND newer.bucket_id = usage_rollups.bucket_id
+                        AND newer.window = usage_rollups.window
+                        AND newer.period_start > usage_rollups.period_start
+                  )
+                """
+            )
+            try execute(
+                "DELETE FROM token_usage_samples WHERE is_retention_baseline = 0 AND received_at < \(dayStart)"
+            )
+            try execute("DELETE FROM token_usage_hourly_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM token_dimension_hourly_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM token_usage_daily_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM token_dimension_daily_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM telemetry_hourly_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM telemetry_error_hourly_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM telemetry_daily_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM telemetry_error_daily_rollups WHERE period_start < \(dayStart)")
+            try execute("DELETE FROM codex_turn_performance_dimensions")
+            try execute("DELETE FROM codex_turn_performance_events")
+            try execute("DELETE FROM codex_session_task_timing_events")
+        }
+        try pruneStorageBudgetOrphans()
+    }
+
+    private func pruneStorageBudgetOrphans() throws {
+        try transaction {
+            try execute(
+                """
+                DELETE FROM token_dimension_sets
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM token_usage_samples
+                    WHERE token_usage_samples.dimension_set_id = token_dimension_sets.set_id
+                )
+                """
+            )
+            try execute(
+                """
+                DELETE FROM token_dimension_values
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM token_dimension_set_members
+                    WHERE token_dimension_set_members.value_id = token_dimension_values.value_id
+                )
+                """
+            )
+            try execute(
+                """
+                DELETE FROM token_expired_baselines
+                WHERE expired_at < CAST(strftime('%s', 'now', '-30 days') AS INTEGER)
+                """
+            )
+            try execute(
+                """
+                DELETE FROM codex_turn_performance_dimension_catalog
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM codex_turn_performance_dimensions
+                    WHERE codex_turn_performance_dimensions.dimension_key = codex_turn_performance_dimension_catalog.dimension_key
+                      AND codex_turn_performance_dimensions.dimension_value = codex_turn_performance_dimension_catalog.dimension_value
+                )
+                """
+            )
+        }
+    }
+
+    private func shedOldestOptionalRawDetail() throws -> Bool {
+        if try compactOldestRawBudgetBatch() {
+            return true
+        }
+        let beforeChanges = sqlite3_total_changes64(database)
+        try transaction {
+            // Performance/session rows are optional. Delete at most one oldest 24-hour slice.
+            try execute(
+                """
+                DELETE FROM codex_turn_performance_dimensions
+                WHERE EXISTS (
+                    SELECT 1 FROM codex_turn_performance_events AS events
+                    WHERE events.source_key = codex_turn_performance_dimensions.source_key
+                      AND events.source_row_id = codex_turn_performance_dimensions.source_row_id
+                      AND events.event_timestamp < (
+                          SELECT COALESCE(MIN(event_timestamp), 0) + 86400
+                          FROM codex_turn_performance_events
+                      )
+                )
+                """
+            )
+            try execute(
+                """
+                DELETE FROM codex_turn_performance_events
+                WHERE event_timestamp < (
+                    SELECT COALESCE(MIN(event_timestamp), 0) + 86400
+                    FROM codex_turn_performance_events
+                )
+                """
+            )
+            try execute(
+                """
+                DELETE FROM codex_session_task_timing_events
+                WHERE event_timestamp < (
+                    SELECT COALESCE(MIN(event_timestamp), 0) + 86400
+                    FROM codex_session_task_timing_events
+                )
+                """
+            )
+
+            // Preserve token totals/delta baselines while dropping only their oldest optional
+            // attribution. The row remains a valid Lightweight sample.
+            try execute(
+                """
+                UPDATE token_usage_samples
+                SET model = NULL,
+                    session_id = NULL,
+                    project_path = NULL,
+                    project_name = NULL,
+                    effort = NULL,
+                    source = NULL,
+                    model_context_window = NULL,
+                    dimension_set_id = NULL
+                WHERE rowid IN (
+                    SELECT rowid FROM token_usage_samples
+                    WHERE is_retention_baseline = 0
+                      AND (dimension_set_id IS NOT NULL OR model IS NOT NULL OR project_path IS NOT NULL)
+                    ORDER BY received_at, rowid
+                    LIMIT 10000
+                )
+                """
+            )
+        }
+        if sqlite3_total_changes64(database) > beforeChanges {
+            try pruneStorageBudgetOrphans()
+            return true
+        }
+        return false
+    }
+
+    private func foldOldestInTierHourlyBudgetBatch() throws -> Bool {
+        guard let earliest = try oldestTimestampDate(
+            """
+            SELECT MIN(value) FROM (
+                SELECT MIN(period_start) AS value FROM token_usage_hourly_rollups
+                UNION ALL SELECT MIN(period_start) FROM token_dimension_hourly_rollups
+                UNION ALL SELECT MIN(period_start) FROM telemetry_hourly_rollups
+                UNION ALL SELECT MIN(period_start) FROM telemetry_error_hourly_rollups
+            )
+            """
+        ) else {
+            return false
+        }
+        return try foldHourlyBudgetBatch(startingAt: earliest)
+    }
+
+    private func shedOldestDailyAnalytics(mode: UsageCollectionMode) throws -> Bool {
+        let protectedTokenCutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60).timeIntervalSince1970Int
+        let beforeChanges = sqlite3_total_changes64(database)
+        _ = mode // Both modes protect the same core seven-day token trend.
+        try transaction {
+            try execute(
+                """
+                DELETE FROM token_dimension_daily_rollups
+                WHERE period_start = (SELECT MIN(period_start) FROM token_dimension_daily_rollups)
+                """
+            )
+            try execute(
+                """
+                DELETE FROM telemetry_daily_rollups
+                WHERE period_start = (SELECT MIN(period_start) FROM telemetry_daily_rollups)
+                """
+            )
+            try execute(
+                """
+                DELETE FROM telemetry_error_daily_rollups
+                WHERE period_start = (SELECT MIN(period_start) FROM telemetry_error_daily_rollups)
+                """
+            )
+            try execute(
+                """
+                DELETE FROM token_usage_daily_rollups
+                WHERE period_start = (
+                    SELECT MIN(period_start)
+                    FROM token_usage_daily_rollups
+                    WHERE period_start < \(protectedTokenCutoff)
+                )
+                """
+            )
+        }
+        return sqlite3_total_changes64(database) > beforeChanges
+    }
+
+    private func databasePragmaInt64(_ name: String) throws -> Int64 {
+        let statement = try prepare("PRAGMA \(name)")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    func oldestTimestampDate(_ sql: String) throws -> Date? {
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              sqlite3_column_type(statement, 0) != SQLITE_NULL
+        else {
+            return nil
+        }
+        return Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 0)))
     }
 
     func localSourceStoredMetrics() throws -> CodexLocalSourceStoredMetrics {
@@ -200,14 +690,21 @@ extension UsageHistoryStore {
                 withIntermediateDirectories: true
             )
 
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                try fileManager.removeItem(at: destinationURL)
-            }
-
-            try fileManager.copyItem(at: databaseURL, to: destinationURL)
+            try Self.sqliteBackupCopy(
+                from: databaseURL,
+                to: destinationURL,
+                fileManager: fileManager
+            )
             try Self.normalizeBackupJournalMode(at: destinationURL)
         } catch {
             throw UsageHistoryStoreError.fileOperationFailed(error.localizedDescription)
+        }
+    }
+
+    func sanitizeForOfflineRestore() throws {
+        try transaction {
+            try sanitizeStoredGitOrigins()
+            try sanitizeStoredSensitiveMetadata()
         }
     }
 
@@ -263,6 +760,36 @@ extension UsageHistoryStore {
         )
         let importedHasTokenUsageDimensions = try tableExists(
             table: "token_usage_dimensions",
+            schema: "imported_usage_history"
+        )
+        let importedHasNormalizedTokenDimensions = try tableExists(
+            table: "token_dimension_values",
+            schema: "imported_usage_history"
+        ) && tableExists(
+            table: "token_dimension_sets",
+            schema: "imported_usage_history"
+        ) && tableExists(
+            table: "token_dimension_set_members",
+            schema: "imported_usage_history"
+        ) && importedHasTokenUsageSamples && tableHasColumn(
+            table: "token_usage_samples",
+            column: "dimension_set_id",
+            schema: "imported_usage_history"
+        )
+        let importedHasTokenUsageDailyRollups = try tableExists(
+            table: "token_usage_daily_rollups",
+            schema: "imported_usage_history"
+        )
+        let importedHasTokenDimensionDailyRollups = try tableExists(
+            table: "token_dimension_daily_rollups",
+            schema: "imported_usage_history"
+        )
+        let importedHasTelemetryDailyRollups = try tableExists(
+            table: "telemetry_daily_rollups",
+            schema: "imported_usage_history"
+        )
+        let importedHasTelemetryErrorDailyRollups = try tableExists(
+            table: "telemetry_error_daily_rollups",
             schema: "imported_usage_history"
         )
         let importedObservedInputExpression = try importedHasTokenUsageSamples && tableHasColumn(
@@ -450,13 +977,27 @@ extension UsageHistoryStore {
             schema: "imported_usage_history"
         )
 
+        if importedHasTokenUsageDimensions || importedHasNormalizedTokenDimensions {
+            try ensureLegacyTokenDimensionTransitionTable()
+            try setMetadataValue("0", for: "token_dimension_v3_finalized")
+        }
+
         try transaction {
             try execute("DELETE FROM usage_samples")
             try execute("DELETE FROM usage_rollups")
             try execute("DELETE FROM token_usage_samples")
             try execute("DELETE FROM token_usage_hourly_rollups")
             try execute("DELETE FROM token_dimension_hourly_rollups")
-            try execute("DELETE FROM token_usage_dimensions")
+            try execute("DELETE FROM token_usage_daily_rollups")
+            try execute("DELETE FROM token_dimension_daily_rollups")
+            try execute("DELETE FROM telemetry_daily_rollups")
+            try execute("DELETE FROM telemetry_error_daily_rollups")
+            if try tableExists(table: "token_usage_dimensions") {
+                try execute("DELETE FROM token_usage_dimensions")
+            }
+            try execute("DELETE FROM token_dimension_set_members")
+            try execute("DELETE FROM token_dimension_sets")
+            try execute("DELETE FROM token_dimension_values")
             try execute("DELETE FROM codex_session_token_imports")
             try execute("DELETE FROM usage_series_catalog")
             try execute("DELETE FROM token_series_catalog")
@@ -571,6 +1112,38 @@ extension UsageHistoryStore {
                     """
                 )
             }
+            if importedHasTokenUsageDailyRollups {
+                try execute(
+                    """
+                    INSERT INTO token_usage_daily_rollups
+                    SELECT * FROM imported_usage_history.token_usage_daily_rollups
+                    """
+                )
+            }
+            if importedHasTokenDimensionDailyRollups {
+                try execute(
+                    """
+                    INSERT INTO token_dimension_daily_rollups
+                    SELECT * FROM imported_usage_history.token_dimension_daily_rollups
+                    """
+                )
+            }
+            if importedHasTelemetryDailyRollups {
+                try execute(
+                    """
+                    INSERT INTO telemetry_daily_rollups
+                    SELECT * FROM imported_usage_history.telemetry_daily_rollups
+                    """
+                )
+            }
+            if importedHasTelemetryErrorDailyRollups {
+                try execute(
+                    """
+                    INSERT INTO telemetry_error_daily_rollups
+                    SELECT * FROM imported_usage_history.telemetry_error_daily_rollups
+                    """
+                )
+            }
             if importedHasTelemetryHourlyRollups {
                 try execute(
                     """
@@ -617,6 +1190,27 @@ extension UsageHistoryStore {
                         ON samples.thread_id = dimension_rows.thread_id
                         AND samples.turn_id = dimension_rows.turn_id
                         AND samples.total_total_tokens = dimension_rows.total_total_tokens
+                    """
+                )
+            } else if importedHasNormalizedTokenDimensions {
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO token_usage_dimensions (
+                        thread_id, turn_id, total_total_tokens, dimension_key, dimension_value, seen_at
+                    )
+                    SELECT samples.thread_id, samples.turn_id, samples.total_total_tokens,
+                        values_table.dimension_key, values_table.dimension_value,
+                        MAX(values_table.last_seen_at, samples.received_at)
+                    FROM imported_usage_history.token_usage_samples AS samples
+                    JOIN imported_usage_history.token_dimension_set_members AS members
+                      ON members.set_id = samples.dimension_set_id
+                    JOIN imported_usage_history.token_dimension_values AS values_table
+                      ON values_table.value_id = members.value_id
+                    JOIN token_usage_samples AS local_samples
+                      ON local_samples.thread_id = samples.thread_id
+                     AND local_samples.turn_id = samples.turn_id
+                     AND local_samples.total_total_tokens = samples.total_total_tokens
+                    WHERE samples.dimension_set_id IS NOT NULL
                     """
                 )
             }
@@ -911,6 +1505,8 @@ extension UsageHistoryStore {
         _ = try cleanupTokenModelLabels()
         _ = try cleanupTokenContextValues()
         _ = try cleanupTokenDimensions()
+        while try backfillNextTokenDimensionSetChunk(sampleLimit: 1_000) {}
+        _ = try finalizeTokenDimensionSetMigrationIfReady()
         try recomputeStoredUsageConsumption()
         try rebuildSeriesCatalogs()
         if importedHasProjectDisplayNames {
@@ -994,6 +1590,16 @@ extension UsageHistoryStore {
 
             return total + fileSize.int64Value
         }
+    }
+
+    static func fileByteSize(_ url: URL, fileManager: FileManager) -> Int64 {
+        guard fileManager.fileExists(atPath: url.path),
+              let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let fileSize = attributes[.size] as? NSNumber
+        else {
+            return 0
+        }
+        return fileSize.int64Value
     }
 
     static func databaseFileURLs(for databaseURL: URL) -> [URL] {

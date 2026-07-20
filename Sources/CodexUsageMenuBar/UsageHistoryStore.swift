@@ -39,9 +39,14 @@ struct NoOpTokenUsageRecorder: TokenUsageRecording {
 
 final class UsageHistoryRecorder: UsageHistoryRecording, @unchecked Sendable {
     private let database: UsageHistoryDatabaseWorking
+    private let includeDetailedContext: @Sendable () -> Bool
 
-    init(database: UsageHistoryDatabaseWorking) {
+    init(
+        database: UsageHistoryDatabaseWorking,
+        includeDetailedContext: @escaping @Sendable () -> Bool = { true }
+    ) {
         self.database = database
+        self.includeDetailedContext = includeDetailedContext
     }
 
     func record(snapshot: CodexUsageSnapshot, at date: Date) async {
@@ -51,7 +56,8 @@ final class UsageHistoryRecorder: UsageHistoryRecording, @unchecked Sendable {
 
 extension UsageHistoryRecorder: TokenUsageRecording {
     func record(tokenUsage: CodexTokenUsageNotification, at date: Date) async -> TokenCategoryTotals? {
-        await database.record(tokenUsage: tokenUsage, at: date)
+        let persistedNotification = includeDetailedContext() ? tokenUsage : tokenUsage.lightweightStorageValue
+        return await database.record(tokenUsage: persistedNotification, at: date)
     }
 
     func tokenCategoryTotals(periodStart: Date, periodEnd: Date) async -> TokenCategoryTotals? {
@@ -64,6 +70,22 @@ extension UsageHistoryRecorder: TokenUsageRecording {
 
     func todayTotalTokens(at date: Date, calendar: Calendar) async -> Int64? {
         await database.todayTotalTokens(at: date, calendar: calendar)
+    }
+}
+
+extension CodexTokenUsageNotification {
+    var lightweightStorageValue: CodexTokenUsageNotification {
+        CodexTokenUsageNotification(
+            threadID: threadID,
+            turnID: turnID,
+            model: nil,
+            tokenUsage: CodexThreadTokenUsage(
+                last: tokenUsage.last,
+                total: tokenUsage.total,
+                modelContextWindow: nil
+            ),
+            dimensions: []
+        )
     }
 }
 
@@ -93,6 +115,7 @@ extension UsageHistoryStore {
         calendar: Calendar = .autoupdatingCurrent,
         minimumInterval: TimeInterval = 30,
         force: Bool = false,
+        includeDetailedContext: Bool = true,
         logsDatabaseURL: URL = CodexLogTokenUsageImporter.defaultLogsDatabaseURL(),
         sessionTokenBackfillImporter: CodexSessionTokenBackfillImporting? = nil
     ) -> CodexLiveTokenCaptureState {
@@ -113,7 +136,8 @@ extension UsageHistoryStore {
                 into: self,
                 afterLogRowID: existingState.lastLogRowID,
                 containing: date,
-                calendar: calendar
+                calendar: calendar,
+                includeDetailedContext: includeDetailedContext
             )
             var importResult = runResult.importResult
             var lastImportedEventAt = runResult.lastImportedEventAt ?? existingState.lastImportedEventAt
@@ -123,7 +147,10 @@ extension UsageHistoryStore {
             {
                 let sessionSummary = try sessionTokenBackfillImporter.importTokenHistory(
                     into: self,
-                    request: Self.liveSessionTokenFallbackRequest(now: date)
+                    request: Self.liveSessionTokenFallbackRequest(
+                        now: date,
+                        includeDetailedContext: includeDetailedContext
+                    )
                 )
                 importResult = Self.combinedTokenImportResult(
                     logResult: importResult,
@@ -163,12 +190,16 @@ extension UsageHistoryStore {
         }
     }
 
-    private static func liveSessionTokenFallbackRequest(now date: Date) -> CodexSessionTokenBackfillRequest {
+    private static func liveSessionTokenFallbackRequest(
+        now date: Date,
+        includeDetailedContext: Bool
+    ) -> CodexSessionTokenBackfillRequest {
         .recent(
             now: date,
             days: liveSessionTokenFallbackRecentDayCount,
             forceRescan: false,
-            maximumFileSize: liveSessionTokenFallbackMaximumFileSize
+            maximumFileSize: liveSessionTokenFallbackMaximumFileSize,
+            includeDetailedContext: includeDetailedContext
         )
     }
 
@@ -546,6 +577,11 @@ enum UsageHistoryStoreError: LocalizedError {
     case invalidBackup
     case invalidProjectDisplayName
     case fileOperationFailed(String)
+    case storageBudgetExceeded
+    case storageOptimizationNotNeeded
+    case storageMaintenanceInProgress
+    case insufficientStorage(requiredByteSize: Int64, availableByteSize: Int64)
+    case storageMaintenanceRecoveryRequired
 
     var errorDescription: String? {
         switch self {
@@ -563,6 +599,75 @@ enum UsageHistoryStoreError: LocalizedError {
             return "Project name cannot contain line breaks or control characters."
         case .fileOperationFailed(let message):
             return "Usage history file operation failed: \(message)"
+        case .storageBudgetExceeded:
+            return "Detailed analytics collection is paused until storage maintenance returns below its limit."
+        case .storageOptimizationNotNeeded:
+            return "Storage is already compact enough to skip full optimization."
+        case .storageMaintenanceInProgress:
+            return "Storage maintenance is safely replacing the local database. This operation can be retried shortly."
+        case .insufficientStorage(let requiredByteSize, let availableByteSize):
+            return "Optimization needs \(requiredByteSize) bytes of free space; \(availableByteSize) bytes are available. Your data is unchanged."
+        case .storageMaintenanceRecoveryRequired:
+            return "Storage maintenance could not safely recover its last transaction. Your current database was left unchanged."
+        }
+    }
+}
+
+enum StorageMaintenanceErrorSanitizer {
+    static func text(for error: Error) -> String {
+        if error is CancellationError {
+            return "Storage maintenance was cancelled and can resume safely."
+        }
+        if let error = error as? UsageHistoryStoreError {
+            switch error {
+            case .databaseUnavailable,
+                 .invalidBackup,
+                 .storageBudgetExceeded,
+                 .storageOptimizationNotNeeded,
+                 .storageMaintenanceInProgress,
+                 .insufficientStorage,
+                 .storageMaintenanceRecoveryRequired:
+                return error.localizedDescription
+            case .databaseOpenFailed,
+                 .databaseOperationFailed,
+                 .statementPreparationFailed:
+                return "The local database could not complete this maintenance stage. It can be retried safely."
+            case .invalidProjectDisplayName:
+                return "Stored project metadata could not be validated. Existing data is unchanged."
+            case .fileOperationFailed:
+                return "A local file operation could not complete. Existing data is unchanged."
+            }
+        }
+        if let error = error as? HistoricalTokenArchiveError {
+            return error.localizedDescription
+        }
+        return "Storage maintenance could not finish. Existing data is unchanged and the operation can be retried."
+    }
+}
+
+enum AdvancedIngestionBatchKind: Sendable {
+    case tokenNotification
+    case tokenCapture
+    case turnPerformance
+    case sessionTiming
+    case threadCatalog
+    case modelCapabilities
+    case operationalImport
+
+    var conservativeGrowthByteSize: Int64 {
+        switch self {
+        case .tokenNotification:
+            256 * 1_024
+        case .tokenCapture:
+            2 * 1_024 * 1_024
+        case .turnPerformance, .sessionTiming:
+            8 * 1_024 * 1_024
+        case .threadCatalog:
+            4 * 1_024 * 1_024
+        case .modelCapabilities:
+            1 * 1_024 * 1_024
+        case .operationalImport:
+            16 * 1_024 * 1_024
         }
     }
 }
@@ -570,6 +675,171 @@ enum UsageHistoryStoreError: LocalizedError {
 struct UsageHistoryDatabaseInfo: Equatable {
     let databaseURL: URL
     let totalByteSize: Int64
+    let databaseByteSize: Int64
+    let walByteSize: Int64
+    let sharedMemoryByteSize: Int64
+    let archiveByteSize: Int64
+    let logicalLiveByteSize: Int64
+    let reclaimableByteSize: Int64
+    let collectionMode: UsageCollectionMode
+    let softTargetByteSize: Int64
+    let hardMaximumByteSize: Int64
+    let oldestRawBucket: Date?
+    let oldestHourlyBucket: Date?
+    let oldestDailyBucket: Date?
+    let maintenanceState: StorageMaintenanceState
+
+    init(
+        databaseURL: URL,
+        totalByteSize: Int64,
+        databaseByteSize: Int64? = nil,
+        walByteSize: Int64 = 0,
+        sharedMemoryByteSize: Int64 = 0,
+        archiveByteSize: Int64 = 0,
+        logicalLiveByteSize: Int64? = nil,
+        reclaimableByteSize: Int64 = 0,
+        collectionMode: UsageCollectionMode = .lightweight,
+        softTargetByteSize: Int64? = nil,
+        hardMaximumByteSize: Int64? = nil,
+        oldestRawBucket: Date? = nil,
+        oldestHourlyBucket: Date? = nil,
+        oldestDailyBucket: Date? = nil,
+        maintenanceState: StorageMaintenanceState = .idle
+    ) {
+        let budget = StorageBudgetPolicy.policy(for: collectionMode)
+        self.databaseURL = databaseURL
+        self.totalByteSize = totalByteSize
+        self.databaseByteSize = databaseByteSize ?? totalByteSize
+        self.walByteSize = walByteSize
+        self.sharedMemoryByteSize = sharedMemoryByteSize
+        self.archiveByteSize = archiveByteSize
+        self.logicalLiveByteSize = logicalLiveByteSize ?? totalByteSize
+        self.reclaimableByteSize = reclaimableByteSize
+        self.collectionMode = collectionMode
+        self.softTargetByteSize = softTargetByteSize ?? budget.softTargetByteSize
+        self.hardMaximumByteSize = hardMaximumByteSize ?? budget.hardMaximumByteSize
+        self.oldestRawBucket = oldestRawBucket
+        self.oldestHourlyBucket = oldestHourlyBucket
+        self.oldestDailyBucket = oldestDailyBucket
+        self.maintenanceState = maintenanceState
+    }
+}
+
+struct StorageBudgetPolicy: Equatable, Sendable {
+    static let mebibyte: Int64 = 1_024 * 1_024
+    static let physicalReserveByteSize: Int64 = 64 * 1_024
+
+    let softTargetByteSize: Int64
+    let hardMaximumByteSize: Int64
+
+    static func policy(for mode: UsageCollectionMode) -> StorageBudgetPolicy {
+        switch mode {
+        case .lightweight:
+            StorageBudgetPolicy(
+                softTargetByteSize: 100 * mebibyte,
+                hardMaximumByteSize: 250 * mebibyte
+            )
+        case .detailedAnalytics:
+            StorageBudgetPolicy(
+                softTargetByteSize: 250 * mebibyte,
+                hardMaximumByteSize: 500 * mebibyte
+            )
+        }
+    }
+
+    func projectedPhysicalByteSize(current: Int64, conservativeBatchGrowth: Int64) -> Int64 {
+        let (batchTotal, batchOverflow) = max(current, 0).addingReportingOverflow(
+            max(conservativeBatchGrowth, 0)
+        )
+        guard !batchOverflow else { return Int64.max }
+        let (projected, reserveOverflow) = batchTotal.addingReportingOverflow(
+            Self.physicalReserveByteSize
+        )
+        return reserveOverflow ? Int64.max : projected
+    }
+
+    func allowsAdvancedBatch(current: Int64, conservativeBatchGrowth: Int64) -> Bool {
+        projectedPhysicalByteSize(
+            current: current,
+            conservativeBatchGrowth: conservativeBatchGrowth
+        ) <= hardMaximumByteSize
+    }
+
+    func isAtMaintenancePressure(_ physicalByteSize: Int64) -> Bool {
+        physicalByteSize >= (hardMaximumByteSize * 9 / 10)
+    }
+}
+
+enum StorageLifecyclePolicy {
+    static let rateLimitRawRetention: TimeInterval = 7 * 24 * 60 * 60
+    static let detailedRawRetention: TimeInterval = 72 * 60 * 60
+    static let hourlyRetention: TimeInterval = 90 * 24 * 60 * 60
+    static let dailyRetention: TimeInterval = 365 * 24 * 60 * 60
+    static let inactiveTokenBaselineRetention: TimeInterval = 30 * 24 * 60 * 60
+    static let maximumHourlyBucketsPerTransaction = 24
+    static let maintenanceInterval: TimeInterval = 6 * 60 * 60
+    static let launchIdleDelay: TimeInterval = 60
+}
+
+enum StorageMaintenanceStage: String, Codable, Equatable, Sendable {
+    case idle
+    case rawToHourly = "raw_to_hourly"
+    case hourlyToDaily = "hourly_to_daily"
+    case pruning
+    case backfilling
+    case checkpointing
+    case optimizing
+    case validating
+    case replacing
+    case reopening
+    case failed
+}
+
+struct StorageMaintenanceState: Codable, Equatable, Sendable {
+    var lastAttemptAt: Date?
+    var lastSuccessAt: Date?
+    var stage: StorageMaintenanceStage
+    var cursor: Date?
+    var rowsCompacted: Int64
+    var bytesReclaimed: Int64
+    var lastErrorText: String?
+
+    static let idle = StorageMaintenanceState(
+        lastAttemptAt: nil,
+        lastSuccessAt: nil,
+        stage: .idle,
+        cursor: nil,
+        rowsCompacted: 0,
+        bytesReclaimed: 0,
+        lastErrorText: nil
+    )
+}
+
+enum StorageOptimizationReason: String, Codable, Sendable {
+    case schemaMigration = "schema_migration"
+    case backupRestore = "backup_restore"
+    case hardBudgetRecovery = "hard_budget_recovery"
+    case manual
+}
+
+struct StorageOptimizationResult: Equatable, Sendable {
+    let performed: Bool
+    let beforeByteSize: Int64
+    let afterByteSize: Int64
+
+    var reclaimedByteSize: Int64 {
+        max(beforeByteSize - afterByteSize, 0)
+    }
+}
+
+enum StorageOptimizationFailurePoint: String, CaseIterable, Sendable {
+    case maintenanceEntry
+    case walCheckpoint
+    case temporaryCreation
+    case rebuild
+    case validation
+    case atomicReplacement
+    case reopen
 }
 
 enum TokenUsageDimensionKey: String, CaseIterable, Codable, Sendable {
@@ -918,37 +1188,6 @@ enum CodexTokenContextNormalizer {
     }
 }
 
-enum UsageHistoryRawRetention: Int, CaseIterable, Identifiable, Equatable {
-    case sevenDays = 7
-    case fourteenDays = 14
-    case thirtyDays = 30
-    case ninetyDays = 90
-
-    var id: Int { rawValue }
-
-    var displayTitle: String {
-        "\(rawValue) days"
-    }
-
-    var timeInterval: TimeInterval {
-        TimeInterval(rawValue * 24 * 60 * 60)
-    }
-}
-
-enum UsageHistoryRawRetentionStore {
-    static let defaultsKey = "UsageHistoryRawRetentionDays"
-    static let defaultRetention: UsageHistoryRawRetention = .fourteenDays
-
-    static func load(from defaults: UserDefaults = .standard) -> UsageHistoryRawRetention {
-        let rawValue = defaults.integer(forKey: defaultsKey)
-        return UsageHistoryRawRetention(rawValue: rawValue) ?? defaultRetention
-    }
-
-    static func save(_ retention: UsageHistoryRawRetention, to defaults: UserDefaults = .standard) {
-        defaults.set(retention.rawValue, forKey: defaultsKey)
-    }
-}
-
 final class UsageHistoryStore: @unchecked Sendable {
     enum OpenMode {
         case readWrite
@@ -956,9 +1195,11 @@ final class UsageHistoryStore: @unchecked Sendable {
     }
 
     static let didChangeNotification = Notification.Name("UsageHistoryStoreDidChange")
-    static let defaultRawRetention: TimeInterval = 14 * 24 * 60 * 60
+    static let maintenanceRequestedNotification = Notification.Name("UsageHistoryStoreMaintenanceRequested")
+    static let maintenanceTriggerUserInfoKey = "trigger"
+    static let defaultRawRetention: TimeInterval = StorageLifecyclePolicy.detailedRawRetention
     static let defaultBusyTimeoutMilliseconds: Int32 = 5_000
-    static let currentSchemaVersion: Int32 = 2
+    static let currentSchemaVersion: Int32 = 3
     static let consumptionAlgorithmMetadataKey = "usage_consumption_algorithm_version"
     static let currentConsumptionAlgorithmVersion = "5"
     static let seriesCatalogMetadataKey = "series_catalog_version"
@@ -1078,20 +1319,22 @@ final class UsageHistoryStore: @unchecked Sendable {
 
     static func applicationSupportStore(
         rawRetentionProvider: @escaping () -> TimeInterval = {
-            UsageHistoryRawRetentionStore.load().timeInterval
+            StorageLifecyclePolicy.detailedRawRetention
         }
     ) throws -> UsageHistoryStore {
         let directoryURL = try applicationSupportDirectoryURL()
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let databaseURL = directoryURL.appendingPathComponent("usage-history.sqlite3")
+        try recoverStorageMaintenanceIfNeeded(at: databaseURL)
         return try UsageHistoryStore(
-            databaseURL: directoryURL.appendingPathComponent("usage-history.sqlite3"),
+            databaseURL: databaseURL,
             rawRetentionProvider: rawRetentionProvider
         )
     }
 
     static func applicationSupportReadOnlyStore(
         rawRetentionProvider: @escaping () -> TimeInterval = {
-            UsageHistoryRawRetentionStore.load().timeInterval
+            StorageLifecyclePolicy.detailedRawRetention
         }
     ) throws -> UsageHistoryStore {
         let directoryURL = try applicationSupportDirectoryURL()

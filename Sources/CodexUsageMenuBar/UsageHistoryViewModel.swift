@@ -99,8 +99,13 @@ struct UsageHistoryEmptyStatePresentation: Equatable {
 final class UsageHistoryViewModel: ObservableObject {
     typealias RecentTokenHistoryImporter = UsageHistoryDatabaseWorker.RecentTokenHistoryImporter
 
-    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force in
-        store.captureLiveCodexLogTokenHistory(at: date, calendar: calendar, force: force)
+    static let liveRecentTokenHistoryImporter: RecentTokenHistoryImporter = { store, date, calendar, force, includeDetailedContext in
+        store.captureLiveCodexLogTokenHistory(
+            at: date,
+            calendar: calendar,
+            force: force,
+            includeDetailedContext: includeDetailedContext
+        )
     }
 
     @Published var selectedRange: UsageHistoryRange = .month {
@@ -167,7 +172,7 @@ final class UsageHistoryViewModel: ObservableObject {
     }
     let chartSemantics: UsageHistoryChartSemantics
 
-    private let database: UsageHistoryViewModelDatabaseWorking
+    private var database: UsageHistoryViewModelDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
@@ -218,7 +223,7 @@ final class UsageHistoryViewModel: ObservableObject {
         chartSemantics: UsageHistoryChartSemantics = .independentSignals,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
-        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = { _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
+        recentTokenHistoryImporter: @escaping RecentTokenHistoryImporter = { _, _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
     ) {
         self.init(
             database: UsageHistoryDatabaseWorker(
@@ -238,6 +243,15 @@ final class UsageHistoryViewModel: ObservableObject {
         if let historyObserver {
             NotificationCenter.default.removeObserver(historyObserver)
         }
+    }
+
+    func replaceDatabase(_ database: UsageHistoryViewModelDatabaseWorking) {
+        reloadTask?.cancel()
+        self.database = database
+        userEditedSeriesSelection = false
+        seriesSearchText = ""
+        _ = nextReloadGeneration()
+        scheduleReload()
     }
 
     var visiblePoints: [UsageHistoryPoint] {

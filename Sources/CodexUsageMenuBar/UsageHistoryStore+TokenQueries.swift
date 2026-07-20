@@ -761,7 +761,7 @@ extension UsageHistoryStore {
                         ),
                         MIN(dimension_value)
                     ) AS dimension_value
-                FROM token_usage_dimensions
+                FROM token_usage_dimension_query_values
                 WHERE dimension_key = ?
                 GROUP BY thread_id, turn_id, total_total_tokens
             )
@@ -788,7 +788,7 @@ extension UsageHistoryStore {
                 SELECT period_start, NULLIF(dimension_value, ''),
                     observed_input_tokens, observed_cached_input_tokens,
                     observed_output_tokens, observed_reasoning_output_tokens
-                FROM token_dimension_hourly_rollups
+                FROM token_dimension_query_rollups
                 WHERE dimension_key = ?
                     AND period_start >= ? AND period_start < ?
             )
@@ -926,7 +926,7 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT DISTINCT dimension_key
-            FROM token_dimension_catalog
+            FROM token_dimension_values
             WHERE dimension_value IS NOT NULL
                 AND trim(dimension_value) <> ''
                 AND NOT (
@@ -973,7 +973,7 @@ extension UsageHistoryStore {
             SELECT dimension_key
             FROM (
                 SELECT DISTINCT dimensions.dimension_key
-                FROM token_usage_dimensions AS dimensions
+                FROM token_usage_dimension_query_values AS dimensions
                 JOIN token_usage_samples AS samples
                     ON samples.thread_id = dimensions.thread_id
                     AND samples.turn_id = dimensions.turn_id
@@ -993,7 +993,7 @@ extension UsageHistoryStore {
                 UNION
 
                 SELECT DISTINCT dimension_key
-                FROM token_dimension_hourly_rollups
+                FROM token_dimension_query_rollups
                 WHERE period_start >= ? AND period_start < ?
                     AND dimension_value <> ''
                     AND NOT (
@@ -1204,14 +1204,14 @@ extension UsageHistoryStore {
                 AND (
                     EXISTS (
                         SELECT 1
-                        FROM token_usage_dimensions AS dimensions
+                        FROM token_usage_dimension_query_values AS dimensions
                         JOIN token_usage_samples AS samples
                             ON samples.thread_id = dimensions.thread_id
                             AND samples.turn_id = dimensions.turn_id
                             AND samples.total_total_tokens = dimensions.total_total_tokens
                         WHERE samples.is_retention_baseline = 0
-                            AND dimensions.dimension_key = token_dimension_catalog.dimension_key
-                            AND dimensions.dimension_value = token_dimension_catalog.dimension_value
+                            AND dimensions.dimension_key = token_dimension_values.dimension_key
+                            AND dimensions.dimension_value = token_dimension_values.dimension_value
                             AND samples.received_at >= ? AND samples.received_at < ?
                             AND (
                                 \(Self.observedTokenComponentsPredicate.replacingOccurrences(of: "observed_", with: "samples.observed_"))
@@ -1219,9 +1219,9 @@ extension UsageHistoryStore {
                     )
                     OR EXISTS (
                         SELECT 1
-                        FROM token_dimension_hourly_rollups AS rollups
-                        WHERE rollups.dimension_key = token_dimension_catalog.dimension_key
-                            AND rollups.dimension_value = token_dimension_catalog.dimension_value
+                        FROM token_dimension_query_rollups AS rollups
+                        WHERE rollups.dimension_key = token_dimension_values.dimension_key
+                            AND rollups.dimension_value = token_dimension_values.dimension_value
                             AND rollups.period_start >= ? AND rollups.period_start < ?
                             AND NOT (
                                 rollups.dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
@@ -1237,7 +1237,7 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT dimension_value, last_seen_at
-            FROM token_dimension_catalog
+            FROM token_dimension_values
             WHERE dimension_key = ?
             \(periodFilter)
             ORDER BY last_seen_at DESC, dimension_value ASC
@@ -1424,7 +1424,7 @@ extension UsageHistoryStore {
                     END
                 ) AS value
             FROM period_samples
-            JOIN token_usage_dimensions AS dimensions
+            JOIN token_usage_dimension_query_values AS dimensions
                 ON dimensions.thread_id = period_samples.thread_id
                 AND dimensions.turn_id = period_samples.turn_id
                 AND dimensions.total_total_tokens = period_samples.total_total_tokens
@@ -1459,7 +1459,7 @@ extension UsageHistoryStore {
                 SELECT dimension_key,
                     NULLIF(dimension_value, '') AS value,
                     \(observedTokenVolumeSQLExpression()) AS token_count
-                FROM token_dimension_hourly_rollups
+                FROM token_dimension_query_rollups
                 WHERE period_start >= ?1 AND period_start < ?2
             )
             GROUP BY dimension_key
@@ -1562,7 +1562,7 @@ extension UsageHistoryStore {
         let statement = try prepare(
             """
             SELECT dimension_key, dimension_value, first_seen_at, last_seen_at
-            FROM token_dimension_catalog
+            FROM token_dimension_values
             ORDER BY dimension_key ASC, last_seen_at DESC, dimension_value ASC
             """
         )

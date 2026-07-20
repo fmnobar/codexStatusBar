@@ -4,6 +4,7 @@ import SQLite3
 extension UsageHistoryStore {
     func migrate() throws {
         let startingVersion = try schemaVersion()
+        let isStructuralVersion3Upgrade = startingVersion == 2
         guard startingVersion <= Self.currentSchemaVersion else {
             throw UsageHistoryStoreError.databaseOperationFailed(
                 "History database schema version \(startingVersion) is newer than this app supports."
@@ -19,6 +20,17 @@ extension UsageHistoryStore {
 
         if try schemaVersion() < 2 {
             try migrateToVersion2()
+        }
+
+        if try schemaVersion() < 3 {
+            try migrateToVersion3()
+        }
+
+        // A v2 production store can contain millions of retained rows. Opening it for the first
+        // time on v3 must remain structural-only; lifecycle maintenance performs all bounded data
+        // scanning, normalization, and final cutover after launch.
+        if isStructuralVersion3Upgrade {
+            return
         }
 
         try transaction {
@@ -823,6 +835,470 @@ extension UsageHistoryStore {
         }
     }
 
+    /// Version 3 is deliberately structural-only on open. Existing v2 dimension rows are
+    /// compacted by lifecycle maintenance and backfilled later in durable chunks.
+    private func migrateToVersion3() throws {
+        // Existing files adopt the setting when the next safe rebuild runs; new/rebuilt files
+        // use incremental reclamation immediately.
+        try execute("PRAGMA auto_vacuum=INCREMENTAL")
+        try transaction {
+            try addColumnIfNeeded(
+                table: "token_usage_samples",
+                column: "dimension_set_id",
+                definition: "INTEGER"
+            )
+
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS token_dimension_values (
+                    value_id INTEGER PRIMARY KEY,
+                    dimension_key TEXT NOT NULL,
+                    dimension_value TEXT NOT NULL,
+                    first_seen_at INTEGER NOT NULL,
+                    last_seen_at INTEGER NOT NULL,
+                    UNIQUE(dimension_key, dimension_value)
+                )
+                """
+            )
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS token_dimension_sets (
+                    set_id INTEGER PRIMARY KEY,
+                    signature BLOB NOT NULL UNIQUE
+                )
+                """
+            )
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS token_dimension_set_members (
+                    set_id INTEGER NOT NULL REFERENCES token_dimension_sets(set_id) ON DELETE CASCADE,
+                    value_id INTEGER NOT NULL REFERENCES token_dimension_values(value_id) ON DELETE RESTRICT,
+                    PRIMARY KEY(set_id, value_id)
+                )
+                """
+            )
+            try execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_dimension_values_key_value ON token_dimension_values(dimension_key, dimension_value)"
+            )
+            try execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_dimension_set_members_value_set ON token_dimension_set_members(value_id, set_id)"
+            )
+            try execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_usage_samples_dimension_set ON token_usage_samples(dimension_set_id) WHERE dimension_set_id IS NOT NULL"
+            )
+
+            try createDailyRollupTables()
+            try createRollupQueryViews()
+            try createHybridDimensionQueryView()
+            try createTokenUsageQueryViewV3()
+
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS storage_maintenance_journal (
+                    journal_id INTEGER PRIMARY KEY CHECK(journal_id = 1),
+                    operation TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    canonical_path TEXT,
+                    candidate_path TEXT,
+                    rollback_path TEXT,
+                    updated_at INTEGER NOT NULL,
+                    error_text TEXT
+                )
+                """
+            )
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS token_expired_baselines (
+                    thread_id TEXT PRIMARY KEY,
+                    expired_at INTEGER NOT NULL
+                )
+                """
+            )
+            try setSchemaVersion(3)
+        }
+    }
+
+    private func createDailyRollupTables() throws {
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_usage_daily_rollups (
+                period_start INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                project_path TEXT NOT NULL DEFAULT '',
+                project_name TEXT NOT NULL DEFAULT '',
+                effort TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                model_context_window INTEGER NOT NULL DEFAULT -1,
+                observed_input_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_output_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    period_start, model, project_path, project_name,
+                    effort, source, model_context_window
+                )
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_dimension_daily_rollups (
+                period_start INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                dimension_value TEXT NOT NULL DEFAULT '',
+                observed_input_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_output_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                observed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(period_start, dimension_key, dimension_value)
+            )
+            """
+        )
+        try execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_dimension_daily_rollups_key_period ON token_dimension_daily_rollups(dimension_key, period_start)"
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_daily_rollups (
+                metric TEXT NOT NULL,
+                period_start INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                project_path TEXT NOT NULL DEFAULT '',
+                project_name TEXT NOT NULL DEFAULT '',
+                effort TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                transport TEXT NOT NULL DEFAULT '',
+                wire_api TEXT NOT NULL DEFAULT '',
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                duration_sample_count INTEGER NOT NULL DEFAULT 0,
+                duration_total_ms INTEGER NOT NULL DEFAULT 0,
+                first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+                first_token_total_ms INTEGER NOT NULL DEFAULT 0,
+                completed_count INTEGER NOT NULL DEFAULT 0,
+                incomplete_count INTEGER NOT NULL DEFAULT 0,
+                duration_values TEXT,
+                first_token_values TEXT,
+                PRIMARY KEY (
+                    metric, period_start, model, project_path, project_name,
+                    effort, source, transport, wire_api
+                )
+            )
+            """
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_error_daily_rollups (
+                period_start INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                project_path TEXT NOT NULL DEFAULT '',
+                project_name TEXT NOT NULL DEFAULT '',
+                effort TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                transport TEXT NOT NULL DEFAULT '',
+                wire_api TEXT NOT NULL DEFAULT '',
+                error_summary TEXT NOT NULL,
+                event_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    period_start, model, project_path, project_name,
+                    effort, source, transport, wire_api, error_summary
+                )
+            )
+            """
+        )
+    }
+
+    private func createRollupQueryViews() throws {
+        try execute("DROP VIEW IF EXISTS token_dimension_query_rollups")
+        try execute(
+            """
+            CREATE VIEW token_dimension_query_rollups AS
+            SELECT * FROM token_dimension_hourly_rollups
+            UNION ALL
+            SELECT * FROM token_dimension_daily_rollups
+            """
+        )
+        try execute("DROP VIEW IF EXISTS telemetry_query_rollups")
+        try execute(
+            """
+            CREATE VIEW telemetry_query_rollups AS
+            SELECT * FROM telemetry_hourly_rollups
+            UNION ALL
+            SELECT * FROM telemetry_daily_rollups
+            """
+        )
+        try execute("DROP VIEW IF EXISTS telemetry_error_query_rollups")
+        try execute(
+            """
+            CREATE VIEW telemetry_error_query_rollups AS
+            SELECT * FROM telemetry_error_hourly_rollups
+            UNION ALL
+            SELECT * FROM telemetry_error_daily_rollups
+            """
+        )
+    }
+
+    func createHybridDimensionQueryView(includeLegacyFallback: Bool = true) throws {
+        try execute("DROP VIEW IF EXISTS token_usage_dimension_query_values")
+        let legacySQL = includeLegacyFallback
+            ? """
+
+                UNION ALL
+
+                SELECT legacy.thread_id, legacy.turn_id, legacy.total_total_tokens,
+                    legacy.dimension_key, legacy.dimension_value, legacy.seen_at
+                FROM token_usage_dimensions AS legacy
+                JOIN token_usage_samples AS samples
+                  ON samples.thread_id = legacy.thread_id
+                 AND samples.turn_id = legacy.turn_id
+                 AND samples.total_total_tokens = legacy.total_total_tokens
+                WHERE samples.dimension_set_id IS NULL
+            """
+            : ""
+        try execute(
+            """
+            CREATE VIEW token_usage_dimension_query_values AS
+            SELECT samples.thread_id, samples.turn_id, samples.total_total_tokens,
+                values_table.dimension_key, values_table.dimension_value,
+                values_table.last_seen_at AS seen_at
+            FROM token_usage_samples AS samples
+            JOIN token_dimension_set_members AS members
+              ON members.set_id = samples.dimension_set_id
+            JOIN token_dimension_values AS values_table
+              ON values_table.value_id = members.value_id
+            WHERE samples.dimension_set_id IS NOT NULL
+            \(legacySQL)
+            """
+        )
+    }
+
+    func createTokenUsageQueryViewV3() throws {
+        try execute("DROP VIEW IF EXISTS token_usage_query_samples")
+        try execute(
+            """
+            CREATE VIEW token_usage_query_samples AS
+            SELECT thread_id, turn_id, model, session_id, project_path, project_name,
+                effort, source, received_at, model_context_window,
+                last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                last_reasoning_output_tokens, last_total_tokens,
+                total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                total_reasoning_output_tokens, total_total_tokens,
+                observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                observed_reasoning_output_tokens, observed_total_tokens
+            FROM token_usage_samples
+            WHERE is_retention_baseline = 0
+
+            UNION ALL
+
+            SELECT 'hourly:' || period_start || ':' || rowid, 'hourly-rollup',
+                NULLIF(model, ''), NULL, NULLIF(project_path, ''), NULLIF(project_name, ''),
+                NULLIF(effort, ''), NULLIF(source, ''), period_start,
+                NULLIF(model_context_window, -1),
+                observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens, observed_total_tokens
+            FROM token_usage_hourly_rollups
+
+            UNION ALL
+
+            SELECT 'daily:' || period_start || ':' || rowid, 'daily-rollup',
+                NULLIF(model, ''), NULL, NULLIF(project_path, ''), NULLIF(project_name, ''),
+                NULLIF(effort, ''), NULLIF(source, ''), period_start,
+                NULLIF(model_context_window, -1),
+                observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens,
+                observed_total_tokens, observed_input_tokens, observed_cached_input_tokens,
+                observed_output_tokens, observed_reasoning_output_tokens, observed_total_tokens
+            FROM token_usage_daily_rollups
+            """
+        )
+    }
+
+    func finalizeTokenDimensionSetMigrationIfReady() throws -> Bool {
+        if try metadataValue(for: "token_dimension_v3_finalized") == "1" {
+            return true
+        }
+        guard try tableExists(table: "token_usage_dimensions") else {
+            try setMetadataValue("1", for: "token_dimension_v3_finalized")
+            return true
+        }
+
+        let pending = try scalarInt64(
+            """
+            SELECT COUNT(*)
+            FROM token_usage_samples AS samples
+            WHERE samples.is_retention_baseline = 0
+              AND samples.dimension_set_id IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM token_usage_dimensions AS legacy
+                  WHERE legacy.thread_id = samples.thread_id
+                    AND legacy.turn_id = samples.turn_id
+                    AND legacy.total_total_tokens = samples.total_total_tokens
+              )
+            """
+        )
+        guard pending == 0 else {
+            return false
+        }
+
+        let orphanCount = try scalarInt64(
+            """
+            SELECT COUNT(*) FROM token_usage_samples AS samples
+            WHERE samples.dimension_set_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM token_dimension_sets AS sets
+                  WHERE sets.set_id = samples.dimension_set_id
+              )
+            """
+        )
+        guard orphanCount == 0 else {
+            throw UsageHistoryStoreError.databaseOperationFailed(
+                "Dimension-set finalization found \(orphanCount) orphaned samples."
+            )
+        }
+
+        try transaction {
+            try execute("DROP VIEW IF EXISTS token_usage_query_samples")
+            try execute("DROP VIEW IF EXISTS token_usage_dimension_query_values")
+            try execute("DROP TABLE IF EXISTS token_usage_samples_v3")
+            try execute(
+                """
+                CREATE TABLE token_usage_samples_v3 (
+                    thread_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    model TEXT,
+                    session_id TEXT,
+                    project_path TEXT,
+                    project_name TEXT,
+                    effort TEXT,
+                    source TEXT,
+                    received_at INTEGER NOT NULL,
+                    model_context_window INTEGER,
+                    last_input_tokens INTEGER NOT NULL,
+                    last_cached_input_tokens INTEGER NOT NULL,
+                    last_output_tokens INTEGER NOT NULL,
+                    last_reasoning_output_tokens INTEGER NOT NULL,
+                    last_total_tokens INTEGER NOT NULL,
+                    total_input_tokens INTEGER NOT NULL,
+                    total_cached_input_tokens INTEGER NOT NULL,
+                    total_output_tokens INTEGER NOT NULL,
+                    total_reasoning_output_tokens INTEGER NOT NULL,
+                    total_total_tokens INTEGER NOT NULL,
+                    observed_input_tokens INTEGER,
+                    observed_cached_input_tokens INTEGER,
+                    observed_output_tokens INTEGER,
+                    observed_reasoning_output_tokens INTEGER,
+                    observed_total_tokens INTEGER NOT NULL,
+                    is_retention_baseline INTEGER NOT NULL DEFAULT 0,
+                    dimension_set_id INTEGER REFERENCES token_dimension_sets(set_id),
+                    PRIMARY KEY(thread_id, turn_id, total_total_tokens)
+                )
+                """
+            )
+            try execute(
+                """
+                INSERT INTO token_usage_samples_v3 (
+                    thread_id, turn_id, model, session_id, project_path, project_name,
+                    effort, source, received_at, model_context_window,
+                    last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                    last_reasoning_output_tokens, last_total_tokens,
+                    total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                    total_reasoning_output_tokens, total_total_tokens,
+                    observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                    observed_reasoning_output_tokens, observed_total_tokens,
+                    is_retention_baseline, dimension_set_id
+                )
+                SELECT thread_id, turn_id, model, session_id, project_path, project_name,
+                    effort, source, received_at, model_context_window,
+                    last_input_tokens, last_cached_input_tokens, last_output_tokens,
+                    last_reasoning_output_tokens, last_total_tokens,
+                    total_input_tokens, total_cached_input_tokens, total_output_tokens,
+                    total_reasoning_output_tokens, total_total_tokens,
+                    observed_input_tokens, observed_cached_input_tokens, observed_output_tokens,
+                    observed_reasoning_output_tokens, observed_total_tokens,
+                    is_retention_baseline, dimension_set_id
+                FROM token_usage_samples
+                """
+            )
+            try execute("DROP TABLE token_usage_samples")
+            try execute("ALTER TABLE token_usage_samples_v3 RENAME TO token_usage_samples")
+            try execute("CREATE INDEX idx_token_usage_samples_received_at ON token_usage_samples(received_at)")
+            try execute("CREATE INDEX idx_token_usage_samples_thread_total ON token_usage_samples(thread_id, total_total_tokens)")
+            try execute(
+                """
+                CREATE INDEX idx_token_usage_samples_observed_components_received_at
+                ON token_usage_samples(received_at)
+                WHERE \(Self.observedTokenComponentsPredicate)
+                """
+            )
+            try execute(
+                "CREATE INDEX idx_token_usage_samples_dimension_set ON token_usage_samples(dimension_set_id) WHERE dimension_set_id IS NOT NULL"
+            )
+            try execute("DROP TABLE token_usage_dimensions")
+            try createHybridDimensionQueryView(includeLegacyFallback: false)
+            try createTokenUsageQueryViewV3()
+            try setMetadataValue("1", for: "token_dimension_v3_finalized")
+        }
+
+        guard try scalarText("PRAGMA quick_check") == "ok" else {
+            throw UsageHistoryStoreError.databaseOperationFailed("SQLite quick_check failed after v3 finalization.")
+        }
+        guard try scalarInt64("SELECT COUNT(*) FROM pragma_foreign_key_check") == 0 else {
+            throw UsageHistoryStoreError.databaseOperationFailed("SQLite foreign_key_check failed after v3 finalization.")
+        }
+        return true
+    }
+
+    func ensureLegacyTokenDimensionTransitionTable() throws {
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS token_usage_dimensions (
+                thread_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                total_total_tokens INTEGER NOT NULL,
+                dimension_key TEXT NOT NULL,
+                dimension_value TEXT NOT NULL,
+                seen_at INTEGER NOT NULL,
+                PRIMARY KEY (
+                    thread_id, turn_id, total_total_tokens,
+                    dimension_key, dimension_value
+                )
+            )
+            """
+        )
+        try execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_dimensions_sample ON token_usage_dimensions(thread_id, turn_id, total_total_tokens)"
+        )
+    }
+
+    private func scalarInt64(_ sql: String) throws -> Int64 {
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func scalarText(_ sql: String) throws -> String {
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw UsageHistoryStoreError.databaseOperationFailed(lastErrorMessage)
+        }
+        return columnText(statement, index: 0)
+    }
+
     private func schemaVersion() throws -> Int32 {
         let statement = try prepare("PRAGMA user_version")
         defer { sqlite3_finalize(statement) }
@@ -1434,6 +1910,11 @@ extension UsageHistoryStore {
             return
         }
 
+        guard try tableExists(table: "token_usage_dimensions") else {
+            try setMetadataValue(Self.currentTokenDimensionCleanupVersion, for: Self.tokenDimensionCleanupMetadataKey)
+            return
+        }
+
         if try cleanupTokenDimensions() {
             try rebuildTokenDimensionCatalog()
         }
@@ -1809,6 +2290,9 @@ extension UsageHistoryStore {
     }
 
     func rebuildTokenDimensionCatalog() throws {
+        guard try tableExists(table: "token_usage_dimensions") else {
+            return
+        }
         try execute("DELETE FROM token_dimension_catalog")
         try execute(
             """

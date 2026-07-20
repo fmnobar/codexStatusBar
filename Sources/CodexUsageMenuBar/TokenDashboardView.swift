@@ -310,7 +310,7 @@ final class TokenDashboardViewModel: ObservableObject {
     @Published private(set) var attributionSortState: TokenDashboardSortState<TokenDashboardAttributionSortColumn>?
     @Published private(set) var primaryLoadState: TokenDashboardPrimaryLoadState = .idle
 
-    private let database: UsageHistoryDatabaseWorking
+    private var database: TokenDashboardViewModelDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore?
     private let now: () -> Date
     private let calendar: Calendar
@@ -329,7 +329,7 @@ final class TokenDashboardViewModel: ObservableObject {
     private var nextReloadInstrumentationKind: AppPerformanceEventKind = .tokenDashboardReload
 
     init(
-        database: UsageHistoryDatabaseWorking,
+        database: TokenDashboardViewModelDatabaseWorking,
         performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
@@ -351,7 +351,7 @@ final class TokenDashboardViewModel: ObservableObject {
         store: UsageHistoryStore,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .autoupdatingCurrent,
-        recentTokenHistoryImporter: @escaping UsageHistoryDatabaseWorker.RecentTokenHistoryImporter = { _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
+        recentTokenHistoryImporter: @escaping UsageHistoryDatabaseWorker.RecentTokenHistoryImporter = { _, _, _, _, _ in CodexLiveTokenCaptureState(status: .noNewEvents) }
     ) {
         self.init(
             database: UsageHistoryDatabaseWorker(
@@ -368,6 +368,24 @@ final class TokenDashboardViewModel: ObservableObject {
         reloadTask?.cancel()
         coverageTask?.cancel()
         historyChangeReloadTask?.cancel()
+    }
+
+    func replaceDatabase(_ database: TokenDashboardViewModelDatabaseWorking) {
+        reloadTask?.cancel()
+        coverageTask?.cancel()
+        historyChangeReloadTask?.cancel()
+        self.database = database
+        _ = nextReloadGeneration()
+        invalidateSnapshotCache()
+        invalidateCoverageCache()
+        displayedSnapshotCacheKey = nil
+        points = []
+        series = []
+        attributionCoverageRows = []
+        selectedSeriesIDs = []
+        modelCapabilities = []
+        historyBounds = nil
+        scheduleReload()
     }
 
     var selectedPeriod: UsageHistoryPeriod {
@@ -1631,6 +1649,10 @@ private struct TokenDashboardSortableHeader: View {
 
 struct TokenDashboardView: View {
     @StateObject private var viewModel: TokenDashboardViewModel
+    @ObservedObject private var collectionModeController: UsageCollectionModeController
+    @ObservedObject private var archiveController: HistoricalTokenArchiveController
+    @State private var selectedSourceID = Self.operationalSourceID
+    private let operationalDatabase: TokenDashboardViewModelDatabaseWorking
     private let modelColumnWidth: CGFloat = 118
     private let primaryNumberColumnWidth: CGFloat = 82
     private let percentColumnWidth: CGFloat = 54
@@ -1639,9 +1661,11 @@ struct TokenDashboardView: View {
     private let reasoningColumnWidth: CGFloat = 86
     private let onFirstRendered: () -> Void
 
-    init(
-        database: UsageHistoryDatabaseWorking,
+    @MainActor init(
+        database: TokenDashboardViewModelDatabaseWorking,
         performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
+        collectionModeController: UsageCollectionModeController? = nil,
+        archiveController: HistoricalTokenArchiveController? = nil,
         onFirstRendered: @escaping () -> Void = {}
     ) {
         _viewModel = StateObject(
@@ -1650,12 +1674,19 @@ struct TokenDashboardView: View {
                 performanceInstrumentationStore: performanceInstrumentationStore
             )
         )
+        self.operationalDatabase = database
+        self.collectionModeController = collectionModeController ?? UsageCollectionModeController()
+        self.archiveController = archiveController ?? .shared
         self.onFirstRendered = onFirstRendered
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+
+            if collectionModeController.mode == .lightweight {
+                collectionPausedNotice
+            }
 
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
@@ -1678,7 +1709,17 @@ struct TokenDashboardView: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
-            viewModel.scheduleHistoryChangeReload()
+            if selectedSourceID == Self.operationalSourceID {
+                viewModel.scheduleHistoryChangeReload()
+            }
+        }
+        .onReceive(archiveController.$openedArchive) { archive in
+            guard archive != nil || selectedSourceID != Self.archiveSourceID else {
+                return
+            }
+            if archive == nil {
+                selectOperationalSource()
+            }
         }
         .onAppear {
             DispatchQueue.main.async {
@@ -1689,6 +1730,10 @@ struct TokenDashboardView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
+            if archiveController.openedArchive != nil {
+                sourcePicker
+            }
+
             Picker("Range", selection: $viewModel.selectedRange) {
                 ForEach(UsageHistoryRange.allCases) { range in
                     Text(range.displayTitle).tag(range)
@@ -1736,6 +1781,40 @@ struct TokenDashboardView: View {
             .help(viewModel.canExportCSV ? "Export CSV" : "Export available after dashboard data and attribution coverage load")
             .accessibilityLabel(AppAccessibilitySemantics.exportCSVLabel)
         }
+    }
+
+    private static let operationalSourceID = "operational"
+    private static let archiveSourceID = "archive"
+
+    private var sourcePicker: some View {
+        Picker("Token data source", selection: Binding(
+            get: { selectedSourceID },
+            set: { selectSource($0) }
+        )) {
+            Text("Operational").tag(Self.operationalSourceID)
+            if let archive = archiveController.openedArchive {
+                Text(archive.displayName).tag(Self.archiveSourceID)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 150)
+        .help("Choose the live operational store or the opened read-only archive")
+        .accessibilityLabel("Token data source")
+    }
+
+    private func selectSource(_ sourceID: String) {
+        if sourceID == Self.archiveSourceID, let archive = archiveController.openedArchive {
+            selectedSourceID = Self.archiveSourceID
+            viewModel.replaceDatabase(HistoricalTokenArchiveQueryWorker(descriptor: archive))
+        } else {
+            selectOperationalSource()
+        }
+    }
+
+    private func selectOperationalSource() {
+        selectedSourceID = Self.operationalSourceID
+        viewModel.replaceDatabase(operationalDatabase)
     }
 
     private var periodNavigation: some View {
@@ -2132,8 +2211,21 @@ struct TokenDashboardView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+            if collectionModeController.mode == .lightweight && !viewModel.hasTokenData {
+                Button("Enable Detailed Analytics") {
+                    collectionModeController.setMode(.detailedAnalytics)
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var collectionPausedNotice: some View {
+        Label("Detailed collection paused. Existing token analytics remain available.", systemImage: "pause.circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Collection paused. Existing token analytics remain available.")
     }
 }
 

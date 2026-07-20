@@ -296,7 +296,7 @@ extension UsageHistoryStore {
                     NULLIF(r.model, ''), NULLIF(r.project_path, ''), NULLIF(r.project_name, ''),
                     NULLIF(r.effort, ''), NULLIF(r.source, ''), NULL, NULL
                 FROM buckets b
-                JOIN telemetry_hourly_rollups r
+                JOIN telemetry_query_rollups r
                     ON r.period_start >= b.bucket_start
                     AND r.period_start < b.query_end
                 WHERE r.metric = 'session_timing'
@@ -445,7 +445,7 @@ extension UsageHistoryStore {
                     NULLIF(r.effort, ''), NULLIF(r.source, ''), NULLIF(r.transport, ''),
                     NULLIF(r.wire_api, ''), 'success', r.success_count
                 FROM buckets b
-                JOIN telemetry_hourly_rollups r
+                JOIN telemetry_query_rollups r
                     ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
                 WHERE r.metric = 'turn_performance' AND r.success_count > 0
 
@@ -456,7 +456,7 @@ extension UsageHistoryStore {
                     NULLIF(r.effort, ''), NULLIF(r.source, ''), NULLIF(r.transport, ''),
                     NULLIF(r.wire_api, ''), 'failure', r.failure_count
                 FROM buckets b
-                JOIN telemetry_hourly_rollups r
+                JOIN telemetry_query_rollups r
                     ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
                 WHERE r.metric = 'turn_performance' AND r.failure_count > 0
 
@@ -468,7 +468,7 @@ extension UsageHistoryStore {
                     NULLIF(r.wire_api, ''), 'unknown',
                     r.sample_count - r.success_count - r.failure_count
                 FROM buckets b
-                JOIN telemetry_hourly_rollups r
+                JOIN telemetry_query_rollups r
                     ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
                 WHERE r.metric = 'turn_performance'
                     AND r.sample_count > r.success_count + r.failure_count
@@ -604,7 +604,7 @@ extension UsageHistoryStore {
                 SELECT b.bucket_start, b.bucket_end,
                     'aggregate', NULL, NULL, NULL, r.error_summary, r.event_count
                 FROM buckets b
-                JOIN telemetry_error_hourly_rollups r
+                JOIN telemetry_error_query_rollups r
                     ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
 
                 UNION ALL
@@ -614,7 +614,7 @@ extension UsageHistoryStore {
                     \(breakdown.projectPathSQL), \(breakdown.projectNameSQL),
                     r.error_summary, r.event_count
                 FROM buckets b
-                JOIN telemetry_error_hourly_rollups r
+                JOIN telemetry_error_query_rollups r
                     ON r.period_start >= b.bucket_start AND r.period_start < b.query_end
             )
             SELECT
@@ -857,7 +857,7 @@ extension UsageHistoryStore {
                 FROM codex_turn_performance_events
                 UNION ALL
                 SELECT period_start AS timestamp
-                FROM telemetry_hourly_rollups
+                FROM telemetry_query_rollups
                 \(tokenBoundsSQL)
             )
             """

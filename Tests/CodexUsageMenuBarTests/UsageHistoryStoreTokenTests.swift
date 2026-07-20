@@ -4,6 +4,104 @@ import XCTest
 @testable import CodexUsageCore
 
 extension UsageHistoryStoreTests {
+    func testVersion3BackfillReusesImmutableSetsAndFinalizesForeignKeyCutover() async throws {
+        let databaseURL = try makeTemporaryDirectory().appendingPathComponent("v3-backfill.sqlite3")
+        let timestamp = date("2026-07-18T12:00:00Z")
+        do {
+            let store = try UsageHistoryStore(
+                databaseURL: databaseURL,
+                notificationCenter: NotificationCenter(),
+                calendar: calendar
+            )
+            for index in 1...3 {
+                let context = TokenUsageContext(
+                    dimensions: [
+                        try XCTUnwrap(TokenUsageDimension(.originator, "codex")),
+                        try XCTUnwrap(TokenUsageDimension(.cliVersion, index == 3 ? "2.0" : "1.0")),
+                    ]
+                )
+                _ = try store.importTokenUsageSamples(
+                    [
+                        ImportedCodexTokenUsageSample(
+                            notification: tokenNotification(
+                                threadID: "v3-thread",
+                                turnID: "turn-\(index)",
+                                lastTotal: Int64(index * 100),
+                                totalTotal: Int64(index * 100)
+                            ),
+                            receivedAt: timestamp.addingTimeInterval(TimeInterval(index)),
+                            context: context
+                        ),
+                    ]
+                )
+            }
+        }
+        try executeSQLite(
+            at: databaseURL,
+            sql: """
+            UPDATE token_usage_samples SET dimension_set_id = NULL;
+            DELETE FROM token_dimension_set_members;
+            DELETE FROM token_dimension_sets;
+            DELETE FROM token_dimension_values;
+            DELETE FROM usage_history_metadata WHERE key LIKE 'token_dimension_v3_%';
+            PRAGMA user_version = 2;
+            """
+        )
+
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        XCTAssertTrue(try store.backfillNextTokenDimensionSetChunk(sampleLimit: 1))
+        XCTAssertNotNil(try store.metadataValue(for: "token_dimension_v3_backfill_cursor"))
+        while try store.backfillNextTokenDimensionSetChunk(sampleLimit: 1) {}
+
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_dimension_values"),
+            ["3"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_dimension_sets"),
+            ["2"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_dimension_set_members"),
+            ["4"]
+        )
+        XCTAssertTrue(try store.finalizeTokenDimensionSetMigrationIfReady())
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'token_usage_dimensions'"
+            ),
+            ["0"]
+        )
+        XCTAssertTrue(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT \"table\" FROM pragma_foreign_key_list('token_usage_samples')"
+            ).contains("token_dimension_sets")
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM pragma_foreign_key_check"),
+            ["0"]
+        )
+        XCTAssertThrowsError(
+            try store.execute(
+                "UPDATE token_usage_samples SET dimension_set_id = 999999 WHERE turn_id = 'turn-1'"
+            )
+        )
+        XCTAssertEqual(
+            try store.tokenDashboardSeries(
+                breakdownDimension: .cliVersion,
+                periodStart: timestamp.addingTimeInterval(-60),
+                periodEnd: timestamp.addingTimeInterval(60)
+            ).filter { $0.kind == .dimension }.map(\.name).sorted(),
+            ["1.0", "2.0"]
+        )
+    }
+
     func testTokenImportsDoNotRunFullTelemetryRetentionInline() throws {
         let store = try UsageHistoryStore(
             databaseURL: try makeTemporaryDirectory().appendingPathComponent("inline-retention.sqlite3"),
@@ -692,6 +790,69 @@ extension UsageHistoryStoreTests {
                 "subagent_parent_thread_id=019c-parent-thread",
                 "usage_mode=fast",
             ]
+        )
+    }
+
+    func testLightweightTokenImportPersistsTotalsWithoutAdvancedContextOrCatalogs() async throws {
+        let (store, databaseURL) = try makeTemporaryStore()
+        let receivedAt = date("2026-04-14T20:00:00Z")
+        let notification = tokenNotification(
+            threadID: "thread-lightweight",
+            turnID: "turn-a",
+            model: "gpt-5.5",
+            lastInput: 100,
+            lastCached: 25,
+            lastOutput: 10,
+            lastReasoning: 5,
+            lastTotal: 140,
+            totalInput: 100,
+            totalCached: 25,
+            totalOutput: 10,
+            totalReasoning: 5,
+            totalTotal: 140,
+            dimensions: [
+                TokenUsageDimension(.approvalPolicy, "never"),
+                TokenUsageDimension(.usageMode, "/fast"),
+            ].compactMap(\.self)
+        )
+        let context = TokenUsageContext(
+            sessionID: "session-lightweight",
+            projectPath: "/Users/example/Projects/private-project",
+            effort: "xhigh",
+            source: "desktop"
+        )
+
+        let result = try store.importTokenUsageSamples(
+            [
+                ImportedCodexTokenUsageSample(
+                    notification: notification,
+                    receivedAt: receivedAt,
+                    context: context
+                ),
+            ],
+            includeDetailedContext: false
+        )
+
+        XCTAssertEqual(result, TokenUsageImportResult(insertedCount: 1, duplicateCount: 0))
+        XCTAssertEqual(
+            try store.tokenCategoryTotalsForDay(containing: receivedAt, calendar: calendar)?.totalTokens,
+            140
+        )
+        let sample = try XCTUnwrap(store.tokenUsageSamples().first)
+        XCTAssertNil(sample.model)
+        XCTAssertNil(sample.sessionID)
+        XCTAssertNil(sample.projectPath)
+        XCTAssertNil(sample.projectName)
+        XCTAssertNil(sample.effort)
+        XCTAssertNil(sample.source)
+        XCTAssertEqual(try store.tokenDimensionCatalogEntries(), [])
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT CAST(COUNT(*) AS TEXT) FROM token_usage_dimensions"),
+            ["0"]
+        )
+        XCTAssertEqual(
+            try sqliteStrings(at: databaseURL, sql: "SELECT CAST(COUNT(*) AS TEXT) FROM token_project_catalog"),
+            ["0"]
         )
     }
 
@@ -4234,6 +4395,18 @@ extension UsageHistoryStoreTests {
         )
         XCTAssertFalse(request.forceRescan)
         XCTAssertEqual(request.maximumFileSize, UsageHistoryStore.liveSessionTokenFallbackMaximumFileSize)
+        XCTAssertTrue(request.includeDetailedContext)
+
+        _ = store.captureLiveCodexLogTokenHistory(
+            at: timestamp,
+            calendar: calendar,
+            force: true,
+            includeDetailedContext: false,
+            logsDatabaseURL: databaseURL,
+            sessionTokenBackfillImporter: sessionImporter
+        )
+        XCTAssertEqual(sessionImporter.receivedRequests.count, 2)
+        XCTAssertFalse(try XCTUnwrap(sessionImporter.receivedRequests.last).includeDetailedContext)
     }
 
     @MainActor
@@ -5309,6 +5482,96 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(liveTokenCaptureCount, 0)
     }
 
+    @MainActor
+    func testLiveTokenCaptureCoordinatorUsesConfiguredDetailAndCadenceAndStartsOnce() async throws {
+        let database = BackgroundMetadataCaptureSpyDatabase()
+        let delayRecorder = BackgroundMetadataCaptureDelayRecorder()
+        let now = date("2026-05-02T12:00:00Z")
+        let coordinator = CodexLiveTokenCaptureCoordinator(
+            database: database,
+            interval: 300,
+            includeDetailedContext: false,
+            now: { now },
+            sleeper: { interval in
+                await delayRecorder.record(interval)
+                throw CancellationError()
+            }
+        )
+
+        coordinator.start()
+        coordinator.start()
+        for _ in 0..<100 {
+            if await database.liveTokenCaptureCount() == 1,
+               await delayRecorder.intervalsSnapshot() == [300]
+            {
+                break
+            }
+            await Task.yield()
+        }
+        coordinator.stop()
+        coordinator.stop()
+
+        let captureCount = await database.liveTokenCaptureCount()
+        let captureDetails = await database.liveTokenCaptureDetailsSnapshot()
+        let intervals = await delayRecorder.intervalsSnapshot()
+        XCTAssertEqual(captureCount, 1)
+        XCTAssertEqual(captureDetails, [false])
+        XCTAssertEqual(intervals, [300])
+    }
+
+    @MainActor
+    func testLiveTokenCaptureCoordinatorRejectsResultAfterCancellation() async throws {
+        let database = BackgroundMetadataCaptureSpyDatabase(blockLiveTokenCapture: true)
+        var callbackCount = 0
+        let coordinator = CodexLiveTokenCaptureCoordinator(
+            database: database,
+            interval: 30,
+            includeDetailedContext: true,
+            onCapture: { _ in callbackCount += 1 }
+        )
+
+        coordinator.start()
+        await database.waitForLiveTokenCaptureStart()
+        coordinator.stop()
+        await database.releaseLiveTokenCapture()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(callbackCount, 0)
+        let captureCount = await database.liveTokenCaptureCount()
+        let captureDetails = await database.liveTokenCaptureDetailsSnapshot()
+        XCTAssertEqual(captureCount, 1)
+        XCTAssertEqual(captureDetails, [true])
+    }
+
+    @MainActor
+    func testStorageMaintenanceCoordinatorCoalescesConcurrentTriggers() async {
+        let database = DashboardRoutingWriterSpy()
+        let now = date("2026-05-02T12:00:00Z")
+        let coordinator = StorageMaintenanceCoordinator(
+            database: database,
+            now: { now },
+            sleeper: { _ in throw CancellationError() }
+        )
+
+        coordinator.enqueue(.operationalImport)
+        coordinator.enqueue(.modeChange)
+        coordinator.enqueue(.budgetPressure)
+        for _ in 0..<100 {
+            if await database.eventsSnapshot().contains(.maintenance) {
+                break
+            }
+            await Task.yield()
+        }
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(await database.eventsSnapshot().filter { $0 == .maintenance }, [.maintenance])
+        XCTAssertEqual(coordinator.state.lastAttemptAt, now)
+        XCTAssertEqual(coordinator.state.lastSuccessAt, now)
+        XCTAssertEqual(coordinator.state.stage, .idle)
+    }
+
     func testPerformanceDashboardEfficiencyAggregatesTokensTimingReliabilityAndContext() async throws {
         let store = try makeStore()
         try seedPerformanceDashboardFixture(in: store)
@@ -6308,6 +6571,7 @@ private actor DashboardRoutingWriterSpy: UsageHistoryDatabaseWorking {
         case dimensionCatalog
         case renameProject
         case importTokenHistory
+        case maintenance
     }
 
     private enum SpyError: Error {
@@ -6457,6 +6721,10 @@ private actor DashboardRoutingWriterSpy: UsageHistoryDatabaseWorking {
             duplicateEventsSkipped: 0,
             failedLinesSkipped: 0
         )
+    }
+
+    func enforceTelemetryRetention(referenceDate: Date) async throws {
+        events.append(.maintenance)
     }
 }
 
@@ -6660,11 +6928,20 @@ private actor BackgroundMetadataCaptureSpyDatabase: UsageHistoryDatabaseWorking 
     }
 
     private let failTurnPerformance: Bool
+    private let blockLiveTokenCapture: Bool
     private var events: [Event] = []
     private var liveTokenCaptures = 0
+    private var liveTokenCaptureDetails: [Bool] = []
+    private var didStartLiveTokenCapture = false
+    private var liveTokenCaptureStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var liveTokenCaptureReleaseContinuation: CheckedContinuation<Void, Never>?
 
-    init(failTurnPerformance: Bool = false) {
+    init(
+        failTurnPerformance: Bool = false,
+        blockLiveTokenCapture: Bool = false
+    ) {
         self.failTurnPerformance = failTurnPerformance
+        self.blockLiveTokenCapture = blockLiveTokenCapture
     }
 
     func eventsSnapshot() -> [Event] {
@@ -6673,6 +6950,24 @@ private actor BackgroundMetadataCaptureSpyDatabase: UsageHistoryDatabaseWorking 
 
     func liveTokenCaptureCount() -> Int {
         liveTokenCaptures
+    }
+
+    func liveTokenCaptureDetailsSnapshot() -> [Bool] {
+        liveTokenCaptureDetails
+    }
+
+    func waitForLiveTokenCaptureStart() async {
+        guard !didStartLiveTokenCapture else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            liveTokenCaptureStartWaiters.append(continuation)
+        }
+    }
+
+    func releaseLiveTokenCapture() {
+        liveTokenCaptureReleaseContinuation?.resume()
+        liveTokenCaptureReleaseContinuation = nil
     }
 
     func record(snapshot: CodexUsageSnapshot, at date: Date) async {}
@@ -6694,8 +6989,32 @@ private actor BackgroundMetadataCaptureSpyDatabase: UsageHistoryDatabaseWorking 
         calendar: Calendar,
         force: Bool
     ) async -> CodexLiveTokenCaptureState {
+        await captureLiveTokenHistoryIfNeeded(
+            at: date,
+            calendar: calendar,
+            force: force,
+            includeDetailedContext: true
+        )
+    }
+
+    func captureLiveTokenHistoryIfNeeded(
+        at date: Date,
+        calendar: Calendar,
+        force: Bool,
+        includeDetailedContext: Bool
+    ) async -> CodexLiveTokenCaptureState {
         liveTokenCaptures += 1
-        return CodexLiveTokenCaptureState(status: .noNewEvents)
+        liveTokenCaptureDetails.append(includeDetailedContext)
+        didStartLiveTokenCapture = true
+        let waiters = liveTokenCaptureStartWaiters
+        liveTokenCaptureStartWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if blockLiveTokenCapture {
+            await withCheckedContinuation { continuation in
+                liveTokenCaptureReleaseContinuation = continuation
+            }
+        }
+        return CodexLiveTokenCaptureState(lastCheckedAt: date, status: .noNewEvents)
     }
 
     func liveTokenCaptureState() async -> CodexLiveTokenCaptureState {

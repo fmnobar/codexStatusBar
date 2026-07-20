@@ -29,39 +29,10 @@ private final class UnavailableCodexProfileTokenUsageClient: CodexProfileTokenUs
 
 @MainActor
 final class DataManagementSettingsViewModel: ObservableObject {
-    @Published var selectedRetention: UsageHistoryRawRetention {
-        didSet {
-            guard selectedRetention != oldValue else {
-                return
-            }
-
-            UsageHistoryRawRetentionStore.save(selectedRetention, to: defaults)
-            statusMessage = "Raw sample retention updated."
-            errorMessage = nil
-            applySelectedRetention()
-        }
-    }
-
-    private func applySelectedRetention() {
-        Task { [weak self, database, now] in
-            do {
-                try await database.enforceTelemetryRetention(referenceDate: now())
-                guard let self else {
-                    return
-                }
-                statusMessage = "Raw sample retention updated and applied."
-                await refreshDatabaseInfo()
-            } catch {
-                guard let self else {
-                    return
-                }
-                errorMessage = "Retention cleanup failed: \(error.localizedDescription)"
-            }
-        }
-    }
-
     @Published private(set) var databasePathText = "Unavailable"
     @Published private(set) var databaseSizeText = "--"
+    @Published private(set) var storageLimitText = "Storage unavailable"
+    @Published private(set) var maintenanceStatusText = "Maintenance not run yet"
     @Published private(set) var statusMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isImportingTokenHistory = false
@@ -83,6 +54,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
     @Published private(set) var codexSourceHealthState: CodexSourceHealthState
     @Published private(set) var isRefreshingCodexSourceHealth = false
     @Published private(set) var isRefreshingRemoteControlHealth = false
+    @Published private(set) var isOptimizingStorage = false
 
     private let database: UsageHistoryDatabaseWorking
     private let defaults: UserDefaults
@@ -140,7 +112,6 @@ final class DataManagementSettingsViewModel: ObservableObject {
         self.localSourceCoverageProbe = localSourceCoverageProbe
         self.autoRefreshProfileTokens = autoRefreshProfileTokens
         self.now = now
-        selectedRetention = UsageHistoryRawRetentionStore.load(from: defaults)
         tokenPayloadAudit = tokenPayloadAuditStore.latestAudit
         tokenPayloadAuditDiagnostics = tokenPayloadAuditDiagnosticsStore.diagnostics
         performanceInstrumentationSummary = performanceInstrumentationStore.summary()
@@ -703,10 +674,14 @@ final class DataManagementSettingsViewModel: ObservableObject {
             databaseInfo = info
             databasePathText = info.databaseURL.path
             databaseSizeText = byteFormatter.string(fromByteCount: info.totalByteSize)
+            storageLimitText = "Storage: \(databaseSizeText) (\(byteFormatter.string(fromByteCount: info.hardMaximumByteSize)) maximum)"
+            maintenanceStatusText = Self.maintenanceText(info.maintenanceState)
         } catch {
             databaseInfo = nil
             databasePathText = "Unavailable"
             databaseSizeText = "--"
+            storageLimitText = "Storage unavailable"
+            maintenanceStatusText = "Maintenance unavailable"
         }
     }
 
@@ -881,14 +856,18 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
     func refreshData() async {
         await refreshDatabaseInfo()
-        await refreshProjectEntries()
         await refreshLocalTokenCaptureState()
-        await refreshTurnPerformanceCaptureState()
-        await refreshSessionTaskTimingCaptureState()
-        await refreshThreadCatalogCaptureState()
-        await refreshModelCapabilitiesCaptureState()
         await refreshProfileTokenComparison()
         await refreshCodexSourceHealthIfStale()
+    }
+
+    func refreshAdvancedData() async {
+        await refreshProjectEntries()
+        turnPerformanceCaptureState = await database.turnPerformanceCaptureState()
+        turnPerformanceRuntimeDimensionSummary = await database.turnPerformanceRuntimeDimensionSummary()
+        sessionTaskTimingCaptureState = await database.sessionTaskTimingCaptureState()
+        threadCatalogCaptureState = await database.threadCatalogCaptureState()
+        modelCapabilitiesCaptureState = await database.modelCapabilitiesCaptureState()
         if tokenPayloadAuditDiagnostics.remoteControlDiagnostics.enrollmentStatus == .neverChecked {
             await refreshRemoteControlHealth()
         }
@@ -928,17 +907,35 @@ final class DataManagementSettingsViewModel: ObservableObject {
         }
     }
 
-    func clearHistory() async {
+    func clearAnalyticsData() async {
         do {
-            try await database.clearHistory()
-            statusMessage = "History cleared."
+            try await database.clearAnalyticsData()
+            statusMessage = "Detailed analytics data cleared."
             errorMessage = nil
             tokenImportSummaryText = nil
             projectEntries = []
             await refreshData()
         } catch {
             statusMessage = nil
-            errorMessage = "History could not be cleared."
+            errorMessage = "Analytics data could not be cleared. Your core history is unchanged."
+        }
+    }
+
+    func optimizeStorage() async {
+        guard !isOptimizingStorage else { return }
+        isOptimizingStorage = true
+        defer { isOptimizingStorage = false }
+        do {
+            let result = try await database.optimizeStorage(reason: .manual)
+            statusMessage = result.performed
+                ? "Storage optimized; \(byteFormatter.string(fromByteCount: result.reclaimedByteSize)) reclaimed."
+                : "Storage is already compact."
+            errorMessage = nil
+            await refreshDatabaseInfo()
+        } catch {
+            statusMessage = nil
+            errorMessage = "Storage optimization did not run. Your data is unchanged."
+            await refreshDatabaseInfo()
         }
     }
 
@@ -1091,11 +1088,32 @@ final class DataManagementSettingsViewModel: ObservableObject {
     }
 
     func importRecentTokenHistoryFromCodexSessions(now: Date = Date()) {
-        importTokenHistoryFromCodexSessions(request: .recent(now: now))
+        importTokenHistoryFromCodexSessions(request: .recent(now: now, days: 7))
     }
 
-    func importAllTokenHistoryFromCodexSessions() {
-        importTokenHistoryFromCodexSessions(request: .allHistory())
+    func buildHistoricalArchive(
+        at destinationURL: URL,
+        replaceExisting: Bool
+    ) async -> HistoricalTokenArchiveDescriptor? {
+        guard !isImportingTokenHistory else { return nil }
+        isImportingTokenHistory = true
+        statusMessage = nil
+        errorMessage = nil
+        tokenImportSummaryText = nil
+        defer { isImportingTokenHistory = false }
+        do {
+            let result = try await database.buildHistoricalTokenArchive(
+                importer: tokenBackfillImporter,
+                destinationURL: destinationURL,
+                replaceExisting: replaceExisting
+            )
+            tokenImportSummaryText = result.summary.statusMessage
+            statusMessage = "Historical archive built."
+            return result.descriptor
+        } catch {
+            errorMessage = "Historical archive could not be built. Existing data is unchanged."
+            return nil
+        }
     }
 
     private func importTokenHistoryFromCodexSessions(request: CodexSessionTokenBackfillRequest) {
@@ -1143,6 +1161,22 @@ final class DataManagementSettingsViewModel: ObservableObject {
         return formatter
     }()
 
+    private static func maintenanceText(_ state: StorageMaintenanceState) -> String {
+        switch state.stage {
+        case .idle:
+            if let lastSuccessAt = state.lastSuccessAt {
+                return "Last maintained \(auditDateFormatter.string(from: lastSuccessAt))"
+            }
+            return "Maintenance scheduled automatically"
+        case .rawToHourly, .hourlyToDaily, .pruning, .backfilling:
+            return "Maintenance in progress"
+        case .checkpointing, .optimizing, .validating, .replacing, .reopening:
+            return "Optimizing storage"
+        case .failed:
+            return "Maintenance will retry automatically"
+        }
+    }
+
     private static let tokenCountFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -1189,14 +1223,178 @@ final class DataManagementSettingsViewModel: ObservableObject {
     }
 }
 
+#if DEBUG
+enum StorageSettingsFixtureState: String, CaseIterable, Identifiable, Sendable {
+    case lightweight
+    case detailedAnalytics
+    case migrating
+    case overBudgetPaused
+    case insufficientSpace
+    case archiveOpen
+    case empty
+    case failure
+
+    var id: String { rawValue }
+
+    var presentation: StorageSettingsFixturePresentation {
+        switch self {
+        case .lightweight:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: false,
+                storageText: "Storage: 18 MB (250 MB maximum)",
+                maintenanceText: "Last maintained today at 9:41 AM",
+                detailText: "Lightweight keeps rate limits and token totals current with minimal local storage."
+            )
+        case .detailedAnalytics:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: true,
+                storageText: "Storage: 82 MB (500 MB maximum)",
+                maintenanceText: "Last maintained today at 9:41 AM",
+                detailText: "Detailed Analytics records model, project, session, and performance breakdowns."
+            )
+        case .migrating:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: false,
+                storageText: "Storage: 146 MB (250 MB maximum)",
+                maintenanceText: "Migrating retained history · batch 12",
+                detailText: "Collection continues in Lightweight while retained history is compacted."
+            )
+        case .overBudgetPaused:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: true,
+                storageText: "Storage: 503 MB (500 MB maximum)",
+                maintenanceText: "Detailed collection paused · maintenance will retry automatically",
+                detailText: "Rate limits and lightweight token totals remain current."
+            )
+        case .insufficientSpace:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: false,
+                storageText: "Storage: 228 MB (250 MB maximum)",
+                maintenanceText: "Optimization needs 310 MB free; 190 MB is available",
+                detailText: "Existing data is safe. Free space, then choose Optimize Now."
+            )
+        case .archiveOpen:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: false,
+                storageText: "Storage: 21 MB (250 MB maximum)",
+                maintenanceText: "Last maintained yesterday at 6:18 PM",
+                detailText: "Historical archives remain readable independently.",
+                archiveName: "codex-token-history-2026",
+                archiveSizeText: "640 MB"
+            )
+        case .empty:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: false,
+                storageText: "Storage: 1.2 MB (250 MB maximum)",
+                maintenanceText: "Maintenance scheduled automatically",
+                detailText: "No detailed analytics have been collected."
+            )
+        case .failure:
+            StorageSettingsFixturePresentation(
+                detailedAnalyticsEnabled: false,
+                storageText: "Storage: 94 MB (250 MB maximum)",
+                maintenanceText: "Maintenance could not finish · current data is safe",
+                detailText: "Retry Optimize Now. Automatic collection remains lightweight."
+            )
+        }
+    }
+}
+
+struct StorageSettingsFixturePresentation: Equatable, Sendable {
+    let detailedAnalyticsEnabled: Bool
+    let storageText: String
+    let maintenanceText: String
+    let detailText: String
+    var archiveName: String?
+    var archiveSizeText: String?
+
+    init(
+        detailedAnalyticsEnabled: Bool,
+        storageText: String,
+        maintenanceText: String,
+        detailText: String,
+        archiveName: String? = nil,
+        archiveSizeText: String? = nil
+    ) {
+        self.detailedAnalyticsEnabled = detailedAnalyticsEnabled
+        self.storageText = storageText
+        self.maintenanceText = maintenanceText
+        self.detailText = detailText
+        self.archiveName = archiveName
+        self.archiveSizeText = archiveSizeText
+    }
+}
+
+/// Deterministic, non-shipping renderer for native storage-state inspection. It deliberately
+/// models presentation only and never creates, grows, corrupts, or replaces a real database.
+struct StorageSettingsFixtureView: View {
+    let state: StorageSettingsFixtureState
+
+    var body: some View {
+        let presentation = state.presentation
+        Form {
+            Section("Collection") {
+                Toggle("Detailed Analytics", isOn: .constant(presentation.detailedAnalyticsEnabled))
+                    .accessibilityLabel("Detailed Analytics")
+                Text(presentation.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Storage") {
+                Text(presentation.storageText)
+                    .monospacedDigit()
+                    .accessibilityLabel("Operational storage usage")
+                    .accessibilityValue(presentation.storageText)
+                Text(presentation.maintenanceText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Storage maintenance status")
+                    .accessibilityValue(presentation.maintenanceText)
+                HStack {
+                    Button("Optimize Now") {}
+                    Button("Export Backup...") {}
+                    Spacer()
+                    Button("Clear Analytics Data...", role: .destructive) {}
+                }
+            }
+            Section("Retention") {
+                Text("Raw details: 72 hours · Hourly: 90 days · Daily: one year")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let archiveName = presentation.archiveName,
+               let archiveSizeText = presentation.archiveSizeText
+            {
+                Section("Historical Archive") {
+                    LabeledContent("Open archive", value: archiveName)
+                    LabeledContent("Archive size", value: archiveSizeText)
+                    HStack {
+                        Button("Export Archive...") {}
+                        Button("Close Archive") {}
+                        Spacer()
+                        Button("Delete Archive...", role: .destructive) {}
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 760, height: 700)
+    }
+}
+#endif
+
 struct DataManagementSettingsView: View {
     @StateObject private var viewModel: DataManagementSettingsViewModel
     @ObservedObject private var updateMonitor: AppUpdateMonitor
+    @ObservedObject private var collectionModeController: UsageCollectionModeController
+    @ObservedObject private var archiveController: HistoricalTokenArchiveController
     @AppStorage(SettingsTabSelectionStore.key) private var selectedTabRaw = SettingsTabSelection.data.rawValue
     @State private var isConfirmingClear = false
     @State private var pendingImportURL: URL?
     @State private var projectBeingRenamed: TokenProjectCatalogEntry?
     @State private var projectNameDraft = ""
+    @State private var isAdvancedExpanded = false
+    @State private var isConfirmingArchiveDelete = false
 
     init(
         database: UsageHistoryDatabaseWorking,
@@ -1210,6 +1408,8 @@ struct DataManagementSettingsView: View {
         codexSourceHealthReader: CodexSourceHealthReading = CodexSourceHealthReader(),
         remoteControlHealthReader: CodexRemoteControlHealthReading = CodexRemoteControlHealthReader(),
         localSourceCoverageProbe: CodexLocalSourceCoverageProbing = CodexLocalSourceCoverageProbe(),
+        collectionModeController: UsageCollectionModeController = UsageCollectionModeController(),
+        archiveController: HistoricalTokenArchiveController = .shared,
         autoRefreshProfileTokens: Bool = false
     ) {
         _viewModel = StateObject(
@@ -1228,20 +1428,26 @@ struct DataManagementSettingsView: View {
             )
         )
         self.updateMonitor = updateMonitor
+        self.collectionModeController = collectionModeController
+        self.archiveController = archiveController
     }
 
     var body: some View {
         TabView(selection: selectedTabBinding) {
             Form {
+                collectionModeSection
                 databaseSection
                 retentionSection
                 tokenHistorySection
                 profileTokenSection
-                codexSourceHealthSection
-                localSourceCoverageSection
-                remoteControlHealthSection
-                liveTokenPayloadSection
-                projectsSection
+                DisclosureGroup("Advanced", isExpanded: advancedExpandedBinding) {
+                    advancedDatabaseDetails
+                    codexSourceHealthSection
+                    localSourceCoverageSection
+                    remoteControlHealthSection
+                    liveTokenPayloadSection
+                    projectsSection
+                }
                 feedbackSection
             }
             .formStyle(.grouped)
@@ -1258,7 +1464,7 @@ struct DataManagementSettingsView: View {
                 }
                 .tag(SettingsTabSelection.updates)
         }
-        .frame(width: 580, height: 540)
+        .frame(width: 760, height: 700)
         .scenePadding()
         .task {
             await viewModel.refreshData()
@@ -1266,15 +1472,15 @@ struct DataManagementSettingsView: View {
         .sheet(item: $projectBeingRenamed) { entry in
             projectRenameSheet(for: entry)
         }
-        .alert("Clear History?", isPresented: $isConfirmingClear) {
-            Button("Clear History", role: .destructive) {
+        .alert("Clear Analytics Data?", isPresented: $isConfirmingClear) {
+            Button("Clear Analytics Data", role: .destructive) {
                 Task {
-                    await viewModel.clearHistory()
+                    await viewModel.clearAnalyticsData()
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes local usage history. Backups and Codex account data are not affected.")
+            Text("This removes detailed dimensions and performance metadata. Rate-limit History, lightweight token totals, preferences, status state, backups, and archives are preserved.")
         }
         .alert(
             "Import Backup?",
@@ -1299,7 +1505,15 @@ struct DataManagementSettingsView: View {
                 pendingImportURL = nil
             }
         } message: {
-            Text("This replaces current local history with the selected backup.")
+            Text("The backup is normalized, retained, budgeted, and validated in an offline candidate. Current history remains unchanged unless every check passes.")
+        }
+        .alert("Delete Historical Archive?", isPresented: $isConfirmingArchiveDelete) {
+            Button("Delete Archive", role: .destructive) {
+                try? archiveController.deleteOpenedArchive()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Only the currently validated archive file will be deleted. Operational history is not affected.")
         }
     }
 
@@ -1314,25 +1528,36 @@ struct DataManagementSettingsView: View {
         )
     }
 
-    private var databaseSection: some View {
-        Section("History Database") {
-            LabeledContent("Location") {
-                Text(viewModel.databasePathText)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+    private var advancedExpandedBinding: Binding<Bool> {
+        Binding(
+            get: { isAdvancedExpanded },
+            set: { expanded in
+                isAdvancedExpanded = expanded
+                if expanded {
+                    Task { await viewModel.refreshAdvancedData() }
+                }
             }
+        )
+    }
 
-            LabeledContent("Size") {
-                Text(viewModel.databaseSizeText)
-                    .monospacedDigit()
-            }
+    private var databaseSection: some View {
+        Section("Storage") {
+            Text(viewModel.storageLimitText)
+                .monospacedDigit()
+                .accessibilityLabel("Operational storage usage")
+                .accessibilityValue(viewModel.storageLimitText)
+
+            Text(viewModel.maintenanceStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Storage maintenance status")
+                .accessibilityValue(viewModel.maintenanceStatusText)
 
             HStack {
-                Button("Reveal in Finder") {
-                    viewModel.revealDatabaseInFinder()
+                Button(viewModel.isOptimizingStorage ? "Optimizing..." : "Optimize Now") {
+                    Task { await viewModel.optimizeStorage() }
                 }
-                .disabled(!viewModel.canRevealDatabase)
+                .disabled(viewModel.isOptimizingStorage)
 
                 Button("Export Backup...") {
                     exportBackup()
@@ -1344,23 +1569,60 @@ struct DataManagementSettingsView: View {
 
                 Spacer()
 
-                Button("Clear History...", role: .destructive) {
+                Button("Clear Analytics Data...", role: .destructive) {
                     isConfirmingClear = true
                 }
             }
         }
     }
 
-    private var retentionSection: some View {
-        Section("Raw Samples") {
-            Picker("Keep raw samples", selection: $viewModel.selectedRetention) {
-                ForEach(UsageHistoryRawRetention.allCases) { retention in
-                    Text(retention.displayTitle).tag(retention)
-                }
+    private var advancedDatabaseDetails: some View {
+        Group {
+            LabeledContent("Database location") {
+                Text(viewModel.databasePathText)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
             }
-            .pickerStyle(.menu)
+            Button("Reveal Database in Finder") {
+                viewModel.revealDatabaseInFinder()
+            }
+            .disabled(!viewModel.canRevealDatabase)
+        }
+    }
 
-            Text("Hourly and daily rollups are kept indefinitely.")
+    private var collectionModeSection: some View {
+        Section("Collection") {
+            Toggle("Detailed Analytics", isOn: detailedAnalyticsBinding)
+                .accessibilityLabel("Detailed Analytics")
+                .accessibilityHelp("Collect model, project, session, and performance breakdowns locally")
+
+            Text(collectionModeDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var detailedAnalyticsBinding: Binding<Bool> {
+        Binding(
+            get: { collectionModeController.mode == .detailedAnalytics },
+            set: { isEnabled in
+                collectionModeController.setMode(isEnabled ? .detailedAnalytics : .lightweight)
+            }
+        )
+    }
+
+    private var collectionModeDescription: String {
+        switch collectionModeController.mode {
+        case .lightweight:
+            "Lightweight keeps rate limits and token totals current with minimal local storage."
+        case .detailedAnalytics:
+            "Detailed Analytics also records model, project, session, and performance breakdowns."
+        }
+    }
+
+    private var retentionSection: some View {
+        Section("Retention") {
+            Text("Rate-limit details are kept for 7 days. Detailed token and performance samples are kept for 72 hours, hourly summaries for 90 days, and daily summaries for one year.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1369,18 +1631,22 @@ struct DataManagementSettingsView: View {
     private var tokenHistorySection: some View {
         Section("Token History") {
             HStack {
-                Button(viewModel.isImportingTokenHistory ? "Importing..." : "Import Recent Sessions...") {
+                Button(viewModel.isImportingTokenHistory ? "Importing..." : "Import Last 7 Days...") {
                     viewModel.importRecentTokenHistoryFromCodexSessions()
                 }
-                .disabled(viewModel.isImportingTokenHistory)
+                .disabled(viewModel.isImportingTokenHistory || collectionModeController.mode != .detailedAnalytics)
 
-                Button("Import All History...") {
-                    viewModel.importAllTokenHistoryFromCodexSessions()
+                Button("Build Historical Archive...") {
+                    buildHistoricalArchive()
                 }
                 .disabled(viewModel.isImportingTokenHistory)
+
+                Button("Open Archive...") {
+                    openHistoricalArchive()
+                }
             }
 
-            Text("Recent import scans active sessions from the last 30 days. All history includes archives and can take a long time.")
+            Text("The 7-day import adds recent detail to the operational store and requires Detailed Analytics. Historical archives are separate, read-only files and do not count toward the operational limit.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -1388,6 +1654,31 @@ struct DataManagementSettingsView: View {
                 Text(tokenImportSummaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let archive = archiveController.openedArchive {
+                Divider()
+                LabeledContent("Open archive") {
+                    Text(archive.displayName)
+                }
+                LabeledContent("Archive size") {
+                    Text(ByteCountFormatter.string(fromByteCount: archive.byteSize, countStyle: .file))
+                        .monospacedDigit()
+                }
+                Text(archive.url.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                HStack {
+                    Button("Export Archive...") { exportHistoricalArchive() }
+                    Button("Reveal Archive") { archiveController.reveal() }
+                    Button("Close Archive") { archiveController.close() }
+                    Spacer()
+                    Button("Delete Archive...", role: .destructive) {
+                        isConfirmingArchiveDelete = true
+                    }
+                }
             }
         }
     }
@@ -2403,6 +2694,41 @@ struct DataManagementSettingsView: View {
         }
 
         pendingImportURL = url
+    }
+
+    private func buildHistoricalArchive() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [sqliteBackupContentType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "codex-token-history-archive.sqlite3"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let replaceExisting = FileManager.default.fileExists(atPath: url.path)
+        Task {
+            if let descriptor = await viewModel.buildHistoricalArchive(
+                at: url,
+                replaceExisting: replaceExisting
+            ) {
+                try? archiveController.open(descriptor.url)
+            }
+        }
+    }
+
+    private func openHistoricalArchive() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [sqliteBackupContentType]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? archiveController.open(url)
+    }
+
+    private func exportHistoricalArchive() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [sqliteBackupContentType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "codex-token-history-archive-copy.sqlite3"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? archiveController.export(to: url)
     }
 
     private func exportTokenPayloadAudit() {

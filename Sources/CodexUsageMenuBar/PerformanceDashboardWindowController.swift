@@ -5,15 +5,18 @@ import SwiftUI
 final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
     private let database: UsageHistoryDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    private let collectionModeController: UsageCollectionModeController
     private var window: NSWindow?
     private var pendingOpenSpan: AppPerformanceSpan?
 
     init(
         database: UsageHistoryDatabaseWorking,
-        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
+        collectionModeController: UsageCollectionModeController = UsageCollectionModeController()
     ) {
         self.database = database
         self.performanceInstrumentationStore = performanceInstrumentationStore
+        self.collectionModeController = collectionModeController
     }
 
     func prepareOpenInstrumentation() {
@@ -52,6 +55,7 @@ final class PerformanceDashboardWindowController: NSObject, NSWindowDelegate {
             rootView: PerformanceDashboardView(
                 database: database,
                 performanceInstrumentationStore: performanceInstrumentationStore,
+                collectionModeController: collectionModeController,
                 onFirstRendered: { [weak self] in
                     self?.recordFirstRendered()
                 }

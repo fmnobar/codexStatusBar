@@ -7,3 +7,4 @@ xcuserdata/
 *.xccheckout
 *.xcscmblueprint
 diagnostics-captures/
+__pycache__/

@@ -5,15 +5,21 @@ import SwiftUI
 final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
     private let database: UsageHistoryDatabaseWorking
     private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
+    private let collectionModeController: UsageCollectionModeController
+    private let archiveController: HistoricalTokenArchiveController
     private var window: NSWindow?
     private var pendingOpenSpan: AppPerformanceSpan?
 
     init(
         database: UsageHistoryDatabaseWorking,
-        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared
+        performanceInstrumentationStore: AppPerformanceInstrumentationStore? = nil,
+        collectionModeController: UsageCollectionModeController? = nil,
+        archiveController: HistoricalTokenArchiveController? = nil
     ) {
         self.database = database
-        self.performanceInstrumentationStore = performanceInstrumentationStore
+        self.performanceInstrumentationStore = performanceInstrumentationStore ?? .shared
+        self.collectionModeController = collectionModeController ?? UsageCollectionModeController()
+        self.archiveController = archiveController ?? .shared
     }
 
     func prepareOpenInstrumentation() {
@@ -52,11 +58,14 @@ final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
             rootView: TokenDashboardView(
                 database: database,
                 performanceInstrumentationStore: performanceInstrumentationStore,
+                collectionModeController: collectionModeController,
+                archiveController: archiveController,
                 onFirstRendered: { [weak self] in
                     self?.recordFirstRendered()
                 }
             )
         )
+        archiveController.beginViewing()
         window.center()
         enforceMinimumFrame(for: window)
         window.makeKeyAndOrderFront(nil)
@@ -104,6 +113,7 @@ final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
             pendingOpenSpan = nil
         }
         window = nil
+        archiveController.endViewing()
     }
 }
 

@@ -28,6 +28,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private let resetCreditStore: CodexResetCreditStore
     private let resetCreditClient: CodexResetCreditFetching?
+    private let collectionModeController: UsageCollectionModeController
     private let routeHandlerOverride: ((StatusItemDestination) -> Void)?
     private let settingsDefaults: UserDefaults
     private let popoverOpenInstrumentation: AppPerformanceSpanTracker
@@ -36,11 +37,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private lazy var usageHistoryWindowController = UsageHistoryWindowController(database: historyDatabase)
     private lazy var tokenDashboardWindowController = TokenDashboardWindowController(
         database: historyDatabase,
-        performanceInstrumentationStore: performanceInstrumentationStore
+        performanceInstrumentationStore: performanceInstrumentationStore,
+        collectionModeController: collectionModeController
     )
     private lazy var performanceDashboardWindowController = PerformanceDashboardWindowController(
         database: historyDatabase,
-        performanceInstrumentationStore: performanceInstrumentationStore
+        performanceInstrumentationStore: performanceInstrumentationStore,
+        collectionModeController: collectionModeController
     )
     private lazy var contextMenu = StatusItemContextMenuFactory.makeMenu(
         target: self,
@@ -65,6 +68,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
         resetCreditStore: CodexResetCreditStore = .applicationSupportStore(),
         resetCreditClient: CodexResetCreditFetching? = nil,
+        collectionModeController: UsageCollectionModeController = UsageCollectionModeController(),
         launchToMenuTitleSpan: AppPerformanceSpan? = nil,
         routeHandlerOverride: ((StatusItemDestination) -> Void)? = nil,
         settingsDefaults: UserDefaults = .standard
@@ -77,6 +81,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.appServerDiagnosticsStore = appServerDiagnosticsStore
         self.resetCreditStore = resetCreditStore
         self.resetCreditClient = resetCreditClient
+        self.collectionModeController = collectionModeController
         self.routeHandlerOverride = routeHandlerOverride
         self.settingsDefaults = settingsDefaults
         self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
