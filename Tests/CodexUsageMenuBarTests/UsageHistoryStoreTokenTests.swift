@@ -121,6 +121,7 @@ extension UsageHistoryStoreTests {
             ).filter { $0.kind == .dimension }.map(\.name).sorted(),
             ["1.0", "2.0"]
         )
+        XCTAssertFalse(try store.backfillNextTokenDimensionSetChunk(sampleLimit: 1))
     }
 
     func testTokenImportsDoNotRunFullTelemetryRetentionInline() throws {
@@ -5440,6 +5441,19 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(writerEvents, [.turnPerformance(force: true)])
     }
 
+    func testDatabaseRouterInvalidatesReadStoreAroundScheduledMaintenance() async throws {
+        let writer = DashboardRoutingWriterSpy()
+        let query = DashboardRoutingQuerySpy()
+        let router = UsageHistoryDatabaseRouter(writer: writer, dashboardQueryWorker: query)
+
+        try await router.enforceTelemetryRetention(referenceDate: date("2026-05-02T12:05:00Z"))
+
+        let writerEvents = await writer.eventsSnapshot()
+        let queryEvents = await query.eventsSnapshot()
+        XCTAssertEqual(writerEvents, [.maintenance])
+        XCTAssertEqual(queryEvents, [.invalidate, .invalidate])
+    }
+
     func testRouterSnapshotCompletesWhileWriterCaptureIsBlocked() async throws {
         let writer = BlockingDashboardRoutingWriterSpy()
         let query = DashboardRoutingQuerySpy()
@@ -6530,6 +6544,7 @@ private actor DashboardRoutingQuerySpy: UsageHistoryDashboardQueryWorking {
         case usageHistory
         case tokenDashboard
         case performanceDashboard
+        case invalidate
     }
 
     private var events: [Event] = []
@@ -6579,6 +6594,10 @@ private actor DashboardRoutingQuerySpy: UsageHistoryDashboardQueryWorking {
             series: [],
             historyBounds: nil
         )
+    }
+
+    func invalidateCachedStore() {
+        events.append(.invalidate)
     }
 }
 

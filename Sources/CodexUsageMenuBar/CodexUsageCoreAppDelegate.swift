@@ -376,7 +376,7 @@ final class CodexUsageProductionRuntime: CodexUsageApplicationRuntime {
         self.collectionModeController = collectionModeController
         self.collectionDetailGate = collectionDetailGate
         self.collectionPlanProvider = collectionPlanProvider
-        maintenanceCoordinator = StorageMaintenanceCoordinator(database: resolvedHistoryWriteDatabase)
+        maintenanceCoordinator = StorageMaintenanceCoordinator(database: routedHistoryDatabase)
         launchToMenuTitleSpan = performanceInstrumentationStore.begin(.appLaunchToFirstMenuBarTitle)
         viewModel = MenuBarStatusViewModel(
             client: codexClient,

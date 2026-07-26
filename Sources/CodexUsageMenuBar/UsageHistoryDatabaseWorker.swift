@@ -714,7 +714,14 @@ struct UsageHistoryDatabaseRouter: UsageHistoryDatabaseWorking {
     }
 
     func enforceTelemetryRetention(referenceDate: Date) async throws {
-        try await writer.enforceTelemetryRetention(referenceDate: referenceDate)
+        await dashboardQueryWorker.invalidateCachedStore()
+        do {
+            try await writer.enforceTelemetryRetention(referenceDate: referenceDate)
+            await dashboardQueryWorker.invalidateCachedStore()
+        } catch {
+            await dashboardQueryWorker.invalidateCachedStore()
+            throw error
+        }
     }
 
     func optimizeStorage(reason: StorageOptimizationReason) async throws -> StorageOptimizationResult {

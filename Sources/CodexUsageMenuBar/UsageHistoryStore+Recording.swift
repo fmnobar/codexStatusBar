@@ -615,17 +615,10 @@ extension UsageHistoryStore {
         )
         if try tableExists(table: "token_usage_dimensions") {
             try execute(
-                """
-                DELETE FROM token_usage_dimensions
-                WHERE EXISTS (
-                    SELECT 1 FROM token_usage_samples AS samples
-                    WHERE samples.thread_id = token_usage_dimensions.thread_id
-                      AND samples.turn_id = token_usage_dimensions.turn_id
-                      AND samples.total_total_tokens = token_usage_dimensions.total_total_tokens
-                      AND samples.is_retention_baseline = 1
-                      AND samples.received_at < \(cutoff)
+                legacyTokenDimensionDeletionSQL(
+                    olderThan: cutoff,
+                    retentionBaseline: true
                 )
-                """
             )
         }
         try execute(
@@ -680,45 +673,66 @@ extension UsageHistoryStore {
               )
             """
         )
-        try execute(
-            """
-            UPDATE token_usage_samples AS candidate
-            SET is_retention_baseline = 1
-            WHERE candidate.received_at < \(cutoff)
-              AND NOT EXISTS (
-                  SELECT 1 FROM token_usage_samples AS recent
-                  WHERE recent.thread_id = candidate.thread_id
-                    AND recent.received_at >= \(cutoff)
-              )
-              AND candidate.rowid = (
-                  SELECT newest.rowid
-                  FROM token_usage_samples AS newest
-                  WHERE newest.thread_id = candidate.thread_id
-                    AND newest.received_at < \(cutoff)
-                  ORDER BY newest.received_at DESC, newest.total_total_tokens DESC, newest.rowid DESC
-                  LIMIT 1
-              )
-            """
-        )
+        try execute(retentionBaselinePromotionSQL(olderThan: cutoff))
         if try tableExists(table: "token_usage_dimensions") {
             try execute(
-                """
-                DELETE FROM token_usage_dimensions
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM token_usage_samples AS samples
-                    WHERE samples.thread_id = token_usage_dimensions.thread_id
-                      AND samples.turn_id = token_usage_dimensions.turn_id
-                      AND samples.total_total_tokens = token_usage_dimensions.total_total_tokens
-                      AND samples.received_at < \(cutoff)
-                      AND samples.is_retention_baseline = 0
+                legacyTokenDimensionDeletionSQL(
+                    olderThan: cutoff,
+                    retentionBaseline: false
                 )
-                """
             )
         }
         try execute(
             "DELETE FROM token_usage_samples WHERE received_at < \(cutoff) AND is_retention_baseline = 0"
         )
+    }
+
+    func retentionBaselinePromotionSQL(olderThan cutoff: Int64) -> String {
+        """
+        WITH ranked_old_samples AS MATERIALIZED (
+            SELECT rowid AS sample_rowid, thread_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY thread_id
+                    ORDER BY received_at DESC, total_total_tokens DESC, rowid DESC
+                ) AS recency_rank
+            FROM token_usage_samples
+            WHERE received_at < \(cutoff)
+        ),
+        newest_inactive_samples AS (
+            SELECT ranked.sample_rowid
+            FROM ranked_old_samples AS ranked
+            WHERE ranked.recency_rank = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM token_usage_samples AS recent
+                  WHERE recent.thread_id = ranked.thread_id
+                    AND recent.received_at >= \(cutoff)
+              )
+        )
+        UPDATE token_usage_samples
+        SET is_retention_baseline = 1
+        WHERE rowid IN (
+            SELECT sample_rowid FROM newest_inactive_samples
+        )
+        """
+    }
+
+    func legacyTokenDimensionDeletionSQL(
+        olderThan cutoff: Int64,
+        retentionBaseline: Bool
+    ) -> String {
+        """
+        DELETE FROM token_usage_dimensions
+        WHERE rowid IN (
+            SELECT legacy.rowid
+            FROM token_usage_samples AS samples
+            CROSS JOIN token_usage_dimensions AS legacy
+            WHERE samples.received_at < \(cutoff)
+              AND samples.is_retention_baseline = \(retentionBaseline ? 1 : 0)
+              AND legacy.thread_id = samples.thread_id
+              AND legacy.turn_id = samples.turn_id
+              AND legacy.total_total_tokens = samples.total_total_tokens
+        )
+        """
     }
 
     private func compactTokenTelemetryHour(periodStart: Int64, rangeEnd: Int64) throws {
@@ -772,45 +786,101 @@ extension UsageHistoryStore {
         periodStart: Int64,
         rangeEnd: Int64
     ) throws {
-        let rawKey = dimensionKey.rawValue
         try execute(
-            """
+            try tokenDimensionTelemetryCompactionSQL(
+                dimensionKey: dimensionKey,
+                periodStart: periodStart,
+                rangeEnd: rangeEnd
+            )
+        )
+    }
+
+    func tokenDimensionTelemetryCompactionSQL(
+        dimensionKey: TokenUsageDimensionKey,
+        periodStart: Int64,
+        rangeEnd: Int64
+    ) throws -> String {
+        let rawKey = dimensionKey.rawValue
+        let preferredDimensionValue: String
+        if dimensionKey == .sourceKind {
+            preferredDimensionValue =
+                "MIN(CASE WHEN candidates.dimension_value != 'codex-log' THEN candidates.dimension_value END)"
+        } else {
+            preferredDimensionValue = "MIN(candidates.dimension_value)"
+        }
+        let legacyCandidates: String
+        if try tableExists(table: "token_usage_dimensions") {
+            legacyCandidates =
+                """
+
+                UNION ALL
+
+                SELECT bucket.sample_rowid, legacy.dimension_value
+                FROM bucket_samples AS bucket
+                CROSS JOIN token_usage_dimensions AS legacy
+                WHERE bucket.dimension_set_id IS NULL
+                  AND legacy.thread_id = bucket.thread_id
+                  AND legacy.turn_id = bucket.turn_id
+                  AND legacy.total_total_tokens = bucket.total_total_tokens
+                  AND legacy.dimension_key = '\(rawKey)'
+                """
+        } else {
+            legacyCandidates = ""
+        }
+
+        return """
+            WITH bucket_samples AS MATERIALIZED (
+                SELECT rowid AS sample_rowid,
+                    thread_id, turn_id, total_total_tokens, dimension_set_id,
+                    observed_input_tokens, observed_cached_input_tokens,
+                    observed_output_tokens, observed_reasoning_output_tokens,
+                    observed_total_tokens
+                FROM token_usage_samples
+                WHERE received_at >= \(periodStart)
+                  AND received_at < \(rangeEnd)
+                  AND is_retention_baseline = 0
+            ),
+            dimension_candidates AS (
+                SELECT bucket.sample_rowid, values_table.dimension_value
+                FROM bucket_samples AS bucket
+                CROSS JOIN token_dimension_set_members AS members
+                CROSS JOIN token_dimension_values AS values_table
+                WHERE bucket.dimension_set_id IS NOT NULL
+                  AND members.set_id = bucket.dimension_set_id
+                  AND values_table.value_id = members.value_id
+                  AND values_table.dimension_key = '\(rawKey)'
+                \(legacyCandidates)
+            ),
+            resolved_samples AS (
+                SELECT bucket.sample_rowid,
+                    bucket.observed_input_tokens, bucket.observed_cached_input_tokens,
+                    bucket.observed_output_tokens, bucket.observed_reasoning_output_tokens,
+                    bucket.observed_total_tokens,
+                    COALESCE(
+                        \(preferredDimensionValue),
+                        MIN(candidates.dimension_value),
+                        ''
+                    ) AS dimension_value
+                FROM bucket_samples AS bucket
+                LEFT JOIN dimension_candidates AS candidates
+                  ON candidates.sample_rowid = bucket.sample_rowid
+                GROUP BY bucket.sample_rowid
+            )
             INSERT INTO token_dimension_hourly_rollups (
                 period_start, dimension_key, dimension_value,
                 observed_input_tokens, observed_cached_input_tokens,
                 observed_output_tokens, observed_reasoning_output_tokens,
                 observed_total_tokens, sample_count
             )
-            SELECT \(periodStart), '\(rawKey)', COALESCE(dimension_values.dimension_value, ''),
-                SUM(MAX(COALESCE(samples.observed_input_tokens, 0), 0)),
-                SUM(MAX(COALESCE(samples.observed_cached_input_tokens, 0), 0)),
-                SUM(MAX(COALESCE(samples.observed_output_tokens, 0), 0)),
-                SUM(MAX(COALESCE(samples.observed_reasoning_output_tokens, 0), 0)),
-                SUM(MAX(COALESCE(samples.observed_total_tokens, 0), 0)),
+            SELECT \(periodStart), '\(rawKey)', dimension_value,
+                SUM(MAX(COALESCE(observed_input_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_cached_input_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_output_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_reasoning_output_tokens, 0), 0)),
+                SUM(MAX(COALESCE(observed_total_tokens, 0), 0)),
                 COUNT(*)
-            FROM token_usage_samples AS samples
-            LEFT JOIN (
-                SELECT thread_id, turn_id, total_total_tokens,
-                    COALESCE(
-                        MIN(CASE
-                            WHEN NOT (
-                                dimension_key = '\(TokenUsageDimensionKey.sourceKind.rawValue)'
-                                AND dimension_value = 'codex-log'
-                            ) THEN dimension_value
-                        END),
-                        MIN(dimension_value)
-                    ) AS dimension_value
-                FROM token_usage_dimension_query_values
-                WHERE dimension_key = '\(rawKey)'
-                GROUP BY thread_id, turn_id, total_total_tokens
-            ) AS dimension_values
-                ON dimension_values.thread_id = samples.thread_id
-                AND dimension_values.turn_id = samples.turn_id
-                AND dimension_values.total_total_tokens = samples.total_total_tokens
-            WHERE samples.received_at >= \(periodStart)
-              AND samples.received_at < \(rangeEnd)
-              AND samples.is_retention_baseline = 0
-            GROUP BY COALESCE(dimension_values.dimension_value, '')
+            FROM resolved_samples
+            GROUP BY dimension_value
             ON CONFLICT(period_start, dimension_key, dimension_value) DO UPDATE SET
                 observed_input_tokens = observed_input_tokens + excluded.observed_input_tokens,
                 observed_cached_input_tokens = observed_cached_input_tokens + excluded.observed_cached_input_tokens,
@@ -819,7 +889,6 @@ extension UsageHistoryStore {
                 observed_total_tokens = observed_total_tokens + excluded.observed_total_tokens,
                 sample_count = sample_count + excluded.sample_count
             """
-        )
     }
 
     private func earliestUncompactedTokenTimestamp(olderThan cutoff: Int64) throws -> Int64? {
@@ -2247,6 +2316,13 @@ extension UsageHistoryStore {
     /// Backfills at most `sampleLimit` retained samples and persists the rowid cursor in the same
     /// transaction. Returns true when another chunk may remain.
     func backfillNextTokenDimensionSetChunk(sampleLimit: Int = 500) throws -> Bool {
+        // A finalized v3 database deliberately has no legacy dimension table. Scheduled
+        // maintenance remains repeatable after that cutover, so do not prepare the transition
+        // query once the source table has been removed.
+        guard try tableExists(table: "token_usage_dimensions") else {
+            return false
+        }
+
         struct BackfillSample {
             let rowID: Int64
             let threadID: String

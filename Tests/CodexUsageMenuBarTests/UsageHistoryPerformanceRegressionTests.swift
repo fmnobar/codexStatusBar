@@ -18,6 +18,76 @@ extension UsageHistoryStoreTests {
         )
     }
 
+    func testRetentionDimensionCompactionLooksUpOnlyBucketSampleKeys() throws {
+        let databaseURL = try makeTemporaryDirectory()
+            .appendingPathComponent("bounded-dimension-compaction.sqlite3")
+        let store = try UsageHistoryStore(
+            databaseURL: databaseURL,
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        try store.ensureLegacyTokenDimensionTransitionTable()
+
+        let plan = try queryPlan(
+            at: databaseURL,
+            sql: try store.tokenDimensionTelemetryCompactionSQL(
+                dimensionKey: .originator,
+                periodStart: 1_000,
+                rangeEnd: 2_000
+            )
+        )
+
+        XCTAssertPlanUsesSearch(
+            plan,
+            tableOrAlias: "token_usage_samples",
+            fullScanTable: "token_usage_samples"
+        )
+        XCTAssertPlanMentions(plan, "idx_token_usage_samples_received_at")
+        XCTAssertPlanUsesSearch(
+            plan,
+            tableOrAlias: "legacy",
+            fullScanTable: "legacy"
+        )
+        XCTAssertPlanMentions(plan, "sqlite_autoindex_token_usage_dimensions_1")
+        XCTAssertPlanDoesNotMention(plan, "token_usage_dimension_query_values")
+
+        let deletionPlan = try queryPlan(
+            at: databaseURL,
+            sql: store.legacyTokenDimensionDeletionSQL(
+                olderThan: 2_000,
+                retentionBaseline: false
+            )
+        )
+        XCTAssertPlanUsesSearch(
+            deletionPlan,
+            tableOrAlias: "samples",
+            fullScanTable: "samples"
+        )
+        XCTAssertPlanMentions(deletionPlan, "idx_token_usage_samples_received_at")
+        XCTAssertPlanUsesSearch(
+            deletionPlan,
+            tableOrAlias: "legacy",
+            fullScanTable: "legacy"
+        )
+
+        let promotionPlan = try queryPlan(
+            at: databaseURL,
+            sql: store.retentionBaselinePromotionSQL(olderThan: 2_000)
+        )
+        XCTAssertPlanUsesSearch(
+            promotionPlan,
+            tableOrAlias: "token_usage_samples",
+            fullScanTable: "token_usage_samples"
+        )
+        XCTAssertPlanMentions(promotionPlan, "idx_token_usage_samples_received_at")
+        XCTAssertPlanUsesSearch(
+            promotionPlan,
+            tableOrAlias: "recent",
+            fullScanTable: "recent"
+        )
+        XCTAssertPlanMentions(promotionPlan, "idx_token_usage_samples_thread_total")
+    }
+
     func testHistoryHotQueriesUseBoundedIndexes() throws {
         let fixture = try makePerformanceFixture()
         let month = UsageHistoryRange.month.period(containing: fixture.now, calendar: calendar)
