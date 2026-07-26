@@ -110,6 +110,20 @@ enum StorageMaintenanceTrigger: String, Sendable {
     case manual
 }
 
+private final class NotificationObserverRegistration: @unchecked Sendable {
+    private let center: NotificationCenter
+    private let token: NSObjectProtocol
+
+    init(center: NotificationCenter, token: NSObjectProtocol) {
+        self.center = center
+        self.token = token
+    }
+
+    deinit {
+        center.removeObserver(token)
+    }
+}
+
 @MainActor
 final class StorageMaintenanceCoordinator: ObservableObject {
     typealias Sleeper = @Sendable (TimeInterval) async throws -> Void
@@ -122,7 +136,7 @@ final class StorageMaintenanceCoordinator: ObservableObject {
     private var periodicTask: Task<Void, Never>?
     private var executionTask: Task<Void, Never>?
     private var pendingTrigger: StorageMaintenanceTrigger?
-    private var maintenanceRequestObserver: NSObjectProtocol?
+    private var maintenanceRequestObserver: NotificationObserverRegistration?
 
     init(
         database: UsageHistoryDatabaseWorking,
@@ -132,7 +146,8 @@ final class StorageMaintenanceCoordinator: ObservableObject {
         self.database = database
         self.now = now
         self.sleeper = sleeper
-        maintenanceRequestObserver = NotificationCenter.default.addObserver(
+        let center = NotificationCenter.default
+        let token = center.addObserver(
             forName: UsageHistoryStore.maintenanceRequestedNotification,
             object: nil,
             queue: nil
@@ -146,14 +161,12 @@ final class StorageMaintenanceCoordinator: ObservableObject {
                 self?.enqueue(trigger)
             }
         }
+        maintenanceRequestObserver = NotificationObserverRegistration(center: center, token: token)
     }
 
     deinit {
         periodicTask?.cancel()
         executionTask?.cancel()
-        if let maintenanceRequestObserver {
-            NotificationCenter.default.removeObserver(maintenanceRequestObserver)
-        }
     }
 
     func start() {

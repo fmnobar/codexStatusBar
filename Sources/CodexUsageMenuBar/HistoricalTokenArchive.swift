@@ -52,8 +52,10 @@ extension UsageHistoryStore {
             ".\(destinationURL.lastPathComponent).\(UUID().uuidString.lowercased()).partial"
         )
         defer {
-            if fileManager.fileExists(atPath: temporaryURL.path) {
-                try? fileManager.removeItem(at: temporaryURL)
+            for url in databaseFileURLs(for: temporaryURL)
+                where fileManager.fileExists(atPath: url.path)
+            {
+                try? fileManager.removeItem(at: url)
             }
         }
 
@@ -66,6 +68,7 @@ extension UsageHistoryStore {
             _ = try store.finalizeTokenDimensionSetMigrationIfReady()
             try store.prepareHistoricalTokenArchive()
             try store.checkpointWriteAheadLog()
+            try store.execute("PRAGMA journal_mode=DELETE")
         }
 
         try Task.checkCancellation()

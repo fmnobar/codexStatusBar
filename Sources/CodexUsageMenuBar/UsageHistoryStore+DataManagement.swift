@@ -238,7 +238,9 @@ extension UsageHistoryStore {
             oldestHourlyBucket: try oldestTimestampDate(
                 """
                 SELECT MIN(value) FROM (
-                    SELECT MIN(period_start) AS value FROM usage_rollups WHERE granularity = 'hourly'
+                    SELECT MIN(period_start) AS value
+                    FROM usage_rollups
+                    WHERE granularity = '\(UsageHistoryGranularity.hour.rawValue)'
                     UNION ALL SELECT MIN(period_start) FROM token_usage_hourly_rollups
                     UNION ALL SELECT MIN(period_start) FROM token_dimension_hourly_rollups
                     UNION ALL SELECT MIN(period_start) FROM telemetry_hourly_rollups
@@ -249,7 +251,9 @@ extension UsageHistoryStore {
             oldestDailyBucket: try oldestTimestampDate(
                 """
                 SELECT MIN(value) FROM (
-                    SELECT MIN(period_start) AS value FROM usage_rollups WHERE granularity = 'daily'
+                    SELECT MIN(period_start) AS value
+                    FROM usage_rollups
+                    WHERE granularity = '\(UsageHistoryGranularity.day.rawValue)'
                     UNION ALL SELECT MIN(period_start) FROM token_usage_daily_rollups
                     UNION ALL SELECT MIN(period_start) FROM token_dimension_daily_rollups
                     UNION ALL SELECT MIN(period_start) FROM telemetry_daily_rollups
@@ -423,6 +427,16 @@ extension UsageHistoryStore {
                 WHERE NOT EXISTS (
                     SELECT 1 FROM token_dimension_set_members
                     WHERE token_dimension_set_members.value_id = token_dimension_values.value_id
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM token_dimension_hourly_rollups
+                    WHERE token_dimension_hourly_rollups.dimension_key = token_dimension_values.dimension_key
+                      AND token_dimension_hourly_rollups.dimension_value = token_dimension_values.dimension_value
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM token_dimension_daily_rollups
+                    WHERE token_dimension_daily_rollups.dimension_key = token_dimension_values.dimension_key
+                      AND token_dimension_daily_rollups.dimension_value = token_dimension_values.dimension_value
                 )
                 """
             )

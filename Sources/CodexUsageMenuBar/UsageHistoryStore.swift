@@ -1283,13 +1283,6 @@ final class UsageHistoryStore: @unchecked Sendable {
             }
             throw UsageHistoryStoreError.databaseOpenFailed(message)
         }
-        var initializationSucceeded = false
-        defer {
-            if !initializationSucceeded {
-                sqlite3_close(openedDatabase)
-            }
-        }
-
         database = openedDatabase
         self.databaseURL = databaseURL
         self.notificationCenter = notificationCenter
@@ -1310,7 +1303,6 @@ final class UsageHistoryStore: @unchecked Sendable {
             try execute("PRAGMA query_only=ON")
             try execute("PRAGMA foreign_keys=ON")
         }
-        initializationSucceeded = true
     }
 
     deinit {

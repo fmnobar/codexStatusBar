@@ -863,6 +863,7 @@ final class DataManagementSettingsViewModel: ObservableObject {
 
     func refreshAdvancedData() async {
         await refreshProjectEntries()
+        await refreshLocalTokenCaptureState()
         turnPerformanceCaptureState = await database.turnPerformanceCaptureState()
         turnPerformanceRuntimeDimensionSummary = await database.turnPerformanceRuntimeDimensionSummary()
         sessionTaskTimingCaptureState = await database.sessionTaskTimingCaptureState()
@@ -1594,7 +1595,7 @@ struct DataManagementSettingsView: View {
         Section("Collection") {
             Toggle("Detailed Analytics", isOn: detailedAnalyticsBinding)
                 .accessibilityLabel("Detailed Analytics")
-                .accessibilityHelp("Collect model, project, session, and performance breakdowns locally")
+                .accessibilityHint("Collect model, project, session, and performance breakdowns locally")
 
             Text(collectionModeDescription)
                 .font(.caption)

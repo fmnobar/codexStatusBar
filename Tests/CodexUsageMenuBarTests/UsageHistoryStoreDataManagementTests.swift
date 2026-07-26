@@ -294,35 +294,35 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'daily' AND period_start = \(expiredDailyStart)"
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'day' AND period_start = \(expiredDailyStart)"
             ),
             ["0"]
         )
         XCTAssertNotEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'daily' AND period_start = \(dailyOnlyStart)"
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'day' AND period_start = \(dailyOnlyStart)"
             ),
             ["0"]
         )
         XCTAssertNotEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'daily' AND period_start = \(recentDayStart)"
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'day' AND period_start = \(recentDayStart)"
             ),
             ["0"]
         )
         XCTAssertEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'hourly' AND period_start < \(recentHourStart)"
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'hour' AND period_start < \(recentHourStart)"
             ),
             ["0"]
         )
         XCTAssertNotEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'hourly' AND period_start = \(recentHourStart)"
+                sql: "SELECT COUNT(*) FROM usage_rollups WHERE granularity = 'hour' AND period_start = \(recentHourStart)"
             ),
             ["0"]
         )
@@ -1283,7 +1283,11 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT dimension_key || '=' || dimension_value FROM token_usage_dimensions ORDER BY dimension_key"
+                sql: """
+                SELECT dimension_key || '=' || dimension_value
+                FROM token_usage_dimension_query_values
+                ORDER BY dimension_key
+                """
             ),
             ["originator=vscode", "usage_mode=fast"]
         )
@@ -2208,7 +2212,7 @@ extension UsageHistoryStoreTests {
         ])
         let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
 
-        await viewModel.refreshData()
+        await viewModel.refreshAdvancedData()
 
         XCTAssertEqual(viewModel.turnPerformanceCaptureState.status, .imported)
         XCTAssertEqual(viewModel.turnPerformanceRuntimeDimensionRowCountText, "2")
@@ -2235,7 +2239,7 @@ extension UsageHistoryStoreTests {
         )
         let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
 
-        await viewModel.refreshData()
+        await viewModel.refreshAdvancedData()
 
         XCTAssertEqual(viewModel.sessionTaskTimingCaptureState.status, .updated)
         XCTAssertEqual(viewModel.sessionTaskTimingCaptureState.filesDiscovered, 5)
@@ -2264,7 +2268,7 @@ extension UsageHistoryStoreTests {
         )
         let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
 
-        await viewModel.refreshData()
+        await viewModel.refreshAdvancedData()
 
         XCTAssertEqual(viewModel.threadCatalogCaptureState.status, .updated)
         XCTAssertEqual(viewModel.threadCatalogCaptureThreadsText, "1 imported, 2 updated")
@@ -2290,7 +2294,7 @@ extension UsageHistoryStoreTests {
         )
         let viewModel = DataManagementSettingsViewModel(store: store, defaults: makeIsolatedDefaults())
 
-        await viewModel.refreshData()
+        await viewModel.refreshAdvancedData()
 
         XCTAssertEqual(viewModel.modelCapabilitiesCaptureState.status, .updated)
         XCTAssertEqual(viewModel.modelCapabilitiesCaptureModelsText, "1 imported, 2 updated")
@@ -2347,7 +2351,7 @@ extension UsageHistoryStoreTests {
             now: { timestamp }
         )
 
-        await viewModel.refreshData()
+        await viewModel.refreshAdvancedData()
 
         XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "token-samples" }?.status, .healthy)
         XCTAssertEqual(viewModel.localSourceCoverageRows.first { $0.id == "runtime-dimensions" }?.status, .healthy)
@@ -3428,11 +3432,18 @@ extension UsageHistoryStoreTests {
             defaults: makeIsolatedDefaults(),
             tokenBackfillImporter: allHistoryImporter
         )
+        let archiveURL = try makeTemporaryDirectory()
+            .appendingPathComponent("token-history-archive.sqlite3")
 
-        allHistoryViewModel.importAllTokenHistoryFromCodexSessions()
-        await waitForImportToFinish(allHistoryViewModel)
+        let archive = await allHistoryViewModel.buildHistoricalArchive(
+            at: archiveURL,
+            replaceExisting: false
+        )
 
+        XCTAssertEqual(archive?.url, archiveURL)
         XCTAssertEqual(allHistoryImporter.receivedRequests.map(\.mode), [.allHistory])
+        XCTAssertEqual(allHistoryViewModel.statusMessage, "Historical archive built.")
+        XCTAssertNil(allHistoryViewModel.errorMessage)
 
         let failingViewModel = DataManagementSettingsViewModel(
             store: store,

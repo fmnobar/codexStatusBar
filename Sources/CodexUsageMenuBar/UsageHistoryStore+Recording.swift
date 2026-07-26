@@ -281,10 +281,18 @@ extension UsageHistoryStore {
             try compactRawSamples(olderThan: rateCutoff)
             try expireInactiveTokenBaselines(olderThan: baselineCutoff.timeIntervalSince1970Int)
             try execute(
-                "DELETE FROM usage_rollups WHERE granularity = 'hourly' AND period_start < \(hourlyCutoff)"
+                """
+                DELETE FROM usage_rollups
+                WHERE granularity = '\(UsageHistoryGranularity.hour.rawValue)'
+                  AND period_start < \(hourlyCutoff)
+                """
             )
             try execute(
-                "DELETE FROM usage_rollups WHERE granularity = 'daily' AND period_start < \(dailyCutoff)"
+                """
+                DELETE FROM usage_rollups
+                WHERE granularity = '\(UsageHistoryGranularity.day.rawValue)'
+                  AND period_start < \(dailyCutoff)
+                """
             )
             try execute("DELETE FROM token_usage_daily_rollups WHERE period_start < \(dailyCutoff)")
             try execute("DELETE FROM token_dimension_daily_rollups WHERE period_start < \(dailyCutoff)")
@@ -310,6 +318,16 @@ extension UsageHistoryStore {
                 WHERE NOT EXISTS (
                     SELECT 1 FROM token_dimension_set_members
                     WHERE token_dimension_set_members.value_id = token_dimension_values.value_id
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM token_dimension_hourly_rollups
+                    WHERE token_dimension_hourly_rollups.dimension_key = token_dimension_values.dimension_key
+                      AND token_dimension_hourly_rollups.dimension_value = token_dimension_values.dimension_value
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM token_dimension_daily_rollups
+                    WHERE token_dimension_daily_rollups.dimension_key = token_dimension_values.dimension_key
+                      AND token_dimension_daily_rollups.dimension_value = token_dimension_values.dimension_value
                 )
                 """
             )

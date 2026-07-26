@@ -99,9 +99,7 @@ extension UsageHistoryStore {
             try store.vacuum(into: candidateURL)
             try failureInjector(.rebuild)
         } catch {
-            if fileManager.fileExists(atPath: candidateURL.path) {
-                try? fileManager.removeItem(at: candidateURL)
-            }
+            try? removeDatabaseFileFamily(at: candidateURL, fileManager: fileManager)
             try? recordOptimizationFailure(error, at: canonicalURL)
             throw error
         }
@@ -120,7 +118,7 @@ extension UsageHistoryStore {
             try candidateStore.checkpointWriteAheadLog()
             try failureInjector(.validation)
         } catch {
-            try? fileManager.removeItem(at: candidateURL)
+            try? removeDatabaseFileFamily(at: candidateURL, fileManager: fileManager)
             try? recordOptimizationFailure(error, at: canonicalURL)
             throw error
         }
@@ -140,6 +138,8 @@ extension UsageHistoryStore {
         }
 
         do {
+            try removeDatabaseSidecars(at: canonicalURL, fileManager: fileManager)
+            try removeDatabaseSidecars(at: candidateURL, fileManager: fileManager)
             _ = try fileManager.replaceItemAt(
                 canonicalURL,
                 withItemAt: candidateURL,
@@ -173,9 +173,7 @@ extension UsageHistoryStore {
                 throw error
             }
 
-            if fileManager.fileExists(atPath: rollbackURL.path) {
-                try fileManager.removeItem(at: rollbackURL)
-            }
+            try removeDatabaseFileFamily(at: rollbackURL, fileManager: fileManager)
             let afterByteSize = Self.totalByteSize(for: canonicalURL, fileManager: fileManager)
             return StorageOptimizationResult(
                 performed: true,
@@ -183,9 +181,7 @@ extension UsageHistoryStore {
                 afterByteSize: afterByteSize
             )
         } catch {
-            if fileManager.fileExists(atPath: candidateURL.path) {
-                try? fileManager.removeItem(at: candidateURL)
-            }
+            try? removeDatabaseFileFamily(at: candidateURL, fileManager: fileManager)
             try? recordOptimizationFailure(error, at: canonicalURL)
             throw error
         }
@@ -234,9 +230,7 @@ extension UsageHistoryStore {
         }
 
         defer {
-            if fileManager.fileExists(atPath: candidateURL.path) {
-                try? fileManager.removeItem(at: candidateURL)
-            }
+            try? removeDatabaseFileFamily(at: candidateURL, fileManager: fileManager)
         }
 
         do {
@@ -309,11 +303,8 @@ extension UsageHistoryStore {
             }
             try failureInjector(.atomicReplacement)
 
-            for sidecarURL in databaseFileURLs(for: canonicalURL).dropFirst()
-                where fileManager.fileExists(atPath: sidecarURL.path)
-            {
-                try fileManager.removeItem(at: sidecarURL)
-            }
+            try removeDatabaseSidecars(at: canonicalURL, fileManager: fileManager)
+            try removeDatabaseSidecars(at: candidateURL, fileManager: fileManager)
             _ = try fileManager.replaceItemAt(
                 canonicalURL,
                 withItemAt: candidateURL,
@@ -342,9 +333,7 @@ extension UsageHistoryStore {
                 throw error
             }
 
-            if fileManager.fileExists(atPath: rollbackURL.path) {
-                try fileManager.removeItem(at: rollbackURL)
-            }
+            try removeDatabaseFileFamily(at: rollbackURL, fileManager: fileManager)
         } catch {
             if fileManager.fileExists(atPath: rollbackURL.path),
                !(try isValidSQLiteDatabase(at: canonicalURL))
@@ -381,12 +370,8 @@ extension UsageHistoryStore {
         }
 
         if try isValidSQLiteDatabase(at: canonicalURL) {
-            if fileManager.fileExists(atPath: candidateURL.path) {
-                try fileManager.removeItem(at: candidateURL)
-            }
-            if fileManager.fileExists(atPath: rollbackURL.path) {
-                try fileManager.removeItem(at: rollbackURL)
-            }
+            try removeDatabaseFileFamily(at: candidateURL, fileManager: fileManager)
+            try removeDatabaseFileFamily(at: rollbackURL, fileManager: fileManager)
             try clearOptimizationJournal(at: canonicalURL)
             return
         }
@@ -517,7 +502,9 @@ extension UsageHistoryStore {
         mode: UsageCollectionMode,
         fileManager: FileManager
     ) throws {
-        let store = try UsageHistoryStore(databaseURL: databaseURL, openMode: .readOnly)
+        // Operational candidates are writable databases. Opening read-write here also creates the
+        // WAL coordination files required by a WAL-mode database after its main file was renamed.
+        let store = try UsageHistoryStore(databaseURL: databaseURL)
         guard try store.metadataValue(for: "archive_format") == nil,
               try store.optimizationScalar("PRAGMA user_version") == Int64(Self.currentSchemaVersion),
               try store.optimizationText("PRAGMA quick_check") == "ok",
@@ -637,6 +624,8 @@ extension UsageHistoryStore {
         guard fileManager.fileExists(atPath: rollbackURL.path) else {
             throw UsageHistoryStoreError.storageMaintenanceRecoveryRequired
         }
+        try removeDatabaseSidecars(at: canonicalURL, fileManager: fileManager)
+        try removeDatabaseSidecars(at: rollbackURL, fileManager: fileManager)
         if fileManager.fileExists(atPath: canonicalURL.path) {
             _ = try fileManager.replaceItemAt(
                 canonicalURL,
@@ -646,6 +635,29 @@ extension UsageHistoryStore {
             )
         } else {
             try fileManager.moveItem(at: rollbackURL, to: canonicalURL)
+        }
+        try removeDatabaseFileFamily(at: rollbackURL, fileManager: fileManager)
+    }
+
+    private static func removeDatabaseSidecars(
+        at databaseURL: URL,
+        fileManager: FileManager
+    ) throws {
+        for sidecarURL in databaseFileURLs(for: databaseURL).dropFirst()
+            where fileManager.fileExists(atPath: sidecarURL.path)
+        {
+            try fileManager.removeItem(at: sidecarURL)
+        }
+    }
+
+    private static func removeDatabaseFileFamily(
+        at databaseURL: URL,
+        fileManager: FileManager
+    ) throws {
+        for url in databaseFileURLs(for: databaseURL)
+            where fileManager.fileExists(atPath: url.path)
+        {
+            try fileManager.removeItem(at: url)
         }
     }
 }

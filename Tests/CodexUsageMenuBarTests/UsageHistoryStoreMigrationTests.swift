@@ -261,7 +261,21 @@ extension UsageHistoryStoreTests {
         try executeSQLite(
             at: databaseURL,
             sql: """
-            DROP VIEW token_usage_query_samples;
+            DROP VIEW IF EXISTS token_usage_query_samples;
+            DROP VIEW IF EXISTS token_usage_dimension_query_values;
+            DROP VIEW IF EXISTS token_dimension_query_rollups;
+            DROP VIEW IF EXISTS telemetry_query_rollups;
+            DROP VIEW IF EXISTS telemetry_error_query_rollups;
+            DROP INDEX IF EXISTS idx_token_usage_samples_dimension_set;
+            DROP TABLE IF EXISTS token_dimension_set_members;
+            DROP TABLE IF EXISTS token_dimension_sets;
+            DROP TABLE IF EXISTS token_dimension_values;
+            DROP TABLE IF EXISTS token_usage_daily_rollups;
+            DROP TABLE IF EXISTS token_dimension_daily_rollups;
+            DROP TABLE IF EXISTS telemetry_daily_rollups;
+            DROP TABLE IF EXISTS telemetry_error_daily_rollups;
+            DROP TABLE IF EXISTS storage_maintenance_journal;
+            DROP TABLE IF EXISTS token_expired_baselines;
             DROP TABLE token_dimension_hourly_rollups;
             DROP TABLE token_usage_hourly_rollups;
             DROP TABLE telemetry_error_hourly_rollups;

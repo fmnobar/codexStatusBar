@@ -71,7 +71,14 @@ extension UsageHistoryStoreTests {
         while true {
             switch sqlite3_step(statement) {
             case SQLITE_ROW:
-                rows.append(String(cString: sqlite3_column_text(statement, 0)))
+                guard sqlite3_column_type(statement, 0) != SQLITE_NULL,
+                      let text = sqlite3_column_text(statement, 0)
+                else {
+                    XCTFail("Expected the first SQLite result column to be non-NULL")
+                    rows.append("<null>")
+                    continue
+                }
+                rows.append(String(cString: text))
             case SQLITE_DONE:
                 return rows
             default:

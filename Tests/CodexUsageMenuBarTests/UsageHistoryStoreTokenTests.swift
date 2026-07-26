@@ -26,7 +26,9 @@ extension UsageHistoryStoreTests {
                             notification: tokenNotification(
                                 threadID: "v3-thread",
                                 turnID: "turn-\(index)",
+                                lastInput: Int64(index * 100),
                                 lastTotal: Int64(index * 100),
+                                totalInput: Int64(index * 100),
                                 totalTotal: Int64(index * 100)
                             ),
                             receivedAt: timestamp.addingTimeInterval(TimeInterval(index)),
@@ -69,6 +71,13 @@ extension UsageHistoryStoreTests {
             try sqliteStrings(at: databaseURL, sql: "SELECT COUNT(*) FROM token_dimension_set_members"),
             ["4"]
         )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: "SELECT COUNT(*) FROM token_usage_samples WHERE dimension_set_id IS NOT NULL"
+            ),
+            ["3"]
+        )
         XCTAssertTrue(try store.finalizeTokenDimensionSetMigrationIfReady())
         XCTAssertEqual(
             try sqliteStrings(
@@ -91,6 +100,18 @@ extension UsageHistoryStoreTests {
             try store.execute(
                 "UPDATE token_usage_samples SET dimension_set_id = 999999 WHERE turn_id = 'turn-1'"
             )
+        )
+        XCTAssertEqual(
+            try sqliteStrings(
+                at: databaseURL,
+                sql: """
+                SELECT dimension_value
+                FROM token_usage_dimension_query_values
+                WHERE dimension_key = 'cli_version'
+                ORDER BY dimension_value
+                """
+            ),
+            ["1.0", "1.0", "2.0"]
         )
         XCTAssertEqual(
             try store.tokenDashboardSeries(
@@ -428,19 +449,25 @@ extension UsageHistoryStoreTests {
         retention = 24 * 60 * 60
         try store.enforceTelemetryRetention(referenceDate: referenceDate, force: true)
 
+        let afterPoints = try store.tokenDashboardPoints(
+            breakdownDimension: .originator,
+            range: .day,
+            periodStart: localDay.start,
+            periodEnd: localDay.end
+        )
+        let totalsBySeriesAndComponent: ([TokenDashboardComponentPoint]) -> [String: Int64] = { points in
+            Dictionary(grouping: points) { point in
+                "\(point.seriesID)|\(point.component.rawValue)"
+            }.mapValues { group in
+                group.reduce(Int64(0)) { $0 + $1.tokenCount }
+            }
+        }
         XCTAssertEqual(
             try store.tokenCategoryTotals(periodStart: localDay.start, periodEnd: localDay.end),
             beforeTotals
         )
-        XCTAssertEqual(
-            try store.tokenDashboardPoints(
-                breakdownDimension: .originator,
-                range: .day,
-                periodStart: localDay.start,
-                periodEnd: localDay.end
-            ),
-            beforePoints
-        )
+        XCTAssertEqual(totalsBySeriesAndComponent(afterPoints), totalsBySeriesAndComponent(beforePoints))
+        XCTAssertEqual(Set(afterPoints.map(\.bucketStart)), [localDay.start])
         XCTAssertTrue(
             try store.tokenDashboardSeries(
                 breakdownDimension: .originator,
@@ -448,18 +475,18 @@ extension UsageHistoryStoreTests {
                 periodEnd: localDay.end
             ).map(\.id).contains("dimension:originator:vscode")
         )
-        XCTAssertEqual(try store.localSourceStoredMetrics().tokenSamples.rowCount, 2)
+        XCTAssertEqual(try store.localSourceStoredMetrics().tokenSamples.rowCount, 0)
         XCTAssertEqual(
             try sqliteStrings(
                 at: databaseURL,
                 sql: "SELECT COUNT(*) FROM token_usage_samples WHERE is_retention_baseline = 1"
             ),
-            ["1"]
+            ["0"]
         )
         XCTAssertEqual(
             try sqliteStrings(
                 at: databaseURL,
-                sql: "SELECT SUM(sample_count) FROM token_usage_hourly_rollups"
+                sql: "SELECT SUM(sample_count) FROM token_usage_daily_rollups"
             ),
             ["2"]
         )
@@ -2044,7 +2071,7 @@ extension UsageHistoryStoreTests {
             VALUES ('high', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
             INSERT INTO token_project_catalog (project_path, project_name, first_seen_at, last_seen_at)
             VALUES ('/Users/example/Projects/codex_codex', 'codex_codex', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
-            INSERT INTO token_dimension_catalog (dimension_key, dimension_value, first_seen_at, last_seen_at)
+            INSERT INTO token_dimension_values (dimension_key, dimension_value, first_seen_at, last_seen_at)
             VALUES ('approval_policy', 'never', \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)), \(Int64(date("2026-05-03T09:00:00Z").timeIntervalSince1970)));
             """
         )
@@ -5566,7 +5593,8 @@ extension UsageHistoryStoreTests {
         }
         for _ in 0..<10 { await Task.yield() }
 
-        XCTAssertEqual(await database.eventsSnapshot().filter { $0 == .maintenance }, [.maintenance])
+        let maintenanceEvents = await database.eventsSnapshot().filter { $0 == .maintenance }
+        XCTAssertEqual(maintenanceEvents, [.maintenance])
         XCTAssertEqual(coordinator.state.lastAttemptAt, now)
         XCTAssertEqual(coordinator.state.lastSuccessAt, now)
         XCTAssertEqual(coordinator.state.stage, .idle)

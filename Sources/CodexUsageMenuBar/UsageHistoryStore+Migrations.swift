@@ -1923,6 +1923,12 @@ extension UsageHistoryStore {
 
     @discardableResult
     func cleanupTokenDimensions() throws -> Bool {
+        struct SampleKey: Hashable {
+            let threadID: String
+            let turnID: String
+            let totalTotalTokens: Int64
+        }
+
         struct DimensionRow {
             let rowID: Int64
             let threadID: String
@@ -1971,12 +1977,19 @@ extension UsageHistoryStore {
         }
 
         var didChange = false
+        var affectedSamples: [SampleKey: Int64] = [:]
         try transaction {
             for row in rows {
                 guard let key = TokenUsageDimensionKey(rawValue: row.key),
                       let normalizedDimension = TokenUsageDimension(key, row.value)
                 else {
                     try deleteTokenUsageDimension(rowID: row.rowID)
+                    let sampleKey = SampleKey(
+                        threadID: row.threadID,
+                        turnID: row.turnID,
+                        totalTotalTokens: row.totalTotalTokens
+                    )
+                    affectedSamples[sampleKey] = max(affectedSamples[sampleKey] ?? row.seenAt, row.seenAt)
                     didChange = true
                     continue
                 }
@@ -1993,7 +2006,102 @@ extension UsageHistoryStore {
                     seenAt: row.seenAt
                 )
                 try deleteTokenUsageDimension(rowID: row.rowID)
+                let sampleKey = SampleKey(
+                    threadID: row.threadID,
+                    turnID: row.turnID,
+                    totalTotalTokens: row.totalTotalTokens
+                )
+                affectedSamples[sampleKey] = max(affectedSamples[sampleKey] ?? row.seenAt, row.seenAt)
                 didChange = true
+            }
+
+            let hasNormalizedDimensionStorage =
+                try tableExists(table: "token_dimension_values")
+                && tableExists(table: "token_dimension_sets")
+                && tableExists(table: "token_dimension_set_members")
+                && tableHasColumn(table: "token_usage_samples", column: "dimension_set_id")
+            if hasNormalizedDimensionStorage {
+                for (sample, seenAt) in affectedSamples {
+                    let statement = try prepare(
+                        """
+                        SELECT dimension_key, dimension_value
+                        FROM token_usage_dimensions
+                        WHERE thread_id = ? AND turn_id = ? AND total_total_tokens = ?
+                        ORDER BY dimension_key, dimension_value
+                        """
+                    )
+                    bindText(sample.threadID, to: 1, in: statement)
+                    bindText(sample.turnID, to: 2, in: statement)
+                    sqlite3_bind_int64(statement, 3, sample.totalTotalTokens)
+
+                    var dimensions: [TokenUsageDimension] = []
+                    while sqlite3_step(statement) == SQLITE_ROW {
+                        guard
+                            let key = TokenUsageDimensionKey(rawValue: columnText(statement, index: 0)),
+                            let dimension = TokenUsageDimension(key, columnText(statement, index: 1))
+                        else {
+                            continue
+                        }
+                        dimensions.append(dimension)
+                    }
+                    sqlite3_finalize(statement)
+
+                    if dimensions.isEmpty {
+                        let clearStatement = try prepare(
+                            """
+                            UPDATE token_usage_samples
+                            SET dimension_set_id = NULL
+                            WHERE thread_id = ? AND turn_id = ? AND total_total_tokens = ?
+                            """
+                        )
+                        bindText(sample.threadID, to: 1, in: clearStatement)
+                        bindText(sample.turnID, to: 2, in: clearStatement)
+                        sqlite3_bind_int64(clearStatement, 3, sample.totalTotalTokens)
+                        try step(clearStatement)
+                        sqlite3_finalize(clearStatement)
+                    } else {
+                        try assignTokenDimensionSet(
+                            dimensions: dimensions,
+                            threadID: sample.threadID,
+                            turnID: sample.turnID,
+                            totalTotalTokens: sample.totalTotalTokens,
+                            seenAt: seenAt
+                        )
+                    }
+                }
+
+                try execute(
+                    """
+                    DELETE FROM token_dimension_sets
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM token_usage_samples
+                        WHERE token_usage_samples.dimension_set_id = token_dimension_sets.set_id
+                    )
+                    """
+                )
+                try execute(
+                    """
+                    DELETE FROM token_dimension_values
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM token_dimension_set_members
+                        WHERE token_dimension_set_members.value_id = token_dimension_values.value_id
+                    )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM token_dimension_hourly_rollups
+                        WHERE token_dimension_hourly_rollups.dimension_key = token_dimension_values.dimension_key
+                          AND token_dimension_hourly_rollups.dimension_value = token_dimension_values.dimension_value
+                    )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM token_dimension_daily_rollups
+                        WHERE token_dimension_daily_rollups.dimension_key = token_dimension_values.dimension_key
+                          AND token_dimension_daily_rollups.dimension_value = token_dimension_values.dimension_value
+                    )
+                    """
+                )
             }
         }
 
