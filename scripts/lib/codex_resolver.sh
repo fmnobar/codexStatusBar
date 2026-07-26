@@ -122,6 +122,7 @@ codex_run_bounded_probe() {
     exec "$candidate" "$@"
   ) >"$output_file" 2>&1 &
   pid=$!
+  CODEX_PROBE_LAST_PID="$pid"
 
   for ((attempt = 0; attempt < wait_attempts; attempt += 1)); do
     if ! kill -0 "$pid" >/dev/null 2>&1; then

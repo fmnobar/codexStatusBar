@@ -156,15 +156,12 @@ ln -s "$TEMP_PARENT/symlink-source.app" "$FAKE_APPLICATIONS/Codex05.app"
 make_codex_fixture "$FAKE_PATH_BIN/codex" "codex-cli 9.9.9" "--stdio"
 
 STUBBORN_CODEX="$TEMP_PARENT/stubborn-codex"
-STUBBORN_PID_FILE="$TEMP_PARENT/stubborn-codex.pid"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'trap "" TERM' \
-  'printf "%s\n" "$$" > "$CODEX_STUBBORN_PID_FILE"' \
   'while :; do :; done' \
   > "$STUBBORN_CODEX"
 chmod +x "$STUBBORN_CODEX"
-export CODEX_STUBBORN_PID_FILE="$STUBBORN_PID_FILE"
 export CODEX_PROBE_WAIT_ATTEMPTS=20
 export CODEX_PROBE_WAIT_INTERVAL=0.01
 export CODEX_PROBE_TERMINATION_GRACE_ATTEMPTS=1
@@ -172,12 +169,12 @@ export CODEX_PROBE_TERMINATION_INTERVAL=0.01
 SECONDS=0
 expect_failure codex_validate_candidate "$STUBBORN_CODEX"
 [[ "$SECONDS" -lt 3 ]] || fail "Stubborn Codex probe exceeded its bounded termination window."
-STUBBORN_PID="$(cat "$STUBBORN_PID_FILE")"
+STUBBORN_PID="${CODEX_PROBE_LAST_PID:-}"
+[[ "$STUBBORN_PID" =~ ^[0-9]+$ ]] || fail "Stubborn Codex probe did not expose its child PID."
 if kill -0 "$STUBBORN_PID" >/dev/null 2>&1; then
   fail "Stubborn Codex probe process survived timeout escalation: $STUBBORN_PID"
 fi
 unset \
-  CODEX_STUBBORN_PID_FILE \
   CODEX_PROBE_WAIT_ATTEMPTS \
   CODEX_PROBE_WAIT_INTERVAL \
   CODEX_PROBE_TERMINATION_GRACE_ATTEMPTS \
