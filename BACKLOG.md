@@ -1,10 +1,10 @@
 # Backlog
 
-Last reconciled: July 17, 2026 after accepting the lightweight-storage reset as intake-only work.
+Last reconciled: July 26, 2026 after completing every source, migration, storage, installation, and runtime gate that does not require unlocking the current macOS login session.
 
 ## Current status
 
-- `LIGHTWEIGHT-STORAGE-20260717` is planning-complete and implementation-paused. Its eight pending items are ordered for one uninterrupted implementation drain when the owner explicitly says to start.
+- `LIGHTWEIGHT-STORAGE-20260717` has completed `STORAGE-20260717-01` through `-06`. `-07` and `-08` are parked only on the native click-through and same-process UI-toggle evidence that requires an unlocked macOS login session; their implementation, automated verification, production-copy rehearsal, live migration, installation, and independent runtime/storage gates are complete.
 - No product, UX, migration, privacy, retention, or distribution decision remains for this initiative. The defaults and failure behavior below are authoritative; later implementation must not stop for owner input unless the source proves an external constraint that cannot be handled by the recorded fallback.
 - The July 10 audit program and July 12 intake work remain complete. Do not reopen those items while implementing this initiative.
 - No blocked distribution decision remains. The repository is licensed under MIT.
@@ -66,9 +66,9 @@ Primary source gates for the later drain:
 - Update README/privacy/data-management copy in the same drain. Do not leave the shipped UI claiming that raw retention is configurable or that rollups live indefinitely.
 - Completion requires the canonical verifier, a copied-production-database migration rehearsal, installation through `./install.sh`, installed-bundle relaunch, native UI inspection, runtime/storage soak evidence, commit, and push. Release publication remains disabled.
 
-### [ ] `STORAGE-20260717-01` — Lightweight collection policy and runtime composition
+### [x] `STORAGE-20260717-01` — Lightweight collection policy and runtime composition
 
-**Status:** `parked` — implementation is present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+**Status:** `completed` — implementation is present in `a24b5b5` with verification/recovery fixes through `d69a6f7`; focused tests and the canonical verifier passed on July 26, 2026.
 
 **Outcome:** ordinary app launch performs only the work needed for a dependable status bar; detailed analytics becomes explicit opt-in functionality.
 
@@ -93,9 +93,9 @@ Primary source gates for the later drain:
 
 **Depends on:** none. Blocks all later items.
 
-### [ ] `STORAGE-20260717-02` — Bounded automatic lifecycle and tiered rollups
+### [x] `STORAGE-20260717-02` — Bounded automatic lifecycle and tiered rollups
 
-**Status:** `parked` — implementation is present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+**Status:** `completed` — implementation is present in `a24b5b5` with production-history bounding fixes through `d69a6f7`; focused tests, a repeated production-copy maintenance pass, and the canonical verifier passed on July 26, 2026.
 
 **Outcome:** retention is guaranteed during ordinary use and can safely catch up from a multi-gigabyte database without freezing launch or holding one enormous transaction.
 
@@ -119,9 +119,9 @@ Primary source gates for the later drain:
 
 **Depends on:** `STORAGE-20260717-01`.
 
-### [ ] `STORAGE-20260717-03` — Schema-v3 dimension-set normalization and index diet
+### [x] `STORAGE-20260717-03` — Schema-v3 dimension-set normalization and index diet
 
-**Status:** `parked` — implementation and the production-shaped measurement gate are present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+**Status:** `completed` — implementation and the production-shaped measurement gate are present in `a24b5b5` with migration retry fixes through `d69a6f7`; the production-copy rehearsal preserved retained aggregates, passed integrity/parity/query gates, and exceeded the required reduction thresholds on July 26, 2026.
 
 **Outcome:** repeated strings are stored once while sample-specific attribution remains exact.
 
@@ -153,9 +153,9 @@ Primary source gates for the later drain:
 
 **Depends on:** `STORAGE-20260717-02`.
 
-### [ ] `STORAGE-20260717-04` — Enforced operational storage budgets
+### [x] `STORAGE-20260717-04` — Enforced operational storage budgets
 
-**Status:** `parked` — implementation is present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+**Status:** `completed` — implementation is present in `a24b5b5` with deterministic pressure safeguards through `d69a6f7`; focused budget tests, the production-shaped fixture, live Lightweight budget enforcement, and the canonical verifier passed on July 26, 2026.
 
 **Outcome:** the operational database cannot silently grow without bound.
 
@@ -179,9 +179,9 @@ Primary source gates for the later drain:
 
 **Depends on:** `STORAGE-20260717-03`.
 
-### [ ] `STORAGE-20260717-05` — Failure-safe migration and physical reclamation
+### [x] `STORAGE-20260717-05` — Failure-safe migration and physical reclamation
 
-**Status:** `parked` — implementation and phase-injection coverage are present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+**Status:** `completed` — implementation and phase-injection coverage are present in `a24b5b5` with recovery fixes through `d69a6f7`; failpoint tests, copied-production recovery, live migration, canonical-file reopen, and integrity checks passed on July 26, 2026.
 
 **Outcome:** logical cleanup returns real disk space without risking the user's only valid history database.
 
@@ -205,9 +205,9 @@ Primary source gates for the later drain:
 
 **Depends on:** `STORAGE-20260717-04`.
 
-### [ ] `STORAGE-20260717-06` — Bounded imports and separate historical archives
+### [x] `STORAGE-20260717-06` — Bounded imports and separate historical archives
 
-**Status:** `parked` — implementation and archive/restore coverage are present in `a24b5b5`; final Xcode acceptance is blocked by verifier execution availability.
+**Status:** `completed` — implementation and archive/restore coverage are present in `a24b5b5`; cancellation, validation, replacement, isolation, compatibility, and canonical verification gates passed on July 26, 2026.
 
 **Outcome:** manual imports cannot inflate the status-bar database indefinitely.
 
@@ -234,7 +234,9 @@ Primary source gates for the later drain:
 
 ### [ ] `STORAGE-20260717-07` — Simple storage UI, accessibility, and documentation
 
-**Status:** `parked` — implementation, documentation, accessibility text, and the deterministic Debug renderer are present in `a24b5b5`; final native inspection is blocked by verifier execution availability.
+**Status:** `parked` — implementation, documentation, accessibility text, deterministic Debug fixtures, and canonical verification pass; only the unlocked-session native inspection remains.
+
+**Current blocker (July 26, 2026):** source/tests/docs and deterministic fixture coverage pass, but the current macOS session is at the password-protected login screen. Computer Use, the installed app's exact accessibility element, Launch Services de-duplication, and the app's real Settings responder were each exercised safely; macOS will not expose the Settings/History/dashboard windows until the owner unlocks the session. No password was requested or handled. Only the frozen light/dark, size, keyboard, and accessibility click-through remains. This blocks no source work and only the corresponding native-inspection gate in `STORAGE-20260717-08`. Resume by unlocking macOS, then inspect the already-installed `d69a6f7` fixtures and production surfaces; no product or engineering decision is required.
 
 **Outcome:** storage behavior is understandable without turning Settings or the popover into a database console.
 
@@ -266,7 +268,9 @@ Primary source gates for the later drain:
 
 ### [ ] `STORAGE-20260717-08` — Full verification, production-copy rehearsal, installation, and soak
 
-**Status:** `parked` — the canonical verifier cannot start because the execution approval service reports exhausted quota until July 24, 2026 at 8:24 PM. The live database and installed app were intentionally left unchanged.
+**Status:** `parked` — every automated, migration, storage, install, provenance, launch-latency, process-cleanup, and resource-soak gate has passed. The remaining native surface inspection and same-process UI-toggle proof inherit the unlocked-login requirement recorded in `STORAGE-20260717-07`.
+
+**Current blocker (July 26, 2026):** the installed app cannot expose interactive windows while macOS is at the password-protected login screen. A real persisted-mode relaunch proved Detailed Analytics starts every advanced collector and the final Lightweight relaunch proved all advanced capture timestamps stop while core capture continues, but the acceptance wording additionally requires the toggle transition in the same process. Resume after the owner unlocks macOS: run the native fixture matrix, toggle Detailed Analytics on and back off in the live Settings window, verify the already-covered collector transition without relaunch, then check `-07` and `-08`. No code change or product decision is currently indicated.
 
 **Outcome:** the initiative ships only after proving correctness, substantial storage reduction, lightweight runtime behavior, and safe migration on production-shaped data.
 
@@ -324,6 +328,15 @@ Items `AUDIT-20260710-01` through `AUDIT-20260710-15` were reviewed against the 
 15. README, release, security, contribution, privacy, retention, uninstall, and interaction documentation aligned to the accepted code.
 
 ## Verification recorded during the drain
+
+### Lightweight storage implementation and live migration — July 26, 2026
+
+- Implementation/recovery commits `f950d9f`, `94771c9`, and `d69a6f7` are pushed on top of `a24b5b5`. Focused migration, lifecycle, collection-policy, budget, archive, UI-state, recovery, and query-plan suites passed. `./scripts/verify.sh` then passed the complete test suite, analyzer, warning and coverage gates, universal Release build, and source-bundle finalization/validation.
+- A SQLite-backup-API copy of the live schema-v2 store was migrated, retained, normalized, optimized, reopened, and maintained twice in isolation. It preserved 1,006,908 represented token samples and exact retained token-component totals, passed `quick_check` and `foreign_key_check`, finalized schema v3 without legacy dimension storage, reduced dimension objects from 3,834,564,608 bytes to 69,632 bytes (99.998% reduction), and reduced total optimized storage by 98.392%.
+- Only after rehearsal passed, a fresh SQLite-backup-API safety copy was created and validated. `./install.sh` installed clean source commit `d69a6f7`; the installed app migrated the live store to schema v3 and reclaimed 4,766,814,208 bytes. The operational DB/WAL/SHM family is approximately 98 MiB, below the 100 MiB Lightweight target, with `quick_check=ok`, zero foreign-key violations, and idle maintenance.
+- Installed provenance validates as a clean `main` source checkout at `d69a6f7`. The newest Lightweight relaunch produced a valid menu title in 1.381 seconds. Detailed-mode relaunch started turn-performance, session-timing, thread-catalog, and model-capability collectors; the final Lightweight relaunch advanced core token capture while all four advanced capture timestamps remained unchanged.
+- The 10-minute installed Lightweight soak sampled 61 times: combined CPU median/p95 were 0.0%/0.0%, owned-process physical-footprint p95 was 25 MiB, logical database growth was 8 KiB, and total post-checkpoint DB/WAL/SHM growth was 683,920 bytes. No advanced writes occurred and the live token check advanced on the five-minute cadence.
+- One installed app and one direct child app-server are running; earlier relaunch children retired. The only remaining evidence is the native light/dark/size/keyboard/accessibility fixture matrix and same-process Settings toggle, parked above because macOS is at its password-protected login screen.
 
 ### Lightweight storage drain — July 19, 2026
 
