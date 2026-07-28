@@ -50,7 +50,7 @@ final class TokenDashboardWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "Codex Token Dashboard"
-        window.minSize = NSSize(width: 1120, height: 560)
+        window.minSize = TokenDashboardLayout.minimumSize
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.setFrameAutosaveName("CodexTokenDashboardWindow")

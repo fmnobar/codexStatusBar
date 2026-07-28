@@ -1647,6 +1647,18 @@ private struct TokenDashboardSortableHeader: View {
     }
 }
 
+enum TokenDashboardLayout {
+    static let outerPadding: CGFloat = 18
+    static let bodySpacing: CGFloat = 16
+    static let minimumChartWidth: CGFloat = 400
+    static let breakdownWidth: CGFloat = 668
+    static let minimumSize = CGSize(width: 1120, height: 560)
+
+    static var minimumRequiredWidth: CGFloat {
+        (outerPadding * 2) + minimumChartWidth + bodySpacing + breakdownWidth
+    }
+}
+
 struct TokenDashboardView: View {
     @StateObject private var viewModel: TokenDashboardViewModel
     @ObservedObject private var collectionModeController: UsageCollectionModeController
@@ -1696,17 +1708,17 @@ struct TokenDashboardView: View {
 
             summaryTiles
 
-            HStack(alignment: .top, spacing: 16) {
+            HStack(alignment: .top, spacing: TokenDashboardLayout.bodySpacing) {
                 chartPanel
-                    .frame(minWidth: 520, maxWidth: .infinity)
+                    .frame(minWidth: TokenDashboardLayout.minimumChartWidth, maxWidth: .infinity)
                     .layoutPriority(1)
 
                 modelBreakdown
-                    .frame(width: 680)
+                    .frame(width: TokenDashboardLayout.breakdownWidth)
                     .layoutPriority(2)
             }
         }
-        .padding(18)
+        .padding(TokenDashboardLayout.outerPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: UsageHistoryStore.didChangeNotification)) { _ in
             if selectedSourceID == Self.operationalSourceID {
@@ -1951,17 +1963,20 @@ struct TokenDashboardView: View {
     }
 
     private var modelBreakdown: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if viewModel.shouldShowPrimaryLoadingState {
-                dashboardLoadingView(viewModel.loadingState)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                breakdownTable
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                if viewModel.shouldShowPrimaryLoadingState {
+                    dashboardLoadingView(viewModel.loadingState)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    breakdownTable
 
-                Divider()
+                    Divider()
 
-                attributionCoverage
+                    attributionCoverage
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .padding(14)
         .frame(maxHeight: .infinity, alignment: .topLeading)

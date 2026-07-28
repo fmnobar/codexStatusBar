@@ -332,6 +332,36 @@ extension UsageHistoryStoreTests {
         XCTAssertEqual(frame, visibleFrame)
     }
 
+    @MainActor
+    func testTokenDashboardFitsItsDeclaredMinimumContentSize() throws {
+        XCTAssertEqual(
+            TokenDashboardLayout.minimumRequiredWidth,
+            TokenDashboardLayout.minimumSize.width
+        )
+
+        let store = try UsageHistoryStore.inMemory(
+            notificationCenter: NotificationCenter(),
+            calendar: calendar
+        )
+        let database = UsageHistoryDatabaseWorker(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: TokenDashboardLayout.minimumSize
+            ),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = NSHostingController(
+            rootView: TokenDashboardView(database: database)
+        )
+        window.setContentSize(TokenDashboardLayout.minimumSize)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(window.contentLayoutRect.size, TokenDashboardLayout.minimumSize)
+    }
+
     func testPerformanceDashboardWindowFrameClampsLikeHistoryWindow() async {
         let visibleFrame = CGRect(x: 100, y: 50, width: 900, height: 620)
         let restoredFrame = CGRect(x: 20, y: -40, width: 1040, height: 700)
