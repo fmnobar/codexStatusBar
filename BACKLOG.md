@@ -1,10 +1,11 @@
 # Backlog
 
-Last reconciled: July 26, 2026 after completing every source, migration, storage, installation, and runtime gate that does not require unlocking the current macOS login session.
+Last reconciled: July 27, 2026 after completing and verifying the full lightweight-storage initiative.
 
 ## Current status
 
-- `LIGHTWEIGHT-STORAGE-20260717` has completed `STORAGE-20260717-01` through `-06`. `-07` and `-08` are parked only on the native click-through and same-process UI-toggle evidence that requires an unlocked macOS login session; their implementation, automated verification, production-copy rehearsal, live migration, installation, and independent runtime/storage gates are complete.
+- `LIGHTWEIGHT-STORAGE-20260717` is complete. `STORAGE-20260717-01` through `-08` are implemented, verified, installed, and closed; no item is parked.
+- The only entries below that are not checked are conditional watchlist gates, not active implementation work. They must remain dormant until their recorded evidence gates become true.
 - No product, UX, migration, privacy, retention, or distribution decision remains for this initiative. The defaults and failure behavior below are authoritative; later implementation must not stop for owner input unless the source proves an external constraint that cannot be handled by the recorded fallback.
 - The July 10 audit program and July 12 intake work remain complete. Do not reopen those items while implementing this initiative.
 - No blocked distribution decision remains. The repository is licensed under MIT.
@@ -232,11 +233,9 @@ Primary source gates for the later drain:
 
 **Depends on:** `STORAGE-20260717-05`.
 
-### [ ] `STORAGE-20260717-07` — Simple storage UI, accessibility, and documentation
+### [x] `STORAGE-20260717-07` — Simple storage UI, accessibility, and documentation
 
-**Status:** `parked` — implementation, documentation, accessibility text, deterministic Debug fixtures, and canonical verification pass; only the unlocked-session native inspection remains.
-
-**Current blocker (July 26, 2026):** source/tests/docs and deterministic fixture coverage pass, but the current macOS session is at the password-protected login screen. Computer Use, the installed app's exact accessibility element, Launch Services de-duplication, and the app's real Settings responder were each exercised safely; macOS will not expose the Settings/History/dashboard windows until the owner unlocks the session. No password was requested or handled. Only the frozen light/dark, size, keyboard, and accessibility click-through remains. This blocks no source work and only the corresponding native-inspection gate in `STORAGE-20260717-08`. Resume by unlocking macOS, then inspect the already-installed `d69a6f7` fixtures and production surfaces; no product or engineering decision is required.
+**Status:** `completed` — implementation, documentation, accessibility text, deterministic Debug fixtures, canonical verification, and unlocked-session native inspection passed on July 27, 2026. The inspection found a real Token Dashboard minimum-size defect; `46af0db` fixes it and adds a native layout regression test.
 
 **Outcome:** storage behavior is understandable without turning Settings or the popover into a database console.
 
@@ -266,11 +265,9 @@ Primary source gates for the later drain:
 
 **Depends on:** `STORAGE-20260717-06`.
 
-### [ ] `STORAGE-20260717-08` — Full verification, production-copy rehearsal, installation, and soak
+### [x] `STORAGE-20260717-08` — Full verification, production-copy rehearsal, installation, and soak
 
-**Status:** `parked` — every automated, migration, storage, install, provenance, launch-latency, process-cleanup, and resource-soak gate has passed. The remaining native surface inspection and same-process UI-toggle proof inherit the unlocked-login requirement recorded in `STORAGE-20260717-07`.
-
-**Current blocker (July 26, 2026):** the installed app cannot expose interactive windows while macOS is at the password-protected login screen. A real persisted-mode relaunch proved Detailed Analytics starts every advanced collector and the final Lightweight relaunch proved all advanced capture timestamps stop while core capture continues, but the acceptance wording additionally requires the toggle transition in the same process. Resume after the owner unlocks macOS: run the native fixture matrix, toggle Detailed Analytics on and back off in the live Settings window, verify the already-covered collector transition without relaunch, then check `-07` and `-08`. No code change or product decision is currently indicated.
+**Status:** `completed` — all automated, migration, storage, install, provenance, launch-latency, process-cleanup, resource-soak, native-surface, and same-process mode-transition gates passed by July 27, 2026.
 
 **Outcome:** the initiative ships only after proving correctness, substantial storage reduction, lightweight runtime behavior, and safe migration on production-shaped data.
 
@@ -329,6 +326,14 @@ Items `AUDIT-20260710-01` through `AUDIT-20260710-15` were reviewed against the 
 
 ## Verification recorded during the drain
 
+### Native closeout and same-process collection proof — July 27, 2026
+
+- The installed production Settings toggle enabled Detailed Analytics and returned to Lightweight without relaunching or changing PID. Enabling advanced the turn-performance, session-timing, thread-catalog, and model-capability capture timestamps; after disabling, the same four timestamps remained byte-for-byte unchanged through the next capture window while core status stayed live.
+- Native Settings/Data exposed the frozen Lightweight explanation, 250 MiB maximum, maintenance time, Optimize/backup/import/archive actions, fixed retention text, disabled recent import, collapsed Advanced diagnostics, and complete accessibility help. The analytics-clear sheet precisely listed preserved data, and its keyboard Escape path cancelled without mutation. The ordinary menu title and popover remained free of storage UI.
+- History was inspected at 700x520 and 880x640; Token Dashboard at 1120x560 and 1280x720; and Performance Dashboard at 1280x680 and 1360x760. Light/dark dashboard appearances, read-only `Collection paused` states, navigation/export/sort controls, charts, model tables, keyboard cancellation, and accessibility labels were exercised against the installed app. Deterministic non-shipping Settings presentations cover Lightweight, Detailed Analytics, migrating, over-budget/paused, insufficient-space, archive-open, empty, and failure states without mutating the live store.
+- Native inspection revealed that the Token Dashboard's former fixed table and chart minima could not fit its declared 1120x560 content size. Commit `46af0db` gives the chart and breakdown an exact shared layout contract, makes the long breakdown vertically scrollable, and adds an AppKit/SwiftUI regression test that lays out a real window at the declared minimum. Reinspection proved an exact 1120x560 content area with readable charts and an accessible 164-item scrolling breakdown, plus the 1280x720 dark state.
+- After the fix, `./scripts/verify.sh` passed 557 tests with zero failures, static analysis, the actionable-warning gate, the universal Release build, and source-bundle finalization/validation. `./install.sh` transactionally installed clean source commit `46af0db`; the exact installed executable is running in Lightweight mode.
+
 ### Lightweight storage implementation and live migration — July 26, 2026
 
 - Implementation/recovery commits `f950d9f`, `94771c9`, and `d69a6f7` are pushed on top of `a24b5b5`. Focused migration, lifecycle, collection-policy, budget, archive, UI-state, recovery, and query-plan suites passed. `./scripts/verify.sh` then passed the complete test suite, analyzer, warning and coverage gates, universal Release build, and source-bundle finalization/validation.
@@ -336,15 +341,13 @@ Items `AUDIT-20260710-01` through `AUDIT-20260710-15` were reviewed against the 
 - Only after rehearsal passed, a fresh SQLite-backup-API safety copy was created and validated. `./install.sh` installed clean source commit `d69a6f7`; the installed app migrated the live store to schema v3 and reclaimed 4,766,814,208 bytes. The operational DB/WAL/SHM family is approximately 98 MiB, below the 100 MiB Lightweight target, with `quick_check=ok`, zero foreign-key violations, and idle maintenance.
 - Installed provenance validates as a clean `main` source checkout at `d69a6f7`. The newest Lightweight relaunch produced a valid menu title in 1.381 seconds. Detailed-mode relaunch started turn-performance, session-timing, thread-catalog, and model-capability collectors; the final Lightweight relaunch advanced core token capture while all four advanced capture timestamps remained unchanged.
 - The 10-minute installed Lightweight soak sampled 61 times: combined CPU median/p95 were 0.0%/0.0%, owned-process physical-footprint p95 was 25 MiB, logical database growth was 8 KiB, and total post-checkpoint DB/WAL/SHM growth was 683,920 bytes. No advanced writes occurred and the live token check advanced on the five-minute cadence.
-- One installed app and one direct child app-server are running; earlier relaunch children retired. The only remaining evidence is the native light/dark/size/keyboard/accessibility fixture matrix and same-process Settings toggle, parked above because macOS is at its password-protected login screen.
+- One installed app and one direct child app-server were running; earlier relaunch children retired. The formerly parked native fixture and same-process Settings gates were completed on July 27 and are recorded above.
 
 ### Lightweight storage drain — July 19, 2026
 
 - Implementation checkpoint `a24b5b5` is pushed to `main`. Swift parser checks, focused storage-core type-checking, project-file validation, shell syntax, release-script fixtures, and `git diff --check` passed.
 - `scripts/measure_storage_fixture.py` passed the frozen 10,000-turn, 140,000-sample, 1,680,000-dimension synthetic benchmark. Dimension objects fell from 466,599,936 bytes in v2 to 188,416 bytes in v3 (99.96% reduction); total optimized v3 size was 49,926,144 bytes versus 514,957,312 bytes for v2 (9.70%). Evidence: `/tmp/codex-storage-fixture-20260719.json`.
-- The final `./scripts/verify.sh` attempt was rejected before execution by the external approval service because the account execution quota is exhausted. No test, analyzer, Release bundle, migration rehearsal, install, native inspection, or soak claim is made from that attempt.
-- The unchanged installed source bundle at `~/Applications/CodexStatusBar.app` validated successfully against its recorded clean `ee47daa` provenance. It was not running, and the final `open` request was rejected by the same quota gate, so no launch claim is made.
-- Resume condition: execution quota or explicit execution approval becomes available. Then run `./scripts/verify.sh`; rehearse v3 on a SQLite-consistent live-store copy; require parity, integrity, normalization, query-plan, latency, and `<250 MiB` gates; install only the resulting verified source bundle; run installed mode/runtime/UI/storage/resource soaks; then check `STORAGE-01` through `-08` and remove their `parked` labels.
+- At the July 19 checkpoint, the final verifier and launch were rejected before execution by the external approval service, so no claim was made then. That historical blocker was resolved on July 26; the complete verifier, rehearsal, installation, native inspection, and soak evidence above supersedes it.
 
 - Canonical verifier after the audit program and duration fix: 525 tests, analyzer, warning gate, universal arm64/x86_64 Release build, source-bundle finalization/validation, and 63.65% production-core coverage. Evidence root: `/private/tmp/codex-owner-all-final-20260712-180301/DerivedData`.
 - Token-freshness focused suites: 68 tests passed. Full imported-module XCTest suite: 534 tests passed. Evidence root: `/tmp/codex-token-freshness-20260712`.
