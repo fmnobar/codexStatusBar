@@ -488,6 +488,35 @@ final class MenuBarStatusViewModel: ObservableObject {
         menuBarTokenLoadGeneration += 1
         let loadGeneration = menuBarTokenLoadGeneration
         let currentNow = date ?? now()
+        let cachedAccountDisplay: MenuBarTokenDisplay?
+        if let cachedAccountTokenSnapshot,
+           !cachedAccountTokenSnapshotIsStale(cachedAccountTokenSnapshot, at: currentNow)
+        {
+            cachedAccountDisplay = Self.accountTokenDisplay(
+                from: cachedAccountTokenSnapshot,
+                at: currentNow,
+                calendar: menuBarTokenCalendar,
+                freshness: .current
+            )
+        } else {
+            cachedAccountDisplay = nil
+        }
+
+        if let cachedAccountDisplay {
+            menuBarTokenDisplay = cachedAccountDisplay
+            applyPresentation()
+        }
+
+        let localDisplay = await localCapturedTokenDisplay(at: currentNow)
+        guard loadGeneration == menuBarTokenLoadGeneration else {
+            return
+        }
+
+        if cachedAccountDisplay == nil, let localDisplay {
+            menuBarTokenDisplay = localDisplay
+            applyPresentation()
+        }
+
         let accountResolution = await accountTokenDisplay(
             at: currentNow,
             allowRefresh: allowAccountRefresh,
@@ -504,7 +533,6 @@ final class MenuBarStatusViewModel: ObservableObject {
             return
         }
 
-        let localDisplay = await localCapturedTokenDisplay(at: currentNow)
         guard loadGeneration == menuBarTokenLoadGeneration else {
             return
         }
@@ -677,12 +705,21 @@ final class MenuBarStatusViewModel: ObservableObject {
             return nil
         }
 
-        guard let latestDate = accountBucketDate(latestBucket.date) else {
+        guard let latestDate = accountBucketDate(latestBucket.date),
+              let currentDayStart = accountBucketDate(utcDay)
+        else {
             return nil
         }
 
-        let age = date.timeIntervalSince(latestDate)
-        return age <= 36 * 60 * 60 ? latestBucket : nil
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let previousDayStart = utcCalendar.date(byAdding: .day, value: -1, to: currentDayStart) else {
+            return nil
+        }
+
+        // Daily account snapshots can legitimately lag until late in the next UTC day.
+        // Keep yesterday's bucket available for that full day without admitting older data.
+        return latestDate >= previousDayStart ? latestBucket : nil
     }
 
     private static func accountBucketDate(_ day: String) -> Date? {
