@@ -83,7 +83,7 @@ Codex Status Bar is available under the [MIT License](LICENSE).
 ## Notes
 
 - The app launches and owns its local `codex app-server` transport. It never attaches to a pre-existing loopback listener.
-- When seven-day usage is available, the menu bar shows a circular remaining-usage indicator. The percentage, reset date, and reset time are independent display options; the percentage is on by default. When the percentage is hidden, hovering over the circle shows the current percentage.
+- When seven-day usage is available, the menu bar shows a circular remaining-usage indicator. The percentage, reset date, and reset time are independent display options; the percentage is on by default. When all three text options are off, hovering over the circle shows the remaining percentage and full reset date and time when available.
 - The compact popover has a read-only seven-day summary, available usage resets, freshness state, and app version.
 - Settings has General and Updates tabs. General includes reset date/time display and launch at login. Updates retains live release checks and guided update installs.
 - The popover always shows Remaining %, Reset date, and Reset time controls, a menu-bar preview, and `Launch at login`. Available resets appear directly beside an icon-only refresh button that rotates while refreshing.

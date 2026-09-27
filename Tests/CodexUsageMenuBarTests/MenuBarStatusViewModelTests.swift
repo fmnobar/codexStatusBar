@@ -5,8 +5,9 @@ import XCTest
 @MainActor
 final class MenuBarStatusViewModelTests: XCTestCase {
     func testStatusItemRingAndHoverFollowPercentageDisplayOption() async throws {
+        let resetDate = ISO8601DateFormatter().date(from: "2026-10-03T16:58:00Z")!
         let snapshot = CodexRateLimitSnapshot(
-            primary: CodexRateLimitWindow(usedPercent: 33, windowDurationMinutes: 10_080, resetsAt: nil),
+            primary: CodexRateLimitWindow(usedPercent: 33, windowDurationMinutes: 10_080, resetsAt: resetDate),
             secondary: nil
         )
         let client = MockCodexRateLimitClient(snapshot: snapshot)
@@ -34,19 +35,41 @@ final class MenuBarStatusViewModelTests: XCTestCase {
         let button = try XCTUnwrap(controller.statusButtonForTesting)
         XCTAssertEqual(button.title, "67%")
         XCTAssertNotNil(button.image)
+        XCTAssertEqual(button.image?.size.width, 20)
         XCTAssertNil(controller.ringToolTipTag)
 
         viewModel.setMenuBarShowsRemainingPercentage(false)
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(button.title, "")
         XCTAssertNotNil(button.image)
+        XCTAssertEqual(button.image?.size.width, 15)
         XCTAssertNil(button.toolTip)
         let toolTipTag = try XCTUnwrap(controller.ringToolTipTag)
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
         XCTAssertEqual(
             controller.view(button, stringForToolTip: toolTipTag, point: .zero, userData: nil),
-            "67% left"
+            "67% left\nResets \(formatter.string(from: resetDate))"
         )
         XCTAssertEqual(button.accessibilityLabel(), "Codex usage 67% remaining")
+
+        viewModel.setMenuBarShowsResetDate(true)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(button.title.isEmpty)
+        XCTAssertEqual(button.image?.size.width, 20)
+        XCTAssertNil(controller.ringToolTipTag)
+
+        viewModel.setMenuBarShowsResetDate(false)
+        viewModel.setMenuBarShowsResetTime(true)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(button.title.isEmpty)
+        XCTAssertNil(controller.ringToolTipTag)
+
+        viewModel.setMenuBarShowsResetTime(false)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(button.title, "")
+        XCTAssertNotNil(controller.ringToolTipTag)
 
         viewModel.setMenuBarShowsRemainingPercentage(true)
         try await Task.sleep(nanoseconds: 50_000_000)

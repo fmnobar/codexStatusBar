@@ -15,6 +15,9 @@ protocol CodexRateLimitClientProtocol: AnyObject {
 final class MenuBarStatusViewModel: ObservableObject {
     @Published private(set) var menuBarPercentText = "--"
     @Published private(set) var weeklyRemainingPercent: Int?
+    var weeklyResetAt: Date? {
+        snapshot?.classifiedWindow(for: .sevenDay)?.resetsAt
+    }
     @Published private(set) var menuBarToolTipText: String?
     @Published private(set) var sevenDayRow = MenuBarLimitRowPresentation(
         title: "7d limit",

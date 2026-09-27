@@ -141,7 +141,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate, NSViewToolTipOwne
 
         button.title = visibleText
         button.attributedTitle = attributedTitle
-        button.image = remainingPercent.map(StatusItemRingImage.make)
+        button.image = remainingPercent.map {
+            StatusItemRingImage.make(
+                remainingPercent: $0,
+                trailingSpacing: visibleText.isEmpty ? 0 : 5
+            )
+        }
         button.imagePosition = remainingPercent == nil ? .noImage : .imageLeading
         button.cell?.lineBreakMode = .byTruncatingTail
         let accessibilityLabel: String
@@ -167,8 +172,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate, NSViewToolTipOwne
             self.ringToolTipTag = nil
         }
 
+        let options = viewModel.menuBarDisplayOptions
         guard remainingPercent != nil,
-              !viewModel.menuBarDisplayOptions.showsRemainingPercentage else {
+              !options.showsRemainingPercentage,
+              !options.showsResetDate,
+              !options.showsResetTime else {
             return
         }
 
@@ -189,7 +197,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate, NSViewToolTipOwne
         guard tag == ringToolTipTag, let remainingPercent = viewModel.weeklyRemainingPercent else {
             return ""
         }
-        return "\(remainingPercent)% left"
+        let percentageText = "\(remainingPercent)% left"
+        guard let resetAt = viewModel.weeklyResetAt else {
+            return percentageText
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "\(percentageText)\nResets \(formatter.string(from: resetAt))"
     }
 
     @objc

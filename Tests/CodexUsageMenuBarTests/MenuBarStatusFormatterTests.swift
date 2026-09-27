@@ -33,6 +33,11 @@ final class MenuBarStatusFormatterTests: XCTestCase {
             StatusItemTitleLayout.minimumLength
         )
         XCTAssertLessThan(StatusItemTitleLayout.length(for: "", font: font, hasRing: true), 40)
+        XCTAssertEqual(
+            StatusItemTitleLayout.length(for: "67%", font: font, hasRing: true)
+                - StatusItemTitleLayout.length(for: "67%", font: font),
+            24
+        )
 
         XCTAssertEqual(
             StatusItemTitleLayout.length(for: "", font: font),

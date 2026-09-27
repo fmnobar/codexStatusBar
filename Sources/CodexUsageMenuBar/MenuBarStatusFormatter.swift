@@ -25,20 +25,21 @@ enum StatusItemTitleLayout {
     static func length(for text: String, font: NSFont, hasRing: Bool = false) -> CGFloat {
         let title = hasRing ? text.trimmingCharacters(in: .whitespacesAndNewlines) : visibleText(text)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
-        let ringWidth: CGFloat = hasRing ? 19 : 0
+        let ringWidth: CGFloat = hasRing ? (title.isEmpty ? 19 : 24) : 0
         return min(max(textWidth + horizontalPadding + ringWidth, minimumLength), maximumLength)
     }
 }
 
 enum StatusItemRingImage {
-    static func make(remainingPercent: Int) -> NSImage {
+    static func make(remainingPercent: Int, trailingSpacing: CGFloat = 0) -> NSImage {
         let side: CGFloat = 15
         let lineWidth: CGFloat = 2.2
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            let center = NSPoint(x: rect.midX, y: rect.midY)
+        let ringRect = NSRect(x: 0, y: 0, width: side, height: side)
+        let image = NSImage(size: NSSize(width: side + trailingSpacing, height: side), flipped: false) { _ in
+            let center = NSPoint(x: ringRect.midX, y: ringRect.midY)
             let radius = (side - lineWidth) / 2
 
-            let track = NSBezierPath(ovalIn: rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2))
+            let track = NSBezierPath(ovalIn: ringRect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2))
             track.lineWidth = lineWidth
             NSColor.labelColor.withAlphaComponent(0.3).setStroke()
             track.stroke()
