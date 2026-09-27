@@ -22,10 +22,43 @@ enum StatusItemTitleLayout {
         return trimmedText.isEmpty ? "--" : trimmedText
     }
 
-    static func length(for text: String, font: NSFont) -> CGFloat {
-        let visibleText = visibleText(text)
-        let textWidth = ceil((visibleText as NSString).size(withAttributes: [.font: font]).width)
-        return min(max(textWidth + horizontalPadding, minimumLength), maximumLength)
+    static func length(for text: String, font: NSFont, hasRing: Bool = false) -> CGFloat {
+        let title = hasRing ? text.trimmingCharacters(in: .whitespacesAndNewlines) : visibleText(text)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        let ringWidth: CGFloat = hasRing ? 19 : 0
+        return min(max(textWidth + horizontalPadding + ringWidth, minimumLength), maximumLength)
+    }
+}
+
+enum StatusItemRingImage {
+    static func make(remainingPercent: Int) -> NSImage {
+        let side: CGFloat = 15
+        let lineWidth: CGFloat = 2.2
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let center = NSPoint(x: rect.midX, y: rect.midY)
+            let radius = (side - lineWidth) / 2
+
+            let track = NSBezierPath(ovalIn: rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2))
+            track.lineWidth = lineWidth
+            NSColor.labelColor.withAlphaComponent(0.3).setStroke()
+            track.stroke()
+
+            let progress = NSBezierPath()
+            progress.lineWidth = lineWidth
+            progress.lineCapStyle = .round
+            progress.appendArc(
+                withCenter: center,
+                radius: radius,
+                startAngle: 90,
+                endAngle: 90 - 360 * CGFloat(min(max(remainingPercent, 0), 100)) / 100,
+                clockwise: true
+            )
+            NSColor.labelColor.setStroke()
+            progress.stroke()
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 }
 
@@ -46,43 +79,15 @@ enum StatusItemToolTipPolicy {
 struct AppAccessibilityPresentation: Equatable {
     let label: String
     let value: String
-    let isSelected: Bool
 }
 
 enum AppAccessibilitySemantics {
-    static let openFullHistoryLabel = "Open full history"
-    static let openFullSettingsLabel = "Open full settings"
-    static let exportCSVLabel = "Export CSV"
-
     static func limitRow(_ row: MenuBarLimitRowPresentation) -> AppAccessibilityPresentation {
         AppAccessibilityPresentation(
             label: row.title,
             value: [row.remainingPercentText, row.detailText]
                 .filter { !$0.isEmpty }
-                .joined(separator: ", "),
-            isSelected: row.isSelected
-        )
-    }
-
-    static func expandableSection(
-        title: String,
-        isExpanded: Bool
-    ) -> AppAccessibilityPresentation {
-        AppAccessibilityPresentation(
-            label: title,
-            value: isExpanded ? "Expanded" : "Collapsed",
-            isSelected: false
-        )
-    }
-
-    static func selectableSeries(
-        name: String,
-        isSelected: Bool
-    ) -> AppAccessibilityPresentation {
-        AppAccessibilityPresentation(
-            label: name,
-            value: isSelected ? "Selected" : "Not selected",
-            isSelected: isSelected
+                .joined(separator: ", ")
         )
     }
 
@@ -91,88 +96,44 @@ enum AppAccessibilitySemantics {
     }
 }
 
-enum MenuBarDisplayWindow: String, CaseIterable, Equatable {
-    case fiveHour
-    case sevenDay
-    case tightest
-
-    var displayTitle: String {
-        switch self {
-        case .fiveHour:
-            return "5h"
-        case .sevenDay:
-            return "7d"
-        case .tightest:
-            return "Tightest"
-        }
-    }
-}
-
-enum MenuBarDisplayWindowStore {
-    static let defaultsKey = "MenuBarDisplayWindow"
-
-    static func load(from defaults: UserDefaults = .standard) -> MenuBarDisplayWindow {
-        guard
-            let rawValue = defaults.string(forKey: defaultsKey),
-            let selection = MenuBarDisplayWindow(rawValue: rawValue)
-        else {
-            return .tightest
-        }
-
-        return selection
-    }
-
-    static func save(_ selection: MenuBarDisplayWindow, to defaults: UserDefaults = .standard) {
-        defaults.set(selection.rawValue, forKey: defaultsKey)
-    }
-}
-
 struct MenuBarDisplayOptions: Equatable {
-    var showsLimitLabel: Bool
+    var showsRemainingPercentage: Bool
     var showsResetDate: Bool
     var showsResetTime: Bool
-    var showsTokens: Bool
 
     init(
-        showsLimitLabel: Bool,
         showsResetDate: Bool,
         showsResetTime: Bool,
-        showsTokens: Bool = false
+        showsRemainingPercentage: Bool = true
     ) {
-        self.showsLimitLabel = showsLimitLabel
+        self.showsRemainingPercentage = showsRemainingPercentage
         self.showsResetDate = showsResetDate
         self.showsResetTime = showsResetTime
-        self.showsTokens = showsTokens
     }
 
     static let defaultValue = MenuBarDisplayOptions(
-        showsLimitLabel: true,
         showsResetDate: false,
-        showsResetTime: false,
-        showsTokens: false
+        showsResetTime: false
     )
 }
 
 enum MenuBarDisplayOptionsStore {
-    private static let showsLimitLabelKey = "MenuBarDisplayOptionsShowsLimitLabel"
+    private static let showsRemainingPercentageKey = "MenuBarDisplayOptionsShowsRemainingPercentage"
     private static let showsResetDateKey = "MenuBarDisplayOptionsShowsResetDate"
     private static let showsResetTimeKey = "MenuBarDisplayOptionsShowsResetTime"
-    private static let showsTokensKey = "MenuBarDisplayOptionsShowsTokens"
 
     static func load(from defaults: UserDefaults = .standard) -> MenuBarDisplayOptions {
         MenuBarDisplayOptions(
-            showsLimitLabel: bool(forKey: showsLimitLabelKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsLimitLabel, from: defaults),
             showsResetDate: bool(forKey: showsResetDateKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetDate, from: defaults),
             showsResetTime: bool(forKey: showsResetTimeKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsResetTime, from: defaults),
-            showsTokens: bool(forKey: showsTokensKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsTokens, from: defaults)
+            showsRemainingPercentage: bool(forKey: showsRemainingPercentageKey, defaultValue: MenuBarDisplayOptions.defaultValue.showsRemainingPercentage, from: defaults)
         )
     }
 
     static func save(_ options: MenuBarDisplayOptions, to defaults: UserDefaults = .standard) {
-        defaults.set(options.showsLimitLabel, forKey: showsLimitLabelKey)
+        defaults.set(options.showsRemainingPercentage, forKey: showsRemainingPercentageKey)
         defaults.set(options.showsResetDate, forKey: showsResetDateKey)
         defaults.set(options.showsResetTime, forKey: showsResetTimeKey)
-        defaults.set(options.showsTokens, forKey: showsTokensKey)
     }
 
     private static func bool(forKey key: String, defaultValue: Bool, from defaults: UserDefaults) -> Bool {
@@ -194,130 +155,49 @@ struct MenuBarLimitRowPresentation: Equatable {
     let title: String
     let remainingPercentText: String
     let detailText: String
-    let displayWindow: MenuBarDisplayWindow
-    let isSelected: Bool
 }
 
 struct MenuBarStatusPresentation: Equatable {
     let menuBarPercentText: String
+    let weeklyRemainingPercent: Int?
     let menuBarToolTipText: String?
-    let fiveHourRow: MenuBarLimitRowPresentation
     let sevenDayRow: MenuBarLimitRowPresentation
-    let tightestRow: MenuBarLimitRowPresentation
-}
-
-enum MenuBarAccountTokenFreshness: Equatable {
-    case current
-    case stale
-    case refreshFailed
-}
-
-enum MenuBarTokenDisplaySource: Equatable {
-    case accountDate(
-        date: String,
-        fetchedAt: Date,
-        isCurrentDay: Bool,
-        freshness: MenuBarAccountTokenFreshness
-    )
-    case localCapturedToday
-}
-
-struct MenuBarTokenDisplay: Equatable {
-    let tokenCount: Int64
-    let source: MenuBarTokenDisplaySource
-    let localCapturedTotals: TokenCategoryTotals?
-
-    static func accountDate(
-        _ date: String,
-        tokens: Int64,
-        fetchedAt: Date,
-        isCurrentDay: Bool,
-        freshness: MenuBarAccountTokenFreshness
-    ) -> MenuBarTokenDisplay {
-        MenuBarTokenDisplay(
-            tokenCount: tokens,
-            source: .accountDate(
-                date: date,
-                fetchedAt: fetchedAt,
-                isCurrentDay: isCurrentDay,
-                freshness: freshness
-            ),
-            localCapturedTotals: nil
-        )
-    }
-
-    static func localCapturedToday(_ totals: TokenCategoryTotals) -> MenuBarTokenDisplay {
-        MenuBarTokenDisplay(
-            tokenCount: totals.totalTokens,
-            source: .localCapturedToday,
-            localCapturedTotals: totals
-        )
-    }
 }
 
 enum MenuBarStatusFormatter {
     static func presentation(
         snapshot: CodexRateLimitSnapshot?,
         now: Date,
-        selectedMenuBarDisplayWindow: MenuBarDisplayWindow,
         menuBarDisplayOptions: MenuBarDisplayOptions = .defaultValue,
-        tokenDisplay: MenuBarTokenDisplay? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> MenuBarStatusPresentation {
-        let fiveHourWindow = snapshot?.classifiedWindow(for: .fiveHour)
         let sevenDayWindow = snapshot?.classifiedWindow(for: .sevenDay)
-        let menuBarWindow = resolvedMenuBarWindow(
-            snapshot: snapshot,
-            selectedMenuBarDisplayWindow: selectedMenuBarDisplayWindow
-        )
 
         return MenuBarStatusPresentation(
             menuBarPercentText: menuBarPercentText(
-                for: menuBarWindow.window,
-                sourceTitle: menuBarWindow.sourceTitle,
+                for: sevenDayWindow,
                 hasAnyLimitWindow: snapshot?.primary != nil || snapshot?.secondary != nil,
                 options: menuBarDisplayOptions,
-                tokenDisplay: tokenDisplay,
                 now: now,
                 calendar: calendar
             ),
-            menuBarToolTipText: menuBarToolTipText(
-                options: menuBarDisplayOptions,
-                tokenDisplay: tokenDisplay,
-                now: now
-            ),
-            fiveHourRow: row(
-                title: "5h limit",
-                window: fiveHourWindow,
-                displayWindow: .fiveHour,
-                isSelected: menuBarWindow.effectiveDisplayWindow == .fiveHour,
-                now: now,
-                calendar: calendar,
-                locale: locale
-            ),
+            weeklyRemainingPercent: sevenDayWindow?.remainingPercent,
+            menuBarToolTipText: nil,
             sevenDayRow: row(
                 title: "7d limit",
                 window: sevenDayWindow,
-                displayWindow: .sevenDay,
-                isSelected: menuBarWindow.effectiveDisplayWindow == .sevenDay,
                 now: now,
                 calendar: calendar,
                 locale: locale
-            ),
-            tightestRow: tightestRow(
-                snapshot: snapshot,
-                isSelected: menuBarWindow.effectiveDisplayWindow == .tightest
             )
         )
     }
 
     static func menuBarPercentText(
         for window: CodexRateLimitWindow?,
-        sourceTitle: String? = nil,
         hasAnyLimitWindow: Bool = true,
         options: MenuBarDisplayOptions = .defaultValue,
-        tokenDisplay: MenuBarTokenDisplay? = nil,
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
@@ -326,26 +206,13 @@ enum MenuBarStatusFormatter {
                 return "--"
             }
 
-            var components = ["No limit data"]
-            if options.showsTokens {
-                components.append("· \(compactMenuBarTokenText(tokenDisplay?.tokenCount))")
-            }
-
-            return components.joined(separator: " ")
+            return "No limit data"
         }
 
-        var components = [String]()
-        let percentText = "\(window.remainingPercent)%"
-
-        if options.showsLimitLabel, let sourceTitle {
-            components.append("\(sourceTitle): \(percentText)")
-        } else {
-            components.append(percentText)
-        }
+        var components = options.showsRemainingPercentage ? ["\(window.remainingPercent)%"] : []
 
         if let resetText = menuBarResetText(
             for: window.resetsAt,
-            window: window,
             options: options,
             now: now,
             calendar: calendar
@@ -353,65 +220,12 @@ enum MenuBarStatusFormatter {
             components.append(resetText)
         }
 
-        if options.showsTokens {
-            components.append("· \(compactMenuBarTokenText(tokenDisplay?.tokenCount))")
-        }
-
         return components.joined(separator: " ")
-    }
-
-    static func compactMenuBarTokenText(_ tokenCount: Int64?) -> String {
-        guard let tokenCount else {
-            return "--"
-        }
-
-        return compactTokenValue(tokenCount)
-    }
-
-    static func compactTokenCategoryText(_ totals: TokenCategoryTotals?) -> String {
-        guard let totals else {
-            return "-- tok"
-        }
-
-        return [
-            "in \(compactTokenValue(totals.inputTokens))",
-            "cache \(compactTokenValue(totals.cachedInputTokens))",
-            "out \(compactTokenValue(totals.outputTokens))",
-            "reason \(compactTokenValue(totals.reasoningOutputTokens))",
-        ].joined(separator: " ")
-    }
-
-    static func compactTokenText(_ tokenCount: Int64?) -> String {
-        guard let tokenCount else {
-            return "-- tok"
-        }
-
-        return "\(compactTokenValue(tokenCount)) tok"
-    }
-
-    private static func compactTokenValue(_ tokenCount: Int64) -> String {
-        let count = max(tokenCount, 0)
-        switch count {
-        case 0..<1_000:
-            return "\(count)"
-        case 1_000..<10_000:
-            return "\(compactNumber(Double(count) / 1_000))k"
-        case 10_000..<1_000_000:
-            return "\(Int((Double(count) / 1_000).rounded()))k"
-        case 1_000_000..<10_000_000:
-            return "\(compactNumber(Double(count) / 1_000_000))M"
-        case 10_000_000..<1_000_000_000:
-            return "\(Int((Double(count) / 1_000_000).rounded()))M"
-        default:
-            return "\(compactNumber(Double(count) / 1_000_000_000))B"
-        }
     }
 
     static func row(
         title: String,
         window: CodexRateLimitWindow?,
-        displayWindow: MenuBarDisplayWindow,
-        isSelected: Bool,
         now: Date,
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
@@ -421,24 +235,7 @@ enum MenuBarStatusFormatter {
         return MenuBarLimitRowPresentation(
             title: title,
             remainingPercentText: remainingText,
-            detailText: "Resets \(resetText)",
-            displayWindow: displayWindow,
-            isSelected: isSelected
-        )
-    }
-
-    static func tightestRow(
-        snapshot: CodexRateLimitSnapshot?,
-        isSelected: Bool
-    ) -> MenuBarLimitRowPresentation {
-        let sourceTitle = tightestWindowWithSource(snapshot: snapshot)?.sourceTitle
-
-        return MenuBarLimitRowPresentation(
-            title: "Tightest: \(sourceTitle ?? "--")",
-            remainingPercentText: "",
-            detailText: "",
-            displayWindow: .tightest,
-            isSelected: isSelected
+            detailText: "Resets \(resetText)"
         )
     }
 
@@ -468,107 +265,6 @@ enum MenuBarStatusFormatter {
         default:
             return "\(interval / 86_400)d ago"
         }
-    }
-
-    static func tightestWindow(primary: CodexRateLimitWindow?, secondary: CodexRateLimitWindow?) -> CodexRateLimitWindow? {
-        tightestWindowWithSource(snapshot: CodexRateLimitSnapshot(primary: primary, secondary: secondary))?.window
-    }
-
-    static func menuBarToolTipText(
-        options: MenuBarDisplayOptions,
-        tokenDisplay: MenuBarTokenDisplay?,
-        now: Date = Date()
-    ) -> String? {
-        guard options.showsTokens else {
-            return nil
-        }
-
-        guard let tokenDisplay else {
-            return "No token usage data is available for the menu bar."
-        }
-
-        switch tokenDisplay.source {
-        case .accountDate(let date, let fetchedAt, let isCurrentDay, let freshness):
-            let bucketText = if isCurrentDay {
-                "Codex account tokens for \(date)"
-            } else {
-                "Latest available Codex account tokens are for \(date)"
-            }
-            let ageText = relativeAgeText(since: fetchedAt, now: now)
-            let freshnessText = switch freshness {
-            case .current:
-                " Fetched \(ageText)."
-            case .stale:
-                " Cached account data fetched \(ageText); a refresh is due."
-            case .refreshFailed:
-                " Refresh failed; showing account data fetched \(ageText)."
-            }
-
-            return "\(bucketText): \(compactTokenText(tokenDisplay.tokenCount)).\(freshnessText)"
-        case .localCapturedToday:
-            guard let totals = tokenDisplay.localCapturedTotals else {
-                return "Local captured tokens are available."
-            }
-
-            return [
-                "Current local day captured tokens:",
-                "input \(compactTokenText(totals.inputTokens)),",
-                "cached input \(compactTokenText(totals.cachedInputTokens)),",
-                "output \(compactTokenText(totals.outputTokens)),",
-                "reasoning \(compactTokenText(totals.reasoningOutputTokens)),",
-                "total \(compactTokenText(totals.totalTokens)).",
-            ].joined(separator: " ")
-        }
-    }
-
-    private static func resolvedMenuBarWindow(
-        snapshot: CodexRateLimitSnapshot?,
-        selectedMenuBarDisplayWindow: MenuBarDisplayWindow
-    ) -> (
-        sourceTitle: String?,
-        window: CodexRateLimitWindow?,
-        effectiveDisplayWindow: MenuBarDisplayWindow
-    ) {
-        switch selectedMenuBarDisplayWindow {
-        case .fiveHour:
-            if let window = snapshot?.classifiedWindow(for: .fiveHour) {
-                return ("5h", window, .fiveHour)
-            }
-        case .sevenDay:
-            if let window = snapshot?.classifiedWindow(for: .sevenDay) {
-                return ("7d", window, .sevenDay)
-            }
-        case .tightest:
-            let tightest = tightestWindowWithSource(snapshot: snapshot)
-            return (tightest?.sourceTitle, tightest?.window, .tightest)
-        }
-
-        guard let tightest = tightestWindowWithSource(snapshot: snapshot) else {
-            return (nil, nil, selectedMenuBarDisplayWindow)
-        }
-
-        let effectiveDisplayWindow: MenuBarDisplayWindow = switch tightest.kind {
-        case .fiveHour: .fiveHour
-        case .sevenDay: .sevenDay
-        case nil: .tightest
-        }
-
-        return (tightest.sourceTitle, tightest.window, effectiveDisplayWindow)
-    }
-
-    private static func tightestWindowWithSource(
-        snapshot: CodexRateLimitSnapshot?
-    ) -> CodexRateLimitWindowReference? {
-        guard let references = snapshot?.windowReferences, var tightest = references.first else {
-            return nil
-        }
-
-        for reference in references.dropFirst()
-        where reference.window.remainingPercent < tightest.window.remainingPercent {
-            tightest = reference
-        }
-
-        return tightest
     }
 
     static func resetText(
@@ -605,7 +301,6 @@ enum MenuBarStatusFormatter {
 
     private static func menuBarResetText(
         for resetDate: Date?,
-        window: CodexRateLimitWindow,
         options: MenuBarDisplayOptions,
         now: Date,
         calendar: Calendar
@@ -624,7 +319,7 @@ enum MenuBarStatusFormatter {
             dateFormatter.locale = Locale(identifier: "en_US_POSIX")
             dateFormatter.timeZone = calendar.timeZone
 
-            if shouldShowSameDayResetAsTime(for: resetDate, window: window, options: options, now: now, calendar: calendar) {
+            if calendar.isDate(resetDate, inSameDayAs: now) && !options.showsResetTime {
                 dateFormatter.dateFormat = "h:mma"
             } else {
                 dateFormatter.dateFormat = "M/d"
@@ -642,26 +337,5 @@ enum MenuBarStatusFormatter {
         }
 
         return components.joined(separator: " ")
-    }
-
-    private static func shouldShowSameDayResetAsTime(
-        for resetDate: Date,
-        window: CodexRateLimitWindow,
-        options: MenuBarDisplayOptions,
-        now: Date,
-        calendar: Calendar
-    ) -> Bool {
-        CodexRateLimitWindowKind(windowDurationMinutes: window.windowDurationMinutes) == .sevenDay
-            && calendar.isDate(resetDate, inSameDayAs: now)
-            && !options.showsResetTime
-    }
-
-    private static func compactNumber(_ value: Double) -> String {
-        let rounded = (value * 10).rounded() / 10
-        if rounded.rounded() == rounded {
-            return "\(Int(rounded))"
-        }
-
-        return String(format: "%.1f", rounded)
     }
 }

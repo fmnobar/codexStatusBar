@@ -114,7 +114,9 @@ source "$SCRIPT_DIR/lib/codex_resolver.sh"
 codex_validate_candidate_manifest
 fixed_candidate_contract="$(codex_fixed_candidate_paths)"
 expected_fixed_candidate_contract="$(printf '%s\n' \
+  '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex' \
   '/Applications/ChatGPT.app/Contents/Resources/codex' \
+  '/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex' \
   '/Applications/Codex.app/Contents/Resources/codex' \
   '/opt/homebrew/bin/codex' \
   '/usr/local/bin/codex')"
@@ -220,6 +222,39 @@ resolved_codex="$({
 })"
 [[ "$resolved_codex" == "$FAKE_APPLICATIONS/Codex05.app/Contents/Resources/codex" ]] \
   || fail "Resolver did not skip malformed/unsupported candidates or include the canonical symlink candidate."
+
+NESTED_APPLICATIONS="$TEMP_PARENT/nested-applications"
+NESTED_CHATGPT_CODEX="$NESTED_APPLICATIONS/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+make_codex_fixture "$NESTED_CHATGPT_CODEX" "codex-cli 0.158.0-alpha.2.1" "--stdio"
+[[ ! -e "$NESTED_APPLICATIONS/ChatGPT.app/Contents/Resources/codex" ]] \
+  || fail "Nested executable fixture must have no legacy executable."
+resolved_nested_codex="$({
+  CODEX_APPLICATIONS_DIR="$NESTED_APPLICATIONS" \
+  CODEX_HOMEBREW_CANDIDATE="$TEMP_PARENT/missing-homebrew" \
+  CODEX_USR_LOCAL_CANDIDATE="$TEMP_PARENT/missing-usr-local" \
+  CODEX_PATH_VALUE="" \
+    codex_resolve_executable
+})"
+[[ "$resolved_nested_codex" == "$NESTED_CHATGPT_CODEX" ]] \
+  || fail "Resolver did not find the current nested ChatGPT executable."
+
+DISCOVERED_NESTED_APPLICATIONS="$TEMP_PARENT/discovered-nested-applications"
+DISCOVERED_NESTED_CODEX="$DISCOVERED_NESTED_APPLICATIONS/Codex Preview.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+make_codex_fixture "$DISCOVERED_NESTED_CODEX" "codex-cli 0.158.0-alpha.2.1" "--stdio"
+BROKEN_HOMEBREW_CODEX="$TEMP_PARENT/broken-homebrew"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "ENOENT: packaged Codex binary is missing" >&2' 'exit 1' \
+  > "$BROKEN_HOMEBREW_CODEX"
+chmod +x "$BROKEN_HOMEBREW_CODEX"
+expect_failure codex_validate_candidate "$BROKEN_HOMEBREW_CODEX"
+resolved_discovered_nested_codex="$({
+  CODEX_APPLICATIONS_DIR="$DISCOVERED_NESTED_APPLICATIONS" \
+  CODEX_HOMEBREW_CANDIDATE="$BROKEN_HOMEBREW_CODEX" \
+  CODEX_USR_LOCAL_CANDIDATE="$TEMP_PARENT/missing-usr-local" \
+  CODEX_PATH_VALUE="" \
+    codex_resolve_executable
+})"
+[[ "$resolved_discovered_nested_codex" == "$DISCOVERED_NESTED_CODEX" ]] \
+  || fail "Resolver did not skip missing legacy paths/broken Homebrew to find the nested preview executable."
 
 UNINSTALL_ROOT="$TEMP_PARENT/uninstall-fixture"
 UNINSTALL_INSTALL_DIR="$UNINSTALL_ROOT/Applications"

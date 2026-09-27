@@ -186,6 +186,7 @@ codex_candidate_paths() {
 
   if [[ -d "$applications_dir" ]]; then
     while IFS= read -r discovered_bundle; do
+      printf '%s\n' "$discovered_bundle/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
       printf '%s\n' "$discovered_bundle/Contents/Resources/codex"
     done < <(
       find "$applications_dir" -maxdepth 1 \( -type d -o -type l \) -name 'Codex*.app' -print \

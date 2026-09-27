@@ -8,43 +8,23 @@ enum StatusItemClickIntent: Equatable {
 }
 
 enum StatusItemDestination: Equatable {
-    case history
-    case tokenDashboard
-    case performanceDashboard
     case settings(SettingsTabSelection)
 }
 
 @MainActor
-final class StatusItemController: NSObject, NSPopoverDelegate {
+final class StatusItemController: NSObject, NSPopoverDelegate, NSViewToolTipOwner {
     nonisolated static func clickIntent(for eventType: NSEvent.EventType?) -> StatusItemClickIntent {
         eventType == .rightMouseUp ? .showContextMenu : .togglePopover
     }
 
     private let viewModel: MenuBarStatusViewModel
-    private let historyDatabase: UsageHistoryDatabaseWorking
     private let updateMonitor: AppUpdateMonitor
-    private let performanceInstrumentationStore: AppPerformanceInstrumentationStore
-    private let codexSourceHealthStore: CodexSourceHealthStore
-    private let appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore
     private let resetCreditStore: CodexResetCreditStore
     private let resetCreditClient: CodexResetCreditFetching?
-    private let collectionModeController: UsageCollectionModeController
     private let routeHandlerOverride: ((StatusItemDestination) -> Void)?
     private let settingsDefaults: UserDefaults
-    private let popoverOpenInstrumentation: AppPerformanceSpanTracker
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
-    private lazy var usageHistoryWindowController = UsageHistoryWindowController(database: historyDatabase)
-    private lazy var tokenDashboardWindowController = TokenDashboardWindowController(
-        database: historyDatabase,
-        performanceInstrumentationStore: performanceInstrumentationStore,
-        collectionModeController: collectionModeController
-    )
-    private lazy var performanceDashboardWindowController = PerformanceDashboardWindowController(
-        database: historyDatabase,
-        performanceInstrumentationStore: performanceInstrumentationStore,
-        collectionModeController: collectionModeController
-    )
     private lazy var contextMenu = StatusItemContextMenuFactory.makeMenu(
         target: self,
         quitAction: #selector(quit)
@@ -53,7 +33,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
-    private var pendingLaunchToMenuTitleSpan: AppPerformanceSpan?
+    private(set) var ringToolTipTag: NSView.ToolTipTag?
 
     var statusButtonForTesting: NSStatusBarButton? {
         statusItem.button
@@ -61,44 +41,30 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     init(
         viewModel: MenuBarStatusViewModel,
-        historyDatabase: UsageHistoryDatabaseWorking,
         updateMonitor: AppUpdateMonitor,
-        performanceInstrumentationStore: AppPerformanceInstrumentationStore = .shared,
-        codexSourceHealthStore: CodexSourceHealthStore = .shared,
-        appServerDiagnosticsStore: CodexAppServerAuditDiagnosticsStore = .applicationSupportStore(),
         resetCreditStore: CodexResetCreditStore = .applicationSupportStore(),
         resetCreditClient: CodexResetCreditFetching? = nil,
-        collectionModeController: UsageCollectionModeController = UsageCollectionModeController(),
-        launchToMenuTitleSpan: AppPerformanceSpan? = nil,
         routeHandlerOverride: ((StatusItemDestination) -> Void)? = nil,
         settingsDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
-        self.historyDatabase = historyDatabase
         self.updateMonitor = updateMonitor
-        self.performanceInstrumentationStore = performanceInstrumentationStore
-        self.codexSourceHealthStore = codexSourceHealthStore
-        self.appServerDiagnosticsStore = appServerDiagnosticsStore
         self.resetCreditStore = resetCreditStore
         self.resetCreditClient = resetCreditClient
-        self.collectionModeController = collectionModeController
         self.routeHandlerOverride = routeHandlerOverride
         self.settingsDefaults = settingsDefaults
-        self.popoverOpenInstrumentation = AppPerformanceSpanTracker(
-            kind: .menuPopoverOpenToContent,
-            instrumentationStore: performanceInstrumentationStore,
-            baseMetadata: ["surface": "menuPopover"]
-        )
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.autosaveName = "CodexStatusBarStatusItem"
-        self.pendingLaunchToMenuTitleSpan = launchToMenuTitleSpan
         StatusItemVisibility.forceVisible(statusItem)
         super.init()
 
         configurePopover()
         configureStatusItem()
         bindViewModel()
-        updateStatusItemTitle(viewModel.menuBarPercentText)
+        updateStatusItemTitle(
+            viewModel.menuBarPercentText,
+            remainingPercent: viewModel.weeklyRemainingPercent
+        )
     }
 
     private func configurePopover() {
@@ -107,30 +73,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(
             rootView: MenuBarContentView(
                 viewModel: viewModel,
-                historyDatabase: historyDatabase,
                 updateMonitor: updateMonitor,
-                performanceInstrumentationStore: performanceInstrumentationStore,
-                codexSourceHealthStore: codexSourceHealthStore,
-                appServerDiagnosticsStore: appServerDiagnosticsStore,
                 resetCreditStore: resetCreditStore,
                 resetCreditClient: resetCreditClient,
-                onOpenHistory: { [weak self] in
-                    self?.route(to: .history)
-                },
-                onOpenTokenDashboard: { [weak self] in
-                    self?.route(to: .tokenDashboard)
-                },
-                onOpenPerformanceDashboard: { [weak self] in
-                    self?.route(to: .performanceDashboard)
-                },
                 onOpenUpdatesSettings: { [weak self] in
                     self?.route(to: .settings(.updates))
                 },
-                onOpenDataSettings: { [weak self] in
-                    self?.route(to: .settings(.data))
-                },
-                onFirstRendered: { [weak self] in
-                    self?.recordPopoverContentRendered()
+                onOpenSettings: { [weak self] in
+                    self?.route(to: .settings(.general))
                 },
                 onContentSizeChange: { [weak self] size in
                     self?.updatePopoverContentSize(size)
@@ -149,17 +99,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.target = self
         button.action = #selector(handleStatusItemClick(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.imagePosition = .noImage
-        button.image = nil
         StatusItemToolTipPolicy.apply(to: button)
         button.appearsDisabled = false
     }
 
     private func bindViewModel() {
-        viewModel.$menuBarPercentText
+        Publishers.CombineLatest(viewModel.$menuBarPercentText, viewModel.$weeklyRemainingPercent)
             .receive(on: RunLoop.main)
-            .sink { [weak self] text in
-                self?.updateStatusItemTitle(text)
+            .sink { [weak self] text, remainingPercent in
+                self?.updateStatusItemTitle(text, remainingPercent: remainingPercent)
             }
             .store(in: &cancellables)
 
@@ -171,13 +119,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             .store(in: &cancellables)
     }
 
-    private func updateStatusItemTitle(_ text: String) {
+    private func updateStatusItemTitle(_ text: String, remainingPercent: Int? = nil) {
         guard let button = statusItem.button else {
             return
         }
 
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        let visibleText = StatusItemTitleLayout.visibleText(text)
+        let visibleText = remainingPercent == nil
+            ? StatusItemTitleLayout.visibleText(text)
+            : text.trimmingCharacters(in: .whitespacesAndNewlines)
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineBreakMode = .byTruncatingTail
 
@@ -191,22 +141,55 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
         button.title = visibleText
         button.attributedTitle = attributedTitle
+        button.image = remainingPercent.map(StatusItemRingImage.make)
+        button.imagePosition = remainingPercent == nil ? .noImage : .imageLeading
         button.cell?.lineBreakMode = .byTruncatingTail
-        button.setAccessibilityLabel(AppAccessibilitySemantics.statusItemLabel(visibleText: visibleText))
-        statusItem.length = StatusItemTitleLayout.length(for: visibleText, font: font)
-        StatusItemVisibility.forceVisible(statusItem)
-
-        if visibleText != "--",
-           !visibleText.isEmpty,
-           pendingLaunchToMenuTitleSpan != nil
-        {
-            performanceInstrumentationStore.finish(
-                pendingLaunchToMenuTitleSpan,
-                status: .success,
-                metadata: ["surface": "menuBar"]
-            )
-            pendingLaunchToMenuTitleSpan = nil
+        let accessibilityLabel: String
+        if let remainingPercent, !viewModel.menuBarDisplayOptions.showsRemainingPercentage {
+            accessibilityLabel = "Codex usage \(remainingPercent)% remaining"
+                + (visibleText.isEmpty ? "" : ", \(visibleText)")
+        } else {
+            accessibilityLabel = AppAccessibilitySemantics.statusItemLabel(visibleText: visibleText)
         }
+        button.setAccessibilityLabel(accessibilityLabel)
+        statusItem.length = StatusItemTitleLayout.length(
+            for: visibleText,
+            font: font,
+            hasRing: remainingPercent != nil
+        )
+        StatusItemVisibility.forceVisible(statusItem)
+        updateRingToolTip(for: button, remainingPercent: remainingPercent)
+    }
+
+    private func updateRingToolTip(for button: NSStatusBarButton, remainingPercent: Int?) {
+        if let ringToolTipTag {
+            button.removeToolTip(ringToolTipTag)
+            self.ringToolTipTag = nil
+        }
+
+        guard remainingPercent != nil,
+              !viewModel.menuBarDisplayOptions.showsRemainingPercentage else {
+            return
+        }
+
+        button.layoutSubtreeIfNeeded()
+        guard let ringRect = button.cell?.imageRect(forBounds: button.bounds),
+              !ringRect.isEmpty else {
+            return
+        }
+        ringToolTipTag = button.addToolTip(ringRect.insetBy(dx: -2, dy: -3), owner: self, userData: nil)
+    }
+
+    func view(
+        _ view: NSView,
+        stringForToolTip tag: NSView.ToolTipTag,
+        point: NSPoint,
+        userData: UnsafeMutableRawPointer?
+    ) -> String {
+        guard tag == ringToolTipTag, let remainingPercent = viewModel.weeklyRemainingPercent else {
+            return ""
+        }
+        return "\(remainingPercent)% left"
     }
 
     @objc
@@ -221,12 +204,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func togglePopover(relativeTo button: NSStatusBarButton) {
         if popover.isShown {
-            popoverOpenInstrumentation.discardPendingSpan()
             popover.performClose(nil)
             return
         }
 
-        popoverOpenInstrumentation.begin()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         startOutsideClickMonitors()
 
@@ -272,7 +253,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func showContextMenu() {
-        popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         statusItem.menu = contextMenu
         statusItem.button?.performClick(nil)
@@ -290,39 +270,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         }
 
         switch destination {
-        case .history:
-            openUsageHistory()
-        case .tokenDashboard:
-            openTokenDashboard()
-        case .performanceDashboard:
-            openPerformanceDashboard()
         case .settings:
             openSettings()
         }
     }
 
-    private func openTokenDashboard() {
-        tokenDashboardWindowController.prepareOpenInstrumentation()
-        popoverOpenInstrumentation.discardPendingSpan()
-        popover.performClose(nil)
-        tokenDashboardWindowController.showWindow()
-    }
-
-    private func openUsageHistory() {
-        popoverOpenInstrumentation.discardPendingSpan()
-        popover.performClose(nil)
-        usageHistoryWindowController.showWindow()
-    }
-
-    private func openPerformanceDashboard() {
-        performanceDashboardWindowController.prepareOpenInstrumentation()
-        popoverOpenInstrumentation.discardPendingSpan()
-        popover.performClose(nil)
-        performanceDashboardWindowController.showWindow()
-    }
-
     private func openSettings() {
-        popoverOpenInstrumentation.discardPendingSpan()
         popover.performClose(nil)
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -334,16 +287,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        popoverOpenInstrumentation.discardPendingSpan()
         stopOutsideClickMonitors()
-    }
-
-    private func recordPopoverContentRendered() {
-        guard popoverOpenInstrumentation.hasPendingSpan else {
-            return
-        }
-
-        popoverOpenInstrumentation.finish()
     }
 
     private func startOutsideClickMonitors() {

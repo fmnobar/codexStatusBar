@@ -71,19 +71,14 @@ enum AppReleaseNotes {
             detail: "Download, verify, and install signed GitHub Release updates from the Updates settings tab."
         ),
         AppReleaseNote(
-            id: "data-management",
-            title: "Data management settings",
-            detail: "Use Lightweight storage by default, opt into Detailed Analytics, manage fixed retention, safe backups, and read-only historical archives."
+            id: "current-usage",
+            title: "A simpler usage monitor",
+            detail: "See your seven-day usage and available usage resets. Choose whether the menu bar shows the reset date and time, and enable launch at login."
         ),
         AppReleaseNote(
-            id: "history-polish",
-            title: "History chart polish",
-            detail: "Inspect nearby samples, search model series, and see clearer empty states in the History window."
-        ),
-        AppReleaseNote(
-            id: "usage-history",
-            title: "Usage history by model",
-            detail: "Chart rolling day, week, month, and year usage history with aggregate and model-specific series when available."
+            id: "codex-discovery",
+            title: "Updated Codex discovery",
+            detail: "Recognize the Codex executable in the current ChatGPT app bundle while retaining support for older installations."
         ),
     ]
 }

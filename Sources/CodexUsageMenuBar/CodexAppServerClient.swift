@@ -264,17 +264,12 @@ struct CodexLsofWebSocketConnectionOwnershipProber: CodexWebSocketConnectionOwne
 }
 
 @MainActor
-protocol CodexProfileTokenUsageFetching: AnyObject {
-    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot
-}
-
-@MainActor
 protocol CodexResetCreditFetching: AnyObject {
     func resetCreditSnapshot() async throws -> CodexResetCreditSnapshot
 }
 
 @MainActor
-final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexProfileTokenUsageFetching, CodexResetCreditFetching {
+final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexResetCreditFetching {
     private struct ConnectionAttempt {
         let id: UInt64
         let task: Task<Void, Error>
@@ -282,9 +277,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     }
 
     var onSnapshot: ((CodexUsageSnapshot) -> Void)?
-    var onTokenUsage: ((CodexTokenUsageNotification) -> Void)?
-    var onTokenUsagePayloadAudit: ((CodexTokenUsagePayloadAudit) -> Void)?
-    var onAppServerAuditDiagnosticEvent: ((CodexAppServerAuditDiagnosticEvent) -> Void)?
 
     private let decoder = JSONDecoder()
     private let urlSession: URLSession
@@ -292,13 +284,13 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     private let readyTimeout: TimeInterval
     private let readyPollInterval: TimeInterval
     private let requestTimeout: TimeInterval
+    private let initializationTimeout: TimeInterval
     private let maximumIncomingMessageBytes: Int
     private let executableResolver: CodexExecutableResolving
     private let webSocketConnectionOwnershipProber: CodexWebSocketConnectionOwnershipProbing
     private let webSocketHandshakeOverride: (@MainActor (URLSessionWebSocketTask) async throws -> Void)?
     private let ensureConnectedOverride: (@MainActor () async throws -> Void)?
     private let sendRequestOverride: (@MainActor (String, Any?) async throws -> Any)?
-    private let profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient?
     private let resetCreditHTTPClient: CodexResetCreditHTTPClient?
 
     private var process: Process?
@@ -342,13 +334,13 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         readyTimeout: TimeInterval = 5,
         readyPollInterval: TimeInterval = 0.25,
         requestTimeout: TimeInterval = 10,
+        initializationTimeout: TimeInterval = 45,
         maximumIncomingMessageBytes: Int = 4 * 1_024 * 1_024,
         executableResolver: CodexExecutableResolving? = nil,
         webSocketConnectionOwnershipProber: CodexWebSocketConnectionOwnershipProbing? = nil,
         webSocketHandshakeOverride: (@MainActor (URLSessionWebSocketTask) async throws -> Void)? = nil,
         ensureConnectedOverride: (@MainActor () async throws -> Void)? = nil,
         sendRequestOverride: (@MainActor (String, Any?) async throws -> Any)? = nil,
-        profileTokenUsageHTTPClient: CodexProfileTokenUsageHTTPClient? = nil,
         resetCreditHTTPClient: CodexResetCreditHTTPClient? = nil
     ) {
         self.urlSession = urlSession
@@ -356,6 +348,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         self.readyTimeout = readyTimeout
         self.readyPollInterval = readyPollInterval
         self.requestTimeout = requestTimeout
+        self.initializationTimeout = initializationTimeout
         self.maximumIncomingMessageBytes = max(maximumIncomingMessageBytes, 1)
         self.executableResolver = executableResolver ?? CodexExecutableResolver()
         self.webSocketConnectionOwnershipProber = webSocketConnectionOwnershipProber
@@ -363,7 +356,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         self.webSocketHandshakeOverride = webSocketHandshakeOverride
         self.ensureConnectedOverride = ensureConnectedOverride
         self.sendRequestOverride = sendRequestOverride
-        self.profileTokenUsageHTTPClient = profileTokenUsageHTTPClient
         self.resetCreditHTTPClient = resetCreditHTTPClient
     }
 
@@ -375,18 +367,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
     func refresh() async throws -> CodexUsageSnapshot {
         try await withSingleReconnect {
             try await self.fetchLatestUsageSnapshot()
-        }
-    }
-
-    func usageDiagnostics() async throws -> CodexUsageDiagnosticsSnapshot {
-        try await withSingleReconnect {
-            try await self.fetchUsageDiagnostics()
-        }
-    }
-
-    func profileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
-        try await withSingleReconnect {
-            try await self.fetchProfileTokenUsageSnapshot()
         }
     }
 
@@ -607,7 +587,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
                     currentPort = nil
                     break
                 }
-                onAppServerAuditDiagnosticEvent?(.connected(mode: .webSocket))
                 return
             } catch {
                 resetSocketState()
@@ -660,7 +639,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         self.process = process
         ownsProcess = true
         try await initializeSessionIfNeeded()
-        onAppServerAuditDiagnosticEvent?(.connected(mode: .standardIO))
     }
 
     /// FileHandle readability callbacks may run again before work dispatched to
@@ -762,7 +740,8 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
                 "capabilities": [
                     "experimentalApi": true,
                 ],
-            ]
+            ],
+            timeoutOverride: initializationTimeout
         )
 
         isInitialized = true
@@ -791,13 +770,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         let data = try makeJSONData(from: result)
         let response = try decoder.decode(AccountRateLimitsResponse.self, from: data)
         return response.usageSnapshot(displaySnapshotOverride: displaySnapshotOverride)
-    }
-
-    private func fetchUsageDiagnostics() async throws -> CodexUsageDiagnosticsSnapshot {
-        let result = try await sendRequest(method: "account/rateLimits/read", params: nil)
-        let data = try makeJSONData(from: result)
-        let response = try decoder.decode(AccountRateLimitsResponse.self, from: data)
-        return response.diagnosticsSnapshot(generatedAt: Date())
     }
 
     private func fetchWhamUsageSnapshot() async throws -> CodexRateLimitSnapshot {
@@ -838,38 +810,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         }
     }
 
-    private func fetchProfileTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
-        do {
-            return try await fetchAccountTokenUsageSnapshot()
-        } catch {
-            try rethrowCancellation(error)
-            return try await fetchProfileTokenUsageHTTPSnapshot()
-        }
-    }
-
-    private func fetchAccountTokenUsageSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
-        let result = try await sendRequest(method: "account/usage/read", params: nil)
-        let data = try makeJSONData(from: result)
-        return try decoder
-            .decode(CodexAccountTokenUsageResponse.self, from: data)
-            .domainSnapshot(fetchedAt: Date())
-    }
-
-    private func fetchProfileTokenUsageHTTPSnapshot() async throws -> CodexProfileTokenUsageSnapshot {
-        let profileClient = profileTokenUsageHTTPClient ?? CodexProfileTokenUsageHTTPClient(responseLoader: { [urlSession] request in
-            try await urlSession.data(for: request)
-        })
-
-        return try await profileClient.fetch { [weak self] refreshToken in
-            guard let self else {
-                throw CodexClientError.appServerUnavailable
-            }
-
-            let authStatus = try await self.fetchAuthStatus(includeToken: true, refreshToken: refreshToken)
-            return authStatus.authToken
-        }
-    }
-
     private func fetchResetCreditHTTPSnapshot() async throws -> CodexResetCreditSnapshot {
         let resetCreditClient = resetCreditHTTPClient ?? CodexResetCreditHTTPClient(responseLoader: { [urlSession] request in
             try await urlSession.data(for: request)
@@ -897,7 +837,11 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         return try decoder.decode(GetAuthStatusResponse.self, from: data)
     }
 
-    private func sendRequest(method: String, params: Any?) async throws -> Any {
+    private func sendRequest(
+        method: String,
+        params: Any?,
+        timeoutOverride: TimeInterval? = nil
+    ) async throws -> Any {
         if let sendRequestOverride {
             return try await sendRequestOverride(method, params)
         }
@@ -923,7 +867,7 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
 
         let resultData = try await requestTracker.response(
             for: requestID,
-            timeout: requestTimeout
+            timeout: timeoutOverride ?? requestTimeout
         ) { [weak self] in
             guard let self else {
                 throw CodexClientError.websocketUnavailable
@@ -999,77 +943,38 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
             return
         }
 
-        guard let method = object["method"] as? String else {
+        guard object["method"] as? String == "account/rateLimits/updated",
+              let params = object["params"]
+        else {
             return
         }
 
-        onAppServerAuditDiagnosticEvent?(.inboundMethod(method))
-        if let notificationAudit = CodexAppServerNotificationAuditSanitizer.audit(
-            method: method,
-            params: object["params"]
-        ) {
-            onAppServerAuditDiagnosticEvent?(.notificationAudit(notificationAudit))
+        let notification: AccountRateLimitsUpdatedNotificationPayload
+        do {
+            let notificationData = try makeJSONData(from: params)
+            notification = try decoder.decode(AccountRateLimitsUpdatedNotificationPayload.self, from: notificationData)
+        } catch {
+            // An optional malformed notification must not tear down the request transport.
+            return
         }
 
-        if method == "account/rateLimits/updated", let params = object["params"] {
-            onAppServerAuditDiagnosticEvent?(.rateLimitNotification)
+        guard notification.isCodexRelated else {
+            return
+        }
 
-            let notification: AccountRateLimitsUpdatedNotificationPayload
-            do {
-                let notificationData = try makeJSONData(from: params)
-                notification = try decoder.decode(AccountRateLimitsUpdatedNotificationPayload.self, from: notificationData)
-            } catch {
-                onAppServerAuditDiagnosticEvent?(.receiveError(
-                    "Ignored malformed account/rateLimits/updated notification."
-                ))
-                // Notifications are optional side-channel updates. A malformed
-                // payload must not tear down a healthy request transport.
+        Task { @MainActor [weak self] in
+            guard let self else {
                 return
             }
 
-            if notification.isCodexRelated {
-                Task { @MainActor [weak self] in
-                    guard let self else {
-                        return
-                    }
-
-                    do {
-                        let latestSnapshot = try await self.fetchLatestUsageSnapshot()
-                        self.onSnapshot?(latestSnapshot)
-                    } catch {
-                        if let snapshot = notification.selectedSnapshot() {
-                            self.onSnapshot?(CodexUsageSnapshot.aggregateOnly(displaySnapshot: snapshot))
-                        }
-                    }
+            do {
+                let latestSnapshot = try await self.fetchLatestUsageSnapshot()
+                self.onSnapshot?(latestSnapshot)
+            } catch {
+                if let snapshot = notification.selectedSnapshot() {
+                    self.onSnapshot?(.aggregateOnly(displaySnapshot: snapshot))
                 }
             }
-        } else if method == "thread/tokenUsage/updated", let params = object["params"] {
-            onAppServerAuditDiagnosticEvent?(.tokenUsageNotification)
-
-            let audit = CodexTokenPayloadAuditor.audit(params: params)
-            onAppServerAuditDiagnosticEvent?(.auditSanitizeAttempt(success: audit != nil))
-            if let audit {
-                onTokenUsagePayloadAudit?(audit)
-            }
-
-            do {
-                let notificationData = try makeJSONData(from: params)
-                let notification = try decoder.decode(ThreadTokenUsageUpdatedNotificationPayload.self, from: notificationData)
-                onTokenUsage?(notification.toDomainNotification())
-            } catch {
-                onAppServerAuditDiagnosticEvent?(.receiveError(
-                    "Ignored malformed thread/tokenUsage/updated notification."
-                ))
-                return
-            }
-        } else if method == "remoteControl/status/changed" {
-            let remoteControlStatus = CodexRemoteControlStatusSanitizer.sanitize(params: object["params"])
-            onAppServerAuditDiagnosticEvent?(
-                .remoteControlNotification(
-                    status: remoteControlStatus.status,
-                    warningText: remoteControlStatus.warningText
-                )
-            )
         }
     }
 
@@ -1115,7 +1020,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         guard generation == transportGeneration else {
             return
         }
-        onAppServerAuditDiagnosticEvent?(.receiveError(error.localizedDescription))
         failPendingRequests(with: error)
         retireManagedConnection(ifGeneration: generation)
     }
@@ -1152,7 +1056,6 @@ final class CodexAppServerClient: NSObject, CodexRateLimitClientProtocol, CodexP
         standardIOBuffer.removeAll(keepingCapacity: true)
         isInitialized = false
         failPendingRequests(with: CodexClientError.websocketUnavailable)
-        onAppServerAuditDiagnosticEvent?(.disconnected(errorText: nil))
     }
 
     private func retireManagedConnection() {
