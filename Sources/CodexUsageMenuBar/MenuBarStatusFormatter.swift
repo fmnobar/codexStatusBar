@@ -15,7 +15,7 @@ enum StatusItemContextMenuFactory {
 enum StatusItemTitleLayout {
     static let minimumLength: CGFloat = 34
     static let maximumLength: CGFloat = 230
-    private static let horizontalPadding: CGFloat = 16
+    private static let horizontalPadding: CGFloat = 6
 
     static func visibleText(_ text: String) -> String {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -26,7 +26,8 @@ enum StatusItemTitleLayout {
         let title = hasRing ? text.trimmingCharacters(in: .whitespacesAndNewlines) : visibleText(text)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         let ringWidth: CGFloat = hasRing ? (title.isEmpty ? 19 : 24) : 0
-        return min(max(textWidth + horizontalPadding + ringWidth, minimumLength), maximumLength)
+        let minimum = hasRing && title.isEmpty ? 25 : minimumLength
+        return min(max(textWidth + horizontalPadding + ringWidth, minimum), maximumLength)
     }
 }
 

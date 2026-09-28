@@ -28,11 +28,13 @@ final class MenuBarStatusFormatterTests: XCTestCase {
         XCTAssertEqual(StatusItemTitleLayout.visibleText(""), "--")
         XCTAssertEqual(StatusItemTitleLayout.visibleText("   "), "--")
         XCTAssertEqual(StatusItemTitleLayout.visibleText("91% 5/17 10:28AM"), "91% 5/17 10:28AM")
-        XCTAssertGreaterThanOrEqual(
-            StatusItemTitleLayout.length(for: "", font: font, hasRing: true),
-            StatusItemTitleLayout.minimumLength
+        XCTAssertEqual(StatusItemTitleLayout.length(for: "", font: font, hasRing: true), 25)
+        let fullTitle = "68% 10/3"
+        let fullTitleWidth = ceil((fullTitle as NSString).size(withAttributes: [.font: font]).width)
+        XCTAssertEqual(
+            StatusItemTitleLayout.length(for: fullTitle, font: font, hasRing: true),
+            fullTitleWidth + 30
         )
-        XCTAssertLessThan(StatusItemTitleLayout.length(for: "", font: font, hasRing: true), 40)
         XCTAssertEqual(
             StatusItemTitleLayout.length(for: "67%", font: font, hasRing: true)
                 - StatusItemTitleLayout.length(for: "67%", font: font),
